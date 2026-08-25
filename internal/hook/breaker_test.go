@@ -1,0 +1,255 @@
+package hook
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/state"
+)
+
+// testCfg is a config with small, easily-reasoned-about limits so a test
+// failure points at logic rather than arithmetic.
+func testCfg() config.Config {
+	c := config.Defaults()
+	c.Limits.MaxToolCalls = 10
+	c.Limits.MaxRepeatIdentical = 3
+	c.Limits.MaxConsecutiveFailures = 2
+	c.Limits.MaxSameCommandFailures = 2
+	c.Limits.MaxEditsWithoutVerify = 4
+	c.Limits.MaxFilesTouched = 5
+	c.Paths.Plans = "plans"
+	return c
+}
+
+func sess(mut func(*state.Session)) *state.Session {
+	s := &state.Session{
+		Repeats:      map[string]int{},
+		CmdFailures:  map[string]int{},
+		FilesTouched: map[string]int{},
+	}
+	if mut != nil {
+		mut(s)
+	}
+	return s
+}
+
+func input(tool, jsonInput string) Input {
+	return Input{ToolName: tool, ToolInput: json.RawMessage(jsonInput)}
+}
+
+func TestVerdict(t *testing.T) {
+	cfg := testCfg()
+	bashLs := input("Bash", `{"command":"ls -la"}`)
+
+	tests := []struct {
+		name      string
+		in        Input
+		s         *state.Session
+		wantBlock bool
+		wantKind  string
+		// wantIn asserts the block message actually tells the model what to
+		// do. A block that only says "no" gets worked around.
+		wantIn string
+	}{
+		{
+			name: "clean session allows",
+			in:   bashLs,
+			s:    sess(nil),
+		},
+		{
+			name: "identical call under threshold allows",
+			in:   bashLs,
+			s: sess(func(s *state.Session) {
+				s.Repeats[bashLs.Signature()] = 2
+			}),
+		},
+		{
+			name: "identical call at threshold blocks as loop",
+			in:   bashLs,
+			s: sess(func(s *state.Session) {
+				s.Repeats[bashLs.Signature()] = 3
+			}),
+			wantBlock: true,
+			wantKind:  "breaker/loop",
+			wantIn:    "Do not retry",
+		},
+		{
+			name: "same command failing repeatedly blocks",
+			in:   bashLs,
+			s: sess(func(s *state.Session) {
+				s.CmdFailures["ls -la"] = 2
+			}),
+			wantBlock: true,
+			wantKind:  "breaker/command-failures",
+			wantIn:    "not going to start working",
+		},
+		{
+			name: "consecutive failures block",
+			in:   bashLs,
+			s: sess(func(s *state.Session) {
+				s.ConsecFailures = 2
+			}),
+			wantBlock: true,
+			wantKind:  "breaker/consecutive-failures",
+		},
+		{
+			name: "tool budget exhausted blocks",
+			in:   bashLs,
+			s: sess(func(s *state.Session) {
+				s.ToolCalls = 10
+			}),
+			wantBlock: true,
+			wantKind:  "breaker/tool-budget",
+			wantIn:    "BLOCKED.md",
+		},
+		{
+			name: "too many edits without verification blocks",
+			in:   input("Edit", `{"file_path":"a.go"}`),
+			s: sess(func(s *state.Session) {
+				s.EditsSinceCheck = 4
+			}),
+			wantBlock: true,
+			wantKind:  "breaker/unverified-edits",
+		},
+		{
+			name: "blast radius blocks",
+			in:   input("Edit", `{"file_path":"a.go"}`),
+			s: sess(func(s *state.Session) {
+				for _, f := range []string{"a", "b", "c", "d", "e"} {
+					s.FilesTouched[f] = 1
+				}
+			}),
+			wantBlock: true,
+			wantKind:  "breaker/blast-radius",
+		},
+		{
+			// Loop detection must win over the tool budget: "you repeated the
+			// same call" is actionable, "you used 400 calls" is not.
+			name: "loop reported before budget when both tripped",
+			in:   bashLs,
+			s: sess(func(s *state.Session) {
+				s.Repeats[bashLs.Signature()] = 5
+				s.ToolCalls = 99
+			}),
+			wantBlock: true,
+			wantKind:  "breaker/loop",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := verdict(tc.in, cfg, tc.s)
+			if got.Blocked() != tc.wantBlock {
+				t.Fatalf("blocked = %v, want %v (msg: %s)", got.Blocked(), tc.wantBlock, got.Msg)
+			}
+			if tc.wantKind != "" && got.trippedKind != tc.wantKind {
+				t.Errorf("kind = %q, want %q", got.trippedKind, tc.wantKind)
+			}
+			if tc.wantIn != "" && !strings.Contains(got.Msg, tc.wantIn) {
+				t.Errorf("message missing %q, got:\n%s", tc.wantIn, got.Msg)
+			}
+			if tc.wantBlock && got.trippedDetail == "" {
+				t.Error("a block must record a detail for the resume message")
+			}
+		})
+	}
+}
+
+func TestSignatureStability(t *testing.T) {
+	a := input("Bash", `{"command":"go test ./..."}`)
+	b := input("Bash", `{"command":"go test ./..."}`)
+	if a.Signature() != b.Signature() {
+		t.Error("identical inputs must share a signature or loop detection never fires")
+	}
+
+	// Whitespace-only reformatting is the commonest way a retry looks
+	// different while being the same call.
+	c := input("Bash", `{"command":"go test ./..."}`)
+	d := input("Bash", "{\"command\":\"go test ./...\"}\n  ")
+	if c.Signature() != d.Signature() {
+		t.Error("whitespace differences must not defeat loop detection")
+	}
+
+	e := input("Bash", `{"command":"go build ./..."}`)
+	if a.Signature() == e.Signature() {
+		t.Error("different commands must not collide")
+	}
+	f := input("Read", `{"command":"go test ./..."}`)
+	if a.Signature() == f.Signature() {
+		t.Error("tool name must be part of the signature")
+	}
+}
+
+func TestFailedDetection(t *testing.T) {
+	tests := []struct {
+		name string
+		resp string
+		want bool
+	}{
+		{"absent response is not a failure", ``, false},
+		{"explicit success false", `{"success":false}`, true},
+		{"explicit success true", `{"success":true}`, false},
+		{"is_error true", `{"is_error":true}`, true},
+		{"non-zero exit", `{"exit_code":1}`, true},
+		{"zero exit", `{"exit_code":0}`, false},
+		{"error string present", `{"error":"boom"}`, true},
+		// Stderr alone is not failure: plenty of tools write progress there.
+		{"stderr alone is not failure", `{"stderr":"warning: deprecated"}`, false},
+		// A shape we do not recognize must not be counted against the
+		// failure budget, or an unfamiliar tool trips the breaker for free.
+		{"unrecognized shape is not a failure", `"just a string"`, false},
+		{"empty object is not a failure", `{}`, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			in := Input{ToolResponse: json.RawMessage(tc.resp)}
+			if got := in.Failed(); got != tc.want {
+				t.Errorf("Failed() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLooksLikeVerification(t *testing.T) {
+	yes := []string{
+		"make test", "npm test", "go test ./...", "pytest -q",
+		"cargo test --all", "./gradlew test", "make build && make lint",
+	}
+	for _, c := range yes {
+		if !looksLikeVerification(c) {
+			t.Errorf("%q should count as verification", c)
+		}
+	}
+	// The edit budget resets only on real verification. If `ls` counted,
+	// the control would be trivially bypassable.
+	no := []string{"ls", "cat file.go", "git status", "echo test", "cd tests", ""}
+	for _, c := range no {
+		if looksLikeVerification(c) {
+			t.Errorf("%q must not count as verification", c)
+		}
+	}
+}
+
+func TestBreakerPreBlocksAfterTrip(t *testing.T) {
+	dir := t.TempDir()
+	store := state.New(dir)
+	cfg := testCfg()
+
+	_, err := store.Update("s1", func(s *state.Session) {
+		s.Tripped = "breaker/loop"
+		s.TrippedDetail = "Bash repeated 4 times"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d := Breaker(Input{HookEventName: "PreToolUse", SessionID: "s1"}, cfg, store)
+	if !d.Blocked() {
+		t.Fatal("a tripped session must refuse the next call; otherwise the breaker reports but never stops")
+	}
+	if !strings.Contains(d.Msg, "orion reset --session") {
+		t.Error("block message must tell the human how to resume")
+	}
+}

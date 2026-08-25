@@ -1,0 +1,37 @@
+{
+  "SessionStart": [
+    {
+      "hooks": [
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/dispatch.sh session-start" }
+      ]
+    }
+  ],
+  "PreToolUse": [
+    {
+      "matcher": "Bash",
+      "hooks": [
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/dispatch.sh gate" }
+      ]
+    },
+    {
+      "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+      "hooks": [
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/dispatch.sh shield" }
+      ]
+    },
+    {
+      "matcher": "*",
+      "hooks": [
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/dispatch.sh breaker" }
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": "*",
+      "hooks": [
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/dispatch.sh breaker" }
+      ]
+    }
+  ]
+}

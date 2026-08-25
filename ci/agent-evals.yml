@@ -1,0 +1,43 @@
+# Regression-test the agent's configuration exactly as you regression-test
+# code. A prompt or skill change can quietly degrade the agent, and without
+# this gate nothing would notice until a bad PR reached a human.
+#
+# Copy to .github/workflows/ in the target project.
+name: agent-evals
+
+on:
+  pull_request:
+    paths:
+      - 'CLAUDE.md'
+      - '.claude/**'
+      - 'orion.json'
+      - 'evals/**'
+  schedule:
+    - cron: '0 2 * * *'
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Install orion
+        run: |
+          curl -fsSL -o orion.tar.gz \
+            "https://github.com/orion-sdlc/orion/releases/latest/download/orion-linux-amd64"
+          install -m 0755 orion-linux-amd64 /usr/local/bin/orion || true
+          orion version || echo "orion not installed; guardrails will not run in this job"
+
+      - name: Run eval suite
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NJ_AGENTS_CI: '1'
+        run: ./evals/run.sh
+
+      - name: Publish pass rate
+        if: always()
+        run: cat evals/results/summary.txt >> "$GITHUB_STEP_SUMMARY"

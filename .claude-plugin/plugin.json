@@ -1,0 +1,16 @@
+{
+  "name": "orion",
+  "version": "0.1.0",
+  "description": "AI-native SDLC orchestrator. Drives an idea from intent to merged PR through a committed artifact chain, with deterministic guardrails against runaway loops, repeated failures and token burn.",
+  "author": {
+    "name": "Navjyot Nishant"
+  },
+  "keywords": [
+    "sdlc",
+    "orchestrator",
+    "guardrails",
+    "code-review",
+    "agents"
+  ],
+  "license": "MIT"
+}

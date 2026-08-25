@@ -1,0 +1,26 @@
+# Stage 6 response tiers.
+#
+# Detection is deterministic and has no model in it. The model is invoked
+# only AFTER a band is breached, and only with the tools that tier allows.
+# Putting a model in the detection path would make the alarm itself
+# non-reproducible.
+
+metric: ci_test_failure_rate
+baseline: rolling_30d
+rules: western_electric   # catches slow drift, not only spikes
+
+tiers:
+  1sigma:
+    action: log
+  2sigma:
+    action: diagnose
+    tools: "Read,Grep,Bash(gh run view *)"   # read-only. it explains, it does not act
+  3sigma:
+    action: propose
+    routes:
+      - pull_request                  # through the normal review gate
+      - runbook:rollback-deploy       # pre-approved, rehearsed in staging
+
+# Every shipped fix becomes an eval case, so the same class of incident
+# cannot silently recur.
+on_fix: add_eval_case

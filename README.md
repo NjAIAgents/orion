@@ -1,0 +1,200 @@
+# Orion
+
+An AI-native SDLC orchestrator. Hand it an idea; it takes the work from
+intent to a reviewable pull request through a committed artifact chain, in an
+isolated sandboxed workspace, under deterministic guardrails.
+
+Built on the plays in Anthropic's
+[AI-native SDLC playbook](https://claude.com/blog/the-ai-native-sdlc-playbook).
+
+> **Status: unbuilt.** Not one line of this has been compiled or executed.
+> Run `make test` before trusting any of it. See [Known gaps](#known-gaps).
+
+## Why a binary
+
+Most of this could have been shell scripts in a plugin. Three things could
+not:
+
+1. **A hook only fires when the agent calls a tool.** It cannot stop an agent
+   burning turns without tool calls, cannot enforce wall clock, and cannot
+   kill a wedged process. Only a parent process can.
+2. **Parallel worktree sessions share one budget.** That is cross-process
+   mutable state with locking.
+3. **A quota wall needs waiting out.** Parse the reset, sleep, retry, notify.
+
+So Orion is one static binary, no cgo, empty `go.sum`, builds offline.
+
+## Install
+
+```bash
+git clone https://github.com/orion-sdlc/orion && cd orion
+make test     # do this first; nothing here has been run by its author
+make install  # to ~/.local/bin
+orion doctor
+```
+
+`orion doctor` checks the Claude CLI, git identity, `gh` auth, OS sandbox
+availability and your project config, and grades each OK / WARN / FAIL. Only
+FAIL blocks.
+
+## Use
+
+```bash
+orion new "customers should see claim status in the portal"
+orion run <id> --stage intent
+orion run <id> --stage spec
+orion run <id> --stage plan
+orion run <id> --stage build
+orion status <id>
+```
+
+Inside Claude Code, `/orion:start`, `/orion:next`, `/orion:status`,
+`/orion:learn`.
+
+## The artifact chain
+
+```
+intent.md -> spec.md -> plan.md -> diff+tests -> PR+findings -> incident record
+```
+
+Each stage ends by committing an artifact; the next begins by reading it.
+Coordination lives in files, not in a conversation, so no stage depends on
+another's context surviving. The chain of commits is the audit trail.
+
+## Guardrails
+
+Enforced by hooks, deterministically. A skill makes a violation unlikely; a
+hook makes it impossible.
+
+| Hook | Stops |
+|---|---|
+| **breaker** | identical repeated calls, repeated failure of one command, consecutive failures, tool-call budget, edits without verification, blast radius, wall clock |
+| **gate** | production deploys with no named authorization, pushes to the default branch, force pushes, hard reset onto a remote ref |
+| **shield** | edits to protected paths, edits to test files during a fix, implementation before a plan exists |
+
+The breaker is wired to **both** PreToolUse and PostToolUse. PostToolUse
+counts what happened; PreToolUse refuses the next call. Wiring only one
+produces a breaker that reports but never stops.
+
+Every block message names a route forward. A block that only says no gets
+worked around.
+
+Tune in `orion.json`. A limit of `0` restores the default rather than meaning
+unlimited: "no limit" is never a safe reading of an absent value in a circuit
+breaker.
+
+## Isolation
+
+`orion new` provisions:
+
+```
+$ORION_HOME/projects/<slug>-<id>/
+├── repo/          the project, git initialized
+├── worktrees/     for parallel sessions
+└── .orion/
+    ├── task.json      idea, stage, status, run history
+    ├── settings.json  generated: permission denies + OS sandbox
+    ├── state/         breaker counters
+    └── logs/          full transcript per run
+```
+
+Three layers: a dedicated directory, tool-level permission denies, and the
+OS sandbox with a network allowlist and credential denies. The supervisor
+also strips cloud credentials from the child environment, so a misconfigured
+sandbox is not the only thing between an agent and your AWS keys.
+
+**The OS sandbox is not a VM.** It stops credential reads and network egress.
+It does not defend against a determined exploit. For untrusted code use
+`--container`.
+
+## Quota handling
+
+On a provider limit, Orion parses the reset time, waits, retries, and tells
+you. Waits longer than 90 minutes are not sat through: it records a resume
+time and hands back rather than holding a process open for hours.
+
+An estimated wait is always labelled an estimate. Presenting a guess as a
+stated reset time is how a tool loses trust.
+
+Notifications go to stdout always, plus desktop notification, plus
+`ORION_NOTIFY_WEBHOOK` (Slack-compatible) or `ORION_NOTIFY_COMMAND`.
+
+## Cross-project memory
+
+A lesson learned in one project should not be relearned in the next.
+
+```bash
+orion lessons add "Money is BigDecimal, never double"
+orion lessons list
+```
+
+Two constraints keep this from rotting:
+
+**Scope is earned.** A lesson starts scoped to its own project. It reaches
+other projects only after it actually recurs in a different one. Recurring
+five times in one repo proves it matters there and proves nothing about
+anywhere else.
+
+**The injected block is capped.** The agent reads `CLAUDE.md` in full every
+session, so an unbounded list degrades every session invisibly. Capped at 25,
+ranked by recurrence weighted toward recency, expiring after 90 days.
+Hand-written content outside the managed markers is preserved.
+
+## Relationship to nj-agents
+
+Orion delegates review, secret scanning, test/build verification and PR
+authoring to [nj-agents](https://github.com/navjyotnishant/nj-agents) rather
+than reimplementing them. See [docs/nj-agents-integration.md](docs/nj-agents-integration.md),
+including the deliberate carve-out from its propose-never-act contract.
+
+## Known gaps
+
+Read these before relying on it.
+
+- **Nothing has been compiled.** Written without a Go toolchain available.
+  `make test` is the acceptance gate.
+- **Unparseable hook input exits 0, allowing the call.** A malformed payload
+  from a future harness version must not brick a session. The cost is that a
+  harness change could silently disable enforcement. `orion doctor` does not
+  detect this.
+- **Token budget is proxied by tool-call count**, not real tokens. Hooks are
+  not given token counts. True accounting needs the OpenTelemetry export,
+  which is after the fact.
+- **Quota error wording is not a stable contract.** Detection is a pattern
+  list that will need extending. A miss degrades to treating quota as an
+  ordinary failure, which is annoying rather than dangerous.
+- **The nj-agents mapping is unverified**, derived from its README. In
+  particular it is unknown whether those skills work from a non-interactive
+  `claude -p` run, which is how the supervisor drives them.
+- **State locking is best-effort** with a 3 second timeout, then proceeds
+  unserialized and says so. A wedged lock blocking every tool call would be
+  worse than a briefly racy counter.
+- **Auto-merge is off by default** and should stay off until `evals/` holds
+  at least 20 real cases. Green means nothing when the suite is empty.
+
+## Layout
+
+```
+orion/
+├── cmd/orion/              CLI entry
+├── internal/
+│   ├── config/             orion.json, defaults that never widen on error
+│   ├── state/              per-session counters, file-locked
+│   ├── hook/               breaker, gate, shield + the hook protocol
+│   ├── workspace/          isolated project provisioning, settings generation
+│   ├── supervisor/         claude -p process control, stage prompts
+│   ├── quota/              exhaustion detection, reset parsing, backoff
+│   ├── lessons/            cross-project memory
+│   ├── notify/             desktop, webhook, custom command
+│   ├── doctor/             preflight
+│   └── match/              glob with ** support
+├── skills/                 beej (intent), kalp (spec+plan), forge (build)
+├── commands/               /orion:start, next, status, learn
+├── hooks/                  hooks.json + dispatch shim
+├── templates/              intent.md, spec.md, plan.md, orion.json
+└── docs/
+```
+
+## License
+
+MIT

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://raw.githubusercontent.com/orion-sdlc/orion/main/docs/orion.schema.json",
+  "version": 1,
+
+  "_comment_limits": "Deterministic circuit breakers. Seki enforces these. Every value is a hard stop, not a suggestion.",
+  "limits": {
+    "max_tool_calls": 400,
+    "max_repeat_identical": 4,
+    "max_consecutive_failures": 3,
+    "max_same_command_failures": 3,
+    "max_session_minutes": 90,
+    "max_edits_without_verify": 25,
+    "max_files_touched": 60
+  },
+
+  "_comment_gates": "Kado, Tate and the plan gate. Turning any of these off removes a control, not a nag.",
+  "gates": {
+    "require_plan_before_edit": true,
+    "protect_tests_during_fix": true,
+    "production_requires_authorization": true,
+    "block_direct_push_to_default_branch": true
+  },
+
+  "_comment_paths": "Where the artifact chain lives. Relative to repo root.",
+  "paths": {
+    "intent": "intent",
+    "specs": "specs",
+    "plans": "plans",
+    "evals": "evals",
+    "state": ".orion/state",
+    "protected": [
+      ".github/workflows/**",
+      "managed-settings.json",
+      "orion.json"
+    ],
+    "test_globs": [
+      "**/test_*.py",
+      "**/*_test.go",
+      "**/*.test.ts",
+      "**/*.test.tsx",
+      "**/*.spec.ts",
+      "**/tests/**",
+      "**/__tests__/**"
+    ]
+  },
+
+  "_comment_autonomy": "Per-environment ceiling. propose_only means Orion opens a PR and stops.",
+  "autonomy": {
+    "dev": "auto_merge_on_green",
+    "staging": "gated_write",
+    "production": "propose_only"
+  },
+
+  "_comment_auto_merge": "OFF by default and it should stay off until evals/ holds at least min_eval_cases real cases. Green means nothing when the suite is empty.",
+  "auto_merge": {
+    "enabled": false,
+    "environments": ["dev"],
+    "require_checks": ["build", "test", "lint", "agent-evals"],
+    "require_eval_pass_rate": 0.95,
+    "min_eval_cases": 20,
+    "forbid_paths": [
+      ".github/**",
+      "managed-settings.json",
+      "orion.json",
+      "**/migrations/**"
+    ],
+    "max_changed_files": 20
+  },
+
+  "_comment_vcs": "gh CLI is the default path. Orion never pushes to the default branch.",
+  "vcs": {
+    "provider": "github",
+    "default_branch": "main",
+    "branch_prefix": "orion/",
+    "pr_draft": false
+  }
+}

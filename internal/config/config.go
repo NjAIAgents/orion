@@ -1,0 +1,270 @@
+// Package config loads orion.json from the project root and supplies
+// defaults for anything absent. Every value here is a hard limit enforced
+// by a hook, so an absent or malformed config must never silently widen
+// a control: parse failures fall back to defaults and are reported.
+package config
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+type Limits struct {
+	MaxToolCalls           int `json:"max_tool_calls"`
+	MaxRepeatIdentical     int `json:"max_repeat_identical"`
+	MaxConsecutiveFailures int `json:"max_consecutive_failures"`
+	MaxSameCommandFailures int `json:"max_same_command_failures"`
+	MaxSessionMinutes      int `json:"max_session_minutes"`
+	MaxEditsWithoutVerify  int `json:"max_edits_without_verify"`
+	MaxFilesTouched        int `json:"max_files_touched"`
+}
+
+// Delegation configures handoff to nj-agents skills.
+//
+// The budget field exists because of a real interaction: a delegated
+// orchestrator such as /security-deep-review costs 15 to 30 agent calls
+// for a mid-size diff, and the breaker counts every one. Without a
+// separate envelope, a deep review invoked late in a session trips the
+// breaker mid-review and the breaker is wrong to do so.
+type Delegation struct {
+	Enabled bool `json:"enabled"`
+	// ExtraToolCallsForReview is added to the tool budget while a delegated
+	// review orchestrator is running. Generous by design: the failure mode
+	// of too small a number is a review that cannot finish.
+	ExtraToolCallsForReview int `json:"extra_tool_calls_for_review"`
+	// DeepSecurityReviewWhen decides when to spend a deep review rather
+	// than the standard pass. Cost is real, so this is risk-tiered rather
+	// than always-on: "always", "high-risk", or "never".
+	DeepSecurityReviewWhen string `json:"deep_security_review_when"`
+	// HighRiskPaths mark a change as high risk regardless of size.
+	HighRiskPaths []string `json:"high_risk_paths"`
+}
+
+type Gates struct {
+	RequirePlanBeforeEdit         bool `json:"require_plan_before_edit"`
+	ProtectTestsDuringFix         bool `json:"protect_tests_during_fix"`
+	ProductionRequiresAuth        bool `json:"production_requires_authorization"`
+	BlockDirectPushToDefaultBranch bool `json:"block_direct_push_to_default_branch"`
+}
+
+type Paths struct {
+	Intent    string   `json:"intent"`
+	Specs     string   `json:"specs"`
+	Plans     string   `json:"plans"`
+	Evals     string   `json:"evals"`
+	State     string   `json:"state"`
+	Protected []string `json:"protected"`
+	TestGlobs []string `json:"test_globs"`
+}
+
+type AutoMerge struct {
+	Enabled           bool     `json:"enabled"`
+	Environments      []string `json:"environments"`
+	RequireChecks     []string `json:"require_checks"`
+	RequireEvalPass   float64  `json:"require_eval_pass_rate"`
+	MinEvalCases      int      `json:"min_eval_cases"`
+	ForbidPaths       []string `json:"forbid_paths"`
+	MaxChangedFiles   int      `json:"max_changed_files"`
+}
+
+type VCS struct {
+	Provider      string `json:"provider"`
+	DefaultBranch string `json:"default_branch"`
+	BranchPrefix  string `json:"branch_prefix"`
+	PRDraft       bool   `json:"pr_draft"`
+}
+
+type Config struct {
+	Version   int               `json:"version"`
+	Limits    Limits            `json:"limits"`
+	Gates     Gates             `json:"gates"`
+	Paths     Paths             `json:"paths"`
+	Autonomy  map[string]string `json:"autonomy"`
+	AutoMerge  AutoMerge         `json:"auto_merge"`
+	VCS        VCS               `json:"vcs"`
+	Delegation Delegation        `json:"delegation"`
+
+	// Root is the resolved project root. Not read from JSON.
+	Root string `json:"-"`
+	// Degraded is true when orion.json was missing or unparseable and
+	// defaults are in force. Hooks surface this so a broken config is
+	// visible rather than silently permissive.
+	Degraded bool `json:"-"`
+	// DegradedReason explains why, for the block message.
+	DegradedReason string `json:"-"`
+}
+
+// Defaults returns the shipped baseline. These are deliberately
+// conservative: a project with no orion.json still gets real limits.
+func Defaults() Config {
+	return Config{
+		Version: 1,
+		Limits: Limits{
+			MaxToolCalls:           400,
+			MaxRepeatIdentical:     4,
+			MaxConsecutiveFailures: 3,
+			MaxSameCommandFailures: 3,
+			MaxSessionMinutes:      90,
+			MaxEditsWithoutVerify:  25,
+			MaxFilesTouched:        60,
+		},
+		Gates: Gates{
+			RequirePlanBeforeEdit:          false, // opt-in: too disruptive to force on an unconfigured repo
+			ProtectTestsDuringFix:          true,
+			ProductionRequiresAuth:         true,
+			BlockDirectPushToDefaultBranch: true,
+		},
+		Paths: Paths{
+			Intent: "intent",
+			Specs:  "specs",
+			Plans:  "plans",
+			Evals:  "evals",
+			State:  ".orion/state",
+			TestGlobs: []string{
+				"**/test_*.py", "**/*_test.go", "**/*.test.ts", "**/*.test.tsx",
+				"**/*.spec.ts", "**/tests/**", "**/__tests__/**",
+			},
+		},
+		Autonomy: map[string]string{
+			"dev": "gated_write", "staging": "gated_write", "production": "propose_only",
+		},
+		AutoMerge: AutoMerge{
+			Enabled: false, RequireEvalPass: 0.95, MinEvalCases: 20, MaxChangedFiles: 20,
+		},
+		VCS: VCS{Provider: "github", DefaultBranch: "main", BranchPrefix: "orion/"},
+		Delegation: Delegation{
+			Enabled:                 true,
+			ExtraToolCallsForReview: 200,
+			DeepSecurityReviewWhen:  "high-risk",
+			HighRiskPaths: []string{
+				"**/auth/**", "**/security/**", "**/crypto/**",
+				"**/payment*/**", "**/migrations/**",
+				"**/*deserial*", "**/Dockerfile", "**/*.tf",
+			},
+		},
+	}
+}
+
+// FindRoot walks up from start looking for orion.json, then for .git.
+// Returns the first directory containing either.
+func FindRoot(start string) (string, error) {
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "orion.json")); err == nil {
+			return dir, nil
+		}
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", errors.New("no orion.json or .git found walking up from " + start)
+		}
+		dir = parent
+	}
+}
+
+// Load reads orion.json from root, overlaying it on Defaults.
+// A missing or malformed file yields defaults with Degraded set; it never
+// yields an error that would let a caller skip enforcement.
+func Load(root string) Config {
+	cfg := Defaults()
+	cfg.Root = root
+
+	b, err := os.ReadFile(filepath.Join(root, "orion.json"))
+	if err != nil {
+		cfg.Degraded = true
+		cfg.DegradedReason = "orion.json not found; shipped defaults in force"
+		return cfg
+	}
+	// Strip the _comment_* keys before unmarshalling so the template
+	// stays self-documenting without tripping strict consumers.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		cfg.Degraded = true
+		cfg.DegradedReason = "orion.json is not valid JSON (" + err.Error() + "); defaults in force"
+		return cfg
+	}
+	for k := range raw {
+		if strings.HasPrefix(k, "_comment") || k == "$schema" {
+			delete(raw, k)
+		}
+	}
+	clean, _ := json.Marshal(raw)
+	if err := json.Unmarshal(clean, &cfg); err != nil {
+		fresh := Defaults()
+		fresh.Root = root
+		fresh.Degraded = true
+		fresh.DegradedReason = "orion.json failed to decode (" + err.Error() + "); defaults in force"
+		return fresh
+	}
+	cfg.Root = root
+	normalize(&cfg)
+	return cfg
+}
+
+// normalize repairs zero values that would disable a control. A limit of
+// 0 in JSON is indistinguishable from absent, and "unlimited" is never a
+// safe reading for a circuit breaker, so 0 restores the default.
+func normalize(c *Config) {
+	d := Defaults()
+	if c.Limits.MaxToolCalls <= 0 {
+		c.Limits.MaxToolCalls = d.Limits.MaxToolCalls
+	}
+	if c.Limits.MaxRepeatIdentical <= 0 {
+		c.Limits.MaxRepeatIdentical = d.Limits.MaxRepeatIdentical
+	}
+	if c.Limits.MaxConsecutiveFailures <= 0 {
+		c.Limits.MaxConsecutiveFailures = d.Limits.MaxConsecutiveFailures
+	}
+	if c.Limits.MaxSameCommandFailures <= 0 {
+		c.Limits.MaxSameCommandFailures = d.Limits.MaxSameCommandFailures
+	}
+	if c.Limits.MaxSessionMinutes <= 0 {
+		c.Limits.MaxSessionMinutes = d.Limits.MaxSessionMinutes
+	}
+	if c.Limits.MaxEditsWithoutVerify <= 0 {
+		c.Limits.MaxEditsWithoutVerify = d.Limits.MaxEditsWithoutVerify
+	}
+	if c.Limits.MaxFilesTouched <= 0 {
+		c.Limits.MaxFilesTouched = d.Limits.MaxFilesTouched
+	}
+	if c.Paths.State == "" {
+		c.Paths.State = d.Paths.State
+	}
+	if c.Paths.Plans == "" {
+		c.Paths.Plans = d.Paths.Plans
+	}
+	if len(c.Paths.TestGlobs) == 0 {
+		c.Paths.TestGlobs = d.Paths.TestGlobs
+	}
+	if c.VCS.DefaultBranch == "" {
+		c.VCS.DefaultBranch = d.VCS.DefaultBranch
+	}
+	if c.VCS.BranchPrefix == "" {
+		c.VCS.BranchPrefix = d.VCS.BranchPrefix
+	}
+	if c.Delegation.ExtraToolCallsForReview <= 0 {
+		c.Delegation.ExtraToolCallsForReview = d.Delegation.ExtraToolCallsForReview
+	}
+	if c.Delegation.DeepSecurityReviewWhen == "" {
+		c.Delegation.DeepSecurityReviewWhen = d.Delegation.DeepSecurityReviewWhen
+	}
+	if len(c.Delegation.HighRiskPaths) == 0 {
+		c.Delegation.HighRiskPaths = d.Delegation.HighRiskPaths
+	}
+}
+
+// StateDir returns the absolute path to the state directory.
+func (c Config) StateDir() string {
+	if filepath.IsAbs(c.Paths.State) {
+		return c.Paths.State
+	}
+	return filepath.Join(c.Root, c.Paths.State)
+}
