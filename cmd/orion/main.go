@@ -22,6 +22,7 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/budget"
+	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/creds"
 	"github.com/orion-sdlc/orion/internal/discovery"
@@ -71,6 +72,8 @@ RUNNING
   orion status <id>           show stage, breaker state and last run
   orion work <KEY> [KEY...]   work tickets, in the order given
   orion queue                 what the watcher would pick up, in order (read-only)
+  orion collect [KEY...]      finish tickets awaiting CI: close, refresh, prune
+                              (--dry-run to see the verdicts, --no-prune to keep worktrees)
   orion repos                 project key -> repository, as adoption recorded it
   orion repos unbind <KEY>    forget one mapping
   orion sandbox               where agents actually worked: clones and worktrees
@@ -177,6 +180,8 @@ func main() {
 		runRepos(os.Args[2:])
 	case "sandbox":
 		runSandbox(os.Args[2:])
+	case "collect":
+		runCollect(os.Args[2:])
 	case "reset":
 		runReset(os.Args[2:])
 	case "fix":
@@ -810,6 +815,14 @@ func adviseRunner(dir, model, prompt string) (string, error) {
 }
 
 func mustJira() work.TrackerAPI {
+	j, err := tracker.NewJiraFromEnv()
+	exitOn(err)
+	return j
+}
+
+// mustJiraSearch is the same client through the collector's wider interface,
+// which also needs Search to find what is waiting.
+func mustJiraSearch() collect.TrackerAPI {
 	j, err := tracker.NewJiraFromEnv()
 	exitOn(err)
 	return j
