@@ -440,6 +440,13 @@ func provisionRemote(dir string, cfg config.Config, assumeYes bool) {
 		}
 		plan.SlackTeam = id.Team
 		plan.SlackName = slack.NormalizeChannelName(cfg.Slack.ChannelPrefix + name)
+		// Check before describing, so the plan does not offer to create a
+		// channel it would in fact bind. The Jira line already distinguishes
+		// the two; a plan that is honest about one and not the other trains
+		// people to skim it.
+		if ch, err := sc.FindChannel(plan.SlackName, cfg.Slack.Private); err == nil && ch != nil {
+			plan.SlackExists = true
+		}
 	}
 
 	if plan.JiraSkip != "" && plan.SlackSkip != "" {
