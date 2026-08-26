@@ -63,18 +63,23 @@ func runSlackCmd(args []string) {
 	}
 	ui.Ok(w, "resolved", "#%s (%s) from %s", name, channel, source)
 
-	// 3. Membership. A bot cannot post to a channel it is not in, and for a
-	// private channel it cannot even see one.
-	if err := c.Join(channel); err != nil && !strings.Contains(err.Error(), "already_in_channel") {
-		ui.Warn(w, "could not join #%s: %v", name, err)
-		fmt.Fprintln(w, "  For a PRIVATE channel a bot cannot join itself: invite it from Slack\n"+
-			"  with /invite @"+id.User+" in that channel, then run this again.")
-	}
-
-	// 4. The actual send.
+	// 3. The actual send. Attempted BEFORE any membership check, because the
+	// send is the only thing that actually answers the question.
+	//
+	// This used to call conversations.join first and warn when it failed --
+	// which it always does for a private channel, since that API does not
+	// support them at all. So every successful test printed a warning about
+	// a problem that did not exist, directly above the line saying it had
+	// worked. A warning that fires on the happy path is worse than no
+	// warning: it is the one people learn to scroll past.
 	if err := c.Post(channel, "*Orion delivery test*\nIf you can read this, "+
 		"notifications for this project will arrive here."); err != nil {
 		ui.Fail(w, "the message was rejected: %v", err)
+		if strings.Contains(err.Error(), "not_in_channel") ||
+			strings.Contains(err.Error(), "channel_not_found") {
+			fmt.Fprintf(w, "  The bot is not in #%s. A bot cannot add itself to a PRIVATE\n"+
+				"  channel, so invite it from Slack: /invite @%s\n", name, id.User)
+		}
 		os.Exit(1)
 	}
 	ui.Ok(w, "ok", "posted to #%s -- go and look", name)
