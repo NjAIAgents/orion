@@ -328,6 +328,9 @@ unacknowledged budget checkpoint, failed runs with their log paths — because
 a digest that buries the actionable part under a status table becomes
 wallpaper.
 
+> **Setting the tokens up: [docs/SETUP-CREDENTIALS.md](SETUP-CREDENTIALS.md)**
+> — a paste-ready Slack app manifest, and the Jira token steps.
+
 ### Slack: a channel per project
 
 Orion can create a Slack channel for every workspace and report into it. This

@@ -137,6 +137,10 @@ func (e *APIError) Error() string {
 		hint = "\n  The token is not valid. Check ORION_SLACK_TOKEN, or reinstall the app."
 	case "ratelimited":
 		hint = "\n  Rate limited by Slack. Retry shortly."
+	case "not_in_channel", "channel_not_found":
+		hint = "\n  The bot is not a member of that channel. It joins public channels" +
+			"\n  automatically, but Slack provides no way to self-join a PRIVATE one:" +
+			"\n  invite it in Slack with /invite @Orion, then re-run."
 	}
 	return "slack " + e.Method + ": " + e.Code + hint
 }
@@ -193,9 +197,35 @@ func (c *Client) CreateChannel(name string, private bool) (*Channel, error) {
 		if findErr != nil {
 			return nil, fmt.Errorf("%s exists but could not be resolved: %w", name, findErr)
 		}
+		// A bot is automatically a member of a channel it CREATED, but not
+		// of one it merely found. conversations.setTopic requires membership
+		// and chat.postMessage to a public channel needs either membership or
+		// chat:write.public, so a reused channel must be joined first or
+		// every later call fails with not_in_channel.
+		//
+		// A private channel cannot be self-joined: Slack has no API for it,
+		// by design. Someone has to invite the bot.
+		if !private {
+			if joinErr := c.Join(found.ID); joinErr != nil {
+				return found, fmt.Errorf(
+					"found #%s but could not join it: %w\n"+
+						"  Add the channels:join scope, or invite the bot in Slack with /invite @Orion",
+					found.Name, joinErr)
+			}
+		}
 		return found, nil
 	}
 	return nil, err
+}
+
+// Join adds the bot to a public channel.
+//
+// Only public channels. Slack provides no way for an app to add itself to a
+// private channel, deliberately: a human must invite it. That is a policy
+// choice rather than a gap, and pretending otherwise would produce a
+// confusing failure instead of a clear instruction.
+func (c *Client) Join(channelID string) error {
+	return c.call("conversations.join", map[string]any{"channel": channelID}, nil)
 }
 
 // FindChannel locates a channel by name.
