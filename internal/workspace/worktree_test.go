@@ -191,3 +191,80 @@ func TestWorktreeBranchesFromTheRemoteTip(t *testing.T) {
 		t.Error("the job branched from a stale base; the newest commit on develop is missing")
 	}
 }
+
+// A worktree cut from the base and left untouched holds nothing that is not
+// already on a remote, so removing it must be allowed.
+//
+// The first implementation compared against origin/HEAD -- the DEFAULT
+// branch -- so a worktree branched from develop appeared to carry every
+// commit develop has that main does not, and cleanup was refused for work
+// that did not exist. A safety check that fires on nothing teaches people to
+// pass --force by habit, and then it is not there when it matters.
+func TestUntouchedWorktreeCanBeRemoved(t *testing.T) {
+	ws := sandbox(t)
+	repo := filepath.Join(ws.Dir, "repo")
+
+	// Put a commit on develop only, so develop and main differ -- the exact
+	// shape that produced the false positive.
+	origin, _ := git(repo, "remote", "get-url", "origin")
+	other := filepath.Join(t.TempDir(), "other")
+	if out, err := exec.Command("git", "clone", "-q", "-b", "develop", origin, other).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(other, "on-develop.txt"), []byte("d\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-q", "-m", "develop only"}, {"push", "-q", "origin", "develop"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = other
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	j, err := AddWorktree(ws, "develop", "orion/untouched")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unpushed, n := hasUnpushedCommits(j.Path); unpushed {
+		t.Errorf("an untouched worktree reported %d unpushed commit(s)", n)
+	}
+	if err := RemoveWorktree(ws, j.Path, false); err != nil {
+		t.Fatalf("refused to remove a worktree holding nothing: %v", err)
+	}
+}
+
+// The counterpart: a real commit that exists on no remote must still block
+// removal, or the check protects nothing.
+func TestWorktreeWithARealCommitIsStillProtected(t *testing.T) {
+	ws := sandbox(t)
+	j, err := AddWorktree(ws, "develop", "orion/has-work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(j.Path, "new.go"), []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-q", "-m", "real work"}} {
+		cmd := exec.Command("git", append([]string{"-C", j.Path}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	unpushed, n := hasUnpushedCommits(j.Path)
+	if !unpushed || n != 1 {
+		t.Fatalf("unpushed = %v, n = %d; a real commit must be protected", unpushed, n)
+	}
+	err = RemoveWorktree(ws, j.Path, false)
+	if err == nil {
+		t.Fatal("removed a worktree holding the only copy of a commit")
+	}
+	if !strings.Contains(err.Error(), "not on the remote") {
+		t.Errorf("the refusal should say why: %v", err)
+	}
+}

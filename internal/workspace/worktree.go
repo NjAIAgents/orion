@@ -185,20 +185,23 @@ func RemoveWorktree(ws *Workspace, path string, force bool) error {
 	return nil
 }
 
+// hasUnpushedCommits reports commits on this branch that exist on no remote.
+//
+// Asks the precise question -- "what is reachable from HEAD but from no
+// remote ref" -- rather than diffing against a guessed base.
+//
+// The first version fell back to origin/HEAD..branch when a branch had no
+// upstream, and origin/HEAD is the DEFAULT branch. A branch cut from develop
+// therefore appeared to carry every commit develop has that main does not,
+// so removing an untouched worktree was refused with "1 commit(s) that are
+// not on the remote" for work that did not exist. A safety check that fires
+// on nothing is worse than none: it teaches people to pass --force by habit,
+// and then it is not there on the day it would have mattered.
 func hasUnpushedCommits(path string) (bool, int) {
-	branch, err := git(path, "branch", "--show-current")
-	if err != nil || strings.TrimSpace(branch) == "" {
-		return false, 0
-	}
-	branch = strings.TrimSpace(branch)
-	out, err := git(path, "log", "--oneline", "origin/"+branch+".."+branch)
+	out, err := git(path, "log", "--oneline", "HEAD", "--not", "--remotes")
 	if err != nil {
-		// No upstream means nothing has been pushed at all, so every commit
-		// on the branch is unique to this worktree.
-		out, err = git(path, "log", "--oneline", "origin/HEAD.."+branch)
-		if err != nil {
-			return false, 0
-		}
+		// Unreadable: assume there IS work rather than risk discarding it.
+		return true, 0
 	}
 	out = strings.TrimSpace(out)
 	if out == "" {

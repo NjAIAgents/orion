@@ -39,6 +39,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
+	"github.com/orion-sdlc/orion/internal/work"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -68,6 +69,7 @@ RUNNING
   orion run <id> [--stage S]  supervise a sandboxed claude run in a workspace
   orion status                show this repo: branch, hooks, Jira, Slack, spend
   orion status <id>           show stage, breaker state and last run
+  orion work <KEY> [KEY...]   work tickets, in the order given
   orion queue                 what the watcher would pick up, in order (read-only)
   orion repos                 project key -> repository, as adoption recorded it
   orion repos unbind <KEY>    forget one mapping
@@ -160,6 +162,9 @@ func main() {
 		} else {
 			runProjectStatus(os.Stdout)
 		}
+	case "work":
+		mustArg(os.Args, 2, "orion work <KEY> [KEY...]")
+		runWork(os.Args[2:])
 	case "queue":
 		runQueue(os.Args[2:])
 	case "repos":
@@ -705,6 +710,86 @@ func confirm(prompt string) bool {
 	_, _ = fmt.Scanln(&ans)
 	ans = strings.ToLower(strings.TrimSpace(ans))
 	return ans == "y" || ans == "yes"
+}
+
+// runWork implements one or more tickets.
+func runWork(args []string) {
+	var keys []string
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			keys = append(keys, a)
+		}
+	}
+	if len(keys) == 0 {
+		fmt.Fprintln(os.Stderr, "orion work needs at least one ticket: orion work FCIA-6")
+		os.Exit(64)
+	}
+
+	results := work.Run(work.Options{
+		Keys: keys, Out: os.Stdout, Home: workspace.Home(),
+		DryRun:     hasFlag(args, "--dry-run"),
+		MaxMinutes: intFlag(args, "--max-minutes", 0),
+		MaxTurns:   intFlag(args, "--max-turns", 0),
+	}, work.Deps{
+		Jira:      mustJira(),
+		Supervise: supervisor.Run,
+		Push:      pushBranch,
+		OpenPR:    openPR,
+	})
+
+	// Exit non-zero when anything needs a person, so a wrapper script or a
+	// cron entry can tell "done" from "someone has to look at this".
+	worst := 0
+	for _, r := range results {
+		switch r.Outcome {
+		case work.OutcomeFailed:
+			worst = 1
+		case work.OutcomeBlocked:
+			if worst == 0 {
+				worst = 2
+			}
+		}
+	}
+	os.Exit(worst)
+}
+
+func mustJira() work.TrackerAPI {
+	j, err := tracker.NewJiraFromEnv()
+	exitOn(err)
+	return j
+}
+
+// pushBranch sets upstream on first push so a later `git push` in that
+// worktree does the obvious thing.
+func pushBranch(dir, branch string) error {
+	out, err := exec.Command("git", "-C", dir, "push", "-u", "origin", branch).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// openPR shells out to gh. Orion does not embed a GitHub client: gh already
+// holds the auth, and a second credential path is a second thing to expire.
+func openPR(dir, branch, title, body, base string) (string, error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return "", fmt.Errorf("gh is not installed, so the branch is pushed but no pull request was opened.\n" +
+			"  Open it yourself, or install gh and re-run")
+	}
+	out, err := exec.Command("gh", "pr", "create", "--head", branch, "--base", base,
+		"--title", title, "--body", body).CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil {
+		return "", fmt.Errorf("%v\n%s", err, text)
+	}
+	// gh prints the URL as the last line.
+	for i := len(strings.Split(text, "\n")) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(strings.Split(text, "\n")[i])
+		if strings.HasPrefix(line, "http") {
+			return line, nil
+		}
+	}
+	return text, nil
 }
 
 // runQueue shows what the watcher WOULD work, in the order it would work
