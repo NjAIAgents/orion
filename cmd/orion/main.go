@@ -31,6 +31,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/provision"
+	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/report"
 	"github.com/orion-sdlc/orion/internal/slack"
 	"github.com/orion-sdlc/orion/internal/state"
@@ -67,6 +68,8 @@ RUNNING
   orion status                show this repo: branch, hooks, Jira, Slack, spend
   orion status <id>           show stage, breaker state and last run
   orion queue                 what the watcher would pick up, in order (read-only)
+  orion repos                 project key -> repository, as adoption recorded it
+  orion repos unbind <KEY>    forget one mapping
 
 GUARDRAILS
   orion doctor [--fix]        preflight: tools, auth, sandbox, config
@@ -157,6 +160,8 @@ func main() {
 		}
 	case "queue":
 		runQueue(os.Args[2:])
+	case "repos":
+		runRepos(os.Args[2:])
 	case "reset":
 		runReset(os.Args[2:])
 	case "fix":
@@ -528,6 +533,7 @@ func ensureSandbox(dir string, cfg config.Config, force bool) {
 
 	if existing := workspace.FindBySource(dir); existing != nil {
 		ui.Ok(w, "bound", "sandbox %s (%s)", existing.ID, existing.RepoDir())
+		registerRepo(dir, cfg, existing)
 		return
 	}
 	remote, err := workspace.RemoteOf(dir)
@@ -553,8 +559,78 @@ func ensureSandbox(dir string, cfg config.Config, force bool) {
 	}
 	ui.Ok(w, "created", "sandbox %s", ws.ID)
 	fmt.Fprintf(w, "         %s\n", ui.Dim(w, ws.RepoDir()))
+	registerRepo(dir, cfg, ws)
 	if len(ws.Task.Branches) > 0 {
 		ui.Ok(w, "created", "branches %s in the sandbox", strings.Join(ws.Task.Branches, ", "))
+	}
+}
+
+// registerRepo records the project-key to repository mapping.
+//
+// Without it every command has to be run from inside a checkout, and the
+// daemon -- which has no meaningful working directory -- cannot act on a
+// ticket at all. The ticket key already names the project; this supplies the
+// other half.
+func registerRepo(dir string, cfg config.Config, ws *workspace.Workspace) {
+	key := strings.TrimSpace(cfg.Tracker.ProjectKey)
+	if key == "" {
+		return // no tracker bound: nothing to key the mapping on
+	}
+	var channel string
+	if ws.Task.Slack != nil {
+		channel = ws.Task.Slack.ID
+	}
+	err := registry.Bind(workspace.Home(), registry.Entry{
+		Key: key, Source: dir, Workspace: ws.ID,
+		Channel: channel, Remote: ws.Task.Remote,
+	})
+	if err != nil {
+		// A collision is a real problem, not a warning to scroll past: two
+		// repositories claiming one key means work lands in whichever ran
+		// last, so say it loudly and leave the original binding intact.
+		ui.Fail(os.Stdout, "%v", err)
+		return
+	}
+	ui.Ok(os.Stdout, "bound", "project %s -> this repository", key)
+}
+
+// runRepos lists what is registered, so a mapping that has gone wrong is
+// visible rather than something you deduce from a failure.
+func runRepos(args []string) {
+	home := workspace.Home()
+	w := os.Stdout
+
+	if len(args) > 0 && args[0] == "unbind" {
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: orion repos unbind <PROJECT>")
+			os.Exit(64)
+		}
+		exitOn(registry.Unbind(home, args[1]))
+		ui.Ok(w, "updated", "unbound %s", strings.ToUpper(args[1]))
+		return
+	}
+
+	f, err := registry.Load(home)
+	exitOn(err)
+	if len(f.Repos) == 0 {
+		fmt.Fprintln(w, "no repositories registered. Run orion init inside one.")
+		return
+	}
+	fmt.Fprintf(w, "%s\n\n", ui.Heading(w, "registered repositories"))
+	for _, k := range f.Keys() {
+		e := f.Repos[k]
+		fmt.Fprintf(w, "  %-10s %s\n", k, e.Source)
+		fmt.Fprintf(w, "             %s\n", ui.Dim(w, "sandbox "+e.Workspace))
+	}
+	missing, err := registry.Prune(home)
+	if err == nil && len(missing) > 0 {
+		fmt.Fprintln(w)
+		for _, e := range missing {
+			ui.Warn(w, "%s: %s is gone.\n"+
+				"         Not unbound automatically: an unmounted volume looks the same as a\n"+
+				"         deletion, and freeing the key would let another repo claim it.\n"+
+				"         Remove it deliberately with: orion repos unbind %s", e.Key, e.Source, e.Key)
+		}
 	}
 }
 
