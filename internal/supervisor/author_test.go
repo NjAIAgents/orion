@@ -53,12 +53,18 @@ func TestAgentAliasSetsBothAuthorAndCommitter(t *testing.T) {
 			t.Errorf("%s = %q, want orionbot", k, got)
 		}
 	}
-	// The address stays the human's by default, which is what keeps these
-	// commits inside the repository's contribution history. The visible
-	// trade -- GitHub still showing the owner -- is documented, not a bug.
+	// And the shipped noreply address, NOT the repository owner's, because
+	// the email is the field that decides attribution: GitHub matches
+	// commits to accounts by address and ignores the name. Falling back to
+	// me@example.com here would put the alias in git log and leave GitHub
+	// still crediting the human.
 	for _, k := range []string{"GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"} {
-		if got, _ := kv(env, k); got != "me@example.com" {
-			t.Errorf("%s = %q, want the repository's own address", k, got)
+		got, _ := kv(env, k)
+		if got == "me@example.com" {
+			t.Errorf("%s fell back to the owner's address; GitHub will credit them for the agent's work", k)
+		}
+		if !strings.Contains(got, "orionbot") {
+			t.Errorf("%s = %q, want the bot's own address", k, got)
 		}
 	}
 }
@@ -73,8 +79,13 @@ func TestAgentAliasHonoursAnExplicitEmail(t *testing.T) {
 
 // Git refuses to commit with an empty author email, so an alias with no
 // address would break every commit the agent makes. No alias beats that.
+//
+// Reachable only by blanking the address explicitly -- an empty value in
+// orion.json overwrites the shipped default rather than being read as
+// absent -- and someone doing that to opt out of the bot identity must not
+// get a repository where nothing can commit.
 func TestNoEmailAnywhereDisablesTheAliasRatherThanBreakingCommits(t *testing.T) {
-	d := repoWithEmail(t, "", `{"vcs":{"agent_author_name":"orion_agent"}}`)
+	d := repoWithEmail(t, "", `{"vcs":{"agent_author_name":"orionbot","agent_author_email":""}}`)
 	t.Setenv("HOME", t.TempDir()) // no global user.email either
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	if env := agentAuthorEnv(d); len(env) != 0 {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -38,6 +39,10 @@ func runSandbox(args []string) {
 		}
 	}
 
+	if target == "PRUNE" {
+		pruneSandboxes(w, home, hasFlag(args, "--dry-run"))
+		return
+	}
 	if target == "" {
 		listSandboxes(w, home)
 		return
@@ -171,6 +176,91 @@ func listSandboxes(w io.Writer, home string) {
 		fmt.Fprintf(w, "\n%s\n", ui.Dim(w,
 			"open one:  orion sandbox <KEY> --code    enter it:  cd \"$(orion sandbox <KEY> --path)\""))
 	}
+}
+
+// pruneSandboxes removes the worktrees that have stopped being evidence.
+//
+// The retention rule is one question: could anyone still need to look at
+// this? A merged branch is fully reachable from the work branch, so the
+// worktree holds nothing the repository does not, and the only thing it
+// still costs is disk and a confusing entry in `orion sandbox`. A branch
+// that is NOT merged is the opposite -- a blocked run, a failed one, or a
+// pull request nobody approved -- and that checkout is the fastest way to
+// see what the agent actually did.
+//
+// So: merged and clean goes, everything else stays, and every decision is
+// printed. Nothing here is silent, because a cleanup that quietly removed
+// the one worktree someone wanted is worse than a directory that grows.
+func pruneSandboxes(w io.Writer, home string, dryRun bool) {
+	f, err := registry.Load(home)
+	exitOn(err)
+
+	removed, kept := 0, 0
+	for _, key := range f.Keys() {
+		entry, err := registry.Lookup(home, key)
+		if err != nil {
+			continue
+		}
+		ws, err := workspace.Open(entry.Workspace)
+		if err != nil {
+			continue
+		}
+		base := config.Load(ws.RepoDir()).VCS.WorkBranch
+		jobs, err := workspace.ListWorktrees(ws)
+		if err != nil || len(jobs) == 0 {
+			continue
+		}
+		for _, j := range jobs {
+			if dirty, lines := agentDirt(j.Path); dirty {
+				ui.Warn(w, "keeping %s: %d uncommitted file(s), in no pull request", j.Branch, len(lines))
+				kept++
+				continue
+			}
+			if !mergedInto(j.Path, j.Branch, base) {
+				ui.Ok(w, "keeping", "%s is not merged into %s yet", j.Branch, base)
+				kept++
+				continue
+			}
+			if dryRun {
+				ui.Ok(w, "would", "remove %s (merged into %s)", j.Branch, base)
+				removed++
+				continue
+			}
+			if err := workspace.RemoveWorktree(ws, j.Path, false); err != nil {
+				ui.Warn(w, "could not remove %s: %v", j.Branch, err)
+				kept++
+				continue
+			}
+			// Drop the local branch too. It is merged, so every commit on it
+			// is reachable from the base and nothing is lost -- and leaving
+			// it means the next ticket of the same number lands on
+			// orion/fcia-6-2, a name that claims a second attempt.
+			_, _ = gitIn(ws.RepoDir(), "branch", "-d", j.Branch)
+			ui.Ok(w, "removed", "%s (merged into %s)", j.Branch, base)
+			removed++
+		}
+	}
+	if removed == 0 && kept == 0 {
+		fmt.Fprintln(w, "nothing to prune; no job worktrees exist.")
+		return
+	}
+	fmt.Fprintf(w, "\n%s\n", ui.Dim(w,
+		fmt.Sprintf("%d removed, %d kept. Keeping means the work is unmerged or uncommitted.", removed, kept)))
+}
+
+// mergedInto reports whether a branch is fully contained in the base.
+//
+// Checks the REMOTE base first. The merge happens on GitHub, so the local
+// develop in a sandbox clone can be days behind and would report a merged
+// branch as unmerged -- refusing to clean up exactly the worktrees that
+// should go.
+func mergedInto(dir, branch, base string) bool {
+	for _, ref := range []string{"origin/" + base, base} {
+		if _, err := gitIn(dir, "merge-base", "--is-ancestor", branch, ref); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func describeJob(w io.Writer, job workspace.Job) {

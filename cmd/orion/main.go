@@ -78,6 +78,7 @@ RUNNING
   orion sandbox <KEY> --code  open it in VS Code
   orion sandbox <KEY> --shell start a shell in it
   orion sandbox <KEY> --path  print the path only (use with cd)
+  orion sandbox prune         remove worktrees whose branch is merged and clean
 
 GUARDRAILS
   orion doctor [--fix]        preflight: tools, auth, sandbox, config

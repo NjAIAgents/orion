@@ -599,9 +599,9 @@ const defaultConfig = `{
     "protected_branches": ["main", "develop"],
     "branch_prefix": "orion/",
 
-    "_comment_author": "Commits the agent makes are authored AND committed under this alias, so git log, blame and bisect can tell its work from yours. The email defaults to your user.email, and that has a visible consequence: GitHub identifies commits by ADDRESS, so its web UI will still show your name and avatar even though both git fields say orionbot. To make the alias visible there too, set agent_author_email to an address GitHub does not resolve to you -- ideally a real bot account's ID+name@users.noreply.github.com -- accepting that such commits leave your contribution graph. Empty name disables the alias entirely.",
+    "_comment_author": "Commits the agent makes are authored AND committed under this alias, so git log, blame, bisect and GitHub all show orionbot rather than you. The EMAIL is what decides that: GitHub matches commits to accounts by address and ignores the name. The default noreply address carries no account id, so it resolves to nobody and displays as a plain 'orionbot' -- which also means these commits leave your contribution graph (correct: you did not write them) and will be rejected by any branch rule demanding a verified or allowlisted committer email. For a real avatar and profile, create a GitHub account for the bot and use its own ID+name@users.noreply.github.com. Putting your own address here reverts to commits appearing as yours on GitHub. Empty name disables the alias entirely.",
     "agent_author_name": "orionbot",
-    "agent_author_email": ""
+    "agent_author_email": "orionbot@users.noreply.github.com"
   },
 
   "_comment_budget": "YOUR weekly budget, not your Anthropic plan's allowance. Zero means unlimited.",

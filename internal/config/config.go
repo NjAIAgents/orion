@@ -209,19 +209,25 @@ type VCS struct {
 	// the commits were authored orion_agent and GitHub still said the
 	// account owner had made them.
 	//
-	// Empty by default, which falls back to the repository's own user.email
-	// -- the owner's real address. That is a deliberate choice with a known
-	// consequence: GitHub will keep rendering these commits under the
-	// owner's account and avatar, so the orionbot name shows in `git log`,
-	// `git blame` and a bisect, but NOT in the web UI's "X committed" line.
-	// The history stays intact and the commits keep counting; the alias is
-	// for the tools that read the fields, not for the badge.
+	// The default is a noreply address, because the email is the field that
+	// actually decides attribution: GitHub matches commits to accounts by
+	// ADDRESS and ignores the name entirely. Sharing the owner's address
+	// means the web UI keeps saying the owner made the change however the
+	// name fields read, which is what happened on the first real run.
 	//
-	// To make the alias visible on GitHub too, this needs an address GitHub
-	// does not resolve to a human account -- ideally a real bot account's
-	// ID+name@users.noreply.github.com. The cost of a synthetic address is
-	// that those commits drop out of the contribution graph and will be
-	// rejected by any rule requiring a verified or allowlisted email.
+	// orionbot@users.noreply.github.com carries no account id, so it
+	// resolves to nobody and the commit displays as a plain "orionbot".
+	// Two consequences, both intended:
+	//   - these commits leave the owner's contribution graph, which is
+	//     correct, since the owner did not write them;
+	//   - a branch rule demanding a verified or allowlisted committer email
+	//     will reject them, and the fix is a real bot account.
+	//
+	// For a genuine avatar and profile, create a GitHub account for the bot
+	// and use its own ID+name@users.noreply.github.com here.
+	//
+	// Setting this to the owner's real address restores the old behaviour:
+	// the alias then lives only in `git log`, `git blame` and a bisect.
 	AgentAuthorEmail string `json:"agent_author_email"`
 }
 
@@ -316,6 +322,7 @@ func Defaults() Config {
 			ProtectedBranches: []string{"main", "develop"},
 			BranchPrefix:      "orion/",
 			AgentAuthorName:   "orionbot",
+			AgentAuthorEmail:  "orionbot@users.noreply.github.com",
 		},
 		Budget:      Budget{PauseAtPercent: []int{50, 75, 90, 95}},
 		Attribution: Attribution{Enabled: true, AutoInstall: true},
