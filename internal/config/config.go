@@ -68,6 +68,15 @@ type Slack struct {
 	// Private channels by default: a workspace name can reveal an unreleased
 	// project, and a public channel cannot be made private afterwards.
 	Private bool `json:"private"`
+	// InviteUsers are added to a channel Orion creates. Slack user IDs (U...)
+	// or email addresses; emails need the users:read.email scope.
+	//
+	// Required for a PRIVATE channel to be of any use. The bot is the only
+	// member of a channel it just made, and Slack shows a private channel to
+	// nobody outside it -- not in the sidebar, not in search. Without this
+	// Orion creates a "communication medium" that no human can see, and there
+	// is no notification to tell them it happened.
+	InviteUsers []string `json:"invite_users"`
 }
 
 // Budget caps what Orion spends over a rolling seven days.

@@ -21,6 +21,7 @@ package slack
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -347,6 +348,54 @@ func (c *Client) SetTopic(channelID, topic string) error {
 // the channel worth having.
 func (c *Client) Archive(channelID string) error {
 	return c.call("conversations.archive", map[string]any{"channel": channelID}, nil)
+}
+
+// Invite adds people to a channel.
+//
+// This is not optional polish. A private channel is invisible to everyone
+// who is not in it, and the bot is the only member of one it just created,
+// so without this Orion produces a "communication medium" that no human can
+// see or even find by search. Slack has no notification for it either: the
+// channel simply does not exist as far as you are concerned.
+//
+// Entries may be user IDs (U...) or email addresses. Emails need the
+// users:read.email scope, which is not in Orion's default manifest, so a
+// lookup failure is reported per-entry rather than failing the whole call.
+func (c *Client) Invite(channelID string, people []string) (invited []string, errs []error) {
+	var ids []string
+	for _, p := range people {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if !strings.Contains(p, "@") {
+			ids = append(ids, p)
+			continue
+		}
+		var res struct {
+			User struct {
+				ID string `json:"id"`
+			} `json:"user"`
+		}
+		if err := c.call("users.lookupByEmail", map[string]any{"email": p}, &res); err != nil {
+			errs = append(errs, fmt.Errorf("looking up %s: %w", p, err))
+			continue
+		}
+		ids = append(ids, res.User.ID)
+	}
+	if len(ids) == 0 {
+		return nil, errs
+	}
+	// already_in_channel is success: re-running provisioning must not fail
+	// because someone is already where they should be.
+	err := c.call("conversations.invite", map[string]any{
+		"channel": channelID, "users": strings.Join(ids, ","),
+	}, nil)
+	var apiErr *APIError
+	if err != nil && (!errors.As(err, &apiErr) || apiErr.Code != "already_in_channel") {
+		return nil, append(errs, err)
+	}
+	return ids, errs
 }
 
 // NormalizeChannelName makes a slug Slack will accept.

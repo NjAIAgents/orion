@@ -14,12 +14,15 @@ package adopt
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/orion-sdlc/orion/internal/ui"
 )
 
 // StableBinaryPath returns the path to write into hook commands, plus any
@@ -496,25 +499,34 @@ func hasCommand(list []any, command, matcher string) bool {
 }
 
 // Summary renders what happened, leading with anything that needs a human.
-func (r *Result) Summary() string {
-	var b strings.Builder
+//
+// Written to a specific io.Writer rather than returning a bare string so the
+// colouring can tell whether it is going to a terminal: escape codes piped
+// into a log file are noise someone then has to strip.
+func (r *Result) Write(w io.Writer) {
 	sort.Strings(r.Created)
 	sort.Strings(r.Skipped)
-	for _, w := range r.Warnings {
-		fmt.Fprintf(&b, "WARNING  %s\n", w)
+	for _, warn := range r.Warnings {
+		ui.Warn(w, "%s", warn)
 	}
 	for _, c := range r.Created {
-		fmt.Fprintf(&b, "created  %s\n", c)
+		ui.Ok(w, "created", "%s", c)
 	}
 	for _, u := range r.Updated {
-		fmt.Fprintf(&b, "updated  %s\n", u)
+		ui.Ok(w, "updated", "%s", u)
 	}
 	for _, s := range r.Skipped {
-		fmt.Fprintf(&b, "skipped  %s\n", s)
+		ui.Ok(w, "skipped", "%s", s)
 	}
 	if r.Backup != "" {
-		fmt.Fprintf(&b, "backup   %s\n", r.Backup)
+		ui.Ok(w, "backup", "%s", r.Backup)
 	}
+}
+
+// Summary keeps the plain-text rendering for tests and non-terminal callers.
+func (r *Result) Summary() string {
+	var b strings.Builder
+	r.Write(&b)
 	return b.String()
 }
 
@@ -583,7 +595,10 @@ const defaultConfig = `{
     "enabled": false,
     "create_channel_per_project": true,
     "channel_prefix": "orion-",
-    "private": true
+    "private": true,
+
+    "_comment_invite": "A private channel is invisible to everyone who is not in it, and the bot is the only member of one it just created. Without these, Orion makes a channel no human can see or find. Slack user IDs (U...) or emails; emails need the users:read.email scope, which is not in the default manifest.",
+    "invite_users": []
   },
 
   "_comment_attribution": "Stamps each commit with an AI-Attribution trailer via whodunit (dun), recording which agent and model produced the change and how much of the diff was theirs. Distinct from vcs.agent_author_name, which only marks that a commit came from an Orion run. auto_install fetches dun through brew or scoop; a package-managed install puts it on PATH under the name dun, which matters because the git hook resolves it by name at commit time and a missing dun silently stamps every commit undetermined.",

@@ -36,6 +36,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/state"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
+	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -334,7 +335,7 @@ func runInit(args []string) {
 		Force:          hasFlag(args, "--force"),
 	})
 	if res != nil {
-		fmt.Print(res.Summary())
+		res.Write(os.Stdout)
 	}
 	exitOn(err)
 
@@ -344,14 +345,16 @@ func runInit(args []string) {
 	// task branch while no such branch exists, and nothing notices until the
 	// first PR has nowhere to go.
 	if created, warns, bErr := adopt.EnsureWorkBranch(abs, cfg.VCS.WorkBranch); bErr != nil {
-		fmt.Fprintf(os.Stderr, "WARNING  %v\n", bErr)
+		ui.Warn(os.Stdout, "%v", bErr)
 	} else {
 		if created {
-			fmt.Printf("created  branch %s (switched to it; it is the PR base for all task branches)\n",
+			ui.Ok(os.Stdout, "created", "branch %s (switched to it; the PR base for all task branches)",
 				cfg.VCS.WorkBranch)
+		} else {
+			ui.Ok(os.Stdout, "bound", "branch %s (already exists)", cfg.VCS.WorkBranch)
 		}
 		for _, w := range warns {
-			fmt.Printf("WARNING  %s\n", w)
+			ui.Warn(os.Stdout, "%s", w)
 		}
 	}
 
@@ -366,10 +369,14 @@ func runInit(args []string) {
 		}
 		lines, warns := adopt.EnsureDun(abs, cfg.Attribution.AutoInstall, ask)
 		for _, l := range lines {
-			fmt.Println(l)
+			if v, d, ok := strings.Cut(l, " "); ok && !strings.HasPrefix(l, "  dun |") {
+				ui.Ok(os.Stdout, strings.TrimSpace(v), "%s", strings.TrimSpace(d))
+			} else {
+				fmt.Println(ui.Dim(os.Stdout, l))
+			}
 		}
 		for _, w := range warns {
-			fmt.Printf("WARNING  %s\n", w)
+			ui.Warn(os.Stdout, "%s", w)
 		}
 	}
 
@@ -457,7 +464,7 @@ func provisionRemote(dir string, cfg config.Config, assumeYes bool) {
 	fmt.Print(plan.Describe())
 	if !plan.Nothing() && !assumeYes {
 		if !confirm("Proceed?") {
-			fmt.Println("skipped  remote provisioning (re-run orion init to do it later)")
+			ui.Ok(os.Stdout, "skipped", "remote provisioning (re-run orion init to do it later)")
 			return
 		}
 	}
@@ -466,16 +473,16 @@ func provisionRemote(dir string, cfg config.Config, assumeYes bool) {
 	if plan.JiraSkip == "" && plan.JiraKey != "" {
 		if !plan.JiraExists {
 			if jiraLead == "" {
-				fmt.Fprintln(os.Stderr, "WARNING  could not resolve a Jira account to lead the project; skipping creation")
+				ui.Warn(os.Stdout, "no Jira account resolved to lead the project; not creating it")
 				goto slackStep
 			}
 			if _, err := j.CreateProject(plan.JiraKey, name, jiraLead); err != nil {
-				fmt.Fprintf(os.Stderr, "WARNING  could not create Jira project %s: %v\n", plan.JiraKey, err)
+				ui.Fail(os.Stdout, "Jira project %s: %v", plan.JiraKey, err)
 				goto slackStep
 			}
-			fmt.Printf("created  Jira project %s (%s)\n", plan.JiraKey, j.BaseURL)
+			ui.Ok(os.Stdout, "created", "Jira project %s  %s/browse/%s", plan.JiraKey, j.BaseURL, plan.JiraKey)
 		} else {
-			fmt.Printf("bound    Jira project %s (already existed)\n", plan.JiraKey)
+			ui.Ok(os.Stdout, "bound", "Jira project %s  %s/browse/%s", plan.JiraKey, j.BaseURL, plan.JiraKey)
 		}
 		patchConfig(cfgPath, map[string][2]string{
 			"tracker": {"enabled", "true"},
@@ -486,15 +493,43 @@ slackStep:
 	if plan.SlackSkip == "" && plan.SlackName != "" {
 		ch, err := sc.CreateChannel(plan.SlackName, cfg.Slack.Private)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "WARNING  could not create Slack channel #%s: %v\n", plan.SlackName, err)
+			ui.Fail(os.Stdout, "Slack channel #%s: %v", plan.SlackName, err)
 			return
 		}
-		verb := "bound   "
+		verb := "bound"
 		if ch.Created {
-			verb = "created "
+			verb = "created"
 		}
-		fmt.Printf("%s Slack channel #%s\n", verb, ch.Name)
+		ui.Ok(os.Stdout, verb, "Slack channel #%s", ch.Name)
+		inviteToChannel(sc, ch, cfg)
 		patchConfig(cfgPath, map[string][2]string{"slack": {"enabled", "true"}}, "")
+	}
+}
+
+// inviteToChannel adds the configured humans to a channel Orion just made.
+//
+// Without this a PRIVATE channel is useless: the bot is its only member, and
+// Slack shows a private channel to nobody outside it -- not in the sidebar,
+// not in search, with no notification that it exists. Orion would create a
+// "communication medium" its audience cannot see, and report success.
+func inviteToChannel(sc *slack.Client, ch *slack.Channel, cfg config.Config) {
+	if !ch.Created {
+		return // an existing channel already has whoever belongs in it
+	}
+	if len(cfg.Slack.InviteUsers) == 0 {
+		if cfg.Slack.Private {
+			ui.Warn(os.Stdout, "#%s is private and the bot is its only member, so nobody can see it.\n"+
+				"         Add Slack user IDs to slack.invite_users in orion.json and re-run,\n"+
+				"         or open Slack and add yourself to the channel.", ch.Name)
+		}
+		return
+	}
+	invited, errs := sc.Invite(ch.ID, cfg.Slack.InviteUsers)
+	for _, e := range errs {
+		ui.Warn(os.Stdout, "inviting to #%s: %v", ch.Name, e)
+	}
+	if len(invited) > 0 {
+		ui.Ok(os.Stdout, "invited", "%d to #%s", len(invited), ch.Name)
 	}
 }
 
@@ -503,7 +538,7 @@ slackStep:
 func patchConfig(path string, fields map[string][2]string, jiraKey string) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING  could not update %s: %v\n", path, err)
+		ui.Warn(os.Stdout, "could not update %s: %v", path, err)
 		return
 	}
 	src := string(b)
@@ -522,10 +557,10 @@ func patchConfig(path string, fields map[string][2]string, jiraKey string) {
 		return
 	}
 	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING  could not write %s: %v\n", path, err)
+		ui.Warn(os.Stdout, "could not write %s: %v", path, err)
 		return
 	}
-	fmt.Printf("updated  orion.json\n")
+	ui.Ok(os.Stdout, "updated", "orion.json")
 }
 
 // confirm asks once. A non-interactive shell answers no: creating something
