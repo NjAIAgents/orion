@@ -214,7 +214,57 @@ orion reset --session <id>
 
 ---
 
-## 6. Keeping nj-agents current
+## 6. Weekly budget checkpoints
+
+Orion accounts for what it spends over a rolling seven days and stops for
+confirmation at 50%, 75%, 90% and 95%.
+
+```bash
+orion budget status        # spend, tokens, next checkpoint, recent runs
+orion budget ack           # confirm the current checkpoint and continue
+```
+
+Set the limit in `orion.json`:
+
+```json
+"budget": { "weekly_usd": 40, "weekly_tokens": 0, "pause_at_percent": [50, 75, 90, 95] }
+```
+
+**This is your budget, not your Anthropic plan's weekly limit.** Orion cannot
+read the latter: `claude` has no usage command, and a run's JSON result
+reports what that run consumed, never what remains on the plan. Any
+percentage shown against the provider's real quota would be invented, so
+Orion does not show one.
+
+Zero means unlimited, which is the opposite of the circuit-breaker
+convention where zero restores a default. A budget nobody set should not be
+invented; a missing breaker limit is never safe.
+
+Acknowledging one checkpoint does not consent to the rest. The next threshold
+stops again.
+
+## 7. Context and token burn
+
+Two numbers worth knowing before designing a long chain.
+
+**Every invocation carries a floor of roughly 30k input tokens.** Measured,
+not estimated: `claude -p "say ok"` reports ~34k input tokens and about $0.19,
+almost all of it system prompt and cached context. That is paid per
+invocation, so nine small stages cost nine floors before any work happens.
+Prefer fewer, larger stages over many trivial ones.
+
+**Orion cannot trigger compaction, and mostly does not need to.** The CLI
+exposes no compaction flag or setting. What Orion does instead is
+architectural: every stage is a separate `claude -p` invocation that reads
+committed artifacts rather than inheriting a transcript, so context resets at
+each stage boundary by construction. The artifact chain *is* the compaction
+strategy.
+
+Within a single long stage, context can still climb. Orion reports it: when a
+run's input passes 70% of the model's context window, it says so and suggests
+splitting the stage, because that is the only lever that exists.
+
+## 8. Keeping nj-agents current
 
 It ships independently of Orion, so its improvements arrive only when
 something fetches them.
@@ -229,7 +279,7 @@ work in progress. It prints the `git -C ... pull` to run yourself.
 
 ---
 
-## 7. Cross-project memory
+## 9. Cross-project memory
 
 A correction learned in one project should not be relearned in the next.
 
@@ -247,7 +297,7 @@ invisibly.
 
 ---
 
-## 8. Releasing Orion itself
+## 10. Releasing Orion itself
 
 ```bash
 make release TAG=v0.1.0 DRY=1   # rehearse, publishes nothing

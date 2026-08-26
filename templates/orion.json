@@ -67,6 +67,13 @@
     "max_changed_files": 20
   },
 
+  "_comment_budget": "YOUR weekly budget, not your Anthropic plan's allowance. Nothing reports how much of a subscription's weekly limit remains, so Orion accounts only for what it spends itself, from the cost and tokens each run returns. Zero means unlimited: a budget nobody set should not be invented. Crossing a checkpoint stops the run until `orion budget ack`.",
+  "budget": {
+    "weekly_usd": 0,
+    "weekly_tokens": 0,
+    "pause_at_percent": [50, 75, 90, 95]
+  },
+
   "_comment_vcs": "Two long-lived branches. main is the release branch. develop is the integration branch and the default PR base (named develop, not dev, so it does not collide with the dev ENVIRONMENT in the autonomy block). Every task gets its own branch cut from develop. BOTH are push-protected: protecting only main would make the PR into dev optional, and an optional gate is not a gate.",
   "vcs": {
     "provider": "github",

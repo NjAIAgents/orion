@@ -14,9 +14,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/doctor"
 	"github.com/orion-sdlc/orion/internal/hook"
@@ -55,6 +57,10 @@ DEPENDENCIES
   orion njagents status       where nj-agents is, which commit, how stale
   orion njagents update       fast-forward Orion's own clone, if it has one
   orion njagents install      wire Orion's clone into a dir (only if no global)
+
+BUDGET (rolling 7 days, your limit, not your plan's)
+  orion budget status         spend, tokens and the next checkpoint
+  orion budget ack [pct]      confirm a checkpoint and continue
 
 MEMORY (shared across every project)
   orion lessons add "<text>"  record a correction so it is not repeated
@@ -108,6 +114,8 @@ func main() {
 		runFix(os.Args[2])
 	case "njagents", "nj-agents":
 		runNJAgents(os.Args[2:])
+	case "budget":
+		runBudget(os.Args[2:])
 	case "lessons":
 		runLessons(os.Args[2:])
 	case "version", "--version", "-v":
@@ -387,6 +395,84 @@ func runTrackerProvision(ws *workspace.Workspace, cfg config.Config, confirm fun
 	fmt.Println("\nNext, decompose the plan into issues. The whole tree is previewed")
 	fmt.Println("for one approval before anything is created:")
 	fmt.Printf("  claude -p \"Use /pm-plan to decompose plans/*.plan.md into %s. Preview the full tree and wait for approval.\"\n", b.Key)
+}
+
+// runBudget reports and acknowledges the rolling weekly budget.
+//
+// Worth restating wherever this surfaces: the percentage is against a limit
+// the user configured, never against the Anthropic plan's weekly allowance.
+// Nothing reports the latter, so presenting one would be a fabrication.
+func runBudget(args []string) {
+	home := workspace.Home()
+	cfg := config.Load(rootOrCwd())
+	lim := budget.Limits{WeeklyUSD: cfg.Budget.WeeklyUSD, WeeklyTokens: cfg.Budget.WeeklyTokens}
+	ledger, err := budget.Load(home)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orion: %v\n", err)
+	}
+
+	sub := "status"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub = args[0]
+		args = args[1:]
+	}
+
+	switch sub {
+	case "status":
+		st := ledger.Status(lim)
+		if !lim.Set() {
+			fmt.Println("no weekly budget configured.")
+			fmt.Println("Set budget.weekly_usd or budget.weekly_tokens in orion.json to")
+			fmt.Println("enable the 50/75/90/95% checkpoints. Until then Orion accounts")
+			fmt.Println("spend but never stops for it.")
+		}
+		fmt.Printf("window     last 7 days (%d runs)\n", st.Runs)
+		fmt.Printf("spend      $%.2f", st.SpentUSD)
+		if lim.WeeklyUSD > 0 {
+			fmt.Printf(" of $%.2f (%d%%)", lim.WeeklyUSD, st.PercentUSD)
+		}
+		fmt.Println()
+		fmt.Printf("tokens     %d", st.Tokens)
+		if lim.WeeklyTokens > 0 {
+			fmt.Printf(" of %d (%d%%)", lim.WeeklyTokens, st.PercentTok)
+		}
+		fmt.Println()
+		if st.Crossed > 0 {
+			fmt.Printf("\nCHECKPOINT %d%% reached and not acknowledged.\n", st.Crossed)
+			fmt.Printf("Runs are stopped until: orion budget ack %d\n", st.Crossed)
+		}
+		if runs := ledger.Recent(5); len(runs) > 0 {
+			fmt.Println("\nrecent")
+			for _, r := range runs {
+				fmt.Printf("  %s  %-10s $%.4f  %d in / %d out\n",
+					r.At.Local().Format("Jan 02 15:04"), r.Stage, r.CostUSD,
+					r.InputTokens, r.OutputTokens)
+			}
+		}
+
+	case "ack":
+		st := ledger.Status(lim)
+		pct := st.Crossed
+		if len(args) > 0 {
+			if n, convErr := strconv.Atoi(args[0]); convErr == nil {
+				pct = n
+			}
+		}
+		if pct == 0 {
+			fmt.Println("nothing to acknowledge.")
+			return
+		}
+		// Acknowledge everything at or below, so returning after a long gap
+		// does not stop the next four runs in a row.
+		ledger.AckAll(pct)
+		exitOn(ledger.Save(home))
+		fmt.Printf("acknowledged the %d%% checkpoint. Runs may continue.\n", pct)
+		fmt.Println("The next checkpoint will stop again; this is consent for one step, not the rest.")
+
+	default:
+		fmt.Fprintf(os.Stderr, "orion: unknown budget subcommand %q (status|ack)\n", sub)
+		os.Exit(64)
+	}
 }
 
 // runNJAgents inspects and refreshes the delegated toolkit.

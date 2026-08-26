@@ -28,6 +28,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/budget"
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/quota"
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -38,7 +40,10 @@ type Options struct {
 	Prompt     string
 	MaxMinutes int
 	MaxTurns   int
-	DryRun     bool
+	// SkipBudgetCheck bypasses the weekly checkpoint for this run only. It
+	// exists for the acknowledge-and-continue path, never as a default.
+	SkipBudgetCheck bool
+	DryRun          bool
 	// NoWait skips quota waiting entirely and fails fast instead. For CI,
 	// where sleeping a runner for forty minutes costs real money.
 	NoWait bool
@@ -97,11 +102,28 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 		return nil, err
 	}
 
+	// Budget checkpoint BEFORE spending, not after. Checking afterwards
+	// reports an overrun that has already happened, which is a receipt
+	// rather than a control.
+	cfg := config.Load(ws.RepoDir())
+	lim := budget.Limits{WeeklyUSD: cfg.Budget.WeeklyUSD, WeeklyTokens: cfg.Budget.WeeklyTokens}
+	ledger, ledgerErr := budget.Load(workspace.Home())
+	if ledgerErr != nil {
+		fmt.Fprintf(os.Stderr, "orion: %v\n", ledgerErr)
+	}
+	if st := ledger.Status(lim); st.Crossed > 0 && !opts.SkipBudgetCheck {
+		return &Result{
+			ExitCode: 0,
+			Reason:   fmt.Sprintf("stopped at the %d%% budget checkpoint", st.Crossed),
+		}, fmt.Errorf("%s", st.Message())
+	}
+
 	overall := time.Now()
 	var last *Result
 
 	for attempt := 1; attempt <= quota.MaxAttempts; attempt++ {
 		res, output := runOnce(ws, bin, prompt, opts, attempt)
+		recordUsage(ws, opts.Stage, output)
 		res.Attempts = attempt
 		last = res
 
@@ -195,6 +217,36 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	return last, nil
 }
 
+// recordUsage books what a run actually cost. Failures here are reported and
+// never fatal: losing an accounting row must not lose the work.
+func recordUsage(ws *workspace.Workspace, stage, out string) {
+	run, ok := budget.FromResultJSON(out)
+	if !ok {
+		return
+	}
+	run.Workspace, run.Stage = ws.ID, stage
+	ledger, _ := budget.Load(workspace.Home())
+	ledger.Record(run)
+	if err := ledger.Save(workspace.Home()); err != nil {
+		fmt.Fprintf(os.Stderr, "orion: could not record usage: %v\n", err)
+		return
+	}
+	if p := budget.ContextPressure(run); p >= 70 {
+		fmt.Fprintf(os.Stderr,
+			"orion: context reached %d%% of the %s window on this stage.\n"+
+				"  Orion cannot compact mid-run; the CLI exposes no control for it.\n"+
+				"  If this recurs, split the stage: each stage starts a fresh session.\n",
+			p, humanTokens(run.ContextWindow))
+	}
+}
+
+func humanTokens(n int) string {
+	if n >= 1_000_000 {
+		return fmt.Sprintf("%.0fM", float64(n)/1e6)
+	}
+	return fmt.Sprintf("%dk", n/1000)
+}
+
 // runOnce executes a single attempt and returns its result plus the tail
 // of its combined output for quota inspection.
 func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt int) (*Result, string) {
@@ -205,6 +257,13 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	args := []string{
 		"-p", prompt,
 		"--settings", ws.SettingsPath(),
+		// JSON so the run's own usage and cost can be accounted rather than
+		// estimated. Text output reports neither.
+		"--output-format", "json",
+		// Undocumented: --max-turns is absent from `claude --help` but is
+		// accepted (exit 0). Passed as a best-effort belt to the braces of
+		// Orion's own tool-call breaker and wall clock, which are the
+		// controls actually relied upon.
 		"--max-turns", fmt.Sprint(opts.MaxTurns),
 	}
 

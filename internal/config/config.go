@@ -51,6 +51,22 @@ type Delegation struct {
 	HighRiskPaths []string `json:"high_risk_paths"`
 }
 
+// Budget caps what Orion spends over a rolling seven days.
+//
+// These are YOUR limits, not the provider's. Nothing reports how much of an
+// Anthropic subscription's weekly allowance remains, so Orion accounts only
+// for what it spends itself, from the cost and token figures each run
+// returns. Zero means unlimited, deliberately: a budget nobody set should
+// not be invented. That is the opposite of the circuit-breaker convention,
+// where zero restores a default, because there "no limit" is never safe and
+// here it is the honest default.
+type Budget struct {
+	WeeklyUSD    float64 `json:"weekly_usd"`
+	WeeklyTokens int     `json:"weekly_tokens"`
+	// PauseAtPercent are the checkpoints where a run stops for confirmation.
+	PauseAtPercent []int `json:"pause_at_percent"`
+}
+
 // Tracker configures project-management provisioning.
 type Tracker struct {
 	Provider string `json:"provider"`
@@ -125,6 +141,7 @@ type Config struct {
 	Paths      Paths             `json:"paths"`
 	Autonomy   map[string]string `json:"autonomy"`
 	AutoMerge  AutoMerge         `json:"auto_merge"`
+	Budget     Budget            `json:"budget"`
 	VCS        VCS               `json:"vcs"`
 	Tracker    Tracker           `json:"tracker"`
 	Delegation Delegation        `json:"delegation"`
@@ -183,6 +200,7 @@ func Defaults() Config {
 			ProtectedBranches: []string{"main", "develop"},
 			BranchPrefix:      "orion/",
 		},
+		Budget: Budget{PauseAtPercent: []int{50, 75, 90, 95}},
 		Tracker: Tracker{
 			Provider:                "jira",
 			CreatePerIdea:           true,
@@ -302,6 +320,9 @@ func normalize(c *Config) {
 	}
 	if c.VCS.BranchPrefix == "" {
 		c.VCS.BranchPrefix = d.VCS.BranchPrefix
+	}
+	if len(c.Budget.PauseAtPercent) == 0 {
+		c.Budget.PauseAtPercent = d.Budget.PauseAtPercent
 	}
 	if c.VCS.WorkBranch == "" {
 		c.VCS.WorkBranch = d.VCS.WorkBranch
