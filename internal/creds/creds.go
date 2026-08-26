@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -188,12 +189,30 @@ func Mask(v string) string {
 	return string(r[:6]) + strings.Repeat("*", 8) + string(r[len(r)-4:])
 }
 
+// PermsSupported reports whether Unix permission bits mean anything here.
+//
+// On Windows they do not. Go emulates them: Perm() returns 0666 whatever the
+// real access control says, and Chmod only toggles the read-only attribute.
+// Access is actually governed by NTFS ACLs, which the standard library cannot
+// inspect. Reading the emulated bits there would produce a permanent
+// "TOO OPEN, anyone can read your tokens" on every run, and a warning that is
+// always wrong is worse than no warning: it teaches people to ignore the real
+// ones.
+func PermsSupported() bool { return runtime.GOOS != "windows" }
+
 // CheckPerms reports whether the file is readable by anyone but its owner.
 // Worth surfacing: a 0644 credentials file is a quiet, durable mistake.
+//
+// On a platform where the bits are meaningless it reports ok, because it
+// genuinely cannot tell. Callers should use PermsSupported to say so rather
+// than implying the file was verified.
 func CheckPerms(home string) (bool, os.FileMode, error) {
 	fi, err := os.Stat(Path(home))
 	if err != nil {
 		return true, 0, err
+	}
+	if !PermsSupported() {
+		return true, fi.Mode().Perm(), nil
 	}
 	mode := fi.Mode().Perm()
 	return mode&0o077 == 0, mode, nil

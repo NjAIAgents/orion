@@ -80,7 +80,10 @@ func Show(home string, out io.Writer) error {
 	fmt.Fprintf(out, "file  %s\n", Path(home))
 
 	if okPerm, mode, err := CheckPerms(home); err == nil {
-		if !okPerm {
+		if !PermsSupported() {
+			// Say what is actually true rather than implying a check happened.
+			fmt.Fprintln(out, "mode  not checked on this platform; access is governed by NTFS ACLs")
+		} else if !okPerm {
 			fmt.Fprintf(out, "mode  %o  TOO OPEN. Anyone on this machine can read your tokens.\n", mode)
 			fmt.Fprintf(out, "      Fix with: chmod 600 %s\n", Path(home))
 		} else {

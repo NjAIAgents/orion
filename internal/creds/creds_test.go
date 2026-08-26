@@ -39,6 +39,9 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 // The file holds secrets. Created 0600 at open time rather than chmod'ed
 // afterwards, so there is no window where it is readable by anyone else.
 func TestFileIsNotReadableByOthers(t *testing.T) {
+	if !PermsSupported() {
+		t.Skip("Unix permission bits are emulated on this platform; NTFS ACLs govern access")
+	}
 	home := t.TempDir()
 	if err := Save(home, map[string]string{JiraToken: "s"}); err != nil {
 		t.Fatal(err)
@@ -175,6 +178,9 @@ func TestSecretClassification(t *testing.T) {
 }
 
 func TestCheckPermsSpotsAnOpenFile(t *testing.T) {
+	if !PermsSupported() {
+		t.Skip("Chmod only toggles the read-only attribute on this platform")
+	}
 	home := t.TempDir()
 	_ = Save(home, map[string]string{JiraToken: "s"})
 	if err := os.Chmod(Path(home), 0o644); err != nil {
@@ -230,5 +236,21 @@ func TestPromptDoesNotEchoSecretIntoTheValue(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "supersecretvalue") {
 		t.Error("the prompt printed the secret in full; it must show a mask")
+	}
+}
+
+// A permission warning that is always wrong is worse than none: it teaches
+// people to ignore the real ones.
+func TestCheckPermsDoesNotCryWolfWhereBitsAreMeaningless(t *testing.T) {
+	home := t.TempDir()
+	if err := Save(home, map[string]string{JiraToken: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	okPerm, _, err := CheckPerms(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !PermsSupported() && !okPerm {
+		t.Error("must not report TOO OPEN on a platform where the bits are emulated")
 	}
 }
