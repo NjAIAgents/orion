@@ -56,6 +56,10 @@ const (
 	VerdictClosed Verdict = "closed"
 	// VerdictUnknown: no pull request found for the branch.
 	VerdictUnknown Verdict = "unknown"
+	// VerdictStale: the branch merges cleanly but its checks were produced
+	// against a base that has since moved, so they are not evidence about
+	// what merging would produce.
+	VerdictStale Verdict = "stale"
 	// VerdictConflicted: the branch will not merge into its base without a
 	// human resolving an overlap. Reported rather than retried: no amount of
 	// polling resolves a conflict, and Orion must not rewrite a branch a
@@ -303,6 +307,22 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// anyone having to re-label anything.
 	if pr.Conflicted {
 		return conflicted(res, key, pr, branch, opts, deps, ws, log, w)
+	}
+
+	// A green check on a base that has moved is not evidence about the merge.
+	//
+	// Checked here, alongside the conflict gate, and for the same reason: a
+	// stale branch is usually a PASSING one, so leaving it to the verdict
+	// switch would ask a person to approve a merge nothing has tested.
+	//
+	// Only when the branch is genuinely behind AND git was able to say so.
+	// An unreadable repository is not a stale branch, and refusing every
+	// merge because a fetch failed would be a worse fault than the one this
+	// prevents.
+	if cfg.CI.RequireUpToDate {
+		if ok, known := upToDate(worktreeOrRepo(ws, branch), cfg.VCS.WorkBranch, branch); known && !ok {
+			return stale(res, key, pr, branch, cfg, opts, deps, ws, log, w)
+		}
 	}
 
 	switch pr.Verdict {

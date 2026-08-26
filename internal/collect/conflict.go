@@ -3,6 +3,9 @@ package collect
 import (
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
@@ -49,8 +52,14 @@ func conflicted(res Result, key string, pr PR, branch string,
 	ui.Warn(w, "%s: %s conflicts with its base; git cannot merge it", key, branch)
 	fmt.Fprintf(w, "          %s\n", ui.Dim(w,
 		"rebase it, push, and Orion picks it up again on the next pass:"))
-	fmt.Fprintf(w, "          %s\n", ui.Dim(w,
-		"git fetch origin && git rebase origin/"+baseOf(ws)+" "+branch))
+	// Name WHERE. The branch is checked out in the job's worktree and is
+	// almost never a local branch in the user's own clone -- so the obvious
+	// reading of this hint, run from the repository they are standing in,
+	// fails with "no such branch". A command that cannot be run where the
+	// reader is standing is not an instruction, it is a riddle.
+	for _, line := range rebaseSteps(ws, branch, baseOf(ws)) {
+		fmt.Fprintf(w, "          %s\n", ui.Dim(w, line))
+	}
 
 	if !fresh {
 		return res
@@ -82,6 +91,33 @@ func conflicted(res Result, key string, pr PR, branch string,
 	}
 	res.Changed = true
 	return res
+}
+
+// rebaseSteps writes the commands that actually work, from the directory
+// where the branch actually is.
+//
+// The worktree is checked for rather than assumed: after a merge it is
+// pruned, and a conflict on a branch whose worktree is gone needs the fetch
+// form instead. Printing `cd` into a directory that does not exist would be
+// the same class of error this function was written to fix.
+func rebaseSteps(ws *workspace.Workspace, branch, base string) []string {
+	dir := filepath.Join(ws.Dir, "worktrees", strings.ReplaceAll(branch, "/", "-"))
+	if _, err := os.Stat(dir); err == nil {
+		return []string{
+			"cd " + dir,
+			"git fetch origin && git rebase origin/" + base,
+			"git push --force-with-lease",
+		}
+	}
+	// No worktree: the branch lives only on the remote, so it has to be
+	// fetched into a local one first. `git rebase <upstream> <branch>` on a
+	// branch the clone does not have fails with a bare "no such branch",
+	// which reads as the branch being lost rather than absent locally.
+	return []string{
+		"git fetch origin " + branch + ":" + branch,
+		"git checkout " + branch + " && git rebase origin/" + base,
+		"git push --force-with-lease",
+	}
 }
 
 // baseOf names the branch this project merges into, for the hint above.

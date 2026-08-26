@@ -116,6 +116,20 @@ type CI struct {
 	// spending the remaining attempts proves only that it can fail the same
 	// way three times.
 	MaxFixAttempts int `json:"max_fix_attempts"`
+	// RequireUpToDate refuses to merge a branch whose base has moved since
+	// its checks ran.
+	//
+	// ON by default, which is unusual for a gate here and deliberate: Orion
+	// is the thing performing the merge, so merging on a verdict that no
+	// longer describes the code is a correctness failure rather than a
+	// preference. Two tickets worked in parallel can each pass alone and
+	// break the trunk together, with every signal green.
+	//
+	// GitHub's own "require branches to be up to date" does this and cannot
+	// be relied on: it is unavailable for private repositories on the free
+	// plan, and with protection off `gh` reports a stale branch as CLEAN.
+	// One local `git merge-base --is-ancestor` has neither limitation.
+	RequireUpToDate bool `json:"require_up_to_date"`
 }
 
 // Budget caps what Orion spends over a rolling seven days.
@@ -394,7 +408,10 @@ func Defaults() Config {
 			AgentAuthorName:   "orionbot",
 			AgentAuthorEmail:  "orionbot@users.noreply.github.com",
 		},
-		Budget:      Budget{PauseAtPercent: []int{50, 75, 90, 95}},
+		Budget: Budget{PauseAtPercent: []int{50, 75, 90, 95}},
+		// On by default: Orion performs the merge, so merging on a verdict
+		// that no longer describes the code is a correctness failure.
+		CI:          CI{RequireUpToDate: true},
 		Attribution: Attribution{Enabled: true, AutoInstall: true},
 		Slack: Slack{
 			Enabled:                 false,
