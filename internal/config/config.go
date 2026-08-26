@@ -124,6 +124,20 @@ type Tracker struct {
 	// paying for a licence for it, and impersonating the human would be worse
 	// than leaving it unmarked.
 	AgentLabel string `json:"agent_label"`
+	// QueueLabel marks an issue as work Orion should pick up.
+	QueueLabel string `json:"queue_label"`
+	// QueueOrder is the JQL ORDER BY clause for the queue.
+	//
+	// Priority first, then Rank. Rank alone would mean an urgent ticket
+	// filed today waits behind everything already in the backlog; priority
+	// alone gives no way to sequence the ties, which is most of them.
+	// Together they read as "most important first, and within equal
+	// importance the order I dragged them into".
+	//
+	// Configurable because priority is DISABLED by default on some
+	// team-managed projects, and ordering by a field the project does not
+	// expose is not a useful default to force on everyone.
+	QueueOrder string `json:"queue_order"`
 }
 
 type Gates struct {
@@ -299,6 +313,8 @@ func Defaults() Config {
 			Enabled:                 false,
 			Provider:                "jira",
 			AgentLabel:              "orion_agent",
+			QueueLabel:              "ORION",
+			QueueOrder:              "priority DESC, Rank ASC",
 			CreatePerIdea:           true,
 			ConfirmTreeBeforeCreate: true,
 		},

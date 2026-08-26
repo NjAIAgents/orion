@@ -64,7 +64,9 @@ WORKSPACES
 RUNNING
   orion provision <id>        create the remote repo, branches, and tracker
   orion run <id> [--stage S]  supervise a sandboxed claude run in a workspace
+  orion status                show this repo: branch, hooks, Jira, Slack, spend
   orion status <id>           show stage, breaker state and last run
+  orion queue                 what the watcher would pick up, in order (read-only)
 
 GUARDRAILS
   orion doctor [--fix]        preflight: tools, auth, sandbox, config
@@ -153,6 +155,8 @@ func main() {
 		} else {
 			runProjectStatus(os.Stdout)
 		}
+	case "queue":
+		runQueue(os.Args[2:])
 	case "reset":
 		runReset(os.Args[2:])
 	case "fix":
@@ -576,6 +580,73 @@ func confirm(prompt string) bool {
 	_, _ = fmt.Scanln(&ans)
 	ans = strings.ToLower(strings.TrimSpace(ans))
 	return ans == "y" || ans == "yes"
+}
+
+// runQueue shows what the watcher WOULD work, in the order it would work
+// it, and does nothing else.
+//
+// Read-only on purpose. The queue is driven by a Jira label, so the obvious
+// failure is a JQL that matches more than you meant -- and the moment that
+// query drives real runs, discovering the mistake costs money and writes to
+// your repo. This lets you see the query and its result first.
+func runQueue(args []string) {
+	root, err := config.FindRoot(".")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "not inside an Orion project (no orion.json or .git found)")
+		os.Exit(1)
+	}
+	cfg := config.Load(root)
+	w := os.Stdout
+
+	if !cfg.Tracker.Enabled {
+		fmt.Fprintln(w, "tracker is disabled in orion.json; nothing to queue from")
+		return
+	}
+	j, err := tracker.NewJiraFromEnv()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	jql := queueJQL(cfg)
+	fmt.Fprintf(w, "%s\n  %s\n\n", ui.Heading(w, "queue"), ui.Dim(w, jql))
+
+	issues, err := j.Search(jql, intFlag(args, "--limit", 25))
+	if err != nil {
+		ui.Fail(w, "%v", err)
+		os.Exit(1)
+	}
+	if len(issues) == 0 {
+		fmt.Fprintf(w, "  nothing labelled %s in %s\n",
+			cfg.Tracker.QueueLabel, cfg.Tracker.ProjectKey)
+		return
+	}
+	for n, i := range issues {
+		pr := i.Priority
+		if pr == "" {
+			// Priority is disabled on some team-managed projects. Saying so
+			// beats printing a blank column and letting the order look
+			// arbitrary.
+			pr = "no priority field"
+		}
+		fmt.Fprintf(w, "  %2d. %-10s %-8s %s\n", n+1, i.Key, pr, i.Summary)
+		fmt.Fprintf(w, "      %s\n", ui.Dim(w, i.Status+"  "+i.URL))
+	}
+	fmt.Fprintf(w, "\n  %d issue(s). Nothing has been started: this command only reads.\n", len(issues))
+}
+
+// queueJQL builds the query from config, scoped to the bound project so a
+// label someone reused in another project cannot pull work into this repo.
+func queueJQL(cfg config.Config) string {
+	var b strings.Builder
+	if k := strings.TrimSpace(cfg.Tracker.ProjectKey); k != "" {
+		fmt.Fprintf(&b, "project = %s AND ", k)
+	}
+	fmt.Fprintf(&b, "labels = %q", cfg.Tracker.QueueLabel)
+	if o := strings.TrimSpace(cfg.Tracker.QueueOrder); o != "" {
+		fmt.Fprintf(&b, " ORDER BY %s", o)
+	}
+	return b.String()
 }
 
 // runProjectStatus reports Orion's state for the repository you are in:

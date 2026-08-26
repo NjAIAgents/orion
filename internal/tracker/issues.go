@@ -23,6 +23,7 @@ type Issue struct {
 	Description string
 	Status      string
 	Labels      []string
+	Priority    string
 	// Rank is Jira's backlog ordering field. It is what makes "work these
 	// in this order" expressible by dragging tickets, with no syntax.
 	Rank string
@@ -43,7 +44,7 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 	q := url.Values{}
 	q.Set("jql", jql)
 	q.Set("maxResults", fmt.Sprint(maxResults))
-	q.Set("fields", "summary,description,status,labels")
+	q.Set("fields", "summary,description,status,labels,priority")
 
 	code, body, err := j.do("GET", "/rest/api/3/search/jql?"+q.Encode(), nil)
 	if err != nil {
@@ -68,6 +69,9 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 				Status      struct {
 					Name string `json:"name"`
 				} `json:"status"`
+				Priority struct {
+					Name string `json:"name"`
+				} `json:"priority"`
 			} `json:"fields"`
 		} `json:"issues"`
 	}
@@ -83,6 +87,7 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 			Description: flattenADF(i.Fields.Description),
 			Status:      i.Fields.Status.Name,
 			Labels:      i.Fields.Labels,
+			Priority:    i.Fields.Priority.Name,
 			URL:         j.BaseURL + "/browse/" + i.Key,
 		})
 	}
