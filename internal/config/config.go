@@ -176,18 +176,36 @@ type VCS struct {
 	AgentAuthorEmail string `json:"agent_author_email"`
 }
 
+// Attribution instruments commits with whodunit (`dun`), which records what
+// evidence exists about how each change was written.
+//
+// Distinct from VCS.AgentAuthorName, which only marks that a commit came from
+// an Orion run. The alias is set before the work happens and cannot say which
+// agent, which model, or how much of the diff the agent produced; dun answers
+// that from the session transcripts afterwards.
+type Attribution struct {
+	Enabled bool `json:"enabled"`
+	// AutoInstall lets `orion init` fetch dun through the platform's package
+	// manager. Package-managed installs put the binary on PATH under the name
+	// `dun`, which matters: the git hook resolves it by name at commit time,
+	// and a dun that is not on PATH silently stamps every commit
+	// `undetermined` -- read downstream as "no AI was used".
+	AutoInstall bool `json:"auto_install"`
+}
+
 type Config struct {
-	Version    int               `json:"version"`
-	Limits     Limits            `json:"limits"`
-	Gates      Gates             `json:"gates"`
-	Paths      Paths             `json:"paths"`
-	Autonomy   map[string]string `json:"autonomy"`
-	AutoMerge  AutoMerge         `json:"auto_merge"`
-	Budget     Budget            `json:"budget"`
-	Slack      Slack             `json:"slack"`
-	VCS        VCS               `json:"vcs"`
-	Tracker    Tracker           `json:"tracker"`
-	Delegation Delegation        `json:"delegation"`
+	Version     int               `json:"version"`
+	Limits      Limits            `json:"limits"`
+	Gates       Gates             `json:"gates"`
+	Paths       Paths             `json:"paths"`
+	Autonomy    map[string]string `json:"autonomy"`
+	AutoMerge   AutoMerge         `json:"auto_merge"`
+	Budget      Budget            `json:"budget"`
+	Slack       Slack             `json:"slack"`
+	VCS         VCS               `json:"vcs"`
+	Tracker     Tracker           `json:"tracker"`
+	Delegation  Delegation        `json:"delegation"`
+	Attribution Attribution       `json:"attribution"`
 
 	// Root is the resolved project root. Not read from JSON.
 	Root string `json:"-"`
@@ -197,6 +215,12 @@ type Config struct {
 	Degraded bool `json:"-"`
 	// DegradedReason explains why, for the block message.
 	DegradedReason string `json:"-"`
+
+	// slackPrefixSet records whether channel_prefix was actually present in
+	// the file. Without it an explicit "" is indistinguishable from absent,
+	// so the prefix could be changed but never removed: the config said one
+	// thing and the channel was named another.
+	slackPrefixSet bool
 }
 
 // Defaults returns the shipped baseline. These are deliberately
@@ -244,7 +268,8 @@ func Defaults() Config {
 			BranchPrefix:      "orion/",
 			AgentAuthorName:   "orion_agent",
 		},
-		Budget: Budget{PauseAtPercent: []int{50, 75, 90, 95}},
+		Budget:      Budget{PauseAtPercent: []int{50, 75, 90, 95}},
+		Attribution: Attribution{Enabled: true, AutoInstall: true},
 		Slack: Slack{
 			Enabled:                 false,
 			CreateChannelPerProject: true,
@@ -318,6 +343,17 @@ func Load(root string) Config {
 			delete(raw, k)
 		}
 	}
+	// Note whether channel_prefix was actually written, before defaults are
+	// applied. Without this an explicit "" is indistinguishable from absent
+	// and the prefix can be changed but never removed.
+	prefixSet := false
+	if sb, ok := raw["slack"]; ok {
+		var probe map[string]json.RawMessage
+		if json.Unmarshal(sb, &probe) == nil {
+			_, prefixSet = probe["channel_prefix"]
+		}
+	}
+
 	clean, _ := json.Marshal(raw)
 	if err := json.Unmarshal(clean, &cfg); err != nil {
 		fresh := Defaults()
@@ -327,6 +363,7 @@ func Load(root string) Config {
 		return fresh
 	}
 	cfg.Root = root
+	cfg.slackPrefixSet = prefixSet
 	normalize(&cfg)
 	return cfg
 }
@@ -372,7 +409,12 @@ func normalize(c *Config) {
 	if c.VCS.BranchPrefix == "" {
 		c.VCS.BranchPrefix = d.VCS.BranchPrefix
 	}
-	if c.Slack.ChannelPrefix == "" {
+	// An explicitly empty channel_prefix means "no prefix", not "use the
+	// default". Coercing it back made the setting impossible to turn off:
+	// you could change the prefix but never remove it, and the file said one
+	// thing while the channel was named another. The generated orion.json
+	// writes "orion-" explicitly, so new repos still get it.
+	if !c.slackPrefixSet {
 		c.Slack.ChannelPrefix = d.Slack.ChannelPrefix
 	}
 	if len(c.Budget.PauseAtPercent) == 0 {

@@ -299,6 +299,11 @@ func mergeSettings(opts Options, res *Result) error {
 	// twice, one of them against a path that no longer exists, and the
 	// re-run that was supposed to fix the repo has made it worse.
 	repaired := retargetOrionHooks(hooks, opts.Binary)
+	// Repointing can leave two entries with the same command, when a repo
+	// picked up a second set from a binary an earlier version failed to
+	// recognise. Identical hooks run twice, so every tool call is counted
+	// twice by the breaker and trips it at half the configured limit.
+	deduped := dedupeOrionHooks(hooks)
 
 	added := 0
 	for _, s := range specs() {
@@ -319,7 +324,7 @@ func mergeSettings(opts Options, res *Result) error {
 	}
 	root["hooks"] = hooks
 
-	if added == 0 && repaired == 0 {
+	if added == 0 && repaired == 0 && deduped == 0 {
 		res.Skipped = append(res.Skipped, ".claude/settings.json (hooks already wired)")
 		// Nothing changed, so the backup is noise. Remove it rather than
 		// littering a .bak per invocation.
@@ -337,7 +342,13 @@ func mergeSettings(opts Options, res *Result) error {
 	if err := os.WriteFile(p, append(b, '\n'), 0o644); err != nil {
 		return err
 	}
+	if deduped > 0 {
+		res.Updated = append(res.Updated, fmt.Sprintf(
+			".claude/settings.json (%d duplicate hook(s) removed)", deduped))
+	}
 	switch {
+	case added == 0 && repaired == 0:
+		// Only the dedupe line above applies.
 	case added > 0 && repaired > 0:
 		res.Updated = append(res.Updated, fmt.Sprintf(
 			".claude/settings.json (+%d hook(s), %d repointed to the current binary)", added, repaired))
@@ -348,6 +359,71 @@ func mergeSettings(opts Options, res *Result) error {
 		res.Updated = append(res.Updated, fmt.Sprintf(".claude/settings.json (+%d hook(s))", added))
 	}
 	return nil
+}
+
+// isOrionHookName reports whether a hook subcommand is one of ours. Checked
+// alongside the "hook" keyword so the shape match cannot capture a foreign
+// command that merely lives in a similarly named directory.
+func isOrionHookName(name string) bool {
+	for _, s := range specs() {
+		if s.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// dedupeOrionHooks removes Orion hook entries whose command duplicates one
+// already kept, and reports how many it dropped.
+//
+// A duplicate is not cosmetic. Claude Code runs every matching hook, so a
+// doubled PostToolUse breaker counts each tool call twice and trips at half
+// the configured max_tool_calls -- a limit that reads as 400 in orion.json
+// and behaves as 200.
+func dedupeOrionHooks(hooks map[string]any) int {
+	dropped := 0
+	for event, raw := range hooks {
+		entries, _ := raw.([]any)
+		seen := map[string]bool{}
+		kept := make([]any, 0, len(entries))
+		for _, re := range entries {
+			entry, ok := re.(map[string]any)
+			if !ok {
+				kept = append(kept, re)
+				continue
+			}
+			matcher, _ := entry["matcher"].(string)
+			inner, _ := entry["hooks"].([]any)
+
+			keptInner := make([]any, 0, len(inner))
+			for _, h := range inner {
+				hm, ok := h.(map[string]any)
+				if !ok {
+					keptInner = append(keptInner, h)
+					continue
+				}
+				cmd, _ := hm["command"].(string)
+				f := strings.Fields(cmd)
+				isOurs := len(f) >= 3 && f[len(f)-2] == "hook" && isOrionHookName(f[len(f)-1])
+				key := matcher + "\x00" + cmd
+				if isOurs && seen[key] {
+					dropped++
+					continue
+				}
+				if isOurs {
+					seen[key] = true
+				}
+				keptInner = append(keptInner, h)
+			}
+			if len(keptInner) == 0 {
+				continue // the whole entry was a duplicate
+			}
+			entry["hooks"] = keptInner
+			kept = append(kept, entry)
+		}
+		hooks[event] = kept
+	}
+	return dropped
 }
 
 // retargetOrionHooks rewrites the binary in every Orion hook command that
@@ -373,11 +449,16 @@ func retargetOrionHooks(hooks map[string]any, binary string) int {
 				}
 				cmd, _ := hm["command"].(string)
 				f := strings.Fields(cmd)
-				if len(f) < 3 || f[len(f)-2] != "hook" {
+				if len(f) < 3 || f[len(f)-2] != "hook" || !isOrionHookName(f[len(f)-1]) {
 					continue
 				}
+				// Match any binary whose name STARTS with orion, not just
+				// "orion" exactly. A locally built orion-dev, or orion.exe,
+				// is still our hook; requiring an exact name meant a re-run
+				// failed to recognise it and appended a duplicate set beside
+				// it, which is the bug this whole function exists to avoid.
 				base := strings.TrimSuffix(filepath.Base(f[0]), ".exe")
-				if base != "orion" || f[0] == binary {
+				if !strings.HasPrefix(base, "orion") || f[0] == binary {
 					continue
 				}
 				f[0] = binary
@@ -503,6 +584,12 @@ const defaultConfig = `{
     "create_channel_per_project": true,
     "channel_prefix": "orion-",
     "private": true
+  },
+
+  "_comment_attribution": "Stamps each commit with an AI-Attribution trailer via whodunit (dun), recording which agent and model produced the change and how much of the diff was theirs. Distinct from vcs.agent_author_name, which only marks that a commit came from an Orion run. auto_install fetches dun through brew or scoop; a package-managed install puts it on PATH under the name dun, which matters because the git hook resolves it by name at commit time and a missing dun silently stamps every commit undetermined.",
+  "attribution": {
+    "enabled": true,
+    "auto_install": true
   },
 
   "delegation": {

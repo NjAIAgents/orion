@@ -20,13 +20,13 @@
 package slack
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -83,16 +83,47 @@ func SetResolver(f func() string) {
 	}
 }
 
-func (c *Client) call(method string, payload any, out any) error {
-	var body io.Reader
-	contentType := "application/json; charset=utf-8"
-	if payload != nil {
-		b, err := json.Marshal(payload)
-		if err != nil {
-			return err
+// call posts to the Slack Web API using FORM encoding.
+//
+// Not JSON, and the difference is not cosmetic. Slack accepts a JSON body
+// only for a subset of write methods; the cursor-paginated read methods
+// (conversations.list among them) ignore it entirely and answer as if no
+// arguments were sent. There is no error: the call returns ok:true with the
+// DEFAULT result set, so the bug looks like a correct answer.
+//
+// Concretely, with a JSON body conversations.list dropped types, limit,
+// cursor and exclude_archived. Private channels were therefore invisible --
+// and private is Orion's default -- so an existing channel read as missing,
+// the name_taken reuse path could never resolve, and pagination re-fetched
+// page one up to twenty times without ever advancing.
+func (c *Client) call(method string, payload map[string]any, out any) error {
+	form := url.Values{}
+	for k, v := range payload {
+		switch t := v.(type) {
+		case nil:
+			continue
+		case string:
+			form.Set(k, t)
+		case bool:
+			form.Set(k, strconv.FormatBool(t))
+		case int:
+			form.Set(k, strconv.Itoa(t))
+		case int64:
+			form.Set(k, strconv.FormatInt(t, 10))
+		case float64:
+			form.Set(k, strconv.FormatFloat(t, 'f', -1, 64))
+		default:
+			// Structured arguments such as blocks travel as a JSON-encoded
+			// string in a form field, which is what Slack documents.
+			b, err := json.Marshal(t)
+			if err != nil {
+				return err
+			}
+			form.Set(k, string(b))
 		}
-		body = bytes.NewReader(b)
 	}
+	var body io.Reader = strings.NewReader(form.Encode())
+	contentType := "application/x-www-form-urlencoded; charset=utf-8"
 	req, err := http.NewRequest("POST", api+method, body)
 	if err != nil {
 		return err
@@ -100,7 +131,15 @@ func (c *Client) call(method string, payload any, out any) error {
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	req.Header.Set("Content-Type", contentType)
 
-	resp, err := c.HTTP.Do(req)
+	// Default rather than dereference. A Client built directly (a test, a
+	// caller that does not go through FromEnv) would otherwise panic with a
+	// nil pointer inside net/http, which reads as a crash in the HTTP stack
+	// rather than a missing field here.
+	hc := c.HTTP
+	if hc == nil {
+		hc = &http.Client{Timeout: 20 * time.Second}
+	}
+	resp, err := hc.Do(req)
 	if err != nil {
 		return fmt.Errorf("%s: %w", method, err)
 	}

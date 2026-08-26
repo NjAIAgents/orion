@@ -66,7 +66,7 @@ func TestAgentAliasHonoursAnExplicitEmail(t *testing.T) {
 // address would break every commit the agent makes. No alias beats that.
 func TestNoEmailAnywhereDisablesTheAliasRatherThanBreakingCommits(t *testing.T) {
 	d := repoWithEmail(t, "", `{"vcs":{"agent_author_name":"orion_agent"}}`)
-	t.Setenv("HOME", t.TempDir())          // no global user.email either
+	t.Setenv("HOME", t.TempDir()) // no global user.email either
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	if env := agentAuthorEnv(d); len(env) != 0 {
 		t.Errorf("expected no alias, got %v", env)

@@ -12,7 +12,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -142,8 +144,14 @@ func main() {
 		mustArg(os.Args, 2, "orion run <id>")
 		runSupervised(os.Args[2], os.Args[3:])
 	case "status":
-		mustArg(os.Args, 2, "orion status <id>")
-		exitOn(workspace.Status(os.Stdout, os.Args[2]))
+		// With an id, the workspace view. Without one, the project view:
+		// asking "what is Orion's state here" should not require knowing a
+		// workspace id you may not have created yet.
+		if len(os.Args) > 2 {
+			exitOn(workspace.Status(os.Stdout, os.Args[2]))
+		} else {
+			runProjectStatus(os.Stdout)
+		}
 	case "reset":
 		runReset(os.Args[2:])
 	case "fix":
@@ -347,6 +355,24 @@ func runInit(args []string) {
 		}
 	}
 
+	// Attribution tooling. Separate from the author alias: the alias marks a
+	// commit as coming from an Orion run, dun records which agent, which
+	// model and how much of the diff it actually produced, from the session
+	// transcripts afterwards.
+	if cfg.Attribution.Enabled {
+		ask := func(p string) bool { return confirm(p) }
+		if hasFlag(args, "--yes") {
+			ask = func(string) bool { return true }
+		}
+		lines, warns := adopt.EnsureDun(abs, cfg.Attribution.AutoInstall, ask)
+		for _, l := range lines {
+			fmt.Println(l)
+		}
+		for _, w := range warns {
+			fmt.Printf("WARNING  %s\n", w)
+		}
+	}
+
 	if !hasFlag(args, "--no-provision") {
 		provisionRemote(abs, cfg, hasFlag(args, "--yes"))
 	}
@@ -377,11 +403,19 @@ func provisionRemote(dir string, cfg config.Config, assumeYes bool) {
 		SlackIsPriv: cfg.Slack.Private,
 	}
 
+	var jiraLead string
 	j, jErr := tracker.NewJiraFromEnv()
 	switch {
 	case jErr != nil:
 		plan.JiraSkip = "not configured"
 	default:
+		// Jira rejects project creation without a lead, and the error
+		// ("You must specify a valid project lead") arrives only after the
+		// confirmation has been given. Resolve the authenticated account up
+		// front and use it: whoever ran init is the obvious lead.
+		if cap, err := j.Probe(); err == nil && cap.AccountID != "" {
+			jiraLead = cap.AccountID
+		}
 		plan.JiraSite = j.BaseURL
 		plan.JiraKey = cfg.Tracker.ProjectKey
 		if plan.JiraKey == "" {
@@ -424,7 +458,11 @@ func provisionRemote(dir string, cfg config.Config, assumeYes bool) {
 	cfgPath := filepath.Join(dir, "orion.json")
 	if plan.JiraSkip == "" && plan.JiraKey != "" {
 		if !plan.JiraExists {
-			if _, err := j.CreateProject(plan.JiraKey, name, ""); err != nil {
+			if jiraLead == "" {
+				fmt.Fprintln(os.Stderr, "WARNING  could not resolve a Jira account to lead the project; skipping creation")
+				goto slackStep
+			}
+			if _, err := j.CreateProject(plan.JiraKey, name, jiraLead); err != nil {
 				fmt.Fprintf(os.Stderr, "WARNING  could not create Jira project %s: %v\n", plan.JiraKey, err)
 				goto slackStep
 			}
@@ -496,6 +534,198 @@ func confirm(prompt string) bool {
 	_, _ = fmt.Scanln(&ans)
 	ans = strings.ToLower(strings.TrimSpace(ans))
 	return ans == "y" || ans == "yes"
+}
+
+// runProjectStatus reports Orion's state for the repository you are in:
+// what is wired, where the tracker and channel are, and what has been spent.
+//
+// Kept separate from `orion doctor`. doctor answers "can Orion work here",
+// a pass/fail health check; this answers "what is it connected to", which is
+// what you actually want when returning to a project after a week. Merging
+// them would make one command that does neither job clearly.
+func runProjectStatus(w io.Writer) {
+	root, err := config.FindRoot(".")
+	if err != nil {
+		fmt.Fprintln(w, "not inside an Orion project (no orion.json or .git found)")
+		fmt.Fprintln(w, "  adopt this repo with: orion init")
+		os.Exit(1)
+	}
+	cfg := config.Load(root)
+	name := adopt.DeriveProjectName(root)
+
+	fmt.Fprintf(w, "orion status  %s\n\n", name)
+	fmt.Fprintf(w, "  repo        %s\n", root)
+	if cfg.Degraded {
+		fmt.Fprintf(w, "  config      DEGRADED: %s\n", cfg.DegradedReason)
+	} else {
+		fmt.Fprintf(w, "  config      orion.json (max_tool_calls=%d, plan gate=%v)\n",
+			cfg.Limits.MaxToolCalls, cfg.Gates.RequirePlanBeforeEdit)
+	}
+
+	// Branches.
+	cur := gitOut(root, "branch", "--show-current")
+	fmt.Fprintf(w, "  branch      %s", cur)
+	if cur != cfg.VCS.WorkBranch && cur != cfg.VCS.DefaultBranch {
+		fmt.Fprintf(w, "  (work branch is %s)", cfg.VCS.WorkBranch)
+	}
+	fmt.Fprintln(w)
+	if gitOut(root, "rev-parse", "--verify", "--quiet", "refs/heads/"+cfg.VCS.WorkBranch) == "" {
+		fmt.Fprintf(w, "              WARNING %s does not exist; task branches have no PR base\n",
+			cfg.VCS.WorkBranch)
+	}
+
+	// Hooks: the limits above are advisory unless these resolve.
+	if st := hookState(root); st != "" {
+		fmt.Fprintf(w, "  hooks       %s\n", st)
+	}
+
+	// Attribution.
+	dun := adopt.DunLook(root)
+	switch {
+	case dun.Path == "":
+		fmt.Fprintln(w, "  dun         not installed; commits carry no attribution trailer")
+	case !dun.Instrumented:
+		fmt.Fprintf(w, "  dun         %s installed, this repo NOT instrumented (orion init)\n", dun.Version)
+	default:
+		fmt.Fprintf(w, "  dun         %s, instrumented\n", dun.Version)
+		if s := dunSummary(dun.Path, root); s != "" {
+			fmt.Fprintf(w, "              %s\n", s)
+		}
+	}
+
+	// Tracker.
+	switch {
+	case !cfg.Tracker.Enabled:
+		fmt.Fprintln(w, "  jira        disabled in orion.json")
+	case cfg.Tracker.ProjectKey == "":
+		fmt.Fprintln(w, "  jira        enabled, no project bound (a project is created per idea)")
+	default:
+		line := cfg.Tracker.ProjectKey
+		if j, err := tracker.NewJiraFromEnv(); err == nil {
+			line += "  " + j.BaseURL + "/browse/" + cfg.Tracker.ProjectKey
+			if ok, _, err := j.ProjectExists(cfg.Tracker.ProjectKey); err == nil && !ok {
+				line += "  WARNING not found on this instance"
+			}
+		} else {
+			line += "  (credentials not configured, so it cannot be reached)"
+		}
+		fmt.Fprintf(w, "  jira        %s\n", line)
+	}
+
+	// Chat.
+	if !cfg.Slack.Enabled {
+		fmt.Fprintln(w, "  slack       disabled in orion.json")
+	} else {
+		chName := slack.NormalizeChannelName(cfg.Slack.ChannelPrefix + name)
+		line := "#" + chName
+		if c, err := slack.FromEnv(); err == nil {
+			if id, err := c.AuthTest(); err == nil {
+				// Distinguish "the workspace says no such channel" from "the
+				// lookup itself failed". Reporting a missing scope as a
+				// missing channel sends you to create one that already
+				// exists, which is how the Jira 401 wasted an hour earlier.
+				ch, err := c.FindChannel(chName, cfg.Slack.Private)
+				switch {
+				case err == nil && ch != nil:
+					if u := slack.ChannelURL(id.TeamID, ch.ID); u != "" {
+						line += "  " + u
+					}
+				case err != nil && strings.Contains(err.Error(), "not found"):
+					line += "  WARNING not in " + id.Team + " (orion init creates it)"
+				default:
+					line += "  WARNING lookup failed: " + err.Error()
+				}
+			} else {
+				line += "  WARNING token rejected: " + err.Error()
+			}
+		} else {
+			line += "  (no bot token, so nothing will be posted)"
+		}
+		fmt.Fprintf(w, "  slack       %s\n", line)
+	}
+
+	// Spend. Named as the user's own budget so it is never read as the
+	// provider's remaining quota, which nothing reports.
+	if l, err := budget.Load(workspace.Home()); err == nil {
+		lim := budget.Limits{WeeklyUSD: cfg.Budget.WeeklyUSD, WeeklyTokens: cfg.Budget.WeeklyTokens}
+		s := l.Status(lim)
+		if !lim.Set() {
+			fmt.Fprintf(w, "  budget      no weekly limit set, so the %v%% checkpoints can never fire\n",
+				cfg.Budget.PauseAtPercent)
+			fmt.Fprintf(w, "              $%.2f and %d runs in the last 7 days\n", s.SpentUSD, s.Runs)
+		} else {
+			fmt.Fprintf(w, "  budget      %d%% used  ($%.2f, %d runs, last 7 days)\n",
+				s.Percent, s.SpentUSD, s.Runs)
+		}
+	}
+	fmt.Fprintln(w)
+}
+
+func gitOut(dir string, args ...string) string {
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// hookState reuses what doctor checks, so status cannot report a healthier
+// picture than doctor would for the same repo.
+func hookState(root string) string {
+	b, err := os.ReadFile(filepath.Join(root, ".claude", "settings.json"))
+	if err != nil {
+		return "no .claude/settings.json; nothing enforces the limits above"
+	}
+	var doc struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if json.Unmarshal(b, &doc) != nil {
+		return "settings.json is not valid JSON; no hook is running"
+	}
+	total, broken := 0, 0
+	for _, entries := range doc.Hooks {
+		for _, e := range entries {
+			for _, h := range e.Hooks {
+				f := strings.Fields(h.Command)
+				if len(f) == 0 || !strings.HasPrefix(filepath.Base(f[0]), "orion") {
+					continue
+				}
+				total++
+				if _, err := exec.LookPath(f[0]); err != nil {
+					broken++
+				}
+			}
+		}
+	}
+	switch {
+	case total == 0:
+		return "none wired; the limits above are advisory (orion init)"
+	case broken > 0:
+		return fmt.Sprintf("%d of %d do not resolve; every gate is silently doing nothing", broken, total)
+	}
+	return fmt.Sprintf("%d wired and resolvable", total)
+}
+
+// dunSummary pulls the coverage line out of `dun status`, which is the one
+// number worth surfacing here. Coverage is not adoption: it counts commits
+// carrying any valid trailer, including `undetermined`.
+func dunSummary(bin, root string) string {
+	out, err := exec.Command(bin, "status", "--repo", root).Output()
+	if err != nil {
+		if out, err = exec.Command(bin, "status").Output(); err != nil {
+			return ""
+		}
+	}
+	for _, l := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "coverage:") {
+			return strings.Join(strings.Fields(l), " ")
+		}
+	}
+	return ""
 }
 
 // runAnswer walks the open questions blocking a workspace.

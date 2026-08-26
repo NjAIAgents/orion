@@ -1,9 +1,9 @@
 package slack
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"unicode"
@@ -170,9 +170,10 @@ func TestFindChannelPaginates(t *testing.T) {
 }
 
 func TestPostSendsChannelAndText(t *testing.T) {
-	var got map[string]any
+	var got url.Values
 	c, srv := newFake(t, func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&got)
+		_ = r.ParseForm()
+		got = r.PostForm
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
 	defer srv.Close()
@@ -180,8 +181,67 @@ func TestPostSendsChannelAndText(t *testing.T) {
 	if err := c.Post("C123", "hello"); err != nil {
 		t.Fatal(err)
 	}
-	if got["channel"] != "C123" || got["text"] != "hello" {
+	if got.Get("channel") != "C123" || got.Get("text") != "hello" {
 		t.Errorf("payload = %v", got)
+	}
+}
+
+// Arguments must travel as FORM fields, not a JSON body.
+//
+// Slack's cursor-paginated read methods ignore a JSON body and answer with
+// the DEFAULT result set and ok:true -- no error, just a wrong answer that
+// looks right. With JSON, conversations.list silently dropped types, limit,
+// cursor and exclude_archived, so private channels were invisible (and
+// private is the default), an existing channel read as missing, name_taken
+// could never resolve to it, and pagination re-fetched page one forever.
+func TestArgumentsAreFormEncodedNotJSON(t *testing.T) {
+	var ct string
+	var got url.Values
+	c, srv := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		ct = r.Header.Get("Content-Type")
+		_ = r.ParseForm()
+		got = r.PostForm
+		_, _ = w.Write([]byte(`{"ok":true,"channels":[],"response_metadata":{"next_cursor":""}}`))
+	})
+	defer srv.Close()
+
+	_, _ = c.FindChannel("nope", true)
+
+	if !strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
+		t.Errorf("Content-Type = %q; Slack ignores a JSON body on this method", ct)
+	}
+	if got.Get("types") != "private_channel" {
+		t.Errorf("types = %q; a dropped types means private channels are invisible", got.Get("types"))
+	}
+	if got.Get("limit") != "200" {
+		t.Errorf("limit = %q, want the integer form-encoded", got.Get("limit"))
+	}
+	if got.Get("exclude_archived") != "true" {
+		t.Errorf("exclude_archived = %q, want a form-encoded bool", got.Get("exclude_archived"))
+	}
+}
+
+// Pagination only advances if the cursor actually reaches Slack.
+func TestPaginationSendsTheCursor(t *testing.T) {
+	var cursors []string
+	page := 0
+	c, srv := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		cursors = append(cursors, r.PostForm.Get("cursor"))
+		page++
+		if page == 1 {
+			_, _ = w.Write([]byte(`{"ok":true,"channels":[],"response_metadata":{"next_cursor":"CUR2"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"channels":[{"id":"C9","name":"wanted"}],"response_metadata":{"next_cursor":""}}`))
+	})
+	defer srv.Close()
+
+	if _, err := c.FindChannel("wanted", false); err != nil {
+		t.Fatal(err)
+	}
+	if len(cursors) < 2 || cursors[1] != "CUR2" {
+		t.Errorf("cursors sent = %v; without the cursor the same page is fetched forever", cursors)
 	}
 }
 
