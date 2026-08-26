@@ -63,10 +63,8 @@ func Send(e Event) []error {
 		errs = append(errs, fmt.Errorf("desktop notify: %w", err))
 	}
 	if e.Channel != "" {
-		if c, err := slack.FromEnv(); err == nil {
-			if postErr := c.Post(e.Channel, e.Title+"\n"+e.Body); postErr != nil {
-				errs = append(errs, postErr)
-			}
+		if err := slackSend(e.Channel, e.Title+"\n"+e.Body); err != nil {
+			errs = append(errs, fmt.Errorf("slack: %w", err))
 		}
 	}
 	// Resolved through the same hook as the Slack token, so a webhook stored
@@ -82,6 +80,34 @@ func Send(e Event) []error {
 		}
 	}
 	return errs
+}
+
+// slackSend posts to a channel. A package variable rather than a direct call
+// so the delivery path can be exercised without a live workspace -- and it
+// was the absence of that seam that let the bug below survive untested.
+//
+// The bug: this used to be `if c, err := slack.FromEnv(); err == nil { ... }`,
+// which DISCARDED the error. A caller that asked for a Slack notification
+// with a missing or malformed token got no message and no error, so the
+// alert silently did not arrive and nothing said so. For a package whose
+// entire job is telling you something happened while you were not watching,
+// that is the worst possible failure.
+var slackSend = func(channel, text string) error {
+	c, err := slack.FromEnv()
+	if err != nil {
+		return err
+	}
+	return c.Post(channel, text)
+}
+
+// SetSlackSender replaces the Slack delivery function. Used by tests, and
+// available to a caller that already holds a configured client.
+func SetSlackSender(f func(channel, text string) error) func(channel, text string) error {
+	prev := slackSend
+	if f != nil {
+		slackSend = f
+	}
+	return prev
 }
 
 // desktop raises a native notification. Silently a no-op where no

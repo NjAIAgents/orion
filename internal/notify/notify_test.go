@@ -2,6 +2,7 @@ package notify
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,8 @@ import (
 // exercising, rather than accidentally firing a real webhook.
 func isolate(t *testing.T) {
 	t.Helper()
+	prev := SetSlackSender(func(string, string) error { return nil })
+	t.Cleanup(func() { SetSlackSender(prev) })
 	SetWebhookResolver(func() string { return "" })
 	t.Setenv("ORION_NOTIFY_WEBHOOK", "")
 	t.Setenv("ORION_NOTIFY_COMMAND", "")
@@ -259,5 +262,86 @@ func TestDesktopIsSilentWhenNoNotifierExists(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if err := desktop(Event{Title: "t", Body: "b"}); err != nil {
 		t.Errorf("a missing notifier was reported as an error: %v", err)
+	}
+}
+
+// The delivery path this package exists for. Untested until now, which is
+// how the discarded-error bug survived.
+func TestSlackIsSentOnlyWhenAChannelIsSet(t *testing.T) {
+	isolate(t)
+
+	var gotChannel, gotText string
+	calls := 0
+	SetSlackSender(func(ch, text string) error {
+		calls++
+		gotChannel, gotText = ch, text
+		return nil
+	})
+
+	// No channel: nothing to post to, and posting into a default room would
+	// be worse than staying quiet.
+	Send(Event{Title: "t", Body: "b"})
+	if calls != 0 {
+		t.Fatalf("posted with no channel configured (%d calls)", calls)
+	}
+
+	Send(Event{Channel: "C123", Title: "Orion stopped", Body: "quota exhausted"})
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if gotChannel != "C123" {
+		t.Errorf("channel = %q", gotChannel)
+	}
+	// Both halves must survive: a title with no body says something happened
+	// and refuses to say what.
+	if !strings.Contains(gotText, "Orion stopped") || !strings.Contains(gotText, "quota exhausted") {
+		t.Errorf("text = %q; title and body must both reach Slack", gotText)
+	}
+}
+
+// The bug this seam exposed: a missing or malformed token used to be
+// swallowed, so the caller believed the notification had been delivered.
+func TestSlackFailuresAreReportedNotSwallowed(t *testing.T) {
+	isolate(t)
+	SetSlackSender(func(string, string) error {
+		return errors.New("ORION_SLACK_TOKEN is not set")
+	})
+
+	errs := Send(Event{Channel: "C123", Title: "t", Body: "b"})
+	if len(errs) == 0 {
+		t.Fatal("a Slack delivery failure was reported as success")
+	}
+	joined := ""
+	for _, e := range errs {
+		joined += e.Error() + " "
+	}
+	if !strings.Contains(joined, "slack") {
+		t.Errorf("errors = %v; the failing channel must be identifiable", errs)
+	}
+	if !strings.Contains(joined, "ORION_SLACK_TOKEN") {
+		t.Errorf("errors = %v; the underlying cause must survive", errs)
+	}
+}
+
+// Slack failing must not stop the webhook, and vice versa. These are
+// independent paths precisely so one workspace problem cannot mute all of
+// them at once.
+func TestSlackFailureDoesNotStopTheWebhook(t *testing.T) {
+	isolate(t)
+	SetSlackSender(func(string, string) error { return errors.New("token revoked") })
+
+	delivered := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		delivered = true
+	}))
+	defer srv.Close()
+	SetWebhookResolver(func() string { return srv.URL })
+
+	errs := Send(Event{Channel: "C123", Title: "t", Body: "b"})
+	if !delivered {
+		t.Error("a Slack failure prevented the webhook from delivering")
+	}
+	if len(errs) != 1 {
+		t.Errorf("errs = %v; exactly the Slack failure should be reported", errs)
 	}
 }
