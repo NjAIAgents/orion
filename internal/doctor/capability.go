@@ -351,6 +351,57 @@ func checkSlack(enabled bool) check {
 		""}
 }
 
+// checkSlackAudience asks the question every other Slack check skipped: can
+// a person actually READ what Orion sends?
+//
+// Every existing check passes on a private channel whose only member is the
+// bot. The token is valid, the channel resolves, the post is accepted, the
+// approval scopes are granted -- and no human can see the message, find it
+// by search, or learn the channel exists. fcia ran that way for two full
+// pipelines. The symptom is indistinguishable from Slack being broken,
+// which is exactly how it was repeatedly misdiagnosed.
+//
+// Checked here rather than only at init because init runs once and this can
+// become true later: somebody leaves the channel, or a workspace record is
+// repointed at a room nobody joined.
+func checkSlackAudience(ws *workspace.Workspace) check {
+	if ws == nil || ws.Task.Slack == nil || ws.Task.Slack.ID == "" {
+		return check{"slack audience", ok, "no channel bound yet", ""}
+	}
+	name := ws.Task.Slack.Name
+	c, err := slack.FromEnv()
+	if err != nil {
+		return check{"slack audience", ok, "slack not configured (optional)", ""}
+	}
+	members, err := c.Members(ws.Task.Slack.ID)
+	if err != nil {
+		// Usually a missing read scope. Not a failure of the channel.
+		return check{"slack audience", warn,
+			"could not read the members of #" + name, err.Error()}
+	}
+	self := ""
+	if id, aErr := c.AuthTest(); aErr == nil {
+		self = id.UserID
+	}
+	people := 0
+	for _, m := range members {
+		if m != self && strings.TrimSpace(m) != "" {
+			people++
+		}
+	}
+	if people == 0 {
+		return check{"slack audience", fail,
+			"#" + name + " has no members except the bot",
+			"Everything Orion sends there is delivered and unreadable: a private\n" +
+				"channel is invisible to anyone not in it, with no notification that\n" +
+				"it exists.\n" +
+				"  Add yourself in Slack, or set slack.invite_users in orion.json\n" +
+				"  and re-run: orion init --force"}
+	}
+	return check{"slack audience",
+		ok, fmt.Sprintf("#%s has %d human member(s)", name, people), ""}
+}
+
 // checkDisk catches the failure that looks like everything else failing.
 // A workspace, its logs and a node_modules will not fit in 200MB, and the
 // resulting errors are wildly misleading.

@@ -60,3 +60,35 @@ func TestOnlyOrionsOwnBotIsRecognised(t *testing.T) {
 		t.Fatalf("want the other id treated as a person, got %v", people)
 	}
 }
+
+// countHumans backs the init-time gate that fcia needed and did not have.
+//
+// The old code returned early unless the channel had just been CREATED, on
+// the reasoning that a found channel "already has whoever belongs in it".
+// The channel that stranded fcia was FOUND -- created in an earlier, broken
+// init and then reused -- so the one case that mattered was the one case
+// skipped. There is no test for that early return because the fix was to
+// delete it; this covers the judgement that replaced it.
+func TestCountingWhoCanRead(t *testing.T) {
+	// Standing in for AuthTest returning the bot's own id.
+	const self = "UORION"
+
+	cases := []struct {
+		name    string
+		members []string
+		want    int
+	}{
+		{"the fcia failure: bot alone", []string{self}, 0},
+		{"empty channel", nil, 0},
+		{"one person", []string{self, "UNAV"}, 1},
+		{"several", []string{self, "UNAV", "UOTHER"}, 2},
+		{"blanks are not people", []string{self, "", " "}, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := len(humansAmong(c.members, self)); got != c.want {
+				t.Errorf("counted %d readers in %v, want %d", got, c.members, c.want)
+			}
+		})
+	}
+}

@@ -553,7 +553,7 @@ slackStep:
 			verb = "created"
 		}
 		ui.Ok(os.Stdout, verb, "Slack channel #%s", ch.Name)
-		inviteToChannel(sc, ch, cfg)
+		ensureAudience(sc, ch, cfg, cfgPath)
 		patchConfig(cfgPath, map[string][2]string{"slack": {"enabled", "true"}}, "")
 
 		// Record the channel ON THE WORKSPACE, which is the only place
@@ -681,31 +681,111 @@ func runRepos(args []string) {
 	}
 }
 
-// inviteToChannel adds the configured humans to a channel Orion just made.
+// ensureAudience makes certain a human can actually read this channel.
 //
-// Without this a PRIVATE channel is useless: the bot is its only member, and
-// Slack shows a private channel to nobody outside it -- not in the sidebar,
-// not in search, with no notification that it exists. Orion would create a
-// "communication medium" its audience cannot see, and report success.
-func inviteToChannel(sc *slack.Client, ch *slack.Channel, cfg config.Config) {
-	if !ch.Created {
-		return // an existing channel already has whoever belongs in it
-	}
-	if len(cfg.Slack.InviteUsers) == 0 {
-		if cfg.Slack.Private {
-			ui.Warn(os.Stdout, "#%s is private and the bot is its only member, so nobody can see it.\n"+
-				"         Add Slack user IDs to slack.invite_users in orion.json and re-run,\n"+
-				"         or open Slack and add yourself to the channel.", ch.Name)
+// A PRIVATE channel with only the bot in it is not a communication medium.
+// Slack shows it to nobody outside it -- not in the sidebar, not in search,
+// with no notification that it exists -- so every message Orion sends is
+// accepted, stored, and unreadable. That is not a hypothetical: fcia ran
+// that way for two full pipelines, and each failure was diagnosed as "Slack
+// is broken" because every check that existed passed.
+//
+// The old version could not have caught it, for two reasons:
+//
+//	it returned early unless the channel had just been CREATED -- but the
+//	one that stranded fcia was FOUND, and a found channel was assumed to
+//	"already have whoever belongs in it"
+//
+//	with no invite_users it printed a warning and continued, and a warning
+//	during a long init scrolls past
+//
+// So this now runs for a found channel too, VERIFIES membership rather than
+// assuming the invite worked, and tries to identify the person running init
+// before giving up. Verification is the part that matters: an invite that
+// silently failed used to look identical to one that succeeded.
+func ensureAudience(sc *slack.Client, ch *slack.Channel, cfg config.Config, cfgPath string) {
+	if len(cfg.Slack.InviteUsers) > 0 {
+		invited, errs := sc.Invite(ch.ID, cfg.Slack.InviteUsers)
+		for _, e := range errs {
+			ui.Warn(os.Stdout, "inviting to #%s: %v", ch.Name, e)
 		}
+		if len(invited) > 0 {
+			ui.Ok(os.Stdout, "invited", "%d to #%s", len(invited), ch.Name)
+		}
+	}
+
+	members, err := sc.Members(ch.ID)
+	if err != nil {
+		// Cannot verify. Say so rather than implying it is fine -- this is
+		// the check, and a check that fails quietly is worse than none.
+		ui.Warn(os.Stdout, "could not confirm who is in #%s: %v\n"+
+			"         Open it in Slack and check you are a member.", ch.Name, err)
 		return
 	}
-	invited, errs := sc.Invite(ch.ID, cfg.Slack.InviteUsers)
-	for _, e := range errs {
-		ui.Warn(os.Stdout, "inviting to #%s: %v", ch.Name, e)
+	if n := countHumans(members, sc); n > 0 {
+		ui.Ok(os.Stdout, "ok", "#%s has %d human member(s)", ch.Name, n)
+		return
 	}
-	if len(invited) > 0 {
-		ui.Ok(os.Stdout, "invited", "%d to #%s", len(invited), ch.Name)
+
+	// Nobody home. Try to work out who is standing here.
+	//
+	// git's configured email is the best guess available: the person running
+	// init is the person committing to this repository. Needs the
+	// users:read.email scope, which is not in Orion's default manifest, so
+	// this is an attempt and not a guarantee.
+	if id := slackIDForGitUser(sc); id != "" {
+		if invited, errs := sc.Invite(ch.ID, []string{id}); len(invited) > 0 {
+			ui.Ok(os.Stdout, "invited", "you (%s) to #%s", id, ch.Name)
+			// Persist it, so the next project and the next re-run do not
+			// depend on a lookup that may not be permitted then.
+			patchConfig(cfgPath, map[string][2]string{
+				"slack": {"invite_users", `["` + id + `"]`},
+			}, "")
+			return
+		} else if len(errs) > 0 {
+			ui.Warn(os.Stdout, "could not add you to #%s: %v", ch.Name, errs[0])
+		}
 	}
+
+	// Out of options. This is a hard failure of the notification setup, so
+	// it is stated as one, with the exact edit that fixes it.
+	ui.Fail(os.Stdout, "#%s has no members except the bot, so nobody can read anything Orion sends there.",
+		ch.Name)
+	fmt.Fprintf(os.Stdout,
+		"         Messages will be delivered and invisible -- the failure looks exactly\n"+
+			"         like Slack being broken. Fix it before the first run:\n\n"+
+			"           1. open Slack, find your member ID (Profile -> ... -> Copy member ID)\n"+
+			"           2. set it in %s:  \"invite_users\": [\"U0123456789\"]\n"+
+			"           3. orion init --force\n\n"+
+			"         Or add yourself to #%s by hand -- a bot cannot invite itself an audience.\n",
+		cfgPath, ch.Name)
+}
+
+// countHumans returns how many members are not the bot itself.
+//
+// Defers to humansAmong rather than re-deriving the rule. Two copies of
+// "who counts as a reader" in one package is one copy too many: they drift,
+// and the one that drifts is the one nobody has a test for.
+func countHumans(members []string, sc *slack.Client) int {
+	self := ""
+	if id, err := sc.AuthTest(); err == nil {
+		self = id.UserID
+	}
+	return len(humansAmong(members, self))
+}
+
+// slackIDForGitUser looks up the operator's Slack id from their git email.
+func slackIDForGitUser(sc *slack.Client) string {
+	out, err := exec.Command("git", "config", "user.email").Output()
+	email := strings.TrimSpace(string(out))
+	if err != nil || email == "" {
+		return ""
+	}
+	id, err := sc.LookupUserByEmail(email)
+	if err != nil {
+		return ""
+	}
+	return id
 }
 
 // patchConfig edits orion.json as text rather than round-tripping the JSON,

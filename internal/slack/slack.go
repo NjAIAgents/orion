@@ -361,6 +361,27 @@ func (c *Client) Members(channelID string) ([]string, error) {
 	return out, nil
 }
 
+// LookupUserByEmail resolves an email address to a Slack user id.
+//
+// Needs the users:read.email scope, which is NOT in Orion's default manifest
+// -- so the error return is an ordinary outcome here, not an exception. It is
+// used to guess who is running `orion init` from their git email, and a
+// failure just means falling back to asking them.
+func (c *Client) LookupUserByEmail(email string) (string, error) {
+	var res struct {
+		User struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	if err := c.call("users.lookupByEmail", map[string]any{"email": email}, &res); err != nil {
+		return "", err
+	}
+	if res.User.ID == "" {
+		return "", fmt.Errorf("no Slack user matches %s", email)
+	}
+	return res.User.ID, nil
+}
+
 // Post sends a message to a channel id.
 func (c *Client) Post(channelID, text string) error {
 	return c.call("chat.postMessage", map[string]any{
