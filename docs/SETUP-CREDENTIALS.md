@@ -189,6 +189,14 @@ export ORION_JIRA_EMAIL='you@example.com'
 export ORION_JIRA_TOKEN='...'
 ```
 
+> **The trap that costs an hour.** An export made in one terminal beats
+> `config.env` for the life of that terminal, and lives in no file, so nothing
+> on disk reveals it. Fix the token with `orion config`, and `doctor` in that
+> window keeps failing on the stale export while the same command passes in a
+> new tab. Doctor now names the source on failure — `authentication failed
+> (credentials from: environment)` — and gives you the `unset` line. If you see
+> that, do not re-run `orion config`; the file was never the problem.
+
 ### 3. Verify
 
 ```bash
