@@ -679,6 +679,7 @@ func runQueue(args []string) {
 		verb  string
 	}{
 		{"working", "working"},
+		{"ci-wait", "ci-wait"},
 		{"failed", "failed"},
 		{"queued", "queued"},
 	}
@@ -703,8 +704,8 @@ func runQueue(args []string) {
 		}
 	}
 
-	fmt.Fprintf(w, "\n  %d working, %d queued, %d failed.\n",
-		counts["working"], counts["queued"], counts["failed"])
+	fmt.Fprintf(w, "\n  %d working, %d awaiting CI, %d queued, %d failed.\n",
+		counts["working"], counts["ci-wait"], counts["queued"], counts["failed"])
 	if counts["failed"] > 0 {
 		fmt.Fprintf(w, "  A failed ticket is not retried: remove %s and add %s to requeue it.\n",
 			tracker.LabelFailed, cfg.Tracker.QueueLabel)
@@ -724,8 +725,11 @@ func queueJQL(cfg config.Config) string {
 	// the moment Orion claims it, so the one thing you most want to see --
 	// what is running right now, and what stopped -- is the one thing the
 	// command could not show.
-	fmt.Fprintf(&b, "labels in (%q, %q, %q)",
-		cfg.Tracker.QueueLabel, tracker.LabelWorking, tracker.LabelFailed)
+	quoted := make([]string, 0, 4)
+	for _, l := range tracker.Managed(cfg.Tracker.QueueLabel) {
+		quoted = append(quoted, fmt.Sprintf("%q", l))
+	}
+	fmt.Fprintf(&b, "labels in (%s)", strings.Join(quoted, ", "))
 	if o := strings.TrimSpace(cfg.Tracker.QueueOrder); o != "" {
 		fmt.Fprintf(&b, " ORDER BY %s", o)
 	}

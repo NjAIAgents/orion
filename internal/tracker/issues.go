@@ -311,16 +311,33 @@ func walkADF(n *adfNode, b *strings.Builder) {
 // The queue's state machine lives in labels on the ticket.
 //
 //	<QueueLabel>   queued: a human asked for this
-//	orion-working  claimed: a run is in flight
+//	orion-working  claimed: an agent is running, holding the repo's job slot
+//	orion-ci-wait  pushed: a pull request is open and CI is running
 //	orion-failed   stopped: needs a person
 //
-// Done is the ABSENCE of all three, deliberately. A "done" label would
+// Done is the ABSENCE of all four, deliberately. A "done" label would
 // accumulate forever on every ticket Orion ever touched, and the tracker
 // already records completion in the issue's own status.
+//
+// ci-wait is separate from working for two reasons. It releases the repo's
+// job slot, so a twenty-minute CI run does not stall the rest of the queue
+// behind a machine nobody is waiting on. More importantly it makes the wait
+// CRASH-SAFE: if the state lived only in a blocked process, a daemon that
+// died mid-wait would forget the pull request existed, and the obvious retry
+// would re-run the agent and open a SECOND pull request for the same ticket.
+// On the ticket, a restarted watcher sees ci-wait, finds the existing pull
+// request and resumes polling without spending anything.
 const (
 	LabelWorking = "orion-working"
+	LabelCIWait  = "orion-ci-wait"
 	LabelFailed  = "orion-failed"
 )
+
+// Managed are every label Orion owns, for the queue query and for clearing
+// state when a ticket is finished or requeued.
+func Managed(queueLabel string) []string {
+	return []string{queueLabel, LabelWorking, LabelCIWait, LabelFailed}
+}
 
 // State reports where an issue sits in Orion's queue, given the label that
 // marks work as requested.
@@ -333,11 +350,17 @@ func State(labels []string, queueLabel string) string {
 		}
 		return false
 	}
+	// Order matters: a ticket can briefly carry two labels if a write was
+	// interrupted between the remove and the add. Reporting the more urgent
+	// one is the safe reading -- failed outranks everything, and an agent
+	// still running outranks a pull request that may be stale.
 	switch {
 	case has(LabelFailed):
 		return "failed"
 	case has(LabelWorking):
 		return "working"
+	case has(LabelCIWait):
+		return "ci-wait"
 	case has(queueLabel):
 		return "queued"
 	}

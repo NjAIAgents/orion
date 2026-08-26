@@ -192,3 +192,51 @@ func fakeJira(t *testing.T, handler func(method, path string, body []byte) (int,
 	t.Cleanup(srv.Close)
 	return &Jira{BaseURL: srv.URL, Email: "e", Token: "t", client: srv.Client()}
 }
+
+// A ticket can briefly carry two labels if a write was interrupted between
+// the remove and the add. State must report the more urgent one: failed
+// outranks everything, and an agent still running outranks a pull request
+// that may already be stale.
+func TestStatePrecedenceUnderPartialWrites(t *testing.T) {
+	for _, tc := range []struct {
+		labels []string
+		want   string
+	}{
+		{[]string{"ORION"}, "queued"},
+		{[]string{LabelWorking}, "working"},
+		{[]string{LabelCIWait}, "ci-wait"},
+		{[]string{LabelFailed}, "failed"},
+		{[]string{LabelWorking, LabelCIWait}, "working"},
+		{[]string{LabelCIWait, "ORION"}, "ci-wait"},
+		{[]string{LabelFailed, LabelWorking, LabelCIWait, "ORION"}, "failed"},
+		{[]string{"unrelated"}, ""},
+		{nil, ""},
+		// Jira lowercases nothing, but people type labels by hand.
+		{[]string{"orion"}, "queued"},
+	} {
+		if got := State(tc.labels, "ORION"); got != tc.want {
+			t.Errorf("State(%v) = %q, want %q", tc.labels, got, tc.want)
+		}
+	}
+}
+
+// Managed must cover every label Orion writes. A label missing here would
+// drop off the queue view and, worse, survive a requeue -- leaving a ticket
+// that looks queued but still carries a terminal state.
+func TestManagedCoversEveryOrionLabel(t *testing.T) {
+	m := Managed("ORION")
+	for _, want := range []string{"ORION", LabelWorking, LabelCIWait, LabelFailed} {
+		found := false
+		for _, g := range m {
+			if g == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Managed() is missing %q", want)
+		}
+	}
+	if len(m) != 4 {
+		t.Errorf("Managed() = %v; an extra entry would widen the queue query", m)
+	}
+}
