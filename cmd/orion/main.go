@@ -388,6 +388,13 @@ func runInit(args []string) {
 		provisionRemote(abs, cfg, hasFlag(args, "--yes"))
 	}
 
+	// The sandbox. Built at adoption rather than lazily at the first run, so
+	// a bad remote, missing auth or a dirty working copy surfaces now --
+	// while you are watching -- instead of halfway through a paid run.
+	if !hasFlag(args, "--no-sandbox") {
+		ensureSandbox(abs, cfg, hasFlag(args, "--force"))
+	}
+
 	fmt.Println()
 	fmt.Println("Orion is wired into this repo. Restart any running Claude Code session:")
 	fmt.Println("hooks are read at session start, so an open session is still unguarded.")
@@ -507,6 +514,47 @@ slackStep:
 		ui.Ok(os.Stdout, verb, "Slack channel #%s", ch.Name)
 		inviteToChannel(sc, ch, cfg)
 		patchConfig(cfgPath, map[string][2]string{"slack": {"enabled", "true"}}, "")
+	}
+}
+
+// ensureSandbox creates the isolated clone this repo's runs happen in.
+//
+// Orion never runs the agent in your working copy. An agent editing the
+// directory you have open in an editor can destroy uncommitted work with no
+// undo, so the sandbox clones from the REMOTE and your checkout stays
+// read-only, fast-forwarded afterwards rather than written to.
+func ensureSandbox(dir string, cfg config.Config, force bool) {
+	w := os.Stdout
+
+	if existing := workspace.FindBySource(dir); existing != nil {
+		ui.Ok(w, "bound", "sandbox %s (%s)", existing.ID, existing.RepoDir())
+		return
+	}
+	remote, err := workspace.RemoteOf(dir)
+	if err != nil {
+		ui.Warn(w, "no sandbox: %v", err)
+		return
+	}
+	if problems := workspace.Preflight(dir); len(problems) > 0 && !force {
+		ui.Warn(w, "no sandbox yet: the working copy is not in a state worth cloning")
+		for _, p := range problems {
+			fmt.Fprintf(w, "         %s\n", p)
+		}
+		fmt.Fprintf(w, "         Commit and push, then re-run orion init (or --force).\n")
+		return
+	}
+	ws, err := workspace.Bind(workspace.BindOptions{
+		SourcePath: dir, Remote: remote, Force: force,
+		DefaultBranch: cfg.VCS.DefaultBranch, WorkBranch: cfg.VCS.WorkBranch,
+	})
+	if err != nil {
+		ui.Fail(w, "sandbox: %v", err)
+		return
+	}
+	ui.Ok(w, "created", "sandbox %s", ws.ID)
+	fmt.Fprintf(w, "         %s\n", ui.Dim(w, ws.RepoDir()))
+	if len(ws.Task.Branches) > 0 {
+		ui.Ok(w, "created", "branches %s in the sandbox", strings.Join(ws.Task.Branches, ", "))
 	}
 }
 

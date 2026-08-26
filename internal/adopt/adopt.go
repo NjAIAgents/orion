@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/ui"
 )
 
@@ -193,7 +194,12 @@ func Run(opts Options) (*Result, error) {
 			"no .git here: the artifact chain is meant to be committed, so init a repo when you can")
 	}
 
-	for _, d := range []string{"docs/intent", "specs", "plans", "evals"} {
+	// Use the CONFIGURED paths, not a hardcoded list. A repo whose artifacts
+	// live at the root points these at "." -- and creating docs/intent,
+	// specs and plans anyway left empty directories that the sandbox
+	// preflight then read as uncommitted changes, so `orion init` created
+	// the very condition that made it refuse to finish.
+	for _, d := range artifactDirs(opts.Dir) {
 		p := filepath.Join(opts.Dir, d)
 		if _, err := os.Stat(p); err == nil {
 			res.Skipped = append(res.Skipped, d+"/")
@@ -220,6 +226,28 @@ func Run(opts Options) (*Result, error) {
 		return res, err
 	}
 	return res, nil
+}
+
+// artifactDirs resolves which directories adoption should create, honouring
+// an existing orion.json. "." means the artifacts live at the repo root and
+// there is nothing to make.
+func artifactDirs(dir string) []string {
+	want := []string{"docs/intent", "specs", "plans", "evals"}
+	if _, err := os.Stat(filepath.Join(dir, "orion.json")); err == nil {
+		cfg := config.Load(dir)
+		want = []string{cfg.Paths.Intent, cfg.Paths.Specs, cfg.Paths.Plans, cfg.Paths.Evals}
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, d := range want {
+		d = strings.TrimSpace(d)
+		if d == "" || d == "." || d == "./" || seen[d] {
+			continue
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	return out
 }
 
 func writeConfig(opts Options, res *Result) error {

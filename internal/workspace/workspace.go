@@ -47,6 +47,11 @@ type Task struct {
 	Status    string    `json:"status"`
 	Container bool      `json:"container"`
 	FromRepo  string    `json:"from_repo,omitempty"`
+	// SourcePath is the user's own working copy, for a workspace bound to an
+	// existing repository. Orion clones from the remote and treats this path
+	// as READ-ONLY; it is recorded so the copy can be fast-forwarded after a
+	// push, never written to during a run.
+	SourcePath string `json:"source_path,omitempty"`
 	// ResumeAt is set when a run stopped on a provider quota wall. It is a
 	// record, not a schedule: nothing sleeps on it, and the user or a cron
 	// decides when to actually come back.
