@@ -230,7 +230,12 @@ func (s *Store) Sweep(maxAge time.Duration) (int, error) {
 		if err != nil {
 			continue
 		}
-		if time.Since(fi.ModTime()) > maxAge {
+		// maxAge <= 0 means sweep everything, stated rather than inferred.
+		// Relying on time.Since(modTime) > 0 to express "remove all" is a
+		// race against filesystem timestamp granularity: on Windows the
+		// recorded mtime of a file written moments ago can equal now, the
+		// comparison is false, and nothing is removed.
+		if maxAge <= 0 || time.Since(fi.ModTime()) > maxAge {
 			if os.Remove(filepath.Join(s.dir, e.Name())) == nil {
 				n++
 			}

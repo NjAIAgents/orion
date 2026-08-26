@@ -1,6 +1,7 @@
 package state
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -80,17 +81,45 @@ func TestConcurrentUpdatesDoNotLoseState(t *testing.T) {
 }
 
 func TestSweepRemovesOnlyStale(t *testing.T) {
-	s := New(t.TempDir())
+	dir := t.TempDir()
+	s := New(dir)
 	s.Update("fresh", func(x *Session) { x.ToolCalls = 1 })
+	s.Update("old", func(x *Session) { x.ToolCalls = 2 })
+
+	// Backdate one file rather than sleeping. A sleep long enough to beat
+	// filesystem timestamp granularity is both slow and still a race.
+	old := filepath.Join(dir, "old.json")
+	past := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+
 	n, err := s.Sweep(24 * time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 0 {
-		t.Errorf("swept %d fresh sessions; sweeping live state loses active budgets", n)
+	if n != 1 {
+		t.Errorf("swept %d, want 1: only the backdated session is stale", n)
 	}
-	if n, _ := s.Sweep(0); n != 1 {
-		t.Errorf("swept %d with a zero max age, want 1", n)
+	if _, err := os.Stat(filepath.Join(dir, "fresh.json")); err != nil {
+		t.Error("swept a fresh session; that loses an active budget")
+	}
+}
+
+// Sweep(0) means "remove everything". Expressing that as time.Since(mtime) > 0
+// is a race against filesystem timestamp granularity, and it lost on Windows.
+func TestSweepZeroAgeRemovesEverything(t *testing.T) {
+	dir := t.TempDir()
+	s := New(dir)
+	s.Update("a", func(x *Session) { x.ToolCalls = 1 })
+	s.Update("b", func(x *Session) { x.ToolCalls = 1 })
+
+	n, err := s.Sweep(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("swept %d with a zero max age, want 2", n)
 	}
 }
 
