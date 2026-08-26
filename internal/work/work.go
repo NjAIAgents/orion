@@ -211,9 +211,17 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// too, but by then the ticket is already marked as being worked on and
 	// the label has to be rolled back -- so check here as well and never
 	// touch the tracker for a run that cannot start.
-	if msg, blocked := budgetBlocked(opts.Home, cfg); blocked {
-		log.Emitf(events.KindBudget, events.ActorOrion, "refused before claiming: %s", firstLine(msg))
-		fmt.Fprint(w, msg)
+	// The budget gate ASKS rather than only refusing -- in Slack, and at the
+	// terminal when somebody is there. See budgetack.go: a gate whose only
+	// route forward was to kill the process and run another command was a
+	// crash with instructions, and it stopped an unattended watcher without
+	// telling anyone.
+	if proceed, msg := budgetGate(opts, cfg, ws, log, w); !proceed {
+		log.Emitf(events.KindBudget, events.ActorOrion,
+			"waiting for the budget checkpoint to be acknowledged")
+		if msg != "" {
+			fmt.Fprint(w, msg)
+		}
 		res.Outcome = OutcomeSkipped
 		return res
 	}
@@ -564,13 +572,9 @@ func prBody(key, url string, commits int) string {
 			"message on the ticket.\n", key, url, commits)
 }
 
-func budgetBlocked(home string, cfg config.Config) (string, bool) {
-	st, ok := budgetStatus(home, cfg)
-	if !ok || st.Crossed == 0 {
-		return "", false
-	}
-	return st.Message(), true
-}
+// budgetBlocked was replaced by budgetGate. It answered "may this run
+// spend?" with a message and nothing else, which was the whole problem: the
+// only way to say yes was to stop the process and run another command.
 
 func failAndTell(res Result, err error, key string, ws *workspace.Workspace,
 	log *events.Log, w io.Writer, deps Deps) Result {
