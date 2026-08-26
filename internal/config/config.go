@@ -156,6 +156,24 @@ type VCS struct {
 	ProtectedBranches []string `json:"protected_branches"`
 	BranchPrefix      string   `json:"branch_prefix"`
 	PRDraft           bool     `json:"pr_draft"`
+	// AgentAuthorName is the git AUTHOR recorded for commits the agent makes.
+	// The committer stays the human, so responsibility is unchanged and only
+	// authorship is distinguished.
+	//
+	// Without this, an agent commit is indistinguishable from a hand-written
+	// one: same name, same email, no marker. "Who wrote this" then has no
+	// answer in the history, and a bad agent commit looks like your own work
+	// during a bisect or a blame. That defeats the point of a committed,
+	// traceable artifact chain.
+	//
+	// Empty disables the alias and commits are authored as you.
+	AgentAuthorName string `json:"agent_author_name"`
+	// AgentAuthorEmail defaults to the repo's configured user.email when
+	// empty. Keeping YOUR address is deliberate: the email is what GitHub
+	// matches commits against, so a made-up one shows every agent commit as
+	// an unrecognised author with no avatar and no link, and quietly drops
+	// them out of the contribution history of a repo you are accountable for.
+	AgentAuthorEmail string `json:"agent_author_email"`
 }
 
 type Config struct {
@@ -224,6 +242,7 @@ func Defaults() Config {
 			WorkBranch:        "develop",
 			ProtectedBranches: []string{"main", "develop"},
 			BranchPrefix:      "orion/",
+			AgentAuthorName:   "orion_agent",
 		},
 		Budget: Budget{PauseAtPercent: []int{50, 75, 90, 95}},
 		Slack: Slack{

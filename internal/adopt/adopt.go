@@ -476,7 +476,11 @@ const defaultConfig = `{
     "default_branch": "main",
     "work_branch": "develop",
     "protected_branches": ["main", "develop"],
-    "branch_prefix": "orion/"
+    "branch_prefix": "orion/",
+
+    "_comment_author": "Commits the agent makes are AUTHORED by this alias; the committer stays you. Without it an agent commit is indistinguishable from a hand-written one in git log, blame and bisect. The email defaults to your user.email because GitHub matches commits to accounts by address, and a synthetic one would show every agent commit as an unrecognised author. Empty name disables the alias.",
+    "agent_author_name": "orion_agent",
+    "agent_author_email": ""
   },
 
   "_comment_budget": "YOUR weekly budget, not your Anthropic plan's allowance. Zero means unlimited.",

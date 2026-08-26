@@ -467,6 +467,12 @@ func childEnv(ws *workspace.Workspace) []string {
 		"GITHUB_TOKEN": true, "GH_TOKEN": true,
 		"NPM_TOKEN": true, "DOCKER_PASSWORD": true, "KUBECONFIG": true,
 	}
+	// Any inherited git authorship is dropped too, so the alias below is
+	// decided here rather than by whatever the parent shell happened to
+	// export.
+	drop["GIT_AUTHOR_NAME"] = true
+	drop["GIT_AUTHOR_EMAIL"] = true
+
 	var out []string
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
@@ -475,7 +481,40 @@ func childEnv(ws *workspace.Workspace) []string {
 		}
 		out = append(out, kv)
 	}
-	return append(out, "ORION_WORKSPACE="+ws.ID, "ORION_WORKSPACE_DIR="+ws.Dir)
+	out = append(out, "ORION_WORKSPACE="+ws.ID, "ORION_WORKSPACE_DIR="+ws.Dir)
+	return append(out, agentAuthorEnv(ws.RepoDir())...)
+}
+
+// agentAuthorEnv marks commits the agent makes as authored by the alias,
+// while leaving the COMMITTER as the human.
+//
+// Author and committer are separate fields for exactly this: the alias says
+// who wrote the change, the committer says who is answerable for it landing.
+// Setting only the author keeps `git log`, `git blame` and a bisect able to
+// tell agent work from yours, without pretending a person did not approve it.
+//
+// The email deliberately stays yours unless overridden, because GitHub
+// matches commits to accounts by email. A synthetic address would render
+// every agent commit as an unrecognised author and drop it out of the
+// repository's history of who did what.
+func agentAuthorEnv(repoDir string) []string {
+	cfg := config.Load(repoDir)
+	name := strings.TrimSpace(cfg.VCS.AgentAuthorName)
+	if name == "" {
+		return nil // opted out; commits are authored as the human
+	}
+	email := strings.TrimSpace(cfg.VCS.AgentAuthorEmail)
+	if email == "" {
+		out, err := exec.Command("git", "-C", repoDir, "config", "user.email").Output()
+		email = strings.TrimSpace(string(out))
+		if err != nil || email == "" {
+			// Git refuses to commit with an empty author email, so an alias
+			// with no address would break every commit the agent makes. Not
+			// setting the alias is far better than that.
+			return nil
+		}
+	}
+	return []string{"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email}
 }
 
 // classify turns an exit code into something a human can act on, checking
