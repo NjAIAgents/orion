@@ -53,6 +53,11 @@ PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 win
 # The archive holds a PLAIN `orion`, not a versioned filename. Homebrew's
 # install block does `bin.install "orion"`, so a versioned name inside the
 # archive fails with "no such file" on every upgrade.
+#
+# LICENSE and NOTICE ride along in every archive. Apache-2.0 4(a) requires
+# giving recipients a copy of the License, and 4(d) requires the NOTICE to
+# travel with derivative works. Shipping a bare binary would distribute the
+# software without the terms it is licensed under.
 dist:
 	@rm -rf dist && mkdir -p dist/stage
 	@for p in $(PLATFORMS); do \
@@ -62,13 +67,15 @@ dist:
 	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath \
 	    -ldflags "$(LDFLAGS)" -o dist/stage/$(BINARY)$$ext ./cmd/orion || exit 1; \
 	  base=$(BINARY)_v$(RELVER)_$${os}_$${arch}; \
+	  cp LICENSE NOTICE dist/stage/ 2>/dev/null || true; \
 	  if [ "$$os" = "windows" ]; then \
-	    (cd dist/stage && zip -q ../$$base.zip $(BINARY)$$ext); \
+	    (cd dist/stage && zip -q ../$$base.zip $(BINARY)$$ext LICENSE NOTICE); \
 	  else \
-	    (cd dist/stage && tar czf ../$$base.tar.gz $(BINARY)$$ext); \
+	    (cd dist/stage && tar czf ../$$base.tar.gz $(BINARY)$$ext LICENSE NOTICE); \
 	  fi; \
 	  rm -f dist/stage/$(BINARY)$$ext; \
 	done
+	@rm -f dist/stage/LICENSE dist/stage/NOTICE
 	@rmdir dist/stage
 	@cd dist && (shasum -a 256 * 2>/dev/null || sha256sum *) > checksums.txt
 	@echo "--- dist/" && ls -1 dist

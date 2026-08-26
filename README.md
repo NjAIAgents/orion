@@ -29,6 +29,10 @@ So Orion is one static binary, no cgo, empty `go.sum`, builds offline.
 
 ## Install
 
+Source lives privately in `NjAIAgents/orion`; binaries are published to the
+public `NjAIAgents/orion-releases` so Homebrew and Scoop can fetch them
+unauthenticated.
+
 ```bash
 brew install navjyotnishant/tap/orion     # macOS, Linux
 scoop bucket add navjyotnishant https://github.com/navjyotnishant/scoop-bucket
@@ -222,11 +226,9 @@ including the deliberate carve-out from its propose-never-act contract.
 
 Read these before relying on it.
 
-- **A private repo cannot feed a public tap.** Homebrew and Scoop download
-  release assets unauthenticated, so if this repository stays private the
-  formula and manifest will 404 for everyone, including you on a new
-  machine. Publishing to the tap only becomes useful when the repo is public
-  or the release assets are hosted somewhere reachable.
+- **Two tokens are needed for a release.** `RELEASES_GITHUB_TOKEN` to publish
+  artifacts to `NjAIAgents/orion-releases`, and `TAP_GITHUB_TOKEN` to update
+  the tap and bucket. Without them the build succeeds and nothing ships.
 - **The Jira REST calls have never touched a live instance.** Shapes and the
   project-creation permission key are inferred. The key is discovered at
   runtime rather than hardcoded, and an unrecognised key is treated as
