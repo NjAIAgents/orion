@@ -1,8 +1,18 @@
 name: release
 
+# Manual only. `make release` is the default path and needs no tokens, so a
+# tag-triggered run here would fail on every release for want of secrets that
+# deliberately do not exist. A workflow that is always red teaches you to
+# ignore CI, which is worse than not having it.
+#
+# Run this from the Actions tab when you want a clean-machine release, after
+# setting RELEASES_GITHUB_TOKEN and TAP_GITHUB_TOKEN.
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release, e.g. v0.1.0'
+        required: true
 
 permissions:
   contents: write
@@ -33,7 +43,8 @@ jobs:
         run: |
           # Tag is vX.Y.Z; brew and scoop want the bare X.Y.Z in the version
           # field, while the download URLs keep the v. Both forms are needed.
-          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          TAG="${{ inputs.tag }}"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       - run: make dist
 
