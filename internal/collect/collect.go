@@ -78,7 +78,24 @@ type Deps struct {
 	Refresh func(sourcePath, branch string) (string, error)
 	// Prune removes the job worktree once its branch has merged.
 	Prune func(ws *workspace.Workspace, branch string) error
+	// Merge lands an approved pull request. Separate from everything else
+	// because it is the only irreversible action in this package, and the
+	// only one a person explicitly authorised.
+	Merge func(dir, branch, reason string) error
+	// Slack reads approvals. Nil disables the approval path entirely, which
+	// is the correct behaviour when the extra OAuth scopes are not granted:
+	// Orion then reports that checks pass and waits for a human to merge.
+	Slack SlackAPI
 	Now   func() time.Time
+}
+
+// SlackAPI is what an approval needs from Slack: post the request, offer the
+// affordances, read the answer, and name who gave it.
+type SlackAPI interface {
+	SlackReader
+	PostTS(channel, text string) (string, error)
+	React(channel, ts, emoji string)
+	BotID() string
 }
 
 // TrackerAPI is the slice of the tracker this package needs.
@@ -226,10 +243,14 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		return res
 
 	case VerdictPassing:
-		// Green but unmerged. Orion does not merge on its own -- approving
-		// is the one step in this pipeline that is deliberately a person's,
-		// and a tool that merges its own work has removed the review it
-		// exists to produce.
+		// Green but unmerged. Orion still does not decide this: it either
+		// asks a person in Slack and acts on their answer, or says the
+		// checks pass and waits. What it never does is merge on its own
+		// judgement -- a tool that approves its own work has removed the
+		// review it exists to produce.
+		if cfg.Slack.RequireApproval && deps.Slack != nil {
+			return approvalFlow(res, key, pr, cfg, branch, opts, deps, ws, log, w)
+		}
 		ui.Ok(w, "ok", "%s: checks pass; waiting for you to merge %s", key, pr.URL)
 		return res
 
@@ -361,6 +382,12 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 		Title: title, Body: body,
 	})
 	return res
+}
+
+// lookupEntry re-resolves a project after a merge, for the paths that need
+// the user's own checkout.
+func lookupEntry(home, key string) (*registry.Entry, error) {
+	return registry.Lookup(home, key)
 }
 
 func branchFor(prefix, key string) string {

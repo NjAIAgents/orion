@@ -39,6 +39,9 @@ const api = "https://slack.com/api/"
 type Client struct {
 	Token string
 	HTTP  *http.Client
+	// botID caches this token's own user id. Looked up lazily because most
+	// commands never need it, and it costs an API call.
+	botID string
 }
 
 // FromEnv builds a client from ORION_SLACK_TOKEN.

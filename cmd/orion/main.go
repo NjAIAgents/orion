@@ -408,6 +408,13 @@ func runInit(args []string) {
 		}
 	}
 
+	// CI. Without a workflow, GitHub reports no checks at all and Orion has
+	// no honest verdict to gate a merge on -- so it treats the branch as
+	// passing, because the alternative leaves every ticket waiting forever
+	// for a verdict nobody will produce. Scaffolding here is what makes
+	// "no checks configured" a deliberate state rather than the default one.
+	ensureCI(abs)
+
 	if !hasFlag(args, "--no-provision") {
 		provisionRemote(abs, cfg, hasFlag(args, "--yes"))
 	}

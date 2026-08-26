@@ -8,11 +8,43 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/orion-sdlc/orion/internal/ciscaffold"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
+
+// ensureCI scaffolds the test script and workflow during adoption.
+//
+// Non-fatal throughout. A repository that cannot be given CI is still worth
+// adopting; it just cannot have a merge gated on a verdict, and saying so
+// once here is better than discovering it at the first pull request.
+func ensureCI(dir string) {
+	w := os.Stdout
+	res, err := ciscaffold.Ensure(dir)
+	if err != nil {
+		ui.Warn(w, "could not scaffold CI: %v", err)
+		return
+	}
+	for _, line := range ciscaffold.Describe(res) {
+		if strings.HasPrefix(line, "created ") {
+			ui.Ok(w, "created", "%s", strings.TrimPrefix(line, "created "))
+		} else {
+			fmt.Fprintf(w, "          %s\n", ui.Dim(w, line))
+		}
+	}
+	if ciscaffold.NeedsAttention(res) {
+		ui.Warn(w, "scripts/test.sh exits 1 until you fill in this repository's test command.")
+		fmt.Fprintf(w, "          %s\n", ui.Dim(w,
+			"Until then CI fails, which is the correct direction: a script that "+
+				"exits 0 having run nothing makes every check green by construction."))
+	}
+	if res.ScriptCreated || res.FlowCreated {
+		fmt.Fprintf(w, "          %s\n", ui.Dim(w,
+			"Commit these; a workflow only runs once it is on the default branch."))
+	}
+}
 
 // orion sandbox -- see and enter where the agent actually worked.
 //

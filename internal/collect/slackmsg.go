@@ -24,6 +24,36 @@ func msgMerged(key string, pr PR, checkout string) (string, string) {
 	return title, body
 }
 
+// msgApprovalWanted is the one message in this system that asks for
+// authority rather than reporting a fact.
+//
+// It must make the reader capable of refusing. That means naming what will
+// happen the moment they tap, saying who is allowed to answer -- so a person
+// who is not on the list stops waiting for their own tap to work -- and
+// linking the diff rather than merely the ticket. An approval request that
+// is easier to accept than to check is a rubber stamp with extra steps.
+func msgApprovalWanted(key string, pr PR, branch string, approvers []string) (string, string) {
+	title := fmt.Sprintf("%s is ready to merge — approve?", key)
+
+	who := "nobody is configured, so no approval can succeed"
+	if len(approvers) > 0 {
+		who = strings.Join(approvers, ", ")
+	}
+
+	body := strings.Join([]string{
+		"*Checks pass on " + "`" + branch + "`" + ".*",
+		"",
+		"• review the diff  " + link(pr.URL, "pull request"),
+		"• checks           " + link(pr.URL+"/checks", pr.Detail),
+		"",
+		"React ✅ to merge, or ❌ to decline. Replying `approve` or `no` works too.",
+		"",
+		"_Only " + who + " can approve._",
+		"_Approving merges it and closes the ticket. Declining keeps the branch and changes nothing._",
+	}, "\n")
+	return title, body
+}
+
 func msgCIFailed(key string, pr PR) (string, string) {
 	title := fmt.Sprintf("%s failed CI", key)
 	body := strings.Join([]string{

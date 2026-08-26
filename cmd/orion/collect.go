@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/collect"
+	"github.com/orion-sdlc/orion/internal/slack"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -29,6 +30,8 @@ func runCollect(args []string) {
 		Status:  prStatus,
 		Refresh: workspace.Refresh,
 		Prune:   pruneBranch,
+		Merge:   mergePR,
+		Slack:   slackForApproval(),
 	})
 
 	// Exit non-zero when anything failed, so this composes in a cron line or
@@ -142,6 +145,43 @@ func prStatus(dir, branch string) (collect.PR, error) {
 		pr.Detail = fmt.Sprintf("%d check(s) passed", len(v.Rollup))
 	}
 	return pr, nil
+}
+
+// slackForApproval returns a client, or nil to disable the approval path.
+//
+// Nil rather than an error: a missing or unusable Slack token means Orion
+// falls back to reporting that checks pass and waiting for a human to merge
+// on GitHub. That is the safe direction. Failing the whole collector would
+// also stop it closing tickets that had already merged.
+func slackForApproval() collect.SlackAPI {
+	c, err := slack.FromEnv()
+	if err != nil {
+		return nil
+	}
+	return c
+}
+
+// mergePR merges an approved pull request.
+//
+// --squash, and the reason goes in the commit body: the branch carries the
+// agent's incremental commits and its decision records, which are worth
+// reading on the branch and noise on the trunk. The one line that must
+// survive into develop's history is who authorised it.
+//
+// NOT --admin. That flag bypasses branch protection, which would mean Orion
+// merging past the very rules a repository set up to constrain it -- and it
+// would do so on the authority of a Slack reaction.
+func mergePR(dir, branch, reason string) error {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return fmt.Errorf("gh is not installed, so the merge cannot be performed")
+	}
+	cmd := exec.Command("gh", "pr", "merge", branch,
+		"--squash", "--delete-branch", "--body", reason)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%v\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // pruneBranch removes one merged job worktree and its local branch.

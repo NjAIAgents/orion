@@ -279,3 +279,8 @@ func TestNoRegisteredProjectsMeansNoSearch(t *testing.T) {
 		t.Errorf("got: %s", buf.String())
 	}
 }
+
+// bindTo registers a project, shared by the approval tests.
+func bindTo(home, wsID, source string) error {
+	return registry.Bind(home, registry.Entry{Key: "FCIA", Source: source, Workspace: wsID})
+}

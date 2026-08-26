@@ -77,6 +77,19 @@ type Slack struct {
 	// Orion creates a "communication medium" that no human can see, and there
 	// is no notification to tell them it happened.
 	InviteUsers []string `json:"invite_users"`
+	// MergeApprovers may approve a merge from Slack. Slack usernames or
+	// display names.
+	//
+	// EMPTY MEANS NOBODY, never everybody. Being in a channel is not
+	// authority: a project room contains people with no idea what they are
+	// approving, and a gate any member can satisfy is decoration. Defaulting
+	// to open would also mean the first repository someone forgot to
+	// configure merges on a stranger's thumbs up.
+	MergeApprovers []string `json:"merge_approvers"`
+	// RequireApproval gates merging on a Slack approval. With it off, Orion
+	// reports that checks pass and waits for a human to merge on GitHub --
+	// which is the safe default and needs no extra OAuth scopes.
+	RequireApproval bool `json:"require_approval"`
 }
 
 // Budget caps what Orion spends over a rolling seven days.
