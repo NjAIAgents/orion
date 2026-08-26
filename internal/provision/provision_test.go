@@ -172,8 +172,20 @@ func TestGitReportsFailuresWithOutput(t *testing.T) {
 // Creating a repository in someone's account is not sandboxed work, so it
 // must be behind a confirmation that actually stops it.
 func TestRemoteAbortsWhenConfirmationIsDeclined(t *testing.T) {
+	// Remote() needs gh INSTALLED and AUTHENTICATED, and returns before the
+	// confirmation if either is missing. Guarding on presence alone made
+	// this pass on a laptop with a gh login and fail on a CI runner that
+	// ships gh unauthenticated -- green here, red there, for a reason that
+	// has nothing to do with the code under test.
+	//
+	// A test whose result depends on ambient credentials teaches people to
+	// re-run CI rather than read it.
 	if _, err := exec.LookPath("gh"); err != nil {
 		t.Skip("gh not installed")
+	}
+	if err := exec.Command("gh", "auth", "status").Run(); err != nil {
+		t.Skip("gh is not authenticated; Remote refuses before it can ask, " +
+			"so there is no confirmation to observe")
 	}
 	d := repoAt(t, true)
 	var buf strings.Builder
