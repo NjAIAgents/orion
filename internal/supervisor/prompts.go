@@ -23,21 +23,23 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 	switch strings.ToLower(stage) {
 	case "intent":
 		return join(
-			"You are capturing intent. The idea, in the originator's words:",
+			"Capture the intent behind this idea, in the originator's words:",
 			quote(idea),
 			"",
-			"Interrogate it the way an analyst would: who is affected, what is out of scope,",
-			"what constraints apply, what success looks like. Where the idea is ambiguous, list",
-			"the question rather than inventing an answer.",
+			"Use the /capture-intent skill. It writes docs/intent/<slug>.md with a fixed",
+			"shape and proposes the commit; the path is part of its contract, so do not",
+			"relocate the file. /pm-plan later points at this capture as grounding.",
 			"",
-			"Then write intent/"+ws.Task.Slug+".intent.md with these sections:",
-			"Problem, Proposed outcome, Affected users and systems, Constraints, Open questions.",
-			"Commit it. Do not write code, do not design a solution.",
+			"Interrogate the idea first, the way an analyst would: who is affected, what is",
+			"out of scope, what constraints apply, what success looks like. Where it is",
+			"ambiguous, record the question rather than inventing an answer.",
+			"",
+			"Record only what was actually said. Do not write code or design a solution.",
 		), nil
 
 	case "spec", "design":
 		return join(
-			"Read intent/"+ws.Task.Slug+".intent.md.",
+			"Read docs/intent/"+ws.Task.Slug+".md.",
 			"",
 			"Produce a requirements and design spec. Apply every skill available to you so the",
 			"design conforms to the security, UX and API standards in force.",
@@ -50,7 +52,7 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 
 	case "plan":
 		return join(
-			"Read intent/"+ws.Task.Slug+".intent.md and specs/"+ws.Task.Slug+".spec.md.",
+			"Read docs/intent/"+ws.Task.Slug+".md and specs/"+ws.Task.Slug+".spec.md.",
 			"",
 			"Produce an implementation plan naming: the files that change, the order of work,",
 			"the tests that prove it, and the risks. Interrogate your own plan: what could this",
@@ -70,7 +72,7 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 			"layer in the OpenSSF OSPS Baseline and delegates the stack layout to the",
 			"ecosystem's own generator rather than inventing one.",
 			"",
-			"Read intent/"+ws.Task.Slug+".intent.md and specs/"+ws.Task.Slug+".spec.md first",
+			"Read docs/intent/"+ws.Task.Slug+".md and specs/"+ws.Task.Slug+".spec.md first",
 			"so the stack choice follows the design rather than a default.",
 			"",
 			"Work on a branch cut from develop. Do not commit to develop or main directly;",

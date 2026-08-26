@@ -1,0 +1,468 @@
+# Installing and using Orion
+
+Orion takes an idea to a reviewed pull request through a committed artifact
+chain, in an isolated sandboxed workspace, under guardrails that are enforced
+rather than suggested.
+
+---
+
+## 1. Install
+
+### macOS and Linux
+
+```bash
+brew install navjyotnishant/tap/orion
+```
+
+### Windows
+
+```powershell
+scoop bucket add navjyotnishant https://github.com/navjyotnishant/scoop-bucket
+scoop install orion
+```
+
+> Windows caveat, stated plainly: the guardrail hooks depend on Claude Code's
+> hook protocol, and the OS sandbox Orion generates settings for is macOS and
+> Linux only. `orion doctor` will tell you which capabilities are degraded.
+
+### From source
+
+```bash
+git clone https://github.com/NjAIAgents/orion && cd orion
+make test          # build, vet, gofmt and the full suite
+make install       # to ~/.local/bin
+```
+
+### Install nj-agents, which is not optional
+
+Orion delegates review, secret scanning, test and build verification, PR
+authoring and work decomposition to
+[nj-agents](https://github.com/navjyotnishant/nj-agents). Those stages have no
+fallback, so `orion doctor` grades a missing toolkit as **FAIL**, not a
+warning.
+
+```bash
+orion doctor --fix      # clones it if absent
+```
+
+Or install it yourself, which is preferable if you intend to work on it:
+
+```bash
+git clone https://github.com/navjyotnishant/nj-agents
+cd nj-agents && ./install.sh
+```
+
+Orion reads a global install and never writes to it. Only a clone Orion
+fetched itself is one Orion will update.
+
+### Confirm the machine is ready
+
+```bash
+orion doctor
+```
+
+Every check is graded. **FAIL** blocks; **WARN** means a reduced capability,
+not a dead stop. Expect `jira` to warn until you configure it — that is
+correct, not a problem to fix, unless you want tracker provisioning.
+
+| Check | What it actually proves |
+|---|---|
+| `claude CLI` | the binary Orion supervises exists and runs |
+| `git` | present, **and** `user.name`/`user.email` are set, or commits are unattributable |
+| `gh repo scope` | the token can create a repository, not merely that you are logged in |
+| `nj-agents` | the toolkit is present **and intact**, resolved through the skill symlink to its clone root |
+| `os sandbox` | Seatbelt or bubblewrap is available |
+| `jira` | reachable, authenticated, and whether the account may create projects |
+
+---
+
+## 2. Optional: tracker and notifications
+
+Only needed if you want Orion to provision a Jira project and decompose plans
+into issues.
+
+```bash
+export ORION_JIRA_URL=https://yourorg.atlassian.net
+export ORION_JIRA_EMAIL=you@example.com
+export ORION_JIRA_TOKEN=...   # id.atlassian.com/manage-profile/security/api-tokens
+```
+
+Orion creates a project per idea by default. That needs the "Create
+team-managed projects" global permission and accumulates projects a non-admin
+cannot delete. To use one existing project instead, set `tracker.project_key`
+in `orion.json` and Orion will create its issues there.
+
+---
+
+## 3. Using Orion on a NEW idea
+
+This is the path Orion is built for: nothing exists yet.
+
+```bash
+orion new "customers should see claim status in the portal"
+```
+
+You get an isolated workspace under `$ORION_HOME/projects/<slug>-<id>/` with
+its own git repo, generated sandbox settings, and `main` + `develop` already
+created. Nothing here touches your other work.
+
+```bash
+orion run <id> --stage intent      # /capture-intent -> docs/intent/<slug>.md
+orion run <id> --stage spec        # -> specs/<slug>.spec.md
+orion run <id> --stage plan        # -> plans/<slug>.plan.md   (review this)
+orion provision <id>               # remote repo, branches, Jira project
+orion run <id> --stage scaffold    # /scaffold-project, OSPS baseline layout
+orion run <id> --stage decompose   # /pm-plan tree, approved before creation
+orion run <id> --stage build       # implementation + tests, on a branch
+orion run <id> --stage verify      # runs it, reports, fixes nothing
+orion run <id> --stage review      # severity-ranked findings
+orion run <id> --stage pr          # /pr-describe, PR into develop
+orion status <id>
+```
+
+### Discovery comes first
+
+`orion new` starts a conversation before anything is derived, because the
+intent stage runs through `claude -p` and **cannot ask you anything**. Without
+that conversation the agent's only options are to invent answers or write
+questions nobody reads, and one ambiguous sentence then propagates into spec,
+plan, scaffold and a tracker tree. Each stage carries a token floor of roughly
+30k, so a wrong premise costs nine floors plus the rework, against a
+conversation costing about one.
+
+```bash
+cd <workspace>/repo && claude "/capture-intent"
+```
+
+Anything left unresolved under **Open questions** blocks the `spec`, `plan`,
+`scaffold` and `decompose` stages until it is answered:
+
+```bash
+orion answer <id>       # lists what is blocking, and where to answer it
+```
+
+Answers go in the intent file itself, not a prompt, so every later stage reads
+them. Mark one resolved with `[x]`, `~~strikethrough~~`, or an inline
+`Answer: ...`.
+
+Orion skips discovery on its own when the idea already states constraints,
+scope or a rationale, and `--skip-discovery` bypasses it outright. A gate you
+cannot skip on a typo fix is a gate people learn to route around, and one
+routed around reflexively is worse than none.
+
+**Stop and read `plans/<slug>.plan.md` before letting build run.** It is the
+cheapest moment to change direction: editing a document rather than a diff.
+The bar is that an engineer who never saw the conversation could implement
+from it alone.
+
+Inside Claude Code, `/orion:start`, `/orion:next`, `/orion:status` and
+`/orion:learn` drive the same chain conversationally.
+
+---
+
+## 4. Using Orion on an EXISTING repo
+
+Two ways, and they answer different questions.
+
+### 4a. Work on a copy, in a sandbox
+
+Best when you want Orion's isolation and do not want it near your working
+tree.
+
+```bash
+orion new "add rate limiting to the status endpoint" --from https://github.com/you/your-repo
+```
+
+The repo is cloned shallow into a fresh workspace. Everything above applies.
+The change leaves as a pull request against your real remote once you push the
+branch; nothing is written to your local checkout at any point.
+
+### 4b. Adopt Orion inside the repo itself
+
+Best when you want the guardrails to apply to your ordinary Claude Code
+sessions in that repo, not just to supervised runs.
+
+```bash
+cd /path/to/your-repo
+orion init
+```
+
+That writes `orion.json`, creates the artifact directories, and merges the
+hooks into `.claude/settings.json`. It is idempotent: running it twice
+changes nothing the second time.
+
+**It never overwrites what is already there.** That file usually holds your
+own hooks, permissions and MCP servers, and a copy-paste recipe invites you
+to lose all of it. `orion init` backs the file up first, adds only its own
+entries, recognises them on a re-run rather than duplicating, and **refuses
+outright** if the file is unparseable, because a file it cannot read may
+still be precious.
+
+**Restart any running Claude Code session afterwards.** Hooks are read at
+session start, so an already-open session stays unguarded.
+
+The hooks it merges in are:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "orion hook session-start" }] }],
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "orion hook gate" }] },
+      { "matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{ "type": "command", "command": "orion hook shield" }] },
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "orion hook breaker" }] }
+    ],
+    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "orion hook breaker" }] }]
+  }
+}
+```
+
+The breaker is wired to **both** PreToolUse and PostToolUse deliberately.
+PostToolUse counts what happened; PreToolUse refuses the next call. Wiring
+only one gives you a breaker that reports but never stops.
+
+`orion init` leaves `require_plan_before_edit` **off**, unlike a fresh
+workspace. In a repo where small changes are made without writing a plan
+first, leaving it on means hitting a wall on the first edit, and people
+disable Orion entirely rather than change one setting. Turn it on with
+`orion init --plan-gate`, or flip it in `orion.json` when the habit is there.
+
+---
+
+## 5. Tuning the guardrails
+
+Everything lives in `orion.json` at the repo root, reviewable like code.
+
+| Setting | Default | What it stops |
+|---|---|---|
+| `limits.max_tool_calls` | 400 | a session burning budget indefinitely |
+| `limits.max_repeat_identical` | 4 | the same call looping with no new input |
+| `limits.max_consecutive_failures` | 3 | retrying a broken thing forever |
+| `limits.max_session_minutes` | 90 | wall-clock runaway |
+| `limits.max_files_touched` | 60 | blast radius |
+| `gates.require_plan_before_edit` | true | implementation before a written plan |
+| `gates.protect_tests_during_fix` | true | an agent weakening the test that defines "fixed" |
+| `gates.production_requires_authorization` | true | an unauthorised production deploy |
+| `vcs.protected_branches` | `[main, develop]` | direct pushes to either long-lived branch |
+
+A limit of `0` restores the default rather than meaning unlimited. "No limit"
+is never a safe reading of an absent value in a circuit breaker.
+
+After a breaker trips, a human decides whether to continue:
+
+```bash
+orion reset --session <id>
+```
+
+---
+
+## 6. Weekly budget checkpoints
+
+Orion accounts for what it spends over a rolling seven days and stops for
+confirmation at 50%, 75%, 90% and 95%.
+
+```bash
+orion budget status        # spend, tokens, next checkpoint, recent runs
+orion budget ack           # confirm the current checkpoint and continue
+```
+
+Set the limit in `orion.json`:
+
+```json
+"budget": { "weekly_usd": 40, "weekly_tokens": 0, "pause_at_percent": [50, 75, 90, 95] }
+```
+
+**This is your budget, not your Anthropic plan's weekly limit.** Orion cannot
+read the latter: `claude` has no usage command, and a run's JSON result
+reports what that run consumed, never what remains on the plan. Any
+percentage shown against the provider's real quota would be invented, so
+Orion does not show one.
+
+Zero means unlimited, which is the opposite of the circuit-breaker
+convention where zero restores a default. A budget nobody set should not be
+invented; a missing breaker limit is never safe.
+
+Acknowledging one checkpoint does not consent to the rest. The next threshold
+stops again.
+
+## 7. Context and token burn
+
+Two numbers worth knowing before designing a long chain.
+
+**Every invocation carries a floor of roughly 30k input tokens.** Measured,
+not estimated: `claude -p "say ok"` reports ~34k input tokens and about $0.19,
+almost all of it system prompt and cached context. That is paid per
+invocation, so nine small stages cost nine floors before any work happens.
+Prefer fewer, larger stages over many trivial ones.
+
+**Orion cannot trigger compaction, and mostly does not need to.** The CLI
+exposes no compaction flag or setting. What Orion does instead is
+architectural: every stage is a separate `claude -p` invocation that reads
+committed artifacts rather than inheriting a transcript, so context resets at
+each stage boundary by construction. The artifact chain *is* the compaction
+strategy.
+
+Within a single long stage, context can still climb. Orion reports it: when a
+run's input passes 70% of the model's context window, it says so and suggests
+splitting the stage, because that is the only lever that exists.
+
+## 8. Monitoring, failures and Slack
+
+```bash
+orion report                  # digest: failures, workspaces, budget, usage
+orion report --since 24h      # narrower window (7d, 24h, 90m)
+orion report --notify         # also send it to your webhook
+orion logs <id> --tail 60     # the failing tail of a workspace's runs
+orion logs <id> --runs 3      # the last three runs
+```
+
+`orion report` **exits 1 when something needs a human** and 0 otherwise, so
+cron stays quiet unless there is a problem:
+
+```cron
+0 9 * * *  /opt/homebrew/bin/orion report --notify
+```
+
+The digest leads with what is actionable — quota-parked workspaces, an
+unacknowledged budget checkpoint, failed runs with their log paths — because
+a digest that buries the actionable part under a status table becomes
+wallpaper.
+
+### Slack: a channel per project
+
+Orion can create a Slack channel for every workspace and report into it. This
+needs a **Slack app bot token**, not an incoming webhook — a webhook is bound
+to one channel at creation and cannot create any, which is the single thing
+most likely to waste an afternoon here.
+
+1. Create an app at api.slack.com/apps, then under **OAuth & Permissions**
+   add these **bot** scopes:
+   - `channels:manage` for public channels, or `groups:write` for private
+   - `chat:write`
+   - `channels:read` or `groups:read` so an existing channel can be found again
+2. Install the app to the workspace and copy the bot token (`xoxb-...`).
+   **Adding a scope later requires reinstalling** — an existing token does not
+   gain scopes retroactively, and the resulting `missing_scope` error is
+   otherwise baffling.
+3. Configure:
+
+```bash
+export ORION_SLACK_TOKEN='xoxb-...'
+```
+
+```json
+"slack": { "enabled": true, "create_channel_per_project": true,
+           "channel_prefix": "orion-", "private": true }
+```
+
+`orion doctor` then reports the workspace the token belongs to by name. That
+check matters more than it looks: a token for the *wrong* workspace
+authenticates perfectly and posts into a room nobody reads, which is
+indistinguishable from working.
+
+`orion new` creates `#orion-<slug>`, sets the channel topic to the idea, and
+posts an opening message naming the workspace id and the commands to drive
+it. Every stage failure, breaker trip, quota wait and budget checkpoint for
+that project then lands in that channel rather than one shared firehose.
+
+Two things worth knowing before turning it on. Channels **accumulate** exactly
+as the Jira projects do, and a bot cannot delete them — archive a finished
+project's channel instead. And `private: true` is the default because a public
+channel cannot be made private afterwards, while a slug can easily reveal an
+unreleased project.
+
+If Slack is unreachable when a workspace is created, Orion says so and carries
+on. A workspace without a channel is usable; refusing to provision because
+Slack was down would not be.
+
+### Webhook-only, without an app
+
+Outbound works today with no extra software. Create a Slack incoming webhook
+and export it:
+
+```bash
+export ORION_NOTIFY_WEBHOOK='https://hooks.slack.com/services/...'
+```
+
+Orion posts JSON with a Slack-compatible `text` field, so a raw incoming
+webhook works with no adapter. You will get: any stage failure, a tripped
+breaker, a quota wall with its resume time, and whatever `orion report
+--notify` sends.
+
+`ORION_NOTIFY_COMMAND` runs an arbitrary command instead, if you would rather
+route through something else. Desktop notifications fire on macOS and Windows
+regardless.
+
+### Talking back to Orion
+
+Orion is a CLI invoked by you or by cron. It has no listener, so Slack is
+one-way by design. To make it conversational, drive it from an interactive
+Claude session with the Slack MCP connected: you ask Claude, Claude runs the
+`orion` commands and reports back into the channel. That puts the
+conversation where Claude already is and adds no service to run or secure.
+
+A real Slack app with socket mode would let you command Orion from Slack
+directly. It is also a long-running process with tokens to protect, which is
+a lot of attack surface for a single-user supervisor. It is deliberately not
+built.
+
+## 9. Keeping nj-agents current
+
+It ships independently of Orion, so its improvements arrive only when
+something fetches them.
+
+```bash
+orion njagents status     # where it is, which commit, how stale
+orion njagents update     # fast-forward Orion's own clone
+```
+
+`update` refuses to touch a global install: that clone is yours and may hold
+work in progress. It prints the `git -C ... pull` to run yourself.
+
+---
+
+## 10. Cross-project memory
+
+A correction learned in one project should not be relearned in the next.
+
+```bash
+orion lessons add "Money is BigDecimal, never double"
+orion lessons list
+```
+
+Scope is earned rather than assumed. A lesson starts local to its project and
+reaches others only after it actually recurs somewhere else: recurring five
+times in one repo proves it matters there and proves nothing about anywhere
+else. The injected block is capped at 25 entries, because the agent reads
+`CLAUDE.md` in full every session and an unbounded list degrades every session
+invisibly.
+
+---
+
+## 11. Releasing Orion itself
+
+```bash
+make release TAG=v0.1.0 DRY=1   # rehearse, publishes nothing
+make release TAG=v0.1.0
+```
+
+Uses your existing `gh` login, so there are no tokens to create or rotate. It
+refuses a dirty tree, refuses any branch but `main`, refuses a `main` that
+differs from origin, and runs the full gate before publishing anything.
+
+---
+
+## Known limits
+
+- **Branch protection is not enforced server-side on a private free-plan
+  repository.** GitHub returns 403. Orion's gate hook still refuses pushes to
+  `main` and `develop`, but that constrains the agent, not a human with a
+  terminal.
+- **The OS sandbox is not a VM.** It stops credential reads and network
+  egress; it does not defend against a determined exploit. For untrusted code
+  use `--container`.
+- **Token budget is proxied by tool-call count**, not real tokens. Hooks are
+  not given token counts.
+- **Unparseable hook input exits 0 and allows the call**, so a malformed
+  payload from a future harness version cannot brick a session. The cost is
+  that a harness change could silently disable enforcement.

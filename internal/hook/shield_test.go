@@ -79,7 +79,7 @@ func TestShieldPlanGate(t *testing.T) {
 
 	// The artifacts themselves must stay writable or the gate would make
 	// producing the required plan impossible.
-	for _, p := range []string{"plans/x.plan.md", "intent/x.intent.md", "specs/x.spec.md", "CLAUDE.md"} {
+	for _, p := range []string{"plans/x.plan.md", "docs/intent/x.md", "specs/x.spec.md", "CLAUDE.md"} {
 		if d := Shield(edit(filepath.Join(cfg.Root, p)), cfg); d.Blocked() {
 			t.Errorf("%s must remain writable under the plan gate, got: %s", p, d.Msg)
 		}

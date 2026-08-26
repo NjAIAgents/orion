@@ -54,10 +54,21 @@ type Task struct {
 	// Branches created at provisioning: main (release, protected) and
 	// develop (integration, the pull-request base).
 	Branches []string `json:"branches,omitempty"`
+	// Slack is the project's channel, when one was created. It is the medium
+	// the run reports into.
+	Slack *SlackChannel `json:"slack,omitempty"`
 	// Remote and Tracker are filled by the provision stage.
 	Remote  string          `json:"remote,omitempty"`
 	Tracker json.RawMessage `json:"tracker,omitempty"`
 	Runs    []RunRec        `json:"runs,omitempty"`
+}
+
+// SlackChannel is a project's channel.
+type SlackChannel struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	TeamID string `json:"team_id,omitempty"`
+	URL    string `json:"url,omitempty"`
 }
 
 // RunRec records one supervised run.
@@ -241,6 +252,26 @@ func (w *Workspace) SaveTask() error {
 		return err
 	}
 	return os.WriteFile(w.TaskPath(), b, 0o644)
+}
+
+// IDs lists provisioned workspace ids. Separated from List so a caller that
+// wants the data rather than the rendering does not have to parse a table.
+func IDs() ([]string, error) {
+	entries, err := os.ReadDir(projectsDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			out = append(out, e.Name())
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // Open loads an existing workspace by id or by unambiguous prefix.

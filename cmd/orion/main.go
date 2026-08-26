@@ -14,15 +14,22 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/adopt"
+	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/discovery"
 	"github.com/orion-sdlc/orion/internal/doctor"
 	"github.com/orion-sdlc/orion/internal/hook"
 	"github.com/orion-sdlc/orion/internal/lessons"
 	"github.com/orion-sdlc/orion/internal/njagents"
+	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/provision"
+	"github.com/orion-sdlc/orion/internal/report"
+	"github.com/orion-sdlc/orion/internal/slack"
 	"github.com/orion-sdlc/orion/internal/state"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
@@ -34,8 +41,13 @@ var Version = "dev"
 
 const usage = `orion - AI-native SDLC orchestrator
 
+ADOPT AN EXISTING REPO
+  orion init [--plan-gate]    config, artifact dirs and hooks, idempotent
+
 WORKSPACES
   orion new "<idea>"          provision an isolated project workspace
+                              (--skip-discovery to bypass the intent conversation)
+  orion answer <id>           resolve the open questions blocking a workspace
   orion ls                    list workspaces
   orion open <id>             print a workspace path (use with cd)
   orion rm <id>               remove a workspace
@@ -55,6 +67,15 @@ DEPENDENCIES
   orion njagents status       where nj-agents is, which commit, how stale
   orion njagents update       fast-forward Orion's own clone, if it has one
   orion njagents install      wire Orion's clone into a dir (only if no global)
+
+MONITORING
+  orion report [--since 7d]   digest: failures, workspaces, budget, usage
+  orion report --notify       also send it to ORION_NOTIFY_WEBHOOK (Slack)
+  orion logs <id> [--tail n]  the failing tail of a workspace's runs
+
+BUDGET (rolling 7 days, your limit, not your plan's)
+  orion budget status         spend, tokens and the next checkpoint
+  orion budget ack [pct]      confirm a checkpoint and continue
 
 MEMORY (shared across every project)
   orion lessons add "<text>"  record a correction so it is not repeated
@@ -81,6 +102,11 @@ func main() {
 		runHook(os.Args[2:])
 	case "doctor":
 		os.Exit(doctor.Run(os.Stdout, argFlag(os.Args[2:], "--path", "."), hasFlag(os.Args[2:], "--fix")))
+	case "init":
+		runInit(os.Args[2:])
+	case "answer":
+		mustArg(os.Args, 2, "orion answer <id>")
+		runAnswer(os.Args[2])
 	case "new":
 		mustArg(os.Args, 2, "orion new \"<idea>\"")
 		runNew(os.Args[2], os.Args[3:])
@@ -108,6 +134,13 @@ func main() {
 		runFix(os.Args[2])
 	case "njagents", "nj-agents":
 		runNJAgents(os.Args[2:])
+	case "report":
+		runReport(os.Args[2:])
+	case "logs":
+		mustArg(os.Args, 2, "orion logs <id>")
+		runLogs(os.Args[2], os.Args[3:])
+	case "budget":
+		runBudget(os.Args[2:])
 	case "lessons":
 		runLessons(os.Args[2:])
 	case "version", "--version", "-v":
@@ -188,11 +221,154 @@ func runNew(idea string, rest []string) {
 	}
 	ws, err := workspace.New(opts)
 	exitOn(err)
+
+	// The project channel, if Slack is configured. Failure here is reported
+	// and never fatal: a workspace that exists without a channel is usable,
+	// while refusing to provision because Slack was unreachable is not.
+	if ch := createProjectChannel(ws); ch != nil {
+		ws.Task.Slack = ch
+		_ = ws.SaveTask()
+	}
+
 	fmt.Printf("workspace  %s\n", ws.ID)
 	fmt.Printf("path       %s\n", ws.Dir)
 	fmt.Printf("repo       %s\n", ws.RepoDir())
 	fmt.Printf("sandbox    %s\n", ws.SandboxMode())
-	fmt.Printf("\nnext: orion run %s --stage intent\n", ws.ID)
+	needs, reason := discovery.NeedsDiscovery(idea)
+	switch {
+	case hasFlag(rest, "--skip-discovery"):
+		fmt.Printf("\nnext: orion run %s --stage intent\n", ws.ID)
+	case !needs:
+		fmt.Printf("\ndiscovery skipped: %s\n", reason)
+		fmt.Printf("next: orion run %s --stage intent\n", ws.ID)
+	default:
+		fmt.Printf("\nDiscovery first: %s\n\n", reason)
+		fmt.Println("The intent stage runs non-interactively, so it cannot ask you anything.")
+		fmt.Println("Have the conversation now, while changing course still means editing a")
+		fmt.Println("sentence rather than nine stages of derived work:")
+		fmt.Println()
+		fmt.Printf("  cd %s\n", ws.RepoDir())
+		fmt.Println("  claude \"/capture-intent\"")
+		fmt.Println()
+		fmt.Println("Then continue. Any question left open will block the spec stage until")
+		fmt.Printf("it is answered (orion answer %s).\n", ws.ID)
+		fmt.Println()
+		fmt.Printf("Skip this next time with: orion new \"...\" --skip-discovery\n")
+	}
+}
+
+// runInit adopts the current repository.
+func runInit(args []string) {
+	dir := argFlag(args, "--dir", ".")
+	abs, err := filepath.Abs(dir)
+	exitOn(err)
+
+	bin, lookErr := os.Executable()
+	if lookErr != nil {
+		bin = "orion"
+	} else if resolved, symErr := filepath.EvalSymlinks(bin); symErr == nil {
+		bin = resolved
+	}
+
+	res, err := adopt.Run(adopt.Options{
+		Dir:      abs,
+		Binary:   bin,
+		PlanGate: hasFlag(args, "--plan-gate"),
+		Force:    hasFlag(args, "--force"),
+	})
+	if res != nil {
+		fmt.Print(res.Summary())
+	}
+	exitOn(err)
+
+	fmt.Println()
+	fmt.Println("Orion is wired into this repo. Restart any running Claude Code session:")
+	fmt.Println("hooks are read at session start, so an open session is still unguarded.")
+	fmt.Println()
+	fmt.Println("  orion doctor        confirm the config parses and the limits are in force")
+	if !hasFlag(args, "--plan-gate") {
+		fmt.Println()
+		fmt.Println("The plan gate is off. Turn on gates.require_plan_before_edit in orion.json")
+		fmt.Println("when you want implementation blocked until a plan exists.")
+	}
+}
+
+// runAnswer walks the open questions blocking a workspace.
+func runAnswer(id string) {
+	ws, err := workspace.Open(id)
+	exitOn(err)
+	cfg := config.Load(ws.RepoDir())
+	path := filepath.Join(ws.RepoDir(), cfg.Paths.Intent, ws.Task.Slug+".md")
+
+	a := discovery.Assess(path)
+	if !a.Found {
+		fmt.Printf("no intent captured yet at %s\n", path)
+		fmt.Printf("run: orion run %s --stage intent\n", ws.ID)
+		os.Exit(1)
+	}
+	if a.Open == 0 {
+		fmt.Printf("no open questions in %s\n", path)
+		return
+	}
+
+	// Editing the file is the answer path, not a prompt loop. The answers
+	// belong in the committed artifact where every later stage reads them;
+	// capturing them in a terminal session would put them somewhere no
+	// stage can see.
+	fmt.Printf("%d open question(s) in %s\n\n", a.Open, path)
+	for _, q := range a.Questions {
+		if q.Answered {
+			continue
+		}
+		fmt.Printf("  - %s\n", q.Text)
+	}
+	fmt.Println()
+	fmt.Println("Answer them in the file itself, so every later stage reads the answer:")
+	fmt.Printf("  $EDITOR %s\n\n", path)
+	fmt.Println("Mark each one with [x], ~~strikethrough~~, or an inline \"Answer: ...\".")
+	fmt.Printf("Then: orion run %s --stage spec\n", ws.ID)
+	os.Exit(1)
+}
+
+// createProjectChannel makes the workspace's Slack channel and posts the
+// opening message, so the channel is useful the moment it appears rather
+// than being an empty room someone has to interpret.
+func createProjectChannel(ws *workspace.Workspace) *workspace.SlackChannel {
+	cfg := config.Load(ws.RepoDir())
+	if !cfg.Slack.Enabled || !cfg.Slack.CreateChannelPerProject {
+		return nil
+	}
+	c, err := slack.FromEnv()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orion: slack enabled but not usable: %v\n", err)
+		return nil
+	}
+	id, err := c.AuthTest()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orion: slack: %v\n", err)
+		return nil
+	}
+	ch, err := c.CreateChannel(cfg.Slack.ChannelPrefix+ws.Task.Slug, cfg.Slack.Private)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orion: could not create the project channel: %v\n", err)
+		return nil
+	}
+	_ = c.SetTopic(ch.ID, truncateStr(ws.Task.Idea, 240))
+	_ = c.Post(ch.ID, fmt.Sprintf(
+		"*%s*\n%s\n\nWorkspace `%s`. Orion will report stage results, failures, "+
+			"budget checkpoints and quota waits here.\n"+
+			"Drive it with `orion run %s --stage <stage>`; `orion status %s` for state.",
+		ch.Name, ws.Task.Idea, ws.ID, ws.ID, ws.ID))
+
+	verb := "created"
+	if !ch.Created {
+		verb = "reusing"
+	}
+	fmt.Printf("slack      #%s (%s)\n", ch.Name, verb)
+	return &workspace.SlackChannel{
+		ID: ch.ID, Name: ch.Name, TeamID: id.TeamID,
+		URL: slack.ChannelURL(id.TeamID, ch.ID),
+	}
 }
 
 func runSupervised(id string, rest []string) {
@@ -389,6 +565,181 @@ func runTrackerProvision(ws *workspace.Workspace, cfg config.Config, confirm fun
 	fmt.Printf("  claude -p \"Use /pm-plan to decompose plans/*.plan.md into %s. Preview the full tree and wait for approval.\"\n", b.Key)
 }
 
+// runReport prints the digest, and optionally sends it.
+//
+// Exit code is 1 when something needs a human. That is what makes it usable
+// from cron without a wrapper: a silent success stays silent, and only a
+// real problem produces mail.
+func runReport(args []string) {
+	since := time.Now().Add(-parseDuration(argFlag(args, "--since", "7d"), 7*24*time.Hour))
+	cfg := config.Load(rootOrCwd())
+	d := report.Build(workspace.Home(), since,
+		budget.Limits{WeeklyUSD: cfg.Budget.WeeklyUSD, WeeklyTokens: cfg.Budget.WeeklyTokens})
+
+	text := d.Text()
+	fmt.Print(text)
+
+	if hasFlag(args, "--notify") {
+		level := notify.Info
+		if !d.Healthy() {
+			level = notify.Warning
+		}
+		title := "orion: all clear"
+		if !d.Healthy() {
+			title = fmt.Sprintf("orion: %d failure(s), %d needing attention",
+				len(d.Failures), len(d.Attention))
+		}
+		// Send even when healthy if asked: a heartbeat that only appears on
+		// failure is indistinguishable from a broken cron job.
+		if errs := notify.Send(notify.Event{Level: level, Title: title, Body: text}); len(errs) > 0 {
+			for _, e := range errs {
+				fmt.Fprintf(os.Stderr, "orion: notify: %v\n", e)
+			}
+		}
+	}
+	if !d.Healthy() {
+		os.Exit(1)
+	}
+}
+
+// runLogs shows the tail of a workspace's runs, which is what someone wants
+// when a stage failed: not the whole transcript, the end of it.
+func runLogs(id string, args []string) {
+	ws, err := workspace.Open(id)
+	exitOn(err)
+	logs, err := report.LogsFor(ws)
+	exitOn(err)
+	if len(logs) == 0 {
+		fmt.Printf("no run logs yet for %s\n", ws.ID)
+		return
+	}
+	n := intFlag(args, "--tail", 40)
+	count := intFlag(args, "--runs", 1)
+	if count > len(logs) {
+		count = len(logs)
+	}
+	for i := 0; i < count; i++ {
+		fmt.Printf("=== %s\n", filepath.Base(logs[i]))
+		tail, tailErr := report.TailLog(logs[i], n)
+		if tailErr != nil {
+			fmt.Fprintf(os.Stderr, "  unreadable: %v\n", tailErr)
+			continue
+		}
+		fmt.Println(tail)
+		fmt.Println()
+	}
+}
+
+// parseDuration accepts 7d, 24h, 90m. time.ParseDuration has no day unit,
+// and a report window is most naturally expressed in days.
+func parseDuration(s string, fallback time.Duration) time.Duration {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, "d") {
+		if n, err := strconv.Atoi(strings.TrimSuffix(s, "d")); err == nil && n > 0 {
+			return time.Duration(n) * 24 * time.Hour
+		}
+		return fallback
+	}
+	if d, err := time.ParseDuration(s); err == nil && d > 0 {
+		return d
+	}
+	return fallback
+}
+
+// runBudget reports and acknowledges the rolling weekly budget.
+//
+// Worth restating wherever this surfaces: the percentage is against a limit
+// the user configured, never against the Anthropic plan's weekly allowance.
+// Nothing reports the latter, so presenting one would be a fabrication.
+func runBudget(args []string) {
+	home := workspace.Home()
+	cfg := config.Load(rootOrCwd())
+	lim := budget.Limits{WeeklyUSD: cfg.Budget.WeeklyUSD, WeeklyTokens: cfg.Budget.WeeklyTokens}
+	ledger, err := budget.Load(home)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orion: %v\n", err)
+	}
+
+	sub := "status"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub = args[0]
+		args = args[1:]
+	}
+
+	switch sub {
+	case "status":
+		st := ledger.Status(lim)
+		if !lim.Set() {
+			fmt.Println("no weekly budget configured.")
+			fmt.Println("Set budget.weekly_usd or budget.weekly_tokens in orion.json to")
+			fmt.Println("enable the 50/75/90/95% checkpoints. Until then Orion accounts")
+			fmt.Println("spend but never stops for it.")
+		}
+		fmt.Printf("window     last 7 days (%d runs)\n", st.Runs)
+		fmt.Printf("spend      $%.2f", st.SpentUSD)
+		if lim.WeeklyUSD > 0 {
+			fmt.Printf(" of $%.2f (%d%%)", lim.WeeklyUSD, st.PercentUSD)
+		}
+		fmt.Println()
+		fmt.Printf("tokens     %d", st.Tokens)
+		if lim.WeeklyTokens > 0 {
+			fmt.Printf(" of %d (%d%%)", lim.WeeklyTokens, st.PercentTok)
+		}
+		fmt.Println()
+		if st.Crossed > 0 {
+			fmt.Printf("\nCHECKPOINT %d%% reached and not acknowledged.\n", st.Crossed)
+			fmt.Printf("Runs are stopped until: orion budget ack %d\n", st.Crossed)
+		}
+		// Total consumption across EVERY Claude Code session, not just the
+		// runs Orion supervised. A budget that ignored the interactive
+		// session you spent the morning in would measure the wrong thing.
+		if tu, scanErr := budget.ScanTranscripts(budget.TranscriptDir(), st.WindowStart); scanErr == nil && tu.Turns > 0 {
+			fmt.Printf("\nall Claude Code usage in the same window\n")
+			fmt.Printf("  sessions   %d (%d turns, %d from subagents)\n", tu.Sessions, tu.Turns, tu.Sidechain)
+			fmt.Printf("  input      %s new, %s cache write, %s cache read\n",
+				human(tu.Tokens.Input), human(tu.Tokens.CacheCreation), human(tu.Tokens.CacheRead))
+			fmt.Printf("  output     %s\n", human(tu.Tokens.Output))
+			fmt.Printf("  raw total  %s\n", human(tu.Tokens.Total()))
+			fmt.Printf("  effective  %s  (cache reads 0.1x, writes 2x, output 5x)\n", human(tu.Tokens.Effective()))
+			if tu.Skipped > 0 {
+				fmt.Printf("  NOTE       %d transcript(s) unreadable; the total is partial\n", tu.Skipped)
+			}
+		}
+
+		if runs := ledger.Recent(5); len(runs) > 0 {
+			fmt.Println("\nrecent")
+			for _, r := range runs {
+				fmt.Printf("  %s  %-10s $%.4f  %d in / %d out\n",
+					r.At.Local().Format("Jan 02 15:04"), r.Stage, r.CostUSD,
+					r.InputTokens, r.OutputTokens)
+			}
+		}
+
+	case "ack":
+		st := ledger.Status(lim)
+		pct := st.Crossed
+		if len(args) > 0 {
+			if n, convErr := strconv.Atoi(args[0]); convErr == nil {
+				pct = n
+			}
+		}
+		if pct == 0 {
+			fmt.Println("nothing to acknowledge.")
+			return
+		}
+		// Acknowledge everything at or below, so returning after a long gap
+		// does not stop the next four runs in a row.
+		ledger.AckAll(pct)
+		exitOn(ledger.Save(home))
+		fmt.Printf("acknowledged the %d%% checkpoint. Runs may continue.\n", pct)
+		fmt.Println("The next checkpoint will stop again; this is consent for one step, not the rest.")
+
+	default:
+		fmt.Fprintf(os.Stderr, "orion: unknown budget subcommand %q (status|ack)\n", sub)
+		os.Exit(64)
+	}
+}
+
 // runNJAgents inspects and refreshes the delegated toolkit.
 //
 // nj-agents is developed independently of Orion, so its improvements reach
@@ -475,6 +826,18 @@ func runNJAgents(args []string) {
 		fmt.Fprintf(os.Stderr, "orion: unknown njagents subcommand %q (status|update|install)\n", sub)
 		os.Exit(64)
 	}
+}
+
+func human(n int) string {
+	switch {
+	case n >= 1_000_000_000:
+		return fmt.Sprintf("%.2fB", float64(n)/1e9)
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	case n >= 1_000:
+		return fmt.Sprintf("%.0fk", float64(n)/1e3)
+	}
+	return fmt.Sprint(n)
 }
 
 func ownerLabel(i *njagents.Install) string {

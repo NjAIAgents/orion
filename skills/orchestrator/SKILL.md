@@ -24,7 +24,7 @@ intent.md -> spec.md -> plan.md -> diff+tests -> PR+findings -> incident record
 
 | Stage | Owner | Artifact |
 |---|---|---|
-| 1 Intent | `beej` skill | `intent/<slug>.intent.md` |
+| 1 Intent | **nj-agents** `/capture-intent` | `docs/intent/<slug>.md` |
 | 2 Spec | `kalp` skill | `specs/<slug>.spec.md` |
 | 3 Plan | `kalp` skill | `plans/<slug>.plan.md` |
 | 3b Scaffold | **nj-agents** `/scaffold-project` | repository skeleton, OSPS baseline |

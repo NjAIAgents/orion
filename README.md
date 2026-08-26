@@ -115,6 +115,10 @@ missing.
 availability and your project config, and grades each OK / WARN / FAIL. Only
 FAIL blocks.
 
+**Full instructions: [docs/USAGE.md](docs/USAGE.md)** — installing, using
+Orion on a new idea, adopting it inside an existing repo, and tuning the
+guardrails.
+
 ## Use
 
 ```bash
@@ -153,7 +157,7 @@ Inside Claude Code, `/orion:start`, `/orion:next`, `/orion:status`,
 ## The artifact chain
 
 ```
-intent.md -> spec.md -> plan.md -> diff+tests -> PR+findings -> incident record
+docs/intent/<slug>.md -> spec.md -> plan.md -> diff+tests -> PR -> incident
 ```
 
 Each stage ends by committing an artifact; the next begins by reading it.
@@ -250,10 +254,15 @@ including the deliberate carve-out from its propose-never-act contract.
 
 Read these before relying on it.
 
-- **The GitHub Actions release path needs two PATs**, because Actions runs on
-  GitHub's servers and cannot see your local `gh` credentials. The local path
-  (`make release`) needs none. Pick one; the Actions workflow is dormant
-  until its secrets exist.
+- **Branch protection cannot be enabled on this repository.** GitHub returns
+  403 for branch protection on a private repo without a paid plan, so the
+  human gate on `main` and `develop` is not enforced server-side. Orion's gate
+  hook still refuses pushes to both, but that constrains the agent only, not
+  a human with a terminal. Verified, not assumed.
+- **The Actions release workflow is manual (`workflow_dispatch`).** `make
+  release` is the default path and needs no tokens; a tag-triggered workflow
+  would fail on every release for want of secrets that deliberately do not
+  exist, and a permanently red CI teaches you to ignore it.
 - **The Jira REST calls have never touched a live instance.** Shapes and the
   project-creation permission key are inferred. The key is discovered at
   runtime rather than hardcoded, and an unrecognised key is treated as
@@ -301,7 +310,7 @@ orion/
 │   ├── notify/             desktop, webhook, custom command
 │   ├── doctor/             preflight
 │   └── match/              glob with ** support
-├── skills/                 beej (intent), kalp (spec+plan), forge (build)
+├── skills/                 kalp (spec+plan), forge (build); intent is delegated
 ├── commands/               /orion:start, next, status, learn
 ├── hooks/                  hooks.json + dispatch shim
 ├── templates/              intent.md, spec.md, plan.md, orion.json

@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+
+	"github.com/orion-sdlc/orion/internal/slack"
 	"runtime"
 	"strings"
 	"time"
@@ -31,7 +33,12 @@ const (
 	Blocked Level = "blocked"
 )
 
+// Channel, when set, is a Slack channel id the event should also go to.
+// Set by the supervisor from the workspace's own channel, so a project's
+// messages land in that project's room rather than one shared firehose.
+
 type Event struct {
+	Channel   string
 	Level     Level     `json:"level"`
 	Title     string    `json:"title"`
 	Body      string    `json:"body"`
@@ -54,6 +61,13 @@ func Send(e Event) []error {
 
 	if err := desktop(e); err != nil {
 		errs = append(errs, fmt.Errorf("desktop notify: %w", err))
+	}
+	if e.Channel != "" {
+		if c, err := slack.FromEnv(); err == nil {
+			if postErr := c.Post(e.Channel, e.Title+"\n"+e.Body); postErr != nil {
+				errs = append(errs, postErr)
+			}
+		}
 	}
 	if url := strings.TrimSpace(os.Getenv("ORION_NOTIFY_WEBHOOK")); url != "" {
 		if err := webhook(url, e); err != nil {

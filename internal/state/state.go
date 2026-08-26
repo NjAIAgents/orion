@@ -89,9 +89,17 @@ const (
 // lockStale. A crashed hook must not wedge every later invocation, and a
 // wedged hook that blocks all tool use is worse than a briefly racy
 // counter.
+// acquire takes the per-session lock.
+//
+// It NEVER returns a nil release function. Every caller does `defer
+// release()`, so a nil here is an immediate panic, and a panic inside a hook
+// means Claude Code receives a crash instead of a verdict: the guardrail
+// stops guarding at the exact moment it is being exercised hardest. Failure
+// degrades to running unlocked and reporting it, never to a nil func.
 func (s *Store) acquire(id string) (func(), error) {
+	noop := func() {}
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
-		return nil, err
+		return noop, err
 	}
 	lp := s.lockPath(id)
 	deadline := time.Now().Add(lockTimeout)
@@ -100,8 +108,13 @@ func (s *Store) acquire(id string) (func(), error) {
 		if err == nil {
 			return func() { _ = os.Remove(lp) }, nil
 		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
+		// Not just ErrExist. On Windows a directory pending deletion by a
+		// racing goroutine reports access-denied rather than already-exists,
+		// so treating anything but ErrExist as fatal turns ordinary
+		// contention into a crash. Keep retrying until the deadline and let
+		// the timeout below decide.
+		if !errors.Is(err, os.ErrExist) && !errors.Is(err, os.ErrPermission) {
+			return noop, err
 		}
 		if fi, statErr := os.Stat(lp); statErr == nil {
 			if time.Since(fi.ModTime()) > lockStale {
@@ -112,7 +125,7 @@ func (s *Store) acquire(id string) (func(), error) {
 		if time.Now().After(deadline) {
 			// Proceed unlocked rather than block the session. Report it so
 			// the degradation is visible in the transcript.
-			return func() {}, ErrLockTimeout
+			return noop, ErrLockTimeout
 		}
 		time.Sleep(15 * time.Millisecond)
 	}
@@ -230,7 +243,12 @@ func (s *Store) Sweep(maxAge time.Duration) (int, error) {
 		if err != nil {
 			continue
 		}
-		if time.Since(fi.ModTime()) > maxAge {
+		// maxAge <= 0 means sweep everything, stated rather than inferred.
+		// Relying on time.Since(modTime) > 0 to express "remove all" is a
+		// race against filesystem timestamp granularity: on Windows the
+		// recorded mtime of a file written moments ago can equal now, the
+		// comparison is false, and nothing is removed.
+		if maxAge <= 0 || time.Since(fi.ModTime()) > maxAge {
 			if os.Remove(filepath.Join(s.dir, e.Name())) == nil {
 				n++
 			}

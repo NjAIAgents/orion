@@ -175,7 +175,7 @@ const defaultProjectConfig = `{
     "block_direct_push_to_default_branch": true
   },
   "paths": {
-    "intent": "intent",
+    "intent": "docs/intent",
     "specs": "specs",
     "plans": "plans",
     "evals": "evals",

@@ -139,4 +139,9 @@ publish_manifest "$BUCKET_REPO" "dist/packaging/orion.json" "bucket/orion.json"
 step "Done"
 echo "  release   https://github.com/$RELEASES_REPO/releases/tag/$VERSION_TAG"
 echo "  verify    brew update && brew install navjyotnishant/tap/orion"
-[ -n "$DRY_RUN" ] && echo "  (dry run: nothing was tagged, pushed or published)"
+# An `[ ... ] && echo` as the final statement exits 1 when the test is false,
+# and under `set -e` that becomes the script's exit code: a successful release
+# reporting failure. Use an if, not a short-circuit, in tail position.
+if [ -n "$DRY_RUN" ]; then
+  echo "  (dry run: nothing was tagged, pushed or published)"
+fi
