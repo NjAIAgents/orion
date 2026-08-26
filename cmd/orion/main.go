@@ -733,6 +733,7 @@ func runWork(args []string) {
 	}, work.Deps{
 		Jira:      mustJira(),
 		Supervise: supervisor.Run,
+		Advise:    adviseRunner,
 		Push:      pushBranch,
 		OpenPR:    openPR,
 	})
@@ -751,6 +752,53 @@ func runWork(args []string) {
 		}
 	}
 	os.Exit(worst)
+}
+
+// adviseRunner runs one READ-ONLY agent turn for an advisor or the router.
+//
+// Read-only is enforced by --allowedTools, not by asking politely in the
+// prompt. Two agents writing to one worktree is a race with no referee, and
+// an architect that "just fixes it while it is here" destroys the separation
+// that makes its answer worth anything -- an advisor that edits is no longer
+// an independent opinion, it is a second implementer.
+//
+// --max-turns is low: an advisor reads three documents and decides. One that
+// needs twenty turns is exploring the codebase, which is precisely what it
+// was told not to do, and the cap makes that a bounded cost rather than a
+// second implementation run.
+func adviseRunner(dir, model, prompt string) (string, error) {
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		return "", fmt.Errorf("claude CLI not found on PATH")
+	}
+	args := []string{
+		"-p", prompt,
+		"--output-format", "json",
+		"--model", model,
+		"--max-turns", "8",
+		"--allowedTools", "Read,Glob,Grep",
+	}
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = dir
+	// Advisors read committed artifacts, nothing else. Scrubbing the
+	// environment matters more here than for the implementer: this agent has
+	// no reason to touch a credential at all.
+	cmd.Env = append(os.Environ(), "ORION_ROLE=advisor")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("advisor run failed: %w", err)
+	}
+	var res struct {
+		Result  string `json:"result"`
+		IsError bool   `json:"is_error"`
+	}
+	if jsonErr := json.Unmarshal(out, &res); jsonErr != nil {
+		return strings.TrimSpace(string(out)), nil
+	}
+	if res.IsError {
+		return "", fmt.Errorf("the advisor reported an error: %s", truncateStr(res.Result, 200))
+	}
+	return res.Result, nil
 }
 
 func mustJira() work.TrackerAPI {

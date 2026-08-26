@@ -337,3 +337,40 @@ func TestStagePromptCoversEveryKnownStage(t *testing.T) {
 		t.Error("an unknown stage must be an error, not an empty prompt")
 	}
 }
+
+// The session id and the closing message are what make an advisor loop
+// possible: the message IS the question, and the id is what lets the
+// conversation continue instead of starting over and paying for the whole
+// context a second time.
+func TestSessionAndFinalAreRecoveredFromTheResult(t *testing.T) {
+	body := `{"is_error":false,"num_turns":3,"session_id":"abc-123",` +
+		`"result":"I need to know whether segments are keyed by MCC or issuer.",` +
+		`"total_cost_usd":0.4}`
+	sid, final := sessionAndFinal(body)
+	if sid != "abc-123" {
+		t.Errorf("session = %q", sid)
+	}
+	if !strings.Contains(final, "MCC") {
+		t.Errorf("final = %q", final)
+	}
+}
+
+// The tail buffer is bounded, so it can begin part-way through the stream.
+func TestSessionAndFinalSurvivesATruncatedTail(t *testing.T) {
+	truncated := `ns":6}},"service_tier":"standard"}` + "\n" +
+		`{"is_error":false,"session_id":"xyz-789","result":"done"}`
+	sid, final := sessionAndFinal(truncated)
+	if sid != "xyz-789" || final != "done" {
+		t.Errorf("sid = %q, final = %q", sid, final)
+	}
+}
+
+// Losing them must degrade to a fresh run, never to a wrong one.
+func TestSessionAndFinalOnGarbage(t *testing.T) {
+	for _, in := range []string{"", "not json at all", "<html>error</html>"} {
+		sid, final := sessionAndFinal(in)
+		if sid != "" || final != "" {
+			t.Errorf("sessionAndFinal(%q) invented %q / %q", in, sid, final)
+		}
+	}
+}

@@ -16,6 +16,7 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -45,6 +46,13 @@ type Options struct {
 	// exists for the acknowledge-and-continue path, never as a default.
 	SkipBudgetCheck bool
 	DryRun          bool
+	// Resume continues an existing session rather than starting one. The
+	// Prompt is then the next message in that conversation.
+	Resume string
+	// Model overrides the default: sonnet for advisors, opus for the
+	// implementer, haiku for routing. Empty uses whatever the CLI is
+	// configured with.
+	Model string
 	// NoWait skips quota waiting entirely and fails fast instead. For CI,
 	// where sleeping a runner for forty minutes costs real money.
 	NoWait bool
@@ -60,6 +68,18 @@ type Result struct {
 	// ResumeAt is set when a quota wall was hit and the wait was too long
 	// to sit through. The caller reports it; nothing sleeps on it.
 	ResumeAt time.Time
+	// SessionID identifies the conversation, so a caller can CONTINUE it
+	// rather than starting again.
+	//
+	// This is what makes an advisor loop affordable. Without it, answering an
+	// implementer's question means re-running from the top: the agent
+	// re-reads the spec, re-explores the code and re-derives everything it
+	// already knew, paying for the whole context a second time and possibly
+	// making different choices. Resuming costs one message.
+	SessionID string
+	// Final is the agent's closing message. When a run stops to ask
+	// something, this is the question.
+	Final string
 }
 
 const (
@@ -303,7 +323,13 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	logPath := filepath.Join(ws.LogsDir(),
 		fmt.Sprintf("%s-%s-a%d.log", stamp, safe(opts.Stage), attempt))
 
-	args := []string{
+	args := []string{}
+	if opts.Resume != "" {
+		// Continue the existing conversation. The prompt here is the ANSWER
+		// to what the agent asked, not a fresh instruction.
+		args = append(args, "--resume", opts.Resume)
+	}
+	args = append(args,
 		"-p", prompt,
 		"--settings", ws.SettingsPath(),
 		// JSON so the run's own usage and cost can be accounted rather than
@@ -314,6 +340,9 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 		// Orion's own tool-call breaker and wall clock, which are the
 		// controls actually relied upon.
 		"--max-turns", fmt.Sprint(opts.MaxTurns),
+	)
+	if opts.Model != "" {
+		args = append(args, "--model", opts.Model)
 	}
 
 	if opts.DryRun {
@@ -356,6 +385,11 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 		res.Duration = time.Since(started)
 		res.ExitCode = exitCode(err)
 		res.Reason = classify(res.ExitCode, ws)
+		// The session id and the closing message come from the run's own JSON
+		// result. Both are needed to answer a question the agent asked: the
+		// message IS the question, and the id is what lets the conversation
+		// continue rather than start over.
+		res.SessionID, res.Final = sessionAndFinal(tail.String())
 	case <-ctx.Done():
 		res.Killed = true
 		res.Duration = time.Since(started)
@@ -553,6 +587,43 @@ func agentTrackerEnv(repoDir string) []string {
 // classify turns an exit code into something a human can act on, checking
 // breaker state so "exit 1" becomes "a breaker tripped" when that is what
 // actually happened.
+// sessionAndFinal pulls the session id and the agent's last message out of
+// the --output-format json result.
+//
+// Scans for the LAST JSON object in the stream rather than parsing the whole
+// thing: the tail buffer may begin mid-object, and with stream-json there are
+// several. Failing to find them is not an error -- it costs the ability to
+// resume, which degrades to a fresh run, never to a wrong one.
+func sessionAndFinal(out string) (sessionID, final string) {
+	dec := json.NewDecoder(strings.NewReader(out))
+	for {
+		var m map[string]any
+		if err := dec.Decode(&m); err != nil {
+			break
+		}
+		if v, ok := m["session_id"].(string); ok && v != "" {
+			sessionID = v
+		}
+		if v, ok := m["result"].(string); ok && strings.TrimSpace(v) != "" {
+			final = strings.TrimSpace(v)
+		}
+	}
+	if sessionID != "" || final != "" {
+		return sessionID, final
+	}
+	// The buffer probably starts mid-object. Try from the last opening brace
+	// that parses, which is the common shape for a truncated tail.
+	if i := strings.LastIndex(out, "{\"is_error\""); i >= 0 {
+		var m map[string]any
+		if json.Unmarshal([]byte(out[i:]), &m) == nil {
+			sid, _ := m["session_id"].(string)
+			fin, _ := m["result"].(string)
+			return sid, strings.TrimSpace(fin)
+		}
+	}
+	return "", ""
+}
+
 func classify(code int, ws *workspace.Workspace) string {
 	if b, err := os.ReadFile(filepath.Join(ws.StateDir(), "tripped")); err == nil {
 		if s := strings.TrimSpace(string(b)); s != "" {

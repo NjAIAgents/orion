@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/advise"
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
@@ -438,4 +439,250 @@ func mustWorkspaceID(t *testing.T, home string) string {
 		t.Fatal(err)
 	}
 	return e.Workspace
+}
+
+// advisor builds a Runner that answers the router and then the advisor.
+func advisor(route string, replies ...string) (advise.Runner, *int) {
+	n := 0
+	i := 0
+	return func(dir, model, prompt string) (string, error) {
+		n++
+		if model == advise.ModelRouter {
+			return route, nil
+		}
+		if i < len(replies) {
+			r := replies[i]
+			i++
+			return r, nil
+		}
+		return `{"verdict":"refused","reason":"no more replies"}`, nil
+	}, &n
+}
+
+// The loop this whole design exists for: the implementer stops with a
+// question, an advisor answers it from the committed design, the decision is
+// recorded, and the SAME session continues rather than starting over.
+func TestTheImplementerIsResumedWithTheAdvisorsAnswer(t *testing.T) {
+	home := project(t, cfg)
+	j := &fakeJira{}
+	var out strings.Builder
+
+	run, adviceCalls := advisor("TECHNICAL",
+		`{"verdict":"derived","decision":"By issuer.","grounding":"spec.md section 4"}`)
+
+	runs := 0
+	var resumedWith, resumedSession string
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira:   j,
+			Advise: run,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				runs++
+				if runs == 1 {
+					// Stops to ask, having produced nothing.
+					return &supervisor.Result{ExitCode: 0, SessionID: "sess-1",
+						Final: "Are segments keyed by MCC or by issuer?"}, nil
+				}
+				resumedWith, resumedSession = o.Prompt, o.Resume
+				if err := os.WriteFile(filepath.Join(ws.RepoDir(), "impl.go"), []byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, ws.RepoDir(), "add", ".")
+				git(t, ws.RepoDir(), "commit", "-q", "-m", "feat: segment by issuer")
+				return &supervisor.Result{ExitCode: 0, SessionID: "sess-1", Final: "done"}, nil
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	if res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("outcome = %q, want the run to have finished: %+v", res[0].Outcome, res[0])
+	}
+	if runs != 2 {
+		t.Errorf("%d runs; expected the implementer to be resumed once", runs)
+	}
+	// Resumed, not restarted: restarting would re-read the spec, re-explore
+	// the code and pay for the whole context a second time.
+	if resumedSession != "sess-1" {
+		t.Errorf("resume session = %q, want the original session", resumedSession)
+	}
+	if !strings.Contains(resumedWith, "By issuer") || !strings.Contains(resumedWith, "spec.md section 4") {
+		t.Errorf("the answer did not reach the implementer:\n%s", resumedWith)
+	}
+	if *adviceCalls < 2 {
+		t.Errorf("advice calls = %d; expected a route and an ask", *adviceCalls)
+	}
+}
+
+// The decision has to land in the diff a reviewer reads, and become grounding
+// for the next ticket. A Slack thread cannot do either.
+func TestTheDecisionIsCommittedOnTheBranch(t *testing.T) {
+	home := project(t, cfg)
+	var out strings.Builder
+	run, _ := advisor("TECHNICAL",
+		`{"verdict":"derived","decision":"By issuer.","grounding":"spec.md section 4"}`)
+
+	var worktree string
+	runs := 0
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: &fakeJira{}, Advise: run,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				runs++
+				worktree = ws.RepoDir()
+				if runs == 1 {
+					return &supervisor.Result{ExitCode: 0, SessionID: "s", Final: "MCC or issuer?"}, nil
+				}
+				if err := os.WriteFile(filepath.Join(ws.RepoDir(), "impl.go"), []byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, ws.RepoDir(), "add", ".")
+				git(t, ws.RepoDir(), "commit", "-q", "-m", "feat: done")
+				return &supervisor.Result{ExitCode: 0, SessionID: "s", Final: "done"}, nil
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	rec := filepath.Join(worktree, "docs", "decisions", "fcia-6-01.md")
+	b, err := os.ReadFile(rec)
+	if err != nil {
+		t.Fatalf("no decision record was written: %v", err)
+	}
+	body := string(b)
+	for _, want := range []string{"MCC or issuer?", "By issuer.", "spec.md section 4", "architect"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the record is missing %q:\n%s", want, body)
+		}
+	}
+	// Committed, and as its own commit: squashing it with the implementation
+	// would hide which part of the change the decision caused.
+	log := git(t, worktree, "log", "--oneline")
+	if !strings.Contains(log, "record the architect decision") {
+		t.Errorf("the decision was not committed separately:\n%s", log)
+	}
+	if st := git(t, worktree, "status", "--porcelain"); strings.Contains(st, "decisions") {
+		t.Errorf("the record was left uncommitted: %s", st)
+	}
+}
+
+// A refusal means the DESIGN is silent. That is a human's decision and then
+// an amendment, so it must not be dressed up as a failed run.
+func TestARefusalBlocksAndSaysTheDesignIsIncomplete(t *testing.T) {
+	home := project(t, cfg)
+	j := &fakeJira{}
+	var out strings.Builder
+	run, _ := advisor("PRODUCT",
+		`{"verdict":"refused","reason":"intent.md does not mention fees on declines"}`)
+
+	runs := 0
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j, Advise: run,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				runs++
+				return &supervisor.Result{ExitCode: 0, SessionID: "s",
+					Final: "Do we charge a fee on declined transactions?"}, nil
+			},
+			Push:   func(string, string) error { t.Fatal("pushed after a refusal"); return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	if res[0].Outcome != OutcomeBlocked {
+		t.Fatalf("outcome = %q, want blocked", res[0].Outcome)
+	}
+	if runs != 1 {
+		t.Errorf("%d runs; a refusal must not resume the implementer", runs)
+	}
+	comments := strings.Join(j.comments, "\n")
+	if !strings.Contains(comments, "amend the artifact") {
+		t.Errorf("the ticket does not say the design is incomplete:\n%s", comments)
+	}
+	if !strings.Contains(comments, "fees on declines") {
+		t.Errorf("the advisor's reason was lost:\n%s", comments)
+	}
+}
+
+// Two agents can converse indefinitely at full price while producing nothing.
+func TestTheAdvisorLoopIsCapped(t *testing.T) {
+	home := project(t, cfg)
+	var out strings.Builder
+	run := advise.Runner(func(dir, model, prompt string) (string, error) {
+		if model == advise.ModelRouter {
+			return "TECHNICAL", nil
+		}
+		return `{"verdict":"derived","decision":"Do it this way.","grounding":"spec.md 1"}`, nil
+	})
+
+	runs := 0
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: &fakeJira{}, Advise: run,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				runs++ // never commits, always asks again
+				return &supervisor.Result{ExitCode: 0, SessionID: "s",
+					Final: "But what about the other case?"}, nil
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	if res[0].Outcome != OutcomeBlocked {
+		t.Errorf("outcome = %q, want blocked once the cap is hit", res[0].Outcome)
+	}
+	if runs > maxQuestions+1 {
+		t.Errorf("%d runs; the loop is not capped at %d questions", runs, maxQuestions)
+	}
+}
+
+// Without a session there is nothing to continue. Restarting would pay for
+// the whole context again and might make different choices, so stopping and
+// keeping the answer is better than silently re-running.
+func TestNoSessionMeansStopRatherThanRestart(t *testing.T) {
+	home := project(t, cfg)
+	var out strings.Builder
+	run, _ := advisor("TECHNICAL",
+		`{"verdict":"derived","decision":"By issuer.","grounding":"spec.md 4"}`)
+
+	runs := 0
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: &fakeJira{}, Advise: run,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				runs++
+				return &supervisor.Result{ExitCode: 0, SessionID: "", Final: "MCC or issuer?"}, nil
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	if runs != 1 {
+		t.Errorf("%d runs; without a session it must not restart", runs)
+	}
+	if res[0].Outcome != OutcomeBlocked {
+		t.Errorf("outcome = %q", res[0].Outcome)
+	}
+}
+
+// With no advisor configured the old behaviour must survive: stop, record
+// the question, hand the ticket back.
+func TestWithoutAnAdvisorItStillBlocksCleanly(t *testing.T) {
+	home := project(t, cfg)
+	j := &fakeJira{}
+	var out strings.Builder
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j, // Advise deliberately nil
+			Supervise: func(*workspace.Workspace, supervisor.Options) (*supervisor.Result, error) {
+				return &supervisor.Result{ExitCode: 0, Final: "MCC or issuer?"}, nil
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+	if res[0].Outcome != OutcomeBlocked {
+		t.Errorf("outcome = %q", res[0].Outcome)
+	}
+	if !strings.Contains(res[0].Question, "MCC") {
+		t.Errorf("question = %q", res[0].Question)
+	}
 }

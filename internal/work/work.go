@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/advise"
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
@@ -61,6 +62,16 @@ type Result struct {
 	Branch   string
 	PR       string
 	Question string // the agent's closing message, when it stopped to ask
+	// Advice is the last verdict, when an advisor was consulted. A refusal
+	// here is the useful part of a blocked outcome: it says the DESIGN is
+	// incomplete, not that the agent failed.
+	Advice advise.Answer
+	// Summary, IssueURL and LogPath are carried so a failure message can be
+	// written without re-fetching the ticket -- which would fail for exactly
+	// the reasons that caused the failure being reported.
+	Summary  string
+	IssueURL string
+	LogPath  string
 	Err      error
 }
 
@@ -70,9 +81,15 @@ type Result struct {
 type Deps struct {
 	Jira      TrackerAPI
 	Supervise func(ws *workspace.Workspace, opts supervisor.Options) (*supervisor.Result, error)
-	Push      func(dir, branch string) error
-	OpenPR    func(dir, branch, title, body, base string) (string, error)
-	Now       func() time.Time
+	// Advise runs a READ-ONLY agent turn for an advisor or the router.
+	// Separate from Supervise because an advisor must not be able to edit:
+	// two agents writing to one worktree is a race with no referee, and an
+	// architect that "just fixes it while it is there" destroys the
+	// separation that makes its answer worth anything.
+	Advise advise.Runner
+	Push   func(dir, branch string) error
+	OpenPR func(dir, branch, title, body, base string) (string, error)
+	Now    func() time.Time
 }
 
 // TrackerAPI is the slice of the tracker this package needs. Narrow on
@@ -180,6 +197,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if err != nil {
 		return fail(res, err)
 	}
+	res.Summary, res.IssueURL = issue.Summary, issue.URL
 	ui.Ok(w, "bound", "%s  %s", key, issue.Summary)
 
 	// Claim it. This is the lock: two runs must not pick up one ticket, and
@@ -253,9 +271,10 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}
 
 	log.Emitf(events.KindRunStart, events.ActorImplementer, "implementing %s", key)
+	stTitle, stBody := msgStarted(key, issue.Summary, job.Branch, issue.URL)
 	notify.Send(notify.Event{
 		Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
-		Title: key + " started", Body: issue.Summary + "\n" + job.Branch + "\n" + issue.URL,
+		Title: stTitle, Body: stBody,
 	})
 
 	runRes, runErr := deps.Supervise(&jobWS, supervisor.Options{
@@ -265,6 +284,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	code := -1
 	if runRes != nil {
 		code = runRes.ExitCode
+		res.LogPath = runRes.LogPath
 	}
 	log.Emit(events.Event{Kind: events.KindRunEnd, Actor: events.ActorImplementer,
 		Msg:    fmt.Sprintf("exit %d", code),
@@ -285,6 +305,72 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if err != nil {
 		return failAndTell(res, err, key, ws, log, w, deps)
 	}
+
+	// The advisor loop. This is the automation of carrying a question to the
+	// model that designed the project and carrying the answer back.
+	//
+	// It only engages when the run produced NOTHING and said something --
+	// which is what "stopped to ask" looks like from outside. A run that
+	// committed and also mused about an alternative is finished, not blocked.
+	for round := 1; commits == 0 && strings.TrimSpace(runRes.Final) != "" &&
+		round <= maxQuestions && deps.Advise != nil; round++ {
+
+		question := strings.TrimSpace(runRes.Final)
+		ans, asked := consult(deps, job.Path, question, log, w)
+		if !asked || !ans.Answered() {
+			res.Question = question
+			res.Advice = ans
+			break
+		}
+
+		// Record it BEFORE resuming, so the implementer can read the file it
+		// is being told about, and so a crash mid-loop leaves the reasoning
+		// on the branch rather than only in a log.
+		path, wErr := WriteDecision(job.Path, key, round, question, ans)
+		if wErr != nil {
+			return failAndTell(res, wErr, key, ws, log, w, deps)
+		}
+		if cErr := CommitDecision(job.Path, path, key, ans); cErr != nil {
+			return failAndTell(res, cErr, key, ws, log, w, deps)
+		}
+		rel, _ := filepath.Rel(job.Path, path)
+		log.Emitf(events.KindDecision, events.ActorOrion, "recorded %s", rel)
+		ui.Ok(w, "created", "%s", rel)
+
+		anTitle, anBody := msgAnswered(key, ans, question)
+		notify.Send(notify.Event{
+			Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
+			Title: anTitle, Body: anBody,
+		})
+
+		if runRes.SessionID == "" {
+			// Without a session there is nothing to continue, and re-running
+			// from the top would pay for the whole context again and might
+			// make different choices. Better to stop and say so.
+			res.Question = question
+			res.Advice = ans
+			ui.Warn(w, "answered, but the session could not be resumed; stopping so the answer is not lost")
+			break
+		}
+
+		ui.Ok(w, "working", "resuming with the %s's answer", ans.Role)
+		runRes, runErr = deps.Supervise(&jobWS, supervisor.Options{
+			Stage: "ticket", Resume: runRes.SessionID,
+			Prompt:     AnswerMessage(ans, rel),
+			MaxMinutes: opts.MaxMinutes, MaxTurns: opts.MaxTurns,
+		})
+		if runErr != nil || runRes == nil || runRes.ExitCode != 0 {
+			err := runErr
+			if err == nil {
+				err = fmt.Errorf("the resumed run exited %d: %s", runRes.ExitCode, reasonOf(runRes))
+			}
+			return failAndTell(res, err, key, ws, log, w, deps)
+		}
+		if commits, err = commitsOn(job.Path, cfg.VCS.WorkBranch); err != nil {
+			return failAndTell(res, err, key, ws, log, w, deps)
+		}
+	}
+
 	if commits == 0 {
 		res.Question = tailOf(runRes)
 		res.Outcome = OutcomeBlocked
@@ -294,10 +380,21 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		if res.Question != "" {
 			fmt.Fprintf(w, "          %s\n", ui.Dim(w, firstLine(res.Question)))
 		}
-		_ = deps.Jira.Comment(key, "Orion stopped without making a change.\n\n"+res.Question)
+		body := "Orion stopped without making a change.\n\n" + res.Question
+		if res.Advice.Verdict != "" && !res.Advice.Answered() {
+			// The useful part of a blocked outcome: an advisor looked and
+			// could not derive it, which says the DESIGN is incomplete rather
+			// than that the agent failed. Whoever picks this up should amend
+			// the artifact, not just answer in a comment.
+			body += "\n\nThe " + string(res.Advice.Role) + " could not decide it from the committed design:\n" +
+				res.Advice.Reason +
+				"\n\nDecide it, then amend the artifact so the next ticket does not ask again."
+		}
+		_ = deps.Jira.Comment(key, body)
+		blTitle, blBody := msgBlocked(key, issue.Summary, res.Question, issue.URL, res.Advice)
 		notify.Send(notify.Event{
 			Channel: channelOf(ws), Level: notify.Blocked, Workspace: ws.ID,
-			Title: key + " is blocked", Body: res.Question,
+			Title: blTitle, Body: blBody,
 		})
 		return res
 	}
@@ -331,9 +428,10 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	_ = deps.Jira.Comment(key, "Orion opened "+url+" from "+job.Branch+".")
 	_ = deps.Jira.TransitionTo(key, "In Review")
 
+	ciTitle, ciBody := msgCIWait(key, issue.Summary, job.Branch, url, issue.URL, commits)
 	notify.Send(notify.Event{
 		Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
-		Title: key + " -> pull request open", Body: url + "\nCI is running.",
+		Title: ciTitle, Body: ciBody,
 	})
 	ui.Ok(w, "bound", "%s awaiting CI; the job slot is free", key)
 	res.Outcome = OutcomeCIWait
@@ -378,14 +476,24 @@ func branchFor(prefix, key string) string {
 	return prefix + strings.ToLower(key)
 }
 
-// commitsOn counts what the agent actually produced, relative to the base.
+// commitsOn counts IMPLEMENTATION commits: those touching anything outside
+// docs/decisions.
+//
+// Excluding the decision records is not tidiness. Orion commits one per
+// question, so an agent that only ever asks produces five commits and no
+// code -- and a plain count would read that as work, push it, and open a
+// pull request whose entire content is a record of not having decided
+// anything. Caught by TestTheAdvisorLoopIsCapped.
 func commitsOn(dir, base string) (int, error) {
-	out, err := exec.Command("git", "-C", dir, "rev-list", "--count",
-		"origin/"+base+"..HEAD").CombinedOutput()
+	args := func(ref string) []string {
+		return []string{"-C", dir, "rev-list", "--count", ref + "..HEAD",
+			"--", ".", ":(exclude)docs/decisions"}
+	}
+	out, err := exec.Command("git", args("origin/"+base)...).CombinedOutput()
 	if err != nil {
 		// Fall back to the local base: a repo whose work branch is not
 		// pushed is unusual but not broken.
-		out, err = exec.Command("git", "-C", dir, "rev-list", "--count", base+"..HEAD").CombinedOutput()
+		out, err = exec.Command("git", args(base)...).CombinedOutput()
 		if err != nil {
 			return 0, fmt.Errorf("counting commits: %s", strings.TrimSpace(string(out)))
 		}
@@ -418,9 +526,15 @@ func failAndTell(res Result, err error, key string, ws *workspace.Workspace,
 	log.Emitf(events.KindFailed, events.ActorOrion, "%v", err)
 	ui.Fail(w, "%v", err)
 	_ = deps.Jira.Comment(key, "Orion failed on this ticket.\n\n"+err.Error())
+
+	summary := res.Summary
+	if summary == "" {
+		summary = key
+	}
+	title, body := msgFailed(key, summary, err.Error(), res.Branch, res.IssueURL, res.LogPath)
 	notify.Send(notify.Event{
 		Channel: channelOf(ws), Level: notify.Blocked, Workspace: ws.ID,
-		Title: key + " failed", Body: err.Error(),
+		Title: title, Body: body,
 	})
 	return fail(res, err)
 }
@@ -463,9 +577,17 @@ func reasonOf(r *supervisor.Result) string {
 
 // tailOf returns the agent's closing message, which is where a stop-to-ask
 // question lands.
+//
+// Final first: that is what the model actually said. Reason is Orion's own
+// classification ("completed", "timed out"), which would put the word
+// "completed" on a ticket as though it were the agent's explanation for
+// having done nothing.
 func tailOf(r *supervisor.Result) string {
 	if r == nil {
 		return ""
+	}
+	if f := strings.TrimSpace(r.Final); f != "" {
+		return f
 	}
 	return strings.TrimSpace(r.Reason)
 }
@@ -488,4 +610,58 @@ func budgetStatus(home string, cfg config.Config) (budget.Status, bool) {
 		return budget.Status{}, false
 	}
 	return l.Status(lim), true
+}
+
+// maxQuestions caps the advisor loop.
+//
+// An implementer that dislikes an answer can ask again, and a pair of agents
+// can converse indefinitely at full price while producing nothing. Five is
+// generous for one ticket: past that, the design is the problem, not the
+// question, and a person should look.
+const maxQuestions = 5
+
+// consult routes a question and asks the right advisor, trying the other role
+// once when the first escalates.
+//
+// The retry exists because routing is a guess. A product question sent to the
+// architect comes back as "escalate", and forwarding it costs one more cheap
+// call -- far better than declaring the run blocked over a misclassification.
+func consult(deps Deps, dir, question string, log *events.Log, w io.Writer) (advise.Answer, bool) {
+	log.Emitf(events.KindAsk, events.ActorImplementer, "%s", firstLine(question))
+	ui.Ok(w, "working", "asking: %s", firstLine(question))
+
+	role := advise.Route(deps.Advise, dir, question)
+	ans, err := advise.Ask(deps.Advise, dir, role, question, advise.Artifacts(dir, role))
+	if err != nil {
+		ui.Warn(w, "could not reach the %s: %v", role, err)
+		return advise.Answer{Role: role, Verdict: advise.VerdictRefused,
+			Reason: "the advisor could not be reached: " + err.Error()}, false
+	}
+
+	if ans.Verdict == advise.VerdictEscalate {
+		other := advise.RolePM
+		if role == advise.RolePM {
+			other = advise.RoleArchitect
+		}
+		log.Emitf(events.KindEscalate, string(role), "escalated to the %s: %s", other, ans.Reason)
+		ui.Ok(w, "working", "the %s says this is for the %s", role, other)
+		ans, err = advise.Ask(deps.Advise, dir, other, question, advise.Artifacts(dir, other))
+		if err != nil {
+			return advise.Answer{Role: other, Verdict: advise.VerdictRefused,
+				Reason: "the advisor could not be reached: " + err.Error()}, false
+		}
+	}
+
+	if ans.Answered() {
+		log.Emit(events.Event{Kind: events.KindAnswer, Actor: string(ans.Role),
+			Msg:    firstLine(ans.Decision),
+			Detail: map[string]any{"grounding": ans.Grounding}})
+		ui.Ok(w, "ok", "%s: %s", ans.Role, firstLine(ans.Decision))
+		fmt.Fprintf(w, "          %s\n", ui.Dim(w, ans.Grounding))
+		return ans, true
+	}
+
+	log.Emitf(events.KindRefuse, string(ans.Role), "%s", firstLine(ans.Reason))
+	ui.Warn(w, "the %s could not decide this: %s", ans.Role, firstLine(ans.Reason))
+	return ans, true
 }
