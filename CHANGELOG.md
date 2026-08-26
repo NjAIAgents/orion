@@ -4,6 +4,91 @@ Notable changes per release. Written for someone deciding whether to upgrade
 and what to watch afterwards, so each entry says what changed **and what it
 now refuses to do**.
 
+## v0.4.2
+
+Six fixes from the first real unattended runs of FCIA-6 and FCIA-7. Each one
+shares a shape: something reported success while the thing it claimed to
+have done had not actually happened.
+
+The sharpest of these was Slack delivery: `orion slack test` checked the
+token, the channel, the post, and the approval scopes — all four passed —
+while every message landed in a private channel with no human members.
+Slack accepted them silently; nobody could read one, search for one, or
+know it existed. A related bug meant the channel a run actually posted to
+depended on where the command was invoked from, because two different code
+paths resolved it two different ways — one read the workspace record, the
+other re-derived it from `orion.json` by slugifying the repo's absolute
+path. Standing in a checkout could produce a channel name built from your
+own home directory. Both now go through one resolver, and `orion slack
+test` fails loudly when the audience is nobody.
+
+The job-limit fix matters for anyone running `--max-jobs`: because a tick
+reconciles before it starts new work, a tight cap could collect the ticket
+it had just finished, push, open the PR, move it to ci-wait, and exit —
+with no watcher left running to notice CI go green, ask for approval, merge,
+or prune the worktree. The ticket would sit "done" in CI with nobody told.
+The cap now only stops *starting* new work; it keeps draining until
+everything already in flight finishes.
+
+The rest are smaller but still change visible behavior: merge conflicts
+between two in-flight branches used to be silently retried forever, because
+`gh` was never asked whether a merge was actually possible, so an impossible
+merge looked identical to any other transient failure. `orion collect` used
+to ask for approval and immediately exit — correct for a watcher, but wrong
+for the manual invocation people reach for specifically because no watcher
+is running. And two numbers in Orion's own output were simply wrong: a
+context-usage figure that claimed 991% of the window on a real run (true
+occupancy: 16%), and a "nothing is waiting on you" message after a
+develop merge that hid the still-outstanding develop → main merge.
+
+### Fixed
+
+- `orion slack test` passed all four checks (token, channel, post, approval
+  scopes) while posting into a channel with no human members — messages
+  were delivered but unreadable and unsearchable by anyone; the test now
+  checks channel membership and fails when the audience is nobody
+- Channel resolution differed depending on where `orion slack test` was
+  run — with a workspace record it used that record, without one it
+  re-derived the channel from `orion.json` by slugifying the repository's
+  absolute filesystem path, producing names like
+  `users-navjyotnishant-desktop-github-njai`; both paths now share one
+  resolver, and the output states when the workspace record overrides
+  `orion.json`
+- `tell()` discarded the specific reason a message wasn't sent, so an
+  unconfigured project failed silently with no explanation surfaced
+  anywhere
+- `--max-jobs 1` (and any tight cap) could collect a ticket, push, open its
+  PR, and exit with no watcher left running — CI going green afterward
+  triggered no approval request, no merge, and no worktree cleanup; the cap
+  now only blocks starting new work and keeps draining in-flight tickets
+  until they finish
+- A merge conflict between two in-flight branches was indistinguishable
+  from a transient failure, so Orion retried the same impossible merge
+  every tick indefinitely without ever telling a human to rebase; conflicts
+  are now reported once per HEAD (and again after a rebase that doesn't fix
+  it), with the ticket held in ci-wait so no re-labelling is needed to
+  resume
+- `orion collect` requested approval and exited immediately, which is right
+  for a watcher's next tick but wrong for the manual path — used
+  specifically because no watcher is running; it now waits (30 minutes by
+  default, `--wait`/`--no-wait`), and Ctrl-C confirms the request still
+  stands
+- Context usage was reported as cumulative session throughput divided by
+  window size, which always exceeds 100% on a long run because
+  `cache_read` re-counts the whole cached prefix every turn — one real log
+  showed 991% claimed against 16% true occupancy; it's now a peak measured
+  over turns read off the stream, and the unfixable `budget.ContextPressure`
+  metric has been removed rather than patched
+- The post-merge message said "Nothing is waiting on you" after landing on
+  develop, implying a release had happened, when a develop → main merge was
+  still outstanding; it now names that merge explicitly, using the
+  project's configured branch names instead of a hardcoded `develop`
+- the same message reported "your checkout was fast-forwarded", which is
+  git's word for it and left the reader to work out whether they still had
+  to pull; it now answers that question directly — the merged changes are
+  already in the local copy and there is nothing to do — and when the sync
+  was refused it hands over the exact command to fix it
+
 ## v0.4.1
 
 `orion init --force` no longer touches `orion.json`.
