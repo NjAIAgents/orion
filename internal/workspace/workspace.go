@@ -103,6 +103,34 @@ func (w Workspace) SandboxMode() string {
 	return "os sandbox + permission denies"
 }
 
+// Directory and file modes for everything Orion owns.
+//
+// 0700 and 0600 rather than the usual 0755/0644, because this tree is not
+// ordinary application state. It holds credentials, a spend ledger, learned
+// lessons, and under projects/*/.orion/logs the FULL transcript of every
+// supervised run: whatever source, error output or file content the agent
+// read is in there verbatim. World-readable is the wrong default for all of
+// it, and the transcripts are the part people would least expect to be
+// readable by any other account on the machine.
+const (
+	HomeDirMode     = 0o700
+	PrivateFileMode = 0o600
+)
+
+// EnsureHome creates ORION_HOME with private permissions, and tightens it if
+// an earlier version left it open. Fixing in place matters: a directory
+// created 0755 by a previous release stays 0755 forever otherwise.
+func EnsureHome() (string, error) {
+	h := Home()
+	if err := os.MkdirAll(h, HomeDirMode); err != nil {
+		return h, err
+	}
+	if fi, err := os.Stat(h); err == nil && fi.Mode().Perm()&0o077 != 0 {
+		_ = os.Chmod(h, HomeDirMode)
+	}
+	return h, nil
+}
+
 // Home returns $ORION_HOME, defaulting to ~/.orion.
 func Home() string {
 	if h := strings.TrimSpace(os.Getenv("ORION_HOME")); h != "" {
@@ -140,13 +168,16 @@ func New(opts NewOptions) (*Workspace, error) {
 		return nil, fmt.Errorf("workspace %s already exists", id)
 	}
 
+	if _, err := EnsureHome(); err != nil {
+		return nil, err
+	}
 	for _, d := range []string{
 		filepath.Join(dir, "repo"),
 		filepath.Join(dir, "worktrees"),
 		filepath.Join(dir, ".orion", "logs"),
 		filepath.Join(dir, ".orion", "state"),
 	} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err := os.MkdirAll(d, HomeDirMode); err != nil {
 			return nil, fmt.Errorf("provisioning %s: %w", d, err)
 		}
 	}
@@ -213,6 +244,11 @@ func initRepo(ws *Workspace, opts NewOptions) error {
 	return nil
 }
 
+// Files under repo/ keep ordinary 0644. They are git-tracked content meant
+// to be committed and read; git preserves only the executable bit, so a
+// tighter mode would not travel anyway, and it would surprise anyone who
+// later clones the workspace. The 0700 parent is what actually protects them.
+
 // scaffoldChain lays down the artifact directories and a starting
 // orion.json so the first stage has somewhere to write.
 func scaffoldChain(ws *Workspace) error {
@@ -251,7 +287,10 @@ func (w *Workspace) SaveTask() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(w.TaskPath(), b, 0o644)
+	// Orion metadata: the idea, tracker binding and Slack channel. The
+	// 0700 tree already protects it; matching modes keeps the line clear
+	// between what is Orion's and what is the repository's.
+	return os.WriteFile(w.TaskPath(), b, PrivateFileMode)
 }
 
 // IDs lists provisioned workspace ids. Separated from List so a caller that

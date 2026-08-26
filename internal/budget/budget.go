@@ -118,7 +118,7 @@ func Load(home string) (*Ledger, error) {
 }
 
 func (l *Ledger) Save(home string) error {
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(l, "", "  ")
@@ -126,7 +126,8 @@ func (l *Ledger) Save(home string) error {
 		return err
 	}
 	tmp := path(home) + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	// Spend, token counts, workspace ids and the ideas behind them.
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path(home))

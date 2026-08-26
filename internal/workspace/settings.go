@@ -113,7 +113,9 @@ func writeSettings(ws *Workspace) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(ws.SettingsPath(), b, 0o644); err != nil {
+	// Generated sandbox and permission settings: Orion metadata, not repo
+	// content, so it follows the private mode.
+	if err := os.WriteFile(ws.SettingsPath(), b, PrivateFileMode); err != nil {
 		return err
 	}
 	return nil

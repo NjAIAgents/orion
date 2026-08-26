@@ -113,10 +113,11 @@ func (s *Store) Append(l Lesson) error {
 	if l.Signature == "" {
 		l.Signature = Signature(l.Text)
 	}
-	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(s.logPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	// Lessons can carry proprietary conventions from private codebases.
+	f, err := os.OpenFile(s.logPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
