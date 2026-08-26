@@ -1,0 +1,83 @@
+{
+  "version": 1,
+
+  "_comment_limits": "A limit of 0 restores the default rather than meaning unlimited: 'no limit' is never a safe reading of an absent value in a circuit breaker.",
+  "limits": {
+    "max_tool_calls": 400,
+    "max_repeat_identical": 4,
+    "max_consecutive_failures": 3,
+    "max_same_command_failures": 3,
+    "max_session_minutes": 90,
+    "max_edits_without_verify": 25,
+    "max_files_touched": 60
+  },
+
+  "_comment_gates": "require_plan_before_edit is OFF for an adopted repo. In a codebase where small changes are made without writing a plan first, leaving it on means hitting a wall on the first edit, and people disable Orion entirely rather than change one setting. Turn it on when the team is ready.",
+  "gates": {
+    "require_plan_before_edit": false,
+    "protect_tests_during_fix": true,
+    "production_requires_authorization": true,
+    "block_direct_push_to_default_branch": true
+  },
+
+  "paths": {
+    "intent": "docs/intent",
+    "specs": "specs",
+    "plans": "plans",
+    "evals": "evals",
+    "state": ".orion/state",
+    "protected": [".github/workflows/**", "orion.json", "managed-settings.json"]
+  },
+
+  "vcs": {
+    "provider": "github",
+    "default_branch": "main",
+    "work_branch": "develop",
+    "protected_branches": ["main", "develop"],
+    "branch_prefix": "orion/",
+
+    "_comment_author": "Commits the agent makes are authored AND committed under this alias, so git log, blame, bisect and GitHub all show orionbot rather than you. The EMAIL is what decides that: GitHub matches commits to accounts by address and ignores the name. The default noreply address carries no account id, so it resolves to nobody and displays as a plain 'orionbot' -- which also means these commits leave your contribution graph (correct: you did not write them) and will be rejected by any branch rule demanding a verified or allowlisted committer email. For a real avatar and profile, create a GitHub account for the bot and use its own ID+name@users.noreply.github.com. Putting your own address here reverts to commits appearing as yours on GitHub. Empty name disables the alias entirely.",
+    "agent_author_name": "orionbot",
+    "agent_author_email": "orionbot@users.noreply.github.com"
+  },
+
+  "_comment_budget": "YOUR weekly budget, not your Anthropic plan's allowance. Zero means unlimited.",
+  "budget": {
+    "weekly_usd": 0,
+    "weekly_tokens": 0,
+    "pause_at_percent": [50, 75, 90, 95]
+  },
+
+  "tracker": {
+    "enabled": true,
+    "provider": "jira",
+    "project_key": "OR",
+    "create_project_per_idea": false,
+    "confirm_tree_before_create": true,
+
+    "_comment_agent_label": "Stamped on every issue the agent files, so agent-filed work stays separable from work a person filed. The tracker equivalent of vcs.agent_author_name. A label rather than a reporter because Jira's reporter must be a real licensed account, and impersonating you would be worse than leaving it unmarked. Exported to the agent as ORION_TRACKER_LABEL.",
+    "agent_label": "orion_agent"
+  },
+
+  "slack": {
+    "enabled": true,
+    "create_channel_per_project": true,
+    "channel_prefix": "orion-",
+    "private": true,
+
+    "_comment_invite": "A private channel is invisible to everyone who is not in it, and the bot is the only member of one it just created. Without these, Orion makes a channel no human can see or find. Slack user IDs (U...) or emails; emails need the users:read.email scope, which is not in the default manifest.",
+    "invite_users": ["U0BNSLYT6M9"]
+  },
+
+  "_comment_attribution": "Stamps each commit with an AI-Attribution trailer via whodunit (dun), recording which agent and model produced the change and how much of the diff was theirs. Distinct from vcs.agent_author_name, which only marks that a commit came from an Orion run. auto_install fetches dun through brew or scoop; a package-managed install puts it on PATH under the name dun, which matters because the git hook resolves it by name at commit time and a missing dun silently stamps every commit undetermined.",
+  "attribution": {
+    "enabled": true,
+    "auto_install": true
+  },
+
+  "delegation": {
+    "enabled": true,
+    "extra_tool_calls_for_review": 200,
+    "deep_security_review_when": "high-risk"
+  }
+}

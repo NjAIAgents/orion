@@ -210,14 +210,51 @@ func TestArgumentsAreFormEncodedNotJSON(t *testing.T) {
 	if !strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
 		t.Errorf("Content-Type = %q; Slack ignores a JSON body on this method", ct)
 	}
-	if got.Get("types") != "private_channel" {
-		t.Errorf("types = %q; a dropped types means private channels are invisible", got.Get("types"))
+	// BOTH types, always. Slack's channel namespace is global across public
+	// and private, so a lookup narrowed to the kind Orion wanted cannot
+	// answer "who holds this name" -- which is the only question the
+	// name_taken fallback is asking.
+	if !strings.Contains(got.Get("types"), "private_channel") ||
+		!strings.Contains(got.Get("types"), "public_channel") {
+		t.Errorf("types = %q; both kinds must be searched, or a name held by the other kind is unresolvable",
+			got.Get("types"))
 	}
 	if got.Get("limit") != "200" {
 		t.Errorf("limit = %q, want the integer form-encoded", got.Get("limit"))
 	}
-	if got.Get("exclude_archived") != "true" {
-		t.Errorf("exclude_archived = %q, want a form-encoded bool", got.Get("exclude_archived"))
+	// Archived channels are INCLUDED, deliberately. An archived channel
+	// still holds its name: conversations.create refuses with name_taken and
+	// the fallback lookup then finds nothing, which reported the genuinely
+	// unreadable "orion exists but could not be resolved: channel not found".
+	if got.Get("exclude_archived") != "false" {
+		t.Errorf("exclude_archived = %q; archived channels hold their names and must be findable",
+			got.Get("exclude_archived"))
+	}
+}
+
+// The archived case, end to end: creating is refused because the name is
+// taken, the lookup finds the archived channel, and the caller is told the
+// truth rather than being handed a room that accepts no messages.
+func TestAnArchivedChannelIsRefusedWithAWayOut(t *testing.T) {
+	c, srv := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if strings.HasSuffix(r.URL.Path, "conversations.create") {
+			_, _ = w.Write([]byte(`{"ok":false,"error":"name_taken"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"channels":[{"id":"C1","name":"orion","is_archived":true}],` +
+			`"response_metadata":{"next_cursor":""}}`))
+	})
+	defer srv.Close()
+
+	ch, err := c.CreateChannel("orion", true)
+	if err == nil {
+		t.Fatalf("bound to an archived channel: %+v", ch)
+	}
+	for _, want := range []string{"ARCHIVED", "Un-archive", "channel_prefix"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error must contain %q, got: %v", want, err)
+		}
 	}
 }
 

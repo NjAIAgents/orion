@@ -654,6 +654,25 @@ func resolveChannel(ws *workspace.Workspace) (string, string) {
 	if err != nil {
 		return "", "could not resolve #" + cfg.Slack.ChannelPrefix + ws.Task.Slug + ": " + err.Error()
 	}
+	// Invite the humans, exactly as init does.
+	//
+	// This path CREATES a channel when init never got to -- somebody declined
+	// the provisioning prompt, or adopted a repository before Slack was
+	// configured. Without this it makes a private channel whose only member
+	// is the bot, which is the fcia failure precisely: every message
+	// delivered, none readable, and no error anywhere.
+	//
+	// ensureAudience at init time did not cover this, because this is not
+	// init. Fixing one entry point and not the other leaves the bug alive
+	// behind a door that is opened less often, which is worse than leaving
+	// it alone -- it will be rediscovered from scratch.
+	//
+	// Only on creation. The invite is idempotent, but calling it on every
+	// notification would spend an API call per message to re-assert
+	// something that was settled the first time.
+	if ch.Created && len(cfg.Slack.InviteUsers) > 0 {
+		c.Invite(ch.ID, cfg.Slack.InviteUsers)
+	}
 	ws.Task.Slack = &workspace.SlackChannel{ID: ch.ID, Name: ch.Name}
 	if err := ws.SaveTask(); err != nil {
 		// Not fatal: the id is good for this run, it just will not be

@@ -226,9 +226,14 @@ func (c *Client) AuthTest() (*Identity, error) {
 
 // Channel is a created or resolved conversation.
 type Channel struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Created bool   `json:"-"` // false when an existing channel was reused
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Archived matters because an archived channel still HOLDS its name.
+	// conversations.create refuses with name_taken and the channel accepts
+	// no messages, so a caller that treats it as usable posts into a room
+	// that is closed.
+	Archived bool `json:"is_archived"`
+	Created  bool `json:"-"` // false when an existing channel was reused
 }
 
 // CreateChannel makes a channel, or returns the existing one of that name.
@@ -255,6 +260,22 @@ func (c *Client) CreateChannel(name string, private bool) (*Channel, error) {
 		if findErr != nil {
 			return nil, fmt.Errorf("%s exists but could not be resolved: %w", name, findErr)
 		}
+		// An ARCHIVED channel holds its name and accepts nothing.
+		//
+		// This is the state that produced `orion exists but could not be
+		// resolved`: Slack refused to create #orion because an archived
+		// channel of that name existed, and the lookup could not see it.
+		// Binding to it now would be worse than failing -- an archived
+		// channel takes no messages and is invisible to everyone -- so say
+		// what is actually true and name both ways out.
+		if found.Archived {
+			return nil, fmt.Errorf(
+				"#%s exists but is ARCHIVED, so Slack will not let anything be created "+
+					"with that name and the channel itself accepts no messages.\n"+
+					"  Un-archive it in Slack (its name is then usable again), or pick a\n"+
+					"  different name with slack.channel_prefix in orion.json.", found.Name)
+		}
+
 		// A bot is automatically a member of a channel it CREATED, but not
 		// of one it merely found. conversations.setTopic requires membership
 		// and chat.postMessage to a public channel needs either membership or
@@ -291,12 +312,23 @@ func (c *Client) Join(channelID string) error {
 // Paginates. A workspace with more than a few hundred channels returns the
 // first page only, and stopping there would report "not found" for a channel
 // that plainly exists.
+//
+// Searches BOTH types regardless of the `private` argument, and includes
+// ARCHIVED channels. Slack's namespace is global across those categories --
+// one name, whatever kind of channel holds it -- so a search narrowed to the
+// kind Orion happened to want cannot answer the question that matters here,
+// which is "who has this name".
+//
+// This is the fallback after conversations.create reports name_taken, and
+// narrowing it produced a genuinely unresolvable state: `orion init` asked
+// for a private #orion, Slack refused because the name was held by an
+// ARCHIVED channel, and the fallback -- private-only, exclude_archived --
+// then reported `orion exists but could not be resolved: channel "orion" not
+// found`. Both halves of that sentence were true and the pair of them is
+// nonsense to read.
 func (c *Client) FindChannel(name string, private bool) (*Channel, error) {
 	name = NormalizeChannelName(name)
-	types := "public_channel"
-	if private {
-		types = "private_channel"
-	}
+	types := "public_channel,private_channel"
 	cursor := ""
 	for page := 0; page < 20; page++ {
 		var res struct {
@@ -305,7 +337,10 @@ func (c *Client) FindChannel(name string, private bool) (*Channel, error) {
 				NextCursor string `json:"next_cursor"`
 			} `json:"response_metadata"`
 		}
-		payload := map[string]any{"types": types, "limit": 200, "exclude_archived": true}
+		// Archived channels are INCLUDED. They still hold their name, so
+		// excluding them is what turns "the name is taken" into "the name is
+		// taken by nothing", which is unactionable.
+		payload := map[string]any{"types": types, "limit": 200, "exclude_archived": false}
 		if cursor != "" {
 			payload["cursor"] = cursor
 		}
@@ -314,7 +349,7 @@ func (c *Client) FindChannel(name string, private bool) (*Channel, error) {
 		}
 		for _, ch := range res.Channels {
 			if ch.Name == name {
-				return &Channel{ID: ch.ID, Name: ch.Name}, nil
+				return &Channel{ID: ch.ID, Name: ch.Name, Archived: ch.Archived}, nil
 			}
 		}
 		cursor = res.Meta.NextCursor
