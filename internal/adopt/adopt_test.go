@@ -409,3 +409,51 @@ func TestReRunRemovesDuplicateHooks(t *testing.T) {
 		t.Errorf("the removal must be reported, got %v", res.Updated)
 	}
 }
+
+// --force repairs WIRING. It must never reset configuration.
+//
+// This happened for real. `orion doctor` reports broken hooks with "Repair
+// with: orion init --force" -- so that is the command people run when a
+// binary moves. Running it silently replaced orion.json: approval
+// requirements, the merge allowlist, the CI fix loop and the Slack channel
+// prefix all reverted to defaults, and the reverted prefix meant the next
+// run bound a DIFFERENT Slack channel and reported success.
+//
+// Configuration is what a person spent time deciding. Hooks are what a tool
+// can always rebuild. --force may rebuild the second and must not touch the
+// first.
+func TestForceRepairsHooksWithoutResettingConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	mine := `{"version":1,"slack":{"require_approval":true,"channel_prefix":""},` +
+		`"ci":{"auto_fix":true,"max_fix_attempts":3}}`
+	cfg := filepath.Join(dir, "orion.json")
+	if err := os.WriteFile(cfg, []byte(mine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(Options{Dir: dir, Binary: "/usr/bin/true", Force: true})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != mine {
+		t.Fatalf("--force rewrote orion.json.\n got: %s\nwant: %s", got, mine)
+	}
+	// And it must SAY it kept the file, so nobody assumes a repair also
+	// refreshed the defaults.
+	if !strings.Contains(strings.Join(res.Skipped, " "), "orion.json") {
+		t.Errorf("keeping the config was not reported: %v", res.Skipped)
+	}
+	// The hooks are the part --force exists to fix, so they must be written.
+	settings, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatalf("hooks were not written: %v", err)
+	}
+	if !strings.Contains(string(settings), "/usr/bin/true") {
+		t.Error("hooks were not repointed at the current binary")
+	}
+}

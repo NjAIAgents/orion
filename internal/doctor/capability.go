@@ -261,7 +261,9 @@ func checkHooks(dir string) check {
 			fmt.Sprintf("%d of %d hook command(s) do not resolve", len(broken), total),
 			"Missing: " + strings.Join(uniq(broken), "\n           ") +
 				"\n  Every gate is silently doing nothing. This usually follows an\n" +
-				"  upgrade that moved the binary. Repair with: orion init --force"}
+				"  upgrade that moved the binary, or removing the copy the hooks\n" +
+				"  pointed at. Repair with: orion init --force\n" +
+				"  That rewires the hooks and leaves orion.json alone."}
 	}
 	return check{"hooks", ok, fmt.Sprintf("%d hook(s) wired and resolvable", total), ""}
 }
