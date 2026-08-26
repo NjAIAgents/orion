@@ -195,6 +195,27 @@ func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (int, error) {
 		MaxMinutes: opts.MaxMinutes, MaxTurns: opts.MaxTurns,
 	})
 
+	// The plan's own limit, reported by the run that just finished. This is
+	// the gate that replaced an invented weekly token number: when the plan
+	// says no, wait for the exact second it says yes again.
+	for _, r := range res {
+		if !r.Limit.OK() {
+			until := r.Limit.ResetsAt
+			ui.Warn(w, "%s", r.Limit.Describe(deps.Now()))
+			if d := r.Limit.Wait(deps.Now()); d > 0 {
+				// Sleep until the reset rather than polling through it. Every
+				// tick in between would start an agent only to be refused,
+				// and a refusal still costs an API round trip and a log line
+				// -- hundreds of them, for hours, saying the same thing.
+				ui.Ok(w, "ci-wait", "sleeping until %s", until.Local().Format("15:04 Mon"))
+				if !deps.Sleep(d + time.Minute) {
+					return 0, nil
+				}
+			}
+			return 0, nil
+		}
+	}
+
 	// A job that was refused before spending anything -- budget, a dirty
 	// sandbox -- must not count against the run's job limit, and must not be
 	// retried immediately: the condition that refused it is still true, and

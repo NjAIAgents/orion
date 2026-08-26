@@ -66,6 +66,8 @@ type Options struct {
 }
 
 type Result struct {
+	// Limit is what this run reported about the account's plan limits.
+	Limit    RateLimit
 	ExitCode int
 	Reason   string
 	Duration time.Duration
@@ -410,6 +412,12 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 		// message IS the question, and the id is what lets the conversation
 		// continue rather than start over.
 		res.SessionID, res.Final = sessionAndFinal(tail.String())
+		// The plan limit the run itself reported. Recorded on every result,
+		// not only on failures: a run that succeeded while already on
+		// overage is the last one that will, and the caller deciding
+		// whether to start another needs to know that now rather than by
+		// being refused next time.
+		res.Limit = activity.Limit()
 	case <-ctx.Done():
 		res.Killed = true
 		res.Duration = time.Since(started)

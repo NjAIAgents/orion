@@ -120,13 +120,22 @@ type CI struct {
 
 // Budget caps what Orion spends over a rolling seven days.
 //
-// These are YOUR limits, not the provider's. Nothing reports how much of an
-// Anthropic subscription's weekly allowance remains, so Orion accounts only
-// for what it spends itself, from the cost and token figures each run
-// returns. Zero means unlimited, deliberately: a budget nobody set should
-// not be invented. That is the opposite of the circuit-breaker convention,
-// where zero restores a default, because there "no limit" is never safe and
-// here it is the honest default.
+// NOT the plan limit. That one is now read from the runs themselves: the CLI
+// reports its own rate_limit_info on every run, so Orion knows when the
+// account is refused and exactly when the window resets, and a watcher
+// sleeps until then. Nothing here needs to approximate it.
+//
+// What remains is a limit YOU choose, for reasons the plan knows nothing
+// about -- a cap on a project, a spend you want to notice before the plan
+// would. Zero means unlimited, and zero is the right default: a budget
+// nobody set should not be invented, and an invented ceiling stops work for
+// a reason that was never true.
+//
+// The percentage in `claude /usage` is not available here. That view fetches
+// it from an API this process cannot reach, and it is in no file on disk, so
+// Orion cannot warn at 80%. It gets a yes/no and a reset time instead --
+// which is the more actionable half, since "when can I try again" is the
+// only question a refusal actually raises.
 type Budget struct {
 	WeeklyUSD    float64 `json:"weekly_usd"`
 	WeeklyTokens int     `json:"weekly_tokens"`

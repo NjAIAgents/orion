@@ -73,7 +73,11 @@ type Result struct {
 	Summary  string
 	IssueURL string
 	LogPath  string
-	Err      error
+	// Limit is the plan's own verdict, as the run reported it. A watcher
+	// reads this to decide whether to start anything else, and when to
+	// try again if not.
+	Limit supervisor.RateLimit
+	Err   error
 }
 
 // Deps are the seams. Every one of these either costs money, mutates a shared
@@ -307,6 +311,20 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	log.Emit(events.Event{Kind: events.KindRunEnd, Actor: events.ActorImplementer,
 		Msg:    fmt.Sprintf("exit %d", code),
 		Detail: map[string]any{"reason": reasonOf(runRes)}})
+
+	// Carry the plan's own verdict out of the run. This is what replaced
+	// budget.weekly_tokens: the CLI reports the real limit on every run, so
+	// nobody has to invent a number that stops work for a reason never true.
+	if runRes != nil {
+		res.Limit = runRes.Limit
+		if !runRes.Limit.OK() {
+			log.Emit(events.Event{Kind: events.KindBudget, Actor: events.ActorOrion,
+				Msg: runRes.Limit.Describe(deps.Now())})
+			ui.Warn(w, "%s", runRes.Limit.Describe(deps.Now()))
+		} else if runRes.Limit.UsingOverage {
+			ui.Warn(w, "%s", runRes.Limit.Describe(deps.Now()))
+		}
+	}
 
 	if runErr != nil || (runRes != nil && runRes.ExitCode != 0) {
 		err := runErr

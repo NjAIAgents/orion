@@ -51,6 +51,15 @@ type activityWriter struct {
 	// model last seen on the stream, carried forward across frames that do
 	// not name one.
 	model string
+	// limit is the last plan-limit verdict the run reported.
+	limit RateLimit
+}
+
+// Limit returns the plan limit last reported by this run.
+func (w *activityWriter) Limit() RateLimit {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.limit
 }
 
 // maxLine bounds the accumulator. A single stream-json line carries whole
@@ -120,6 +129,17 @@ func (w *activityWriter) emit(line []byte) {
 		} `json:"message"`
 	}
 	if json.Unmarshal(line, &m) != nil {
+		return
+	}
+
+	// The plan's own limit. Parsed before the type switch because it is a
+	// property of the ACCOUNT rather than of anything the agent did, and it
+	// is the one field that decides whether more work may be started at all.
+	if rl, ok := parseRateLimit(line); ok {
+		w.limit = rl
+		if !rl.OK() {
+			w.on(Activity{Kind: "limit", Detail: rl.Describe(timeNow())})
+		}
 		return
 	}
 
