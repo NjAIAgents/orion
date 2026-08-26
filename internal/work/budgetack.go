@@ -132,48 +132,111 @@ func budgetGate(opts Options, cfg config.Config, ws *workspace.Workspace,
 		}
 	}
 
-	// 3. Somebody at the terminal can answer here and now.
-	//
-	// Offered AFTER the Slack message so a person who says no has still left
-	// the question somewhere a colleague can answer later, and so an
-	// unattended watcher is never worse off than an attended one.
+	// 3. Wait for an answer from EITHER route, whichever arrives first.
 	fmt.Fprint(w, st.Message())
-	if askedInline(w, st.Crossed) {
+	who, consented := awaitConsent(w, st.Crossed, req, cfg, channel != "")
+	if consented {
 		if err := ackBudget(opts.Home, st.Crossed); err != nil {
 			ui.Warn(w, "could not record the acknowledgement: %v", err)
 			return false, ""
 		}
 		clearBudgetRequest(opts.Home)
 		log.Emitf(events.KindBudget, events.ActorHuman,
-			"acknowledged the %d%% checkpoint at the terminal", st.Crossed)
-		ui.Ok(w, "ok", "acknowledged the %d%% checkpoint; continuing", st.Crossed)
+			"%s acknowledged the %d%% checkpoint", who, st.Crossed)
+		ui.Ok(w, "ok", "acknowledged the %d%% checkpoint (%s); continuing", st.Crossed, who)
 		return true, ""
 	}
 
 	if channel != "" {
 		fmt.Fprintf(w, "          %s\n", ui.Dim(w, fmt.Sprintf(
-			"asked in Slack too -- tick it there and the next pass continues, "+
+			"the request is still in Slack -- tick it there and the next pass continues, "+
 				"or run: orion budget ack %d", st.Crossed)))
 	}
 	return false, ""
 }
 
-// askedInline prompts, and answers NO for anything that is not a terminal.
+// awaitConsent takes an answer from the terminal or from Slack, first to
+// arrive.
 //
-// A watcher on a timer, a CI runner, a cron line: none of those has anybody
-// to ask, and reading a blocked stdin would hang the run rather than refuse
-// it. Silence is not consent to spend.
-func askedInline(w io.Writer, pct int) bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
-		return false
+// Racing them is the whole point, and getting it wrong was a real failure:
+// the first version printed the Slack request, then called fmt.Scanln, which
+// blocks forever. Somebody who answered in Slack -- promptly, on their phone,
+// exactly as invited -- watched the terminal sit there, because nothing was
+// reading Slack while stdin held the process. Offering two routes and then
+// honouring only one is worse than offering one, because the ignored route
+// looks broken rather than absent.
+//
+// With no terminal this is a Slack-only wait, and with no Slack it is a
+// terminal-only one. With neither it returns immediately: silence is not
+// consent to spend.
+func awaitConsent(w io.Writer, pct int, req budgetRequest, cfg config.Config,
+	hasSlack bool) (string, bool) {
+
+	interactive := false
+	if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+		interactive = true
 	}
-	fmt.Fprintf(w, "\nContinue past the %d%% checkpoint for this run? [y/N] ", pct)
-	var ans string
-	_, _ = fmt.Scanln(&ans)
-	ans = strings.ToLower(strings.TrimSpace(ans))
-	return ans == "y" || ans == "yes"
+	if !interactive && !hasSlack {
+		return "", false
+	}
+
+	typed := make(chan bool, 1)
+	if interactive {
+		fmt.Fprintf(w, "\nContinue past the %d%% checkpoint for this run? [y/N] ", pct)
+		if hasSlack {
+			fmt.Fprintf(w, "\n          %s\n", ui.Dim(w,
+				"(or tick it in Slack -- either answer is taken)"))
+		}
+		// A blocked read cannot be cancelled, so this goroutine outlives a
+		// Slack answer and will consume the next line typed. Accepted: the
+		// alternative is raw terminal handling for one prompt, and nothing
+		// else in a run reads stdin.
+		go func() {
+			var ans string
+			_, _ = fmt.Scanln(&ans)
+			ans = strings.ToLower(strings.TrimSpace(ans))
+			typed <- ans == "y" || ans == "yes"
+		}()
+	}
+
+	// Poll Slack rather than wait on it: reactions have no push here, and a
+	// few seconds of latency on a question a human is answering by hand is
+	// imperceptible.
+	tick := time.NewTicker(3 * time.Second)
+	defer tick.Stop()
+	deadline := time.After(consentTimeout)
+
+	for {
+		select {
+		case yes := <-typed:
+			if !yes {
+				return "at the terminal", false
+			}
+			return "at the terminal", true
+
+		case <-tick.C:
+			if !hasSlack {
+				continue
+			}
+			if by, ok := readAck(req, cfg); ok {
+				fmt.Fprintln(w)
+				return by + " in Slack", true
+			}
+
+		case <-deadline:
+			if interactive {
+				fmt.Fprintln(w)
+			}
+			ui.Warn(w, "nobody answered within %s", consentTimeout)
+			return "", false
+		}
+	}
 }
+
+// consentTimeout bounds the wait. A watcher left running overnight must not
+// hold a checkpoint open forever; the request stays in Slack and the next
+// tick asks again.
+const consentTimeout = 30 * time.Minute
 
 // ackBudget records consent for one checkpoint.
 func ackBudget(home string, pct int) error {
@@ -186,6 +249,11 @@ func ackBudget(home string, pct int) error {
 	l.AckAll(pct)
 	return l.Save(home)
 }
+
+// readAck is a seam. The race between the terminal and Slack is the part of
+// this that was wrong in the shipped version, so it has to be reachable from
+// a test without a Slack workspace.
+var readAck = readBudgetAck
 
 // readBudgetAck reports whether an allowlisted person ticked the request.
 //

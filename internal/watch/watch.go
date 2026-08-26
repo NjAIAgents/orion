@@ -200,6 +200,10 @@ func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (started int, 
 	if deps.Collect != nil {
 		for _, r := range deps.Collect(collect.Options{
 			Out: w, Home: opts.Home, DryRun: opts.DryRun,
+			// A tick is not a person at a terminal. Without this the
+			// collector told the watcher's operator to run the very command
+			// the watcher is already running.
+			Unattended: true,
 		}) {
 			// Pending means CI is still running; passing means CI is green
 			// and a human has not approved yet. Both are work this watcher

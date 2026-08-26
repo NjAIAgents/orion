@@ -156,9 +156,12 @@ func approvalFlow(res Result, key string, pr PR, cfg config.Config, branch strin
 		// phone -- watched nothing happen and reasonably concluded the
 		// approval had not been read. It had not: nothing was looking.
 		if opts.AwaitApproval <= 0 {
-			fmt.Fprintf(w, "          %s\n", ui.Dim(w, fmt.Sprintf(
-				"react there, then run `orion collect %s` again to act on it "+
-					"(orion watch does this on its next tick)", key)))
+			hint := fmt.Sprintf("react there, then run `orion collect %s` again to act on it", key)
+			if opts.Unattended {
+				// Inside a watcher there is nothing for the operator to run.
+				hint = "react there and the next tick merges it"
+			}
+			fmt.Fprintf(w, "          %s\n", ui.Dim(w, hint))
 			return res
 		}
 		// Waiting: carry the request forward and fall through to read it,

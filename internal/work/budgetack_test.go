@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
@@ -88,10 +89,9 @@ func TestAcknowledgementDoesNotCoverTheNextCheckpoint(t *testing.T) {
 
 // Nobody at the terminal is not a yes.
 //
-// Under `orion watch`, on a timer, in CI: stdin is not a character device
-// and there is no one to ask. Reading it would hang the run rather than
-// refuse it, and treating silence as consent would let a watcher spend past
-// every checkpoint precisely when no human is watching.
+// Under `orion watch`, on a timer, in CI: stdin is not a character device and
+// there is no one to ask. Treating silence as consent would let a watcher
+// spend past every checkpoint precisely when no human is watching.
 func TestSilenceIsNotConsentToSpend(t *testing.T) {
 	r, wr, err := os.Pipe() // a pipe: not a terminal
 	if err != nil {
@@ -105,10 +105,56 @@ func TestSilenceIsNotConsentToSpend(t *testing.T) {
 	defer func() { os.Stdin = realStdin }()
 
 	var buf bytes.Buffer
-	if askedInline(&buf, 72) {
-		t.Fatal("a non-interactive stdin answered YES to spending")
+	// No terminal AND no Slack: there is nobody to ask at all.
+	if _, ok := awaitConsent(&buf, 72, budgetRequest{}, config.Config{}, false); ok {
+		t.Fatal("consented to spend with nobody to ask")
 	}
 	if strings.Contains(buf.String(), "Continue past") {
 		t.Error("prompted a terminal that is not there")
+	}
+}
+
+// A Slack answer must be taken even when a terminal prompt is outstanding.
+//
+// This is the bug as it shipped and as it was hit on FCIA-10: the gate posted
+// to Slack, then called fmt.Scanln, which blocks forever. The approval was
+// given in Slack, promptly, and the run sat waiting for a keystroke because
+// nothing was reading Slack while stdin held the process. Offering two routes
+// and honouring one is worse than offering one -- the ignored route looks
+// broken rather than absent.
+func TestASlackAnswerIsTakenWithoutTouchingTheKeyboard(t *testing.T) {
+	// stdin is a pipe that nobody ever writes to: the terminal route is
+	// present in spirit and will never answer.
+	r, wr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer wr.Close()
+	realStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = realStdin }()
+
+	realRead := readAck
+	defer func() { readAck = realRead }()
+	readAck = func(budgetRequest, config.Config) (string, bool) {
+		return "navjyot", true
+	}
+
+	done := make(chan bool, 1)
+	var buf bytes.Buffer
+	go func() {
+		_, ok := awaitConsent(&buf, 95, budgetRequest{TS: "1.1", Channel: "C1"},
+			config.Config{}, true)
+		done <- ok
+	}()
+
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("a Slack approval was not taken")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("blocked on the terminal while Slack had already answered")
 	}
 }

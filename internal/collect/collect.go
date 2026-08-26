@@ -153,6 +153,15 @@ type Options struct {
 	// Poll is how often to re-read the reaction while waiting. Zero uses a
 	// sane default; a test sets it small.
 	Poll time.Duration
+	// Unattended says this pass is a watcher tick rather than somebody at a
+	// terminal, so advice about what to run next is wrong: the next tick is
+	// what runs next.
+	//
+	// Without this, `orion watch` told its own operator to "run `orion
+	// collect FCIA-8` again to act on it (orion watch does this on its next
+	// tick)" -- inside orion watch. Advice that names the command you are
+	// already running teaches people the output is boilerplate.
+	Unattended bool
 }
 
 // Result is one ticket's reconciliation.
