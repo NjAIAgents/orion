@@ -115,6 +115,10 @@ missing.
 availability and your project config, and grades each OK / WARN / FAIL. Only
 FAIL blocks.
 
+**Full instructions: [docs/USAGE.md](docs/USAGE.md)** — installing, using
+Orion on a new idea, adopting it inside an existing repo, and tuning the
+guardrails.
+
 ## Use
 
 ```bash
@@ -153,7 +157,7 @@ Inside Claude Code, `/orion:start`, `/orion:next`, `/orion:status`,
 ## The artifact chain
 
 ```
-intent.md -> spec.md -> plan.md -> diff+tests -> PR+findings -> incident record
+docs/intent/<slug>.md -> spec.md -> plan.md -> diff+tests -> PR -> incident
 ```
 
 Each stage ends by committing an artifact; the next begins by reading it.
@@ -306,7 +310,7 @@ orion/
 │   ├── notify/             desktop, webhook, custom command
 │   ├── doctor/             preflight
 │   └── match/              glob with ** support
-├── skills/                 beej (intent), kalp (spec+plan), forge (build)
+├── skills/                 kalp (spec+plan), forge (build); intent is delegated
 ├── commands/               /orion:start, next, status, learn
 ├── hooks/                  hooks.json + dispatch shim
 ├── templates/              intent.md, spec.md, plan.md, orion.json

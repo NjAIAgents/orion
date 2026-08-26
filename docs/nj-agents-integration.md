@@ -91,7 +91,7 @@ stop at the PR everywhere, matching nj-agents exactly.
 ## Conforming to the harness
 
 nj-agents ships a harness with class contracts and automated checks. Orion's
-own skills (`beej`, `kalp`, `forge`) are authoring-class by its taxonomy:
+own skills (`kalp`, `forge`) are authoring-class by its taxonomy:
 they write an artifact into the repo. They should be validated against
 `CONVENTIONS-authoring.md` and the harness checks before shipping, rather
 than being assumed compatible.
@@ -120,8 +120,21 @@ Checked against the real install at `~/.claude/skills` (38 skills) and
 - In CI mode, ambiguity resolves to the safe outcome: a suspected secret
   BLOCKs rather than waiting for confirmation. That matches Orion's posture.
 
-**Corrected:** the CI failure triage row named `failure-triager`, which does
-not exist. The real skills are `/test-triage` and `/flake-watch`.
+**Corrected twice, and the second correction was the wrong one.**
+`failure-triager` DOES exist — as an **agent** (`agents/failure-triager.md`),
+not a skill. An earlier check looked only in `skills/` and concluded it was
+absent. nj-agents ships 39 skills and 31 agents; a name missing from one
+directory says nothing about the other. `/test-triage` and `/flake-watch` are
+also real, and are skills.
+
+**Superseded: Orion's own intent skill.** nj-agents now ships
+`/capture-intent` (workflow class, v0.1.0), which writes
+`docs/intent/<slug>.md`. That is the same job Orion's `beej` skill did, at a
+conflicting path. `beej` has been removed and stage 1 delegates, because two
+skills competing to own one artifact is exactly the duplication this
+integration exists to avoid. Orion's `paths.intent` now defaults to
+`docs/intent` to match: the path is fixed by nj-agents' authoring contract
+(CONVENTIONS-authoring.md §A4), so Orion adapts rather than the reverse.
 
 **Still unverified:**
 

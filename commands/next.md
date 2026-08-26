@@ -7,8 +7,8 @@ exist, not by asking:
 
 | Present | Next stage | Action |
 |---|---|---|
-| nothing | intent | invoke `beej` |
-| `intent/*.intent.md` | spec | invoke `kalp`, part one |
+| nothing | intent | invoke nj-agents `/capture-intent` |
+| `docs/intent/*.md` | spec | invoke `kalp`, part one |
 | `+ specs/*.spec.md` | plan | invoke `kalp`, part two |
 | `+ plans/*.plan.md` | build | invoke `forge` |
 | `+ diff` | verify | run nj-agents `/review-tests-build` |

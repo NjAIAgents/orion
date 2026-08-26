@@ -20,7 +20,7 @@ Start a new piece of work under Orion.
 
 3. Report the workspace id and path to the user.
 
-4. Invoke the `beej` skill to capture intent, working in the new workspace's
+4. Invoke nj-agents `/capture-intent` to capture intent, working in the new workspace's
    `repo/` directory.
 
 Do not skip to design or implementation. The intent artifact is what the next

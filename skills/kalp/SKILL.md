@@ -19,7 +19,7 @@ next begins.
 
 ## Part one: the spec
 
-Read `intent/<slug>.intent.md`. Produce
+Read `docs/intent/<slug>.md`. Produce
 `specs/<slug>.spec.md`: requirements and design together, constrained by
 whatever policy skills are available in this repo.
 

@@ -160,7 +160,7 @@ func Defaults() Config {
 			BlockDirectPushToDefaultBranch: true,
 		},
 		Paths: Paths{
-			Intent: "intent",
+			Intent: "docs/intent",
 			Specs:  "specs",
 			Plans:  "plans",
 			Evals:  "evals",

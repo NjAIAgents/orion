@@ -1,6 +1,6 @@
 # Spec: <short title>
 
-From: intent/<slug>.intent.md
+From: docs/intent/<slug>.md
 Status: draft. Skills applied: <list the policy skills in force>
 
 ## Requirements

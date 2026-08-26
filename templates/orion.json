@@ -23,7 +23,7 @@
 
   "_comment_paths": "Where the artifact chain lives. Relative to repo root.",
   "paths": {
-    "intent": "intent",
+    "intent": "docs/intent",
     "specs": "specs",
     "plans": "plans",
     "evals": "evals",
