@@ -599,8 +599,8 @@ const defaultConfig = `{
     "protected_branches": ["main", "develop"],
     "branch_prefix": "orion/",
 
-    "_comment_author": "Commits the agent makes are AUTHORED by this alias; the committer stays you. Without it an agent commit is indistinguishable from a hand-written one in git log, blame and bisect. The email defaults to your user.email because GitHub matches commits to accounts by address, and a synthetic one would show every agent commit as an unrecognised author. Empty name disables the alias.",
-    "agent_author_name": "orion_agent",
+    "_comment_author": "Commits the agent makes are authored AND committed under this alias, so git log, blame and bisect can tell its work from yours. The email defaults to your user.email, and that has a visible consequence: GitHub identifies commits by ADDRESS, so its web UI will still show your name and avatar even though both git fields say orionbot. To make the alias visible there too, set agent_author_email to an address GitHub does not resolve to you -- ideally a real bot account's ID+name@users.noreply.github.com -- accepting that such commits leave your contribution graph. Empty name disables the alias entirely.",
+    "agent_author_name": "orionbot",
     "agent_author_email": ""
   },
 

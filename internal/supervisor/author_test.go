@@ -36,21 +36,30 @@ func repoWithEmail(t *testing.T, email, cfg string) string {
 	return d
 }
 
-// The alias must set the AUTHOR only. Author says who wrote it, committer
-// says who is answerable for it landing; overwriting both would erase the
-// human from a change they approved.
-func TestAgentAliasSetsAuthorNotCommitter(t *testing.T) {
-	d := repoWithEmail(t, "me@example.com", `{"vcs":{"agent_author_name":"orion_agent"}}`)
+// The alias must set BOTH author and committer.
+//
+// It once set only the author, on the reasoning that the committer should
+// stay the human who was answerable for the change landing. The result was
+// commits authored orionbot that GitHub displayed under the account owner's
+// name and avatar: its "X committed" line reads the committer, so the alias
+// existed only in `git log`. A mismatched pair also earns the "authored and
+// committed by different people" badge on a change no second person touched.
+func TestAgentAliasSetsBothAuthorAndCommitter(t *testing.T) {
+	d := repoWithEmail(t, "me@example.com", `{"vcs":{"agent_author_name":"orionbot"}}`)
 	env := agentAuthorEnv(d)
 
-	if got, _ := kv(env, "GIT_AUTHOR_NAME"); got != "orion_agent" {
-		t.Errorf("GIT_AUTHOR_NAME = %q", got)
+	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
+		if got, _ := kv(env, k); got != "orionbot" {
+			t.Errorf("%s = %q, want orionbot", k, got)
+		}
 	}
-	if got, _ := kv(env, "GIT_AUTHOR_EMAIL"); got != "me@example.com" {
-		t.Errorf("GIT_AUTHOR_EMAIL = %q; the address must stay the human's so GitHub still links the commit", got)
-	}
-	if _, ok := kv(env, "GIT_COMMITTER_NAME"); ok {
-		t.Error("the committer must remain the human")
+	// The address stays the human's by default, which is what keeps these
+	// commits inside the repository's contribution history. The visible
+	// trade -- GitHub still showing the owner -- is documented, not a bug.
+	for _, k := range []string{"GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"} {
+		if got, _ := kv(env, k); got != "me@example.com" {
+			t.Errorf("%s = %q, want the repository's own address", k, got)
+		}
 	}
 }
 

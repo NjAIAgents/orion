@@ -56,6 +56,13 @@ type Options struct {
 	// NoWait skips quota waiting entirely and fails fast instead. For CI,
 	// where sleeping a runner for forty minutes costs real money.
 	NoWait bool
+	// OnActivity is called for each observable thing the agent does, as it
+	// does it. Optional: nil means the stream is still logged, just not
+	// narrated. Callers use it to write the live event log.
+	//
+	// Called from the process's output goroutine, so an implementation that
+	// blocks holds up the agent it is reporting on.
+	OnActivity func(Activity)
 }
 
 type Result struct {
@@ -332,9 +339,15 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	args = append(args,
 		"-p", prompt,
 		"--settings", ws.SettingsPath(),
-		// JSON so the run's own usage and cost can be accounted rather than
-		// estimated. Text output reports neither.
-		"--output-format", "json",
+		// stream-json rather than json: both carry the run's own usage and
+		// cost (text output reports neither), but json emits a single object
+		// AT EXIT, so a forty minute run is indistinguishable from a hung one
+		// while it happens. NDJSON lets the same run be narrated live.
+		//
+		// --verbose is not optional here: the CLI refuses stream-json in
+		// print mode without it.
+		"--output-format", "stream-json",
+		"--verbose",
 		// Undocumented: --max-turns is absent from `claude --help` but is
 		// accepted (exit 0). Passed as a best-effort belt to the braces of
 		// Orion's own tool-call breaker and wall clock, which are the
@@ -357,6 +370,7 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	defer logFile.Close()
 
 	tail := &ringWriter{max: captureBytes}
+	activity := newActivityWriter(ws.RepoDir(), opts.OnActivity)
 
 	ctx, cancel := context.WithTimeout(context.Background(),
 		time.Duration(opts.MaxMinutes)*time.Minute)
@@ -365,10 +379,16 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = ws.RepoDir()
 	cmd.Env = childEnv(ws)
-	// Three destinations: the terminal so a watching user sees progress,
-	// the log so the postmortem survives, and the ring buffer so quota
-	// detection has something to match without holding the whole stream.
-	cmd.Stdout = io.MultiWriter(os.Stdout, logFile, tail)
+	// Four destinations, and NOT the terminal: with stream-json the raw
+	// stream is machine output, and printing it would replace the missing
+	// progress with unreadable progress. The activity writer produces the
+	// human-facing lines; the log keeps the stream verbatim for postmortems;
+	// the ring buffer holds the tail for quota detection and for the closing
+	// result object.
+	cmd.Stdout = io.MultiWriter(logFile, tail, activity)
+	// stderr stays on the terminal. It is where the CLI reports its own
+	// failures -- a bad flag, an auth problem -- and swallowing those would
+	// turn a clear error into a silent empty run.
 	cmd.Stderr = io.MultiWriter(os.Stderr, logFile, tail)
 
 	started := time.Now()
@@ -520,18 +540,24 @@ func childEnv(ws *workspace.Workspace) []string {
 	return append(out, agentTrackerEnv(ws.RepoDir())...)
 }
 
-// agentAuthorEnv marks commits the agent makes as authored by the alias,
-// while leaving the COMMITTER as the human.
+// agentAuthorEnv marks commits the agent makes as its own, in both fields.
 //
-// Author and committer are separate fields for exactly this: the alias says
-// who wrote the change, the committer says who is answerable for it landing.
-// Setting only the author keeps `git log`, `git blame` and a bisect able to
-// tell agent work from yours, without pretending a person did not approve it.
+// This used to set only GIT_AUTHOR_*, on the reasoning that the alias should
+// say who wrote the change while the committer said who was answerable for
+// it landing. That reasoning was sound and the result was still wrong: the
+// commits went up authored orionbot and GitHub displayed the account owner's
+// name and avatar, because GitHub resolves commits by EMAIL and shows the
+// COMMITTER for the "X committed" line. Leaving the committer as the human
+// while sharing the human's address meant the alias existed only in `git log`
+// -- true, and invisible in the place anyone reviewing a pull request looks.
 //
-// The email deliberately stays yours unless overridden, because GitHub
-// matches commits to accounts by email. A synthetic address would render
-// every agent commit as an unrecognised author and drop it out of the
-// repository's history of who did what.
+// A commit landing on a branch is not an approval, either. Orion pushes and
+// opens the pull request; the human approves at the MERGE, which is where
+// accountability actually attaches. Naming the human as committer implied a
+// review that had not happened yet.
+//
+// The email is what decides the display. See config.AgentAuthorEmail for the
+// trade this makes with contribution graphs and email allowlists.
 func agentAuthorEnv(repoDir string) []string {
 	cfg := config.Load(repoDir)
 	name := strings.TrimSpace(cfg.VCS.AgentAuthorName)
@@ -549,7 +575,14 @@ func agentAuthorEnv(repoDir string) []string {
 			return nil
 		}
 	}
-	return []string{"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email}
+	return []string{
+		"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email,
+		// Both, or the alias is invisible: GitHub's "X committed" line reads
+		// the committer, and a mismatched pair also makes every agent commit
+		// display the misleading "authored and committed by different people"
+		// badge on a change no second person touched.
+		"GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email,
+	}
 }
 
 // agentTrackerEnv publishes the tracker contract to the child.

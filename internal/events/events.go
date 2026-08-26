@@ -49,6 +49,8 @@ const (
 	KindBlocked  = "blocked"   // stopped, needs a person
 	KindFailed   = "failed"    // stopped, something broke
 	KindBudget   = "budget"    // a spend checkpoint fired
+	KindTool     = "tool"      // an agent used a tool, as it used it
+	KindSay      = "say"       // an agent said what it was doing
 	KindNote     = "note"      // anything else worth seeing
 )
 
@@ -65,14 +67,20 @@ const (
 
 // Event is one line of the log.
 type Event struct {
-	At      time.Time      `json:"at"`
-	Kind    string         `json:"kind"`
-	Actor   string         `json:"actor"`
-	Project string         `json:"project,omitempty"` // FCIA
-	Key     string         `json:"key,omitempty"`     // FCIA-6
-	Run     string         `json:"run,omitempty"`     // run id, groups a job's events
-	Msg     string         `json:"msg"`
-	Detail  map[string]any `json:"detail,omitempty"`
+	At      time.Time `json:"at"`
+	Kind    string    `json:"kind"`
+	Actor   string    `json:"actor"`
+	Project string    `json:"project,omitempty"` // FCIA
+	Key     string    `json:"key,omitempty"`     // FCIA-6
+	Run     string    `json:"run,omitempty"`     // run id, groups a job's events
+	// Model is which model did this, when a model did it. Recorded per event
+	// rather than per run because a single ticket is worked by several: opus
+	// implements, haiku routes the question it stops on, sonnet answers it.
+	// Attributing a decision to "the agent" loses the only detail that
+	// explains why one answer was careful and another was cheap.
+	Model  string         `json:"model,omitempty"`
+	Msg    string         `json:"msg"`
+	Detail map[string]any `json:"detail,omitempty"`
 }
 
 // Rotation limits. A live log runs unattended for days, so it needs a

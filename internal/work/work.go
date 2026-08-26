@@ -37,6 +37,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/registry"
+	"github.com/orion-sdlc/orion/internal/slack"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
@@ -182,6 +183,15 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		defer log.Close()
 	}
 
+	// Say up front when nothing will be reported to Slack. Discovering after
+	// an hour that the run you were not watching also was not reporting is
+	// the failure this whole notification path exists to prevent, and it is
+	// worth one line at the start to rule out.
+	if id, why := resolveChannel(ws); id == "" && why != "" {
+		ui.Warn(w, "no Slack messages for this run: %s", why)
+		log.Emitf(events.KindNote, events.ActorOrion, "no slack channel: %s", why)
+	}
+
 	// The budget gate, before anything is claimed. The supervisor checks it
 	// too, but by then the ticket is already marked as being worked on and
 	// the label has to be rolled back -- so check here as well and never
@@ -272,7 +282,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 
 	log.Emitf(events.KindRunStart, events.ActorImplementer, "implementing %s", key)
 	stTitle, stBody := msgStarted(key, issue.Summary, job.Branch, issue.URL)
-	notify.Send(notify.Event{
+	tell(w, log, notify.Event{
 		Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
 		Title: stTitle, Body: stBody,
 	})
@@ -280,6 +290,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	runRes, runErr := deps.Supervise(&jobWS, supervisor.Options{
 		Stage: "ticket", Prompt: prompt,
 		MaxMinutes: opts.MaxMinutes, MaxTurns: opts.MaxTurns,
+		OnActivity: activityLogger(log, w, events.ActorImplementer),
 	})
 	code := -1
 	if runRes != nil {
@@ -338,7 +349,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		ui.Ok(w, "created", "%s", rel)
 
 		anTitle, anBody := msgAnswered(key, ans, question)
-		notify.Send(notify.Event{
+		tell(w, log, notify.Event{
 			Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
 			Title: anTitle, Body: anBody,
 		})
@@ -358,6 +369,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			Stage: "ticket", Resume: runRes.SessionID,
 			Prompt:     AnswerMessage(ans, rel),
 			MaxMinutes: opts.MaxMinutes, MaxTurns: opts.MaxTurns,
+			OnActivity: activityLogger(log, w, events.ActorImplementer),
 		})
 		if runErr != nil || runRes == nil || runRes.ExitCode != 0 {
 			err := runErr
@@ -392,7 +404,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		}
 		_ = deps.Jira.Comment(key, body)
 		blTitle, blBody := msgBlocked(key, issue.Summary, res.Question, issue.URL, res.Advice)
-		notify.Send(notify.Event{
+		tell(w, log, notify.Event{
 			Channel: channelOf(ws), Level: notify.Blocked, Workspace: ws.ID,
 			Title: blTitle, Body: blBody,
 		})
@@ -429,7 +441,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	_ = deps.Jira.TransitionTo(key, "In Review")
 
 	ciTitle, ciBody := msgCIWait(key, issue.Summary, job.Branch, url, issue.URL, commits)
-	notify.Send(notify.Event{
+	tell(w, log, notify.Event{
 		Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
 		Title: ciTitle, Body: ciBody,
 	})
@@ -532,7 +544,7 @@ func failAndTell(res Result, err error, key string, ws *workspace.Workspace,
 		summary = key
 	}
 	title, body := msgFailed(key, summary, err.Error(), res.Branch, res.IssueURL, res.LogPath)
-	notify.Send(notify.Event{
+	tell(w, log, notify.Event{
 		Channel: channelOf(ws), Level: notify.Blocked, Workspace: ws.ID,
 		Title: title, Body: body,
 	})
@@ -561,11 +573,73 @@ func fail(res Result, err error) Result {
 	return res
 }
 
+// channelOf finds the Slack channel this project reports to, resolving and
+// recording it if the workspace has never been told.
+//
+// It used to be a bare `if ws.Task.Slack != nil` and nothing else, which is
+// how a whole run completed without a single Slack message. `orion init`
+// creates the channel and enables Slack in the config, but for an ADOPTED
+// repository it never wrote the channel back into the sandbox's task.json --
+// so the field stayed nil, notify was handed an empty channel, and the Slack
+// branch was skipped without ever being attempted. No error, because nothing
+// had failed: nobody had asked.
+//
+// Resolving here rather than only fixing init means workspaces bound by an
+// older build heal on their next run instead of needing to be re-created.
 func channelOf(ws *workspace.Workspace) string {
-	if ws != nil && ws.Task.Slack != nil {
-		return ws.Task.Slack.ID
+	id, _ := resolveChannel(ws)
+	return id
+}
+
+// resolveChannel returns the channel and, when there is none, WHY -- so the
+// caller can say so instead of going quiet. Silence is the failure mode this
+// whole package exists to avoid.
+func resolveChannel(ws *workspace.Workspace) (string, string) {
+	if ws == nil {
+		return "", "no workspace"
 	}
-	return ""
+	if ws.Task.Slack != nil && ws.Task.Slack.ID != "" {
+		return ws.Task.Slack.ID, ""
+	}
+	cfg := config.Load(ws.RepoDir())
+	if !cfg.Slack.Enabled {
+		return "", "slack is disabled in orion.json"
+	}
+	c, err := slack.FromEnv()
+	if err != nil {
+		return "", "slack is enabled but not usable: " + err.Error()
+	}
+	// CreateChannel returns the existing channel of that name rather than
+	// failing, so this binds to the room init already made instead of
+	// making a second one.
+	ch, err := c.CreateChannel(cfg.Slack.ChannelPrefix+ws.Task.Slug, cfg.Slack.Private)
+	if err != nil {
+		return "", "could not resolve #" + cfg.Slack.ChannelPrefix + ws.Task.Slug + ": " + err.Error()
+	}
+	ws.Task.Slack = &workspace.SlackChannel{ID: ch.ID, Name: ch.Name}
+	if err := ws.SaveTask(); err != nil {
+		// Not fatal: the id is good for this run, it just will not be
+		// remembered for the next one.
+		return ch.ID, ""
+	}
+	return ch.ID, ""
+}
+
+// tell sends a notification and reports what failed.
+//
+// notify.Send returns the errors it collected, and every call site here used
+// to discard them. A Slack token that had expired therefore produced exactly
+// the same output as a successful post: nothing.
+func tell(w io.Writer, log *events.Log, e notify.Event) {
+	if e.Channel == "" {
+		return
+	}
+	for _, err := range notify.Send(e) {
+		ui.Warn(w, "%v", err)
+		if log != nil {
+			log.Emitf(events.KindNote, events.ActorOrion, "notification failed: %v", err)
+		}
+	}
 }
 
 func reasonOf(r *supervisor.Result) string {
@@ -631,6 +705,8 @@ func consult(deps Deps, dir, question string, log *events.Log, w io.Writer) (adv
 	ui.Ok(w, "working", "asking: %s", firstLine(question))
 
 	role := advise.Route(deps.Advise, dir, question)
+	log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorOrion,
+		Model: advise.ModelRouter, Msg: "routed to the " + string(role)})
 	ans, err := advise.Ask(deps.Advise, dir, role, question, advise.Artifacts(dir, role))
 	if err != nil {
 		ui.Warn(w, "could not reach the %s: %v", role, err)
@@ -643,7 +719,9 @@ func consult(deps Deps, dir, question string, log *events.Log, w io.Writer) (adv
 		if role == advise.RolePM {
 			other = advise.RoleArchitect
 		}
-		log.Emitf(events.KindEscalate, string(role), "escalated to the %s: %s", other, ans.Reason)
+		log.Emit(events.Event{Kind: events.KindEscalate, Actor: string(role),
+			Model: advise.ModelAdvisor,
+			Msg:   fmt.Sprintf("escalated to the %s: %s", other, firstLine(ans.Reason))})
 		ui.Ok(w, "working", "the %s says this is for the %s", role, other)
 		ans, err = advise.Ask(deps.Advise, dir, other, question, advise.Artifacts(dir, other))
 		if err != nil {
@@ -654,6 +732,7 @@ func consult(deps Deps, dir, question string, log *events.Log, w io.Writer) (adv
 
 	if ans.Answered() {
 		log.Emit(events.Event{Kind: events.KindAnswer, Actor: string(ans.Role),
+			Model:  ans.Model,
 			Msg:    firstLine(ans.Decision),
 			Detail: map[string]any{"grounding": ans.Grounding}})
 		ui.Ok(w, "ok", "%s: %s", ans.Role, firstLine(ans.Decision))
@@ -661,7 +740,8 @@ func consult(deps Deps, dir, question string, log *events.Log, w io.Writer) (adv
 		return ans, true
 	}
 
-	log.Emitf(events.KindRefuse, string(ans.Role), "%s", firstLine(ans.Reason))
+	log.Emit(events.Event{Kind: events.KindRefuse, Actor: string(ans.Role),
+		Model: ans.Model, Msg: firstLine(ans.Reason)})
 	ui.Warn(w, "the %s could not decide this: %s", ans.Role, firstLine(ans.Reason))
 	return ans, true
 }

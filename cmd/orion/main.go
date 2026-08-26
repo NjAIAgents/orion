@@ -73,6 +73,11 @@ RUNNING
   orion queue                 what the watcher would pick up, in order (read-only)
   orion repos                 project key -> repository, as adoption recorded it
   orion repos unbind <KEY>    forget one mapping
+  orion sandbox               where agents actually worked: clones and worktrees
+  orion sandbox <KEY>         one ticket's worktree: branch, commits, dirt
+  orion sandbox <KEY> --code  open it in VS Code
+  orion sandbox <KEY> --shell start a shell in it
+  orion sandbox <KEY> --path  print the path only (use with cd)
 
 GUARDRAILS
   orion doctor [--fix]        preflight: tools, auth, sandbox, config
@@ -169,6 +174,8 @@ func main() {
 		runQueue(os.Args[2:])
 	case "repos":
 		runRepos(os.Args[2:])
+	case "sandbox":
+		runSandbox(os.Args[2:])
 	case "reset":
 		runReset(os.Args[2:])
 	case "fix":
@@ -817,6 +824,23 @@ func pushBranch(dir, branch string) error {
 	return nil
 }
 
+// prCommand builds the gh invocation.
+//
+// Split out from openPR so the working directory can be asserted in a test
+// without running gh. That is the whole reason this exists: openPR took a
+// dir and never used it, so gh ran in Orion's own cwd -- which is wherever
+// the user was standing, and on the first real end-to-end run was ~/.claude.
+// The branch pushed, then the PR failed with "not a git repository", leaving
+// a ticket marked failed over work that had entirely succeeded.
+func prCommand(dir, branch, title, body, base string) *exec.Cmd {
+	cmd := exec.Command("gh", "pr", "create", "--head", branch, "--base", base,
+		"--title", title, "--body", body)
+	// gh resolves the repository from the working directory, and the branch
+	// lives in a worktree, never in the cwd.
+	cmd.Dir = dir
+	return cmd
+}
+
 // openPR shells out to gh. Orion does not embed a GitHub client: gh already
 // holds the auth, and a second credential path is a second thing to expire.
 func openPR(dir, branch, title, body, base string) (string, error) {
@@ -824,8 +848,7 @@ func openPR(dir, branch, title, body, base string) (string, error) {
 		return "", fmt.Errorf("gh is not installed, so the branch is pushed but no pull request was opened.\n" +
 			"  Open it yourself, or install gh and re-run")
 	}
-	out, err := exec.Command("gh", "pr", "create", "--head", branch, "--base", base,
-		"--title", title, "--body", body).CombinedOutput()
+	out, err := prCommand(dir, branch, title, body, base).CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil {
 		return "", fmt.Errorf("%v\n%s", err, text)
@@ -1568,15 +1591,36 @@ func printEvent(w io.Writer, e events.Event) {
 		verb = "warning"
 	}
 	stamp := e.At.Local().Format("15:04:05")
+	// actor(model): which agent, and which model it was. A run involves
+	// three, and "implementer" alone does not say whether the thing that
+	// just decided something was opus or haiku.
 	who := e.Actor
+	if e.Model != "" {
+		who += "(" + shortModel(e.Model) + ")"
+	}
 	if e.Key != "" {
-		who = e.Key + " " + e.Actor
+		who = e.Key + " " + who
 	}
 	fmt.Fprintf(w, "  %s %s %-22s %s\n",
 		ui.Dim(w, stamp), ui.Label(w, verb, ""), who, e.Msg)
 	for k, v := range e.Detail {
 		fmt.Fprintf(w, "           %s\n", ui.Dim(w, fmt.Sprintf("%s: %v", k, v)))
 	}
+}
+
+// shortModel reduces an API model id to the name people use.
+//
+// The stream reports claude-opus-4-1-20250805; a log column has room for
+// "opus". The full id stays in the JSONL for anyone reconciling a bill, and
+// an unrecognised id is passed through rather than mangled, so a model this
+// build has never heard of still appears.
+func shortModel(m string) string {
+	for _, name := range []string{"opus", "sonnet", "haiku", "fable"} {
+		if strings.Contains(m, name) {
+			return name
+		}
+	}
+	return m
 }
 
 func runTranscript(target string, args []string) {

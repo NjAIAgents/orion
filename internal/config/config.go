@@ -201,11 +201,27 @@ type VCS struct {
 	//
 	// Empty disables the alias and commits are authored as you.
 	AgentAuthorName string `json:"agent_author_name"`
-	// AgentAuthorEmail defaults to the repo's configured user.email when
-	// empty. Keeping YOUR address is deliberate: the email is what GitHub
-	// matches commits against, so a made-up one shows every agent commit as
-	// an unrecognised author with no avatar and no link, and quietly drops
-	// them out of the contribution history of a repo you are accountable for.
+	// AgentAuthorEmail is the address recorded with that name, and it is the
+	// field that actually decides what GitHub displays: GitHub matches
+	// commits to accounts by EMAIL and ignores the name entirely. Setting
+	// only agent_author_name therefore changes `git log` and changes nothing
+	// on the web, which is exactly what happened on the first real run --
+	// the commits were authored orion_agent and GitHub still said the
+	// account owner had made them.
+	//
+	// Empty by default, which falls back to the repository's own user.email
+	// -- the owner's real address. That is a deliberate choice with a known
+	// consequence: GitHub will keep rendering these commits under the
+	// owner's account and avatar, so the orionbot name shows in `git log`,
+	// `git blame` and a bisect, but NOT in the web UI's "X committed" line.
+	// The history stays intact and the commits keep counting; the alias is
+	// for the tools that read the fields, not for the badge.
+	//
+	// To make the alias visible on GitHub too, this needs an address GitHub
+	// does not resolve to a human account -- ideally a real bot account's
+	// ID+name@users.noreply.github.com. The cost of a synthetic address is
+	// that those commits drop out of the contribution graph and will be
+	// rejected by any rule requiring a verified or allowlisted email.
 	AgentAuthorEmail string `json:"agent_author_email"`
 }
 
@@ -299,7 +315,7 @@ func Defaults() Config {
 			WorkBranch:        "develop",
 			ProtectedBranches: []string{"main", "develop"},
 			BranchPrefix:      "orion/",
-			AgentAuthorName:   "orion_agent",
+			AgentAuthorName:   "orionbot",
 		},
 		Budget:      Budget{PauseAtPercent: []int{50, 75, 90, 95}},
 		Attribution: Attribution{Enabled: true, AutoInstall: true},
