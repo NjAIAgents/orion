@@ -26,6 +26,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/creds"
 	"github.com/orion-sdlc/orion/internal/discovery"
 	"github.com/orion-sdlc/orion/internal/doctor"
+	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/hook"
 	"github.com/orion-sdlc/orion/internal/lessons"
 	"github.com/orion-sdlc/orion/internal/njagents"
@@ -85,7 +86,8 @@ DEPENDENCIES
 MONITORING
   orion report [--since 7d]   digest: failures, workspaces, budget, usage
   orion report --notify       also send it to ORION_NOTIFY_WEBHOOK (Slack)
-  orion logs <id> [--tail n]  the failing tail of a workspace's runs
+  orion logs <KEY> [-f]       what Orion is doing, live (FCIA or FCIA-6)
+  orion logs <KEY> --transcript   the raw agent output instead
 
 BUDGET (rolling 7 days, your limit, not your plan's)
   orion budget status         spend, tokens and the next checkpoint
@@ -171,9 +173,8 @@ func main() {
 		runNJAgents(os.Args[2:])
 	case "report":
 		runReport(os.Args[2:])
-	case "logs":
-		mustArg(os.Args, 2, "orion logs <id>")
-		runLogs(os.Args[2], os.Args[3:])
+	case "logs", "log":
+		runLogs(os.Args[2:])
 	case "budget":
 		runBudget(os.Args[2:])
 	case "lessons":
@@ -1315,8 +1316,130 @@ func runReport(args []string) {
 
 // runLogs shows the tail of a workspace's runs, which is what someone wants
 // when a stage failed: not the whole transcript, the end of it.
-func runLogs(id string, args []string) {
-	ws, err := workspace.Open(id)
+// runLogs shows Orion's own event stream by default, and the raw agent
+// transcript only when asked.
+//
+// Two logs, and the default matters. The transcript is tens of thousands of
+// tokens per run; the events are a dozen lines saying what Orion did. Showing
+// the transcript first buries the line anyone actually wants -- which ticket
+// was claimed, what the architect answered, whether CI passed -- inside a
+// wall of tool output.
+//
+// The target may be a project key (FCIA), an issue key (FCIA-6) or a
+// workspace id. A key is what a person has in their hand; requiring the
+// workspace id would mean looking it up first, every time.
+func runLogs(args []string) {
+	target := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		target = args[0]
+		args = args[1:]
+	}
+	if hasFlag(args, "--transcript") {
+		runTranscript(target, args)
+		return
+	}
+	runEventLog(target, args)
+}
+
+// resolveWorkspace turns a project key, an issue key or a workspace id into
+// a workspace, trying the registry first because that is what a person will
+// type.
+func resolveWorkspace(target string) (*workspace.Workspace, string, error) {
+	if target == "" {
+		return nil, "", fmt.Errorf("which project? try: orion logs FCIA")
+	}
+	if e, err := registry.Lookup(workspace.Home(), target); err == nil {
+		ws, wErr := workspace.Open(e.Workspace)
+		return ws, e.Key, wErr
+	}
+	ws, err := workspace.Open(target)
+	if err != nil {
+		return nil, "", fmt.Errorf("no project or workspace matches %q.\n"+
+			"  Registered projects: orion repos\n  Workspaces: orion ls", target)
+	}
+	return ws, "", nil
+}
+
+func runEventLog(target string, args []string) {
+	w := os.Stdout
+	ws, _, err := resolveWorkspace(target)
+	exitOn(err)
+
+	path := events.Path(ws.Dir)
+	all, err := events.Read(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(w, "no events yet for %s.\n  They appear once a run starts: orion work <KEY>\n", ws.ID)
+			return
+		}
+		exitOn(err)
+	}
+
+	// Filter to one ticket when an issue key was given, so `orion logs
+	// FCIA-6` is about that ticket rather than everything the project did.
+	if key := registry.NormalizeKey(target); strings.Contains(key, "-") {
+		var kept []events.Event
+		for _, e := range all {
+			if strings.EqualFold(e.Key, key) {
+				kept = append(kept, e)
+			}
+		}
+		all = kept
+	}
+
+	n := intFlag(args, "--tail", 50)
+	if len(all) > n {
+		all = all[len(all)-n:]
+	}
+	for _, e := range all {
+		printEvent(w, e)
+	}
+
+	if !hasFlag(args, "--follow") && !hasFlag(args, "-f") {
+		return
+	}
+	fi, statErr := os.Stat(path)
+	var from int64
+	if statErr == nil {
+		from = fi.Size()
+	}
+	fmt.Fprintln(w, ui.Dim(w, "  following; ctrl-c to stop"))
+	stop := make(chan struct{})
+	exitOn(events.Follow(path, from, time.Second, stop, func(e events.Event) {
+		printEvent(w, e)
+	}))
+}
+
+// printEvent renders one line: time, actor, kind, message. Colour marks the
+// kind, and the word is still there, so a piped log reads the same.
+func printEvent(w io.Writer, e events.Event) {
+	verb := e.Kind
+	switch e.Kind {
+	case events.KindFailed, events.KindBlocked:
+		verb = "failed"
+	case events.KindAnswer, events.KindMerge, events.KindPR, events.KindPush:
+		verb = "ok"
+	case events.KindRunStart, events.KindAsk:
+		verb = "working"
+	case events.KindCI:
+		verb = "ci-wait"
+	case events.KindEscalate, events.KindRefuse, events.KindBudget:
+		verb = "warning"
+	}
+	stamp := e.At.Local().Format("15:04:05")
+	who := e.Actor
+	if e.Key != "" {
+		who = e.Key + " " + e.Actor
+	}
+	fmt.Fprintf(w, "  %s %s %-22s %s\n",
+		ui.Dim(w, stamp), ui.Label(w, verb, ""), who, e.Msg)
+	for k, v := range e.Detail {
+		fmt.Fprintf(w, "           %s\n", ui.Dim(w, fmt.Sprintf("%s: %v", k, v)))
+	}
+}
+
+func runTranscript(target string, args []string) {
+	ws, _, err := resolveWorkspace(target)
 	exitOn(err)
 	logs, err := report.LogsFor(ws)
 	exitOn(err)
