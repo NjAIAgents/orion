@@ -35,7 +35,7 @@ done
 # and printing that is exercised end to end by hand; including it would drag
 # the number down by fifteen points and tell you nothing about whether the
 # logic is tested. The floor should track the code where a bug costs money.
-MIN_COVERAGE=${MIN_COVERAGE:-54}
+MIN_COVERAGE=${MIN_COVERAGE:-59}
 COVER_PKGS=${COVER_PKGS:-./internal/...}
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }

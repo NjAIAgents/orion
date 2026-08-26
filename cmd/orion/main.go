@@ -84,7 +84,7 @@ DEPENDENCIES
   orion njagents install      wire Orion's clone into a dir (only if no global)
 
 MONITORING
-  orion report [--since 7d]   digest: failures, workspaces, budget, usage
+  orion report [KEY] [--since 7d]  digest: failures, workspaces, budget, usage
   orion report --notify       also send it to ORION_NOTIFY_WEBHOOK (Slack)
   orion logs <KEY> [-f]       what Orion is doing, live (FCIA or FCIA-6)
   orion logs <KEY> --transcript   the raw agent output instead
@@ -1285,8 +1285,16 @@ func runTrackerProvision(ws *workspace.Workspace, cfg config.Config, confirm fun
 func runReport(args []string) {
 	since := time.Now().Add(-parseDuration(argFlag(args, "--since", "7d"), 7*24*time.Hour))
 	cfg := config.Load(rootOrCwd())
+
+	// The same filter vocabulary as `orion logs`: a project key, an issue key
+	// or a workspace id. Two commands describing the same work should not
+	// disagree about how to name it.
+	only := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		only = args[0]
+	}
 	d := report.Build(workspace.Home(), since,
-		budget.Limits{WeeklyUSD: cfg.Budget.WeeklyUSD, WeeklyTokens: cfg.Budget.WeeklyTokens})
+		budget.Limits{WeeklyUSD: cfg.Budget.WeeklyUSD, WeeklyTokens: cfg.Budget.WeeklyTokens}, only)
 
 	text := d.Text()
 	fmt.Print(text)
