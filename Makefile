@@ -86,5 +86,14 @@ dist:
 packaging: dist
 	@scripts/render-packaging.sh $(RELVER)
 
+# release cuts a release from this machine using your existing gh login.
+# No personal access tokens: GitHub Actions needs them only because it runs
+# elsewhere and cannot see your credentials.
+#   make release TAG=v0.1.0
+#   make release TAG=v0.1.0 DRY=1
+release:
+	@[ -n "$(TAG)" ] || { echo "usage: make release TAG=v0.1.0 [DRY=1]" >&2; exit 64; }
+	@scripts/release.sh "$(TAG)" $(if $(DRY),--dry-run,)
+
 clean:
 	rm -rf bin dist
