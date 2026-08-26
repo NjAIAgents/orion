@@ -772,6 +772,7 @@ func runWork(args []string) {
 		Jira:      mustJira(),
 		Supervise: supervisor.Run,
 		Advise:    adviseRunner,
+		Describe:  describeRunner,
 		Push:      pushBranch,
 		OpenPR:    openPR,
 	})

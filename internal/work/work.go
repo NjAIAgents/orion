@@ -93,8 +93,12 @@ type Deps struct {
 	// separation that makes its answer worth anything.
 	Advise advise.Runner
 	Push   func(dir, branch string) error
-	OpenPR func(dir, branch, title, body, base string) (string, error)
-	Now    func() time.Time
+	// Describe drafts the pull request text, read-only. Nil falls back to
+	// Orion's own two-line description -- which is accurate, and says
+	// nothing a reviewer did not already know from the ticket.
+	Describe Describer
+	OpenPR   func(dir, branch, title, body, base string) (string, error)
+	Now      func() time.Time
 }
 
 // TrackerAPI is the slice of the tracker this package needs. Narrow on
@@ -446,6 +450,16 @@ func one(key string, opts Options, deps Deps) (res Result) {
 
 	title := key + ": " + issue.Summary
 	body := prBody(key, issue.URL, commits)
+	// Ask nj-agents' pr-describe for something a reviewer can actually use.
+	// Falls back silently to the two lines above: the branch is pushed and
+	// the work is done, so refusing to open a pull request over a cosmetic
+	// failure would strand finished work for no reason.
+	if t, b, ok := describePR(deps.Describe, job.Path, key, title, body); ok {
+		title, body = t, b
+		log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorOrion,
+			Model: "sonnet", Msg: "described the pull request with pr-describe"})
+		ui.Ok(w, "created", "a pull request description")
+	}
 	url, err := deps.OpenPR(job.Path, job.Branch, title, body, cfg.VCS.WorkBranch)
 	if err != nil {
 		return failAndTell(res, fmt.Errorf("opening a pull request: %w", err), key, ws, log, w, deps)
