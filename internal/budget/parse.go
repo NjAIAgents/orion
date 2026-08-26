@@ -15,16 +15,16 @@ import (
 //	          "cache_read_input_tokens":28856,"cache_creation_input_tokens":0},
 //	 "modelUsage":{"claude-opus-4-8[1m]":{"contextWindow":1000000,...}}}
 //
-// Two details that matter for accounting honestly:
+// The three input counts are DISJOINT, per the Anthropic API: input_tokens
+// excludes anything served from cache or written to it. A transcript line
+// reading input_tokens=2 beside cache_creation=67399 settles it. An earlier
+// version of this parser assumed input_tokens was a superset and added only
+// cache creation, which undercounts a cache-heavy turn by orders of
+// magnitude.
 //
-// `input_tokens` in the top-level usage block already includes the cached
-// portion for billing purposes, so adding cache_read on top would double
-// count. The cache fields are kept separately for reporting only.
-//
-// A trivial prompt still reports roughly 30k input tokens. That is the system
-// prompt and cached context, and it is a floor paid on every invocation. It
-// is the single most important number for anyone planning a chain of stages:
-// nine small stages cost nine floors before any work happens.
+// A trivial prompt still costs roughly 30k tokens once the three are summed.
+// That is the system prompt and tool list, and it is a floor paid on every
+// invocation: nine small stages pay it nine times before any work happens.
 func FromResultJSON(out string) (Run, bool) {
 	line := lastJSONObject(out)
 	if line == "" {
@@ -49,11 +49,10 @@ func FromResultJSON(out string) (Run, bool) {
 	}
 	r := Run{
 		CostUSD:      d.CostUSD,
-		InputTokens:  d.Usage.InputTokens,
 		OutputTokens: d.Usage.OutputTokens,
 	}
-	// Cache creation is billed on top of input, unlike cache reads.
-	r.InputTokens += d.Usage.CacheCreate
+	// Sum all three: they do not overlap.
+	r.InputTokens = d.Usage.InputTokens + d.Usage.CacheCreate + d.Usage.CacheRead
 
 	for model, mu := range d.ModelUsage {
 		r.Model = model

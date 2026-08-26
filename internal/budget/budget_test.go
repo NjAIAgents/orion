@@ -20,8 +20,9 @@ func TestParsesRealResult(t *testing.T) {
 	if r.CostUSD != 0.186768 {
 		t.Errorf("CostUSD = %v", r.CostUSD)
 	}
-	if r.InputTokens != 34448 {
-		t.Errorf("InputTokens = %d, want 34448 (cache reads are already inside input_tokens; adding them double counts)", r.InputTokens)
+	// 34448 + 0 creation + 28856 read: the three counts are disjoint.
+	if r.InputTokens != 63304 {
+		t.Errorf("InputTokens = %d, want 63304: input, cache creation and cache read do not overlap", r.InputTokens)
 	}
 	if r.ContextWindow != 1000000 {
 		t.Errorf("ContextWindow = %d", r.ContextWindow)
@@ -153,5 +154,17 @@ func TestContextPressure(t *testing.T) {
 	}
 	if p := ContextPressure(Run{InputTokens: 500_000}); p != 0 {
 		t.Errorf("pressure = %d: unknown window must report 0, not divide by zero", p)
+	}
+}
+
+func TestTokenBreakdownWeighting(t *testing.T) {
+	b := TokenBreakdown{Input: 1000, CacheRead: 10000, CacheCreation: 1000, Output: 1000}
+	if got := b.Total(); got != 13000 {
+		t.Errorf("Total = %d, want 13000", got)
+	}
+	// 1000 + 10000*0.1 + 1000*2 + 1000*5 = 9000. Raw totals overstate a
+	// cache-heavy session, so a budget built on them binds at the wrong time.
+	if got := b.Effective(); got != 9000 {
+		t.Errorf("Effective = %d, want 9000", got)
 	}
 }

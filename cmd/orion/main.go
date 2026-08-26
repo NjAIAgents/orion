@@ -441,6 +441,22 @@ func runBudget(args []string) {
 			fmt.Printf("\nCHECKPOINT %d%% reached and not acknowledged.\n", st.Crossed)
 			fmt.Printf("Runs are stopped until: orion budget ack %d\n", st.Crossed)
 		}
+		// Total consumption across EVERY Claude Code session, not just the
+		// runs Orion supervised. A budget that ignored the interactive
+		// session you spent the morning in would measure the wrong thing.
+		if tu, scanErr := budget.ScanTranscripts(budget.TranscriptDir(), st.WindowStart); scanErr == nil && tu.Turns > 0 {
+			fmt.Printf("\nall Claude Code usage in the same window\n")
+			fmt.Printf("  sessions   %d (%d turns, %d from subagents)\n", tu.Sessions, tu.Turns, tu.Sidechain)
+			fmt.Printf("  input      %s new, %s cache write, %s cache read\n",
+				human(tu.Tokens.Input), human(tu.Tokens.CacheCreation), human(tu.Tokens.CacheRead))
+			fmt.Printf("  output     %s\n", human(tu.Tokens.Output))
+			fmt.Printf("  raw total  %s\n", human(tu.Tokens.Total()))
+			fmt.Printf("  effective  %s  (cache reads 0.1x, writes 2x, output 5x)\n", human(tu.Tokens.Effective()))
+			if tu.Skipped > 0 {
+				fmt.Printf("  NOTE       %d transcript(s) unreadable; the total is partial\n", tu.Skipped)
+			}
+		}
+
 		if runs := ledger.Recent(5); len(runs) > 0 {
 			fmt.Println("\nrecent")
 			for _, r := range runs {
@@ -561,6 +577,18 @@ func runNJAgents(args []string) {
 		fmt.Fprintf(os.Stderr, "orion: unknown njagents subcommand %q (status|update|install)\n", sub)
 		os.Exit(64)
 	}
+}
+
+func human(n int) string {
+	switch {
+	case n >= 1_000_000_000:
+		return fmt.Sprintf("%.2fB", float64(n)/1e9)
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	case n >= 1_000:
+		return fmt.Sprintf("%.0fk", float64(n)/1e3)
+	}
+	return fmt.Sprint(n)
 }
 
 func ownerLabel(i *njagents.Install) string {
