@@ -71,6 +71,37 @@ if gh release view "$VERSION_TAG" --repo "$RELEASES_REPO" >/dev/null 2>&1; then
   die "release $VERSION_TAG already published to $RELEASES_REPO"
 fi
 
+# ------------------------------------------------------------ release notes
+
+# Release notes come from CHANGELOG.md, not from a generic sentence.
+#
+# The generic line ("Binaries for orion vX.Y.Z") is the same for every
+# release, which makes the release page useless for the one question it is
+# asked: should I upgrade, and what changes if I do. Thirty-three commits
+# deserve better than a filename.
+#
+# Falls back to the generic line when there is no matching section, because a
+# missing changelog entry must not block a release -- but it says so, so the
+# omission is visible rather than silent.
+notes_file="$(mktemp)"
+extract_notes() {
+  [ -f CHANGELOG.md ] || return 1
+  awk -v tag="## $VERSION_TAG" '
+    $0 == tag { found = 1; next }
+    found && /^## / { exit }
+    found { print }
+  ' CHANGELOG.md > "$notes_file"
+  [ -s "$notes_file" ]
+}
+
+if extract_notes; then
+  echo "    notes from CHANGELOG.md ($(wc -l < "$notes_file" | tr -d " ") lines)"
+else
+  echo "WARNING: no '## $VERSION_TAG' section in CHANGELOG.md; using a generic note" >&2
+  printf 'Binaries for orion %s. Each archive includes LICENSE and NOTICE.\n' \
+    "$VERSION_TAG" > "$notes_file"
+fi
+
 # ---------------------------------------------------------------- the gate
 
 step "Gate: build, vet, gofmt, tests"
@@ -107,7 +138,7 @@ else
   gh release create "$VERSION_TAG" \
     --repo "$RELEASES_REPO" \
     --title "orion $VERSION_TAG" \
-    --notes "Binaries for orion $VERSION_TAG. Source is maintained privately; each archive includes LICENSE and NOTICE." \
+    --notes-file "$notes_file" \
     dist/orion_*.tar.gz dist/orion_*.zip dist/checksums.txt
 fi
 
