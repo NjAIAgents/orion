@@ -24,7 +24,9 @@ import (
 	"github.com/orion-sdlc/orion/internal/hook"
 	"github.com/orion-sdlc/orion/internal/lessons"
 	"github.com/orion-sdlc/orion/internal/njagents"
+	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/provision"
+	"github.com/orion-sdlc/orion/internal/report"
 	"github.com/orion-sdlc/orion/internal/state"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
@@ -57,6 +59,11 @@ DEPENDENCIES
   orion njagents status       where nj-agents is, which commit, how stale
   orion njagents update       fast-forward Orion's own clone, if it has one
   orion njagents install      wire Orion's clone into a dir (only if no global)
+
+MONITORING
+  orion report [--since 7d]   digest: failures, workspaces, budget, usage
+  orion report --notify       also send it to ORION_NOTIFY_WEBHOOK (Slack)
+  orion logs <id> [--tail n]  the failing tail of a workspace's runs
 
 BUDGET (rolling 7 days, your limit, not your plan's)
   orion budget status         spend, tokens and the next checkpoint
@@ -114,6 +121,11 @@ func main() {
 		runFix(os.Args[2])
 	case "njagents", "nj-agents":
 		runNJAgents(os.Args[2:])
+	case "report":
+		runReport(os.Args[2:])
+	case "logs":
+		mustArg(os.Args, 2, "orion logs <id>")
+		runLogs(os.Args[2], os.Args[3:])
 	case "budget":
 		runBudget(os.Args[2:])
 	case "lessons":
@@ -395,6 +407,87 @@ func runTrackerProvision(ws *workspace.Workspace, cfg config.Config, confirm fun
 	fmt.Println("\nNext, decompose the plan into issues. The whole tree is previewed")
 	fmt.Println("for one approval before anything is created:")
 	fmt.Printf("  claude -p \"Use /pm-plan to decompose plans/*.plan.md into %s. Preview the full tree and wait for approval.\"\n", b.Key)
+}
+
+// runReport prints the digest, and optionally sends it.
+//
+// Exit code is 1 when something needs a human. That is what makes it usable
+// from cron without a wrapper: a silent success stays silent, and only a
+// real problem produces mail.
+func runReport(args []string) {
+	since := time.Now().Add(-parseDuration(argFlag(args, "--since", "7d"), 7*24*time.Hour))
+	cfg := config.Load(rootOrCwd())
+	d := report.Build(workspace.Home(), since,
+		budget.Limits{WeeklyUSD: cfg.Budget.WeeklyUSD, WeeklyTokens: cfg.Budget.WeeklyTokens})
+
+	text := d.Text()
+	fmt.Print(text)
+
+	if hasFlag(args, "--notify") {
+		level := notify.Info
+		if !d.Healthy() {
+			level = notify.Warning
+		}
+		title := "orion: all clear"
+		if !d.Healthy() {
+			title = fmt.Sprintf("orion: %d failure(s), %d needing attention",
+				len(d.Failures), len(d.Attention))
+		}
+		// Send even when healthy if asked: a heartbeat that only appears on
+		// failure is indistinguishable from a broken cron job.
+		if errs := notify.Send(notify.Event{Level: level, Title: title, Body: text}); len(errs) > 0 {
+			for _, e := range errs {
+				fmt.Fprintf(os.Stderr, "orion: notify: %v\n", e)
+			}
+		}
+	}
+	if !d.Healthy() {
+		os.Exit(1)
+	}
+}
+
+// runLogs shows the tail of a workspace's runs, which is what someone wants
+// when a stage failed: not the whole transcript, the end of it.
+func runLogs(id string, args []string) {
+	ws, err := workspace.Open(id)
+	exitOn(err)
+	logs, err := report.LogsFor(ws)
+	exitOn(err)
+	if len(logs) == 0 {
+		fmt.Printf("no run logs yet for %s\n", ws.ID)
+		return
+	}
+	n := intFlag(args, "--tail", 40)
+	count := intFlag(args, "--runs", 1)
+	if count > len(logs) {
+		count = len(logs)
+	}
+	for i := 0; i < count; i++ {
+		fmt.Printf("=== %s\n", filepath.Base(logs[i]))
+		tail, tailErr := report.TailLog(logs[i], n)
+		if tailErr != nil {
+			fmt.Fprintf(os.Stderr, "  unreadable: %v\n", tailErr)
+			continue
+		}
+		fmt.Println(tail)
+		fmt.Println()
+	}
+}
+
+// parseDuration accepts 7d, 24h, 90m. time.ParseDuration has no day unit,
+// and a report window is most naturally expressed in days.
+func parseDuration(s string, fallback time.Duration) time.Duration {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, "d") {
+		if n, err := strconv.Atoi(strings.TrimSuffix(s, "d")); err == nil && n > 0 {
+			return time.Duration(n) * 24 * time.Hour
+		}
+		return fallback
+	}
+	if d, err := time.ParseDuration(s); err == nil && d > 0 {
+		return d
+	}
+	return fallback
 }
 
 // runBudget reports and acknowledges the rolling weekly budget.

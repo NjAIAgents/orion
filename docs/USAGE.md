@@ -264,7 +264,60 @@ Within a single long stage, context can still climb. Orion reports it: when a
 run's input passes 70% of the model's context window, it says so and suggests
 splitting the stage, because that is the only lever that exists.
 
-## 8. Keeping nj-agents current
+## 8. Monitoring, failures and Slack
+
+```bash
+orion report                  # digest: failures, workspaces, budget, usage
+orion report --since 24h      # narrower window (7d, 24h, 90m)
+orion report --notify         # also send it to your webhook
+orion logs <id> --tail 60     # the failing tail of a workspace's runs
+orion logs <id> --runs 3      # the last three runs
+```
+
+`orion report` **exits 1 when something needs a human** and 0 otherwise, so
+cron stays quiet unless there is a problem:
+
+```cron
+0 9 * * *  /opt/homebrew/bin/orion report --notify
+```
+
+The digest leads with what is actionable — quota-parked workspaces, an
+unacknowledged budget checkpoint, failed runs with their log paths — because
+a digest that buries the actionable part under a status table becomes
+wallpaper.
+
+### Slack
+
+Outbound works today with no extra software. Create a Slack incoming webhook
+and export it:
+
+```bash
+export ORION_NOTIFY_WEBHOOK='https://hooks.slack.com/services/...'
+```
+
+Orion posts JSON with a Slack-compatible `text` field, so a raw incoming
+webhook works with no adapter. You will get: any stage failure, a tripped
+breaker, a quota wall with its resume time, and whatever `orion report
+--notify` sends.
+
+`ORION_NOTIFY_COMMAND` runs an arbitrary command instead, if you would rather
+route through something else. Desktop notifications fire on macOS and Windows
+regardless.
+
+### Talking back to Orion
+
+Orion is a CLI invoked by you or by cron. It has no listener, so Slack is
+one-way by design. To make it conversational, drive it from an interactive
+Claude session with the Slack MCP connected: you ask Claude, Claude runs the
+`orion` commands and reports back into the channel. That puts the
+conversation where Claude already is and adds no service to run or secure.
+
+A real Slack app with socket mode would let you command Orion from Slack
+directly. It is also a long-running process with tokens to protect, which is
+a lot of attack surface for a single-user supervisor. It is deliberately not
+built.
+
+## 9. Keeping nj-agents current
 
 It ships independently of Orion, so its improvements arrive only when
 something fetches them.
@@ -279,7 +332,7 @@ work in progress. It prints the `git -C ... pull` to run yourself.
 
 ---
 
-## 9. Cross-project memory
+## 10. Cross-project memory
 
 A correction learned in one project should not be relearned in the next.
 
@@ -297,7 +350,7 @@ invisibly.
 
 ---
 
-## 10. Releasing Orion itself
+## 11. Releasing Orion itself
 
 ```bash
 make release TAG=v0.1.0 DRY=1   # rehearse, publishes nothing

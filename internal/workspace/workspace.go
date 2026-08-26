@@ -243,6 +243,26 @@ func (w *Workspace) SaveTask() error {
 	return os.WriteFile(w.TaskPath(), b, 0o644)
 }
 
+// IDs lists provisioned workspace ids. Separated from List so a caller that
+// wants the data rather than the rendering does not have to parse a table.
+func IDs() ([]string, error) {
+	entries, err := os.ReadDir(projectsDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			out = append(out, e.Name())
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // Open loads an existing workspace by id or by unambiguous prefix.
 func Open(id string) (*Workspace, error) {
 	dir, err := resolve(id)

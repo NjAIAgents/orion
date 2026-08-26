@@ -214,6 +214,17 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	if last.ExitCode != 0 {
 		return last, fmt.Errorf("stage %s failed: %s", opts.Stage, last.Reason)
 	}
+	// Notify on failure, not only on the quota and timeout paths that
+	// already did. A supervisor that stays silent when a stage fails is one
+	// you have to poll, and a supervisor you have to poll is one you stop
+	// checking.
+	if last != nil && last.ExitCode != 0 {
+		notify.Send(notify.Event{
+			Level: notify.Blocked, Workspace: ws.ID,
+			Title: fmt.Sprintf("orion: %s failed in %s", opts.Stage, ws.ID),
+			Body:  fmt.Sprintf("exit %d after %d attempt(s): %s\nlog: %s", last.ExitCode, last.Attempts, last.Reason, last.LogPath),
+		})
+	}
 	return last, nil
 }
 
