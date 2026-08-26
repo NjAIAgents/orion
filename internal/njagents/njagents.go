@@ -251,12 +251,15 @@ func Clone(orionHome, ref string) (*Install, error) {
 // InstallInto wires the toolkit into one directory using the toolkit's OWN
 // installer, rather than Orion reimplementing the symlink layout.
 //
+// USUALLY UNNECESSARY. A global nj-agents install is visible to every
+// `claude` run regardless of directory, so a workspace needs no wiring at
+// all. This exists for the one case where it does: the user had no global
+// install, Orion fetched its own clone, and a workspace needs to see those
+// skills without Orion modifying the user's ~/.claude to get there.
+//
 // Reusing install.sh is the point. It knows about multiple runners, Codex's
 // TOML generation, hook registration and uninstall. A reimplementation would
 // drift from it and break in ways neither project could debug.
-//
-// --project keeps this per-workspace: Orion does not modify the user's
-// global ~/.claude just to run a job.
 func InstallInto(inst *Install, projectDir string) (string, error) {
 	if inst == nil || inst.Root == "" {
 		return "", fmt.Errorf("no nj-agents installation to install from")
@@ -315,41 +318,45 @@ type UpdateResult struct {
 	Skipped  string // non-empty when Orion declined, with the reason
 }
 
-// Update pulls the latest nj-agents.
+// Update pulls the latest nj-agents, and only ever into a clone Orion owns.
 //
-// nj-agents is developed independently, so its improvements only reach Orion
-// if something fetches them. But refreshing carries a real hazard that the
-// rules below exist to contain.
+// nj-agents ships independently of Orion, so its improvements reach Orion
+// only if something fetches them. Which clone that is decides everything:
 //
-//   - A clone Orion did not create belongs to the user. It may hold work in
-//     progress, a branch they are mid-way through, or deliberate local edits.
-//     Orion refuses to touch it unless explicitly told to, because silently
-//     pulling someone's working repository is how a tool destroys an
-//     afternoon.
-//   - A dirty tree is never updated. Fast-forward or nothing.
-//   - A pinned ref means the user chose reproducibility. Updating past it
-//     would quietly undo that choice, so it is refused and named.
-func Update(inst *Install, pinnedRef string, force bool) (*UpdateResult, error) {
+//   - A GLOBAL install belongs to the user. It is their working repository,
+//     very possibly the one they develop nj-agents in. Orion reads it and
+//     never writes to it. There is no override, because there is no
+//     legitimate caller for one: anyone who wants it updated can run git
+//     pull themselves, and a flag that lets a tool pull someone's working
+//     tree is a footgun whose only real use is to cause the accident it
+//     warns about.
+//   - Orion's OWN clone, fetched by `orion doctor --fix` when the user had
+//     none, is Orion's to maintain. Updating it needs no ceremony.
+//
+// Within Orion's own clone two rules still hold: fast-forward or nothing,
+// and a pinned ref is a reproducibility choice that an update must not
+// quietly undo.
+func Update(inst *Install, pinnedRef string) (*UpdateResult, error) {
 	if inst == nil || inst.Root == "" {
 		return nil, fmt.Errorf("no nj-agents installation found to update")
 	}
 	res := &UpdateResult{From: inst.Commit}
 
-	if !inst.Managed && !force {
-		res.Skipped = "this clone is yours, not Orion's (" + inst.Root + ").\n" +
-			"  Orion will not pull a repository it did not create: it may hold work in\n" +
-			"  progress. Update it yourself with `git -C " + inst.Root + " pull`,\n" +
-			"  or pass --force to let Orion fast-forward it."
+	if !inst.Managed {
+		res.Skipped = "this is your global nj-agents (" + inst.Root + "), not Orion's.\n" +
+			"  Orion reads it and does not write to it. Update it yourself:\n" +
+			"    git -C " + inst.Root + " pull"
 		return res, nil
 	}
-	if inst.Dirty && !force {
-		res.Skipped = "the working tree at " + inst.Root + " has local modifications.\n" +
-			"  Refusing to update over them. Commit or stash first."
+	if inst.Dirty {
+		res.Skipped = "Orion's clone at " + inst.Root + " has local modifications.\n" +
+			"  Refusing to update over them. Commit, stash, or delete the directory\n" +
+			"  and re-run `orion doctor --fix` for a clean copy."
 		return res, nil
 	}
-	if pinnedRef != "" && !force {
+	if pinnedRef != "" {
 		res.Skipped = "delegation.nj_agents_ref pins this to " + pinnedRef + ".\n" +
-			"  Updating would undo the pin you set. Change or clear the pin, or use --force."
+			"  Updating would undo the pin you set. Clear or change the pin first."
 		return res, nil
 	}
 

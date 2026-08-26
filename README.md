@@ -64,9 +64,18 @@ its clone, then Orion's own managed clone under `$ORION_HOME/vendor`. Your
 copy always wins over Orion's, because two clones drifting apart with Orion
 silently using the stale one is a genuinely nasty failure.
 
-`update` is fast-forward only, and it refuses to touch a clone Orion did not
-create unless you pass `--force`. Pulling someone's working repository can
-destroy uncommitted work.
+Which clone it is decides what Orion may do. A **global** install is yours,
+very possibly the repository you develop nj-agents in: Orion reads it and
+never writes to it, with no override, because anyone who wants it updated
+can run `git pull` themselves. **Orion's own** clone, fetched by
+`doctor --fix` when you had none, is Orion's to maintain and updates without
+ceremony.
+
+For the same reason `orion njagents install --project` is usually
+unnecessary and says so: a global install is already visible to every
+`claude` run, whatever directory it starts in. It exists only for the
+fallback case, so that Orion can wire its own clone into a workspace without
+modifying your `~/.claude`.
 
 The check resolves the symlink rather than trusting `~/.claude/skills`.
 Skills install as links back to a clone, and the shared contract they all
@@ -213,11 +222,11 @@ including the deliberate carve-out from its propose-never-act contract.
 
 Read these before relying on it.
 
-- **There is no LICENSE file.** Both a Homebrew formula and a Scoop manifest
-  must declare one, so `scripts/render-packaging.sh` refuses to render until
-  `ORION_LICENSE` is set. It will not invent a licence: a wrong SPDX id in a
-  public tap is a legal claim about the code, not a typo. Releases are
-  blocked on adding one.
+- **A private repo cannot feed a public tap.** Homebrew and Scoop download
+  release assets unauthenticated, so if this repository stays private the
+  formula and manifest will 404 for everyone, including you on a new
+  machine. Publishing to the tap only becomes useful when the repo is public
+  or the release assets are hosted somewhere reachable.
 - **The Jira REST calls have never touched a live instance.** Shapes and the
   project-creation permission key are inferred. The key is discovered at
   runtime rather than hardcoded, and an unrecognised key is treated as

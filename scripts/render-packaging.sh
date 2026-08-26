@@ -15,16 +15,28 @@ LICENSE="${ORION_LICENSE:-}"
 [ -n "$VERSION" ] || { echo "usage: $0 <version-without-v> [distdir] [outdir]" >&2; exit 64; }
 [ -f "$DIST/checksums.txt" ] || { echo "no $DIST/checksums.txt; run make dist first" >&2; exit 1; }
 
+# Detect the SPDX id from the LICENSE file when it was not set explicitly.
+# Detection is deliberately narrow: it recognises only texts it can identify
+# with certainty, and otherwise says nothing. Guessing an id from an
+# unrecognised licence would put a legal claim about the code into a public
+# tap, which is worse than failing the release.
+if [ -z "$LICENSE" ] && [ -f LICENSE ]; then
+  if grep -q "Apache License" LICENSE && grep -q "Version 2.0, January 2004" LICENSE; then
+    LICENSE="Apache-2.0"
+  elif grep -qi "MIT License" LICENSE; then
+    LICENSE="MIT"
+  fi
+fi
+
 if [ -z "$LICENSE" ]; then
-  # Homebrew requires a license field and Scoop expects one. Refuse rather
-  # than inventing one: a wrong licence string in a public tap is a legal
-  # claim about someone's code, not a cosmetic typo.
   echo "ERROR: no licence set." >&2
-  echo "  This repository has no LICENSE file, and both a Homebrew formula and a" >&2
-  echo "  Scoop manifest must declare one. Add a LICENSE file, then set" >&2
-  echo "  ORION_LICENSE to its SPDX id (for example Apache-2.0) and re-run." >&2
+  echo "  Both a Homebrew formula and a Scoop manifest must declare one, and the" >&2
+  echo "  LICENSE file here was not recognised. Set ORION_LICENSE to its SPDX id" >&2
+  echo "  (for example Apache-2.0) and re-run. It is deliberately not guessed:" >&2
+  echo "  a wrong SPDX id in a public tap is a legal claim about the code." >&2
   exit 1
 fi
+echo "licence: $LICENSE"
 
 # sha_for returns 1 rather than exiting: it is called in command
 # substitution, where an exit would kill only the subshell.

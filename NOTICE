@@ -1,0 +1,10 @@
+Orion
+Copyright 2026 Navjyot Nishant
+
+This product includes software developed by Navjyot Nishant
+(https://github.com/navjyotnishant/orion).
+
+Orion delegates review, secret scanning, test and build verification, pull
+request authoring and project decomposition to nj-agents
+(https://github.com/navjyotnishant/nj-agents), which is a separate work with
+its own licence and is not redistributed as part of this product.

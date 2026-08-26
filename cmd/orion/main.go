@@ -53,8 +53,8 @@ GUARDRAILS
 
 DEPENDENCIES
   orion njagents status       where nj-agents is, which commit, how stale
-  orion njagents update       fast-forward it (nj-agents ships independently)
-  orion njagents install      wire it into a workspace via its own install.sh
+  orion njagents update       fast-forward Orion's own clone, if it has one
+  orion njagents install      wire Orion's clone into a dir (only if no global)
 
 MEMORY (shared across every project)
   orion lessons add "<text>"  record a correction so it is not repeated
@@ -430,7 +430,7 @@ func runNJAgents(args []string) {
 		}
 
 	case "update":
-		res, err := njagents.Update(inst, cfg.Delegation.NJAgentsRef, hasFlag(args, "--force"))
+		res, err := njagents.Update(inst, cfg.Delegation.NJAgentsRef)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "orion: %v\n", err)
 			os.Exit(1)
@@ -451,6 +451,15 @@ func runNJAgents(args []string) {
 			fmt.Fprintln(os.Stderr, "orion njagents install --project <dir>")
 			os.Exit(64)
 		}
+		if inst != nil && !inst.Managed {
+			// A global install is already visible to every claude run, so
+			// wiring it into a directory achieves nothing and leaves symlinks
+			// behind that someone has to clean up later.
+			fmt.Printf("nj-agents is already installed globally at %s.\n", inst.Root)
+			fmt.Println("Every claude run can see those skills, so a per-project install")
+			fmt.Println("is unnecessary. Nothing to do.")
+			return
+		}
 		// Running a third-party installer is a different consent level from
 		// reading files, so it is never a side effect of another command.
 		fmt.Println("This runs the toolkit's own installer:")
@@ -470,9 +479,9 @@ func runNJAgents(args []string) {
 
 func ownerLabel(i *njagents.Install) string {
 	if i.Managed {
-		return "Orion-managed (safe to update automatically)"
+		return "Orion's own clone (orion njagents update maintains it)"
 	}
-	return "yours (Orion will not pull it without --force)"
+	return "your global install (Orion reads it; you update it)"
 }
 
 func rootOrCwd() string {

@@ -39,9 +39,9 @@ jobs:
 
       - name: Render brew formula and scoop manifest
         env:
-          # Both package managers require a licence field. The script refuses
-          # to render without one rather than inventing a legal claim, so this
-          # must match the repository's actual LICENSE file.
+          # Left empty on purpose: the script detects Apache-2.0 from the
+          # LICENSE file. Set this repository variable only to override a
+          # licence the script cannot identify with certainty.
           ORION_LICENSE: ${{ vars.ORION_LICENSE }}
         run: scripts/render-packaging.sh "${{ steps.v.outputs.version }}"
 
