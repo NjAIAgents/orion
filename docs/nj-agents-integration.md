@@ -35,7 +35,7 @@ not duplicate.
 | 5 Security, high risk | `/security-deep-review` (see cost note below) |
 | 5 PR | `/pr-describe` (draft only) |
 | 5 Commit | `/commit-assistant` |
-| 6 CI failure triage | `failure-triager` |
+| 6 CI failure triage | `/test-triage`, `/flake-watch` |
 | 6 Release | `/changelog`, `/release-notes` |
 | Decomposition | `/pm-plan` (Epic to Stories to Tasks) |
 
@@ -96,20 +96,41 @@ they write an artifact into the repo. They should be validated against
 `CONVENTIONS-authoring.md` and the harness checks before shipping, rather
 than being assumed compatible.
 
-## Unverified
+## Verified against the installed toolkit
 
-This mapping comes from the nj-agents README and its published documentation
-site, not from reading its `SKILL.md` files. Before shipping, confirm:
+Checked against the real install at `~/.claude/skills` (38 skills) and
+`CONVENTIONS.md` in the toolkit repo.
 
-- exact skill names and invocation syntax
-- **whether these skills can be invoked at all from a non-interactive
-  `claude -p` run**, which is how the supervisor drives them. This is the
-  load-bearing assumption of the whole delegation design.
-- the CI flag (`NJ_AGENTS_CI=1`) and the exit-code contract
-- the report directory variable (`NJ_AGENTS_REPORT_DIR`)
+**Confirmed:**
+
+- Every skill named in the table above exists, with one exception, corrected
+  below.
+- `/pre-push-review` is genuinely an umbrella over five dimensions, and the
+  five standalone skills exist: `review-secrets`, `review-correctness`,
+  `review-tests-build`, `review-dependencies`, `review-style`.
+- **Non-interactive mode is real.** CONVENTIONS.md §5: mode is signalled by
+  `NJ_AGENTS_CI=1`, a `--ci` argument, or the user stating it is for a
+  pipeline. This was the load-bearing assumption of the whole delegation
+  design, and it holds.
+- **The exit-code contract is real.** §5: `0` for PASS or WARN, non-zero
+  (`1`) for BLOCK. The supervisor can key off this directly.
+- **`NJ_AGENTS_REPORT_DIR` is real.** §6: reports go to
+  `${NJ_AGENTS_REPORT_DIR:-<repo>/.nj-agents-reports}/`, never into the repo
+  tree unless gitignored.
+- In CI mode, ambiguity resolves to the safe outcome: a suspected secret
+  BLOCKs rather than waiting for confirmation. That matches Orion's posture.
+
+**Corrected:** the CI failure triage row named `failure-triager`, which does
+not exist. The real skills are `/test-triage` and `/flake-watch`.
+
+**Still unverified:**
+
 - whether `/security-deep-review` honours a diff scope when driven
-  non-interactively, since `--full` on a large repo would be very expensive
+  non-interactively. `--full` on a large repo would be very expensive, and
+  the `extra_tool_calls_for_review` budget assumes a diff-scoped run.
+- the exact argument syntax each skill accepts when invoked via `claude -p`.
 
-If those skills turn out to be interactive-only, the delegation design needs
-rework: either the supervisor drives them differently, or Orion invokes them
-from a foreground session and the autonomy story shrinks.
+**Note for Orion's own skills:** CONVENTIONS.md §7 makes "advises only, never
+runs git push, never bypasses a hook" non-negotiable across every nj-agents
+skill. Orion's auto-merge carve-out does not change that for the delegated
+skills themselves; they still only advise, and Orion acts on the exit code.
