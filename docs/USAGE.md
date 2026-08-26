@@ -120,6 +120,36 @@ orion run <id> --stage pr          # /pr-describe, PR into develop
 orion status <id>
 ```
 
+### Discovery comes first
+
+`orion new` starts a conversation before anything is derived, because the
+intent stage runs through `claude -p` and **cannot ask you anything**. Without
+that conversation the agent's only options are to invent answers or write
+questions nobody reads, and one ambiguous sentence then propagates into spec,
+plan, scaffold and a tracker tree. Each stage carries a token floor of roughly
+30k, so a wrong premise costs nine floors plus the rework, against a
+conversation costing about one.
+
+```bash
+cd <workspace>/repo && claude "/capture-intent"
+```
+
+Anything left unresolved under **Open questions** blocks the `spec`, `plan`,
+`scaffold` and `decompose` stages until it is answered:
+
+```bash
+orion answer <id>       # lists what is blocking, and where to answer it
+```
+
+Answers go in the intent file itself, not a prompt, so every later stage reads
+them. Mark one resolved with `[x]`, `~~strikethrough~~`, or an inline
+`Answer: ...`.
+
+Orion skips discovery on its own when the idea already states constraints,
+scope or a rationale, and `--skip-discovery` bypasses it outright. A gate you
+cannot skip on a typo fix is a gate people learn to route around, and one
+routed around reflexively is worse than none.
+
 **Stop and read `plans/<slug>.plan.md` before letting build run.** It is the
 cheapest moment to change direction: editing a document rather than a diff.
 The bar is that an engineer who never saw the conversation could implement
@@ -154,12 +184,24 @@ sessions in that repo, not just to supervised runs.
 
 ```bash
 cd /path/to/your-repo
-cp "$(brew --prefix orion)/share/orion/orion.json" ./orion.json   # or from the source tree
-mkdir -p docs/intent specs plans evals
-orion doctor            # confirms the config parses and limits are in force
+orion init
 ```
 
-Then wire the hooks into that repo's `.claude/settings.json`:
+That writes `orion.json`, creates the artifact directories, and merges the
+hooks into `.claude/settings.json`. It is idempotent: running it twice
+changes nothing the second time.
+
+**It never overwrites what is already there.** That file usually holds your
+own hooks, permissions and MCP servers, and a copy-paste recipe invites you
+to lose all of it. `orion init` backs the file up first, adds only its own
+entries, recognises them on a re-run rather than duplicating, and **refuses
+outright** if the file is unparseable, because a file it cannot read may
+still be precious.
+
+**Restart any running Claude Code session afterwards.** Hooks are read at
+session start, so an already-open session stays unguarded.
+
+The hooks it merges in are:
 
 ```json
 {
@@ -179,11 +221,11 @@ The breaker is wired to **both** PreToolUse and PostToolUse deliberately.
 PostToolUse counts what happened; PreToolUse refuses the next call. Wiring
 only one gives you a breaker that reports but never stops.
 
-**Adopting in an existing repo has a consequence worth knowing before you do
-it.** `require_plan_before_edit` is on by default, so Orion will refuse edits
-until a plan exists in `plans/`. In a repo where you routinely make small
-changes without writing a plan, that will feel obstructive. Either write plans,
-or set it to `false` in `orion.json` and keep the other guardrails.
+`orion init` leaves `require_plan_before_edit` **off**, unlike a fresh
+workspace. In a repo where small changes are made without writing a plan
+first, leaving it on means hitting a wall on the first edit, and people
+disable Orion entirely rather than change one setting. Turn it on with
+`orion init --plan-gate`, or flip it in `orion.json` when the habit is there.
 
 ---
 

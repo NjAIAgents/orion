@@ -30,6 +30,7 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/discovery"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/quota"
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -100,6 +101,21 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	}
 	if err := os.MkdirAll(ws.LogsDir(), 0o755); err != nil {
 		return nil, err
+	}
+
+	// Discovery gate: refuse to design from an unanswered question.
+	//
+	// Mirrors require_plan_before_edit rather than inventing a second
+	// pattern: an artifact must be complete before the next stage reads it.
+	// Without this, one ambiguous sentence propagates into spec, plan,
+	// scaffold and a tracker tree, and every stage inherits the invention.
+	if stageNeedsIntent(opts.Stage) {
+		cfgEarly := config.Load(ws.RepoDir())
+		intentPath := filepath.Join(ws.RepoDir(), cfgEarly.Paths.Intent, ws.Task.Slug+".md")
+		if a := discovery.Assess(intentPath); a.Found && a.Open > 0 {
+			return &Result{ExitCode: 0, Reason: "stopped at the discovery gate"},
+				fmt.Errorf("%s", a.GateMessage(ws.ID))
+		}
 	}
 
 	// Budget checkpoint BEFORE spending, not after. Checking afterwards
@@ -226,6 +242,18 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 		})
 	}
 	return last, nil
+}
+
+// stageNeedsIntent reports whether a stage designs from the captured intent.
+// Intent itself is excluded for the obvious reason, and the later build and
+// ship stages are excluded because by then the spec and plan are the
+// governing artifacts and re-litigating intent would block finished work.
+func stageNeedsIntent(stage string) bool {
+	switch strings.ToLower(stage) {
+	case "spec", "design", "plan", "scaffold", "decompose":
+		return true
+	}
+	return false
 }
 
 // channelFor returns the workspace's Slack channel id, or "" when it has

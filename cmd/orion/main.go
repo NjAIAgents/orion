@@ -18,8 +18,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/discovery"
 	"github.com/orion-sdlc/orion/internal/doctor"
 	"github.com/orion-sdlc/orion/internal/hook"
 	"github.com/orion-sdlc/orion/internal/lessons"
@@ -39,8 +41,13 @@ var Version = "dev"
 
 const usage = `orion - AI-native SDLC orchestrator
 
+ADOPT AN EXISTING REPO
+  orion init [--plan-gate]    config, artifact dirs and hooks, idempotent
+
 WORKSPACES
   orion new "<idea>"          provision an isolated project workspace
+                              (--skip-discovery to bypass the intent conversation)
+  orion answer <id>           resolve the open questions blocking a workspace
   orion ls                    list workspaces
   orion open <id>             print a workspace path (use with cd)
   orion rm <id>               remove a workspace
@@ -95,6 +102,11 @@ func main() {
 		runHook(os.Args[2:])
 	case "doctor":
 		os.Exit(doctor.Run(os.Stdout, argFlag(os.Args[2:], "--path", "."), hasFlag(os.Args[2:], "--fix")))
+	case "init":
+		runInit(os.Args[2:])
+	case "answer":
+		mustArg(os.Args, 2, "orion answer <id>")
+		runAnswer(os.Args[2])
 	case "new":
 		mustArg(os.Args, 2, "orion new \"<idea>\"")
 		runNew(os.Args[2], os.Args[3:])
@@ -222,7 +234,100 @@ func runNew(idea string, rest []string) {
 	fmt.Printf("path       %s\n", ws.Dir)
 	fmt.Printf("repo       %s\n", ws.RepoDir())
 	fmt.Printf("sandbox    %s\n", ws.SandboxMode())
-	fmt.Printf("\nnext: orion run %s --stage intent\n", ws.ID)
+	needs, reason := discovery.NeedsDiscovery(idea)
+	switch {
+	case hasFlag(rest, "--skip-discovery"):
+		fmt.Printf("\nnext: orion run %s --stage intent\n", ws.ID)
+	case !needs:
+		fmt.Printf("\ndiscovery skipped: %s\n", reason)
+		fmt.Printf("next: orion run %s --stage intent\n", ws.ID)
+	default:
+		fmt.Printf("\nDiscovery first: %s\n\n", reason)
+		fmt.Println("The intent stage runs non-interactively, so it cannot ask you anything.")
+		fmt.Println("Have the conversation now, while changing course still means editing a")
+		fmt.Println("sentence rather than nine stages of derived work:")
+		fmt.Println()
+		fmt.Printf("  cd %s\n", ws.RepoDir())
+		fmt.Println("  claude \"/capture-intent\"")
+		fmt.Println()
+		fmt.Println("Then continue. Any question left open will block the spec stage until")
+		fmt.Printf("it is answered (orion answer %s).\n", ws.ID)
+		fmt.Println()
+		fmt.Printf("Skip this next time with: orion new \"...\" --skip-discovery\n")
+	}
+}
+
+// runInit adopts the current repository.
+func runInit(args []string) {
+	dir := argFlag(args, "--dir", ".")
+	abs, err := filepath.Abs(dir)
+	exitOn(err)
+
+	bin, lookErr := os.Executable()
+	if lookErr != nil {
+		bin = "orion"
+	} else if resolved, symErr := filepath.EvalSymlinks(bin); symErr == nil {
+		bin = resolved
+	}
+
+	res, err := adopt.Run(adopt.Options{
+		Dir:      abs,
+		Binary:   bin,
+		PlanGate: hasFlag(args, "--plan-gate"),
+		Force:    hasFlag(args, "--force"),
+	})
+	if res != nil {
+		fmt.Print(res.Summary())
+	}
+	exitOn(err)
+
+	fmt.Println()
+	fmt.Println("Orion is wired into this repo. Restart any running Claude Code session:")
+	fmt.Println("hooks are read at session start, so an open session is still unguarded.")
+	fmt.Println()
+	fmt.Println("  orion doctor        confirm the config parses and the limits are in force")
+	if !hasFlag(args, "--plan-gate") {
+		fmt.Println()
+		fmt.Println("The plan gate is off. Turn on gates.require_plan_before_edit in orion.json")
+		fmt.Println("when you want implementation blocked until a plan exists.")
+	}
+}
+
+// runAnswer walks the open questions blocking a workspace.
+func runAnswer(id string) {
+	ws, err := workspace.Open(id)
+	exitOn(err)
+	cfg := config.Load(ws.RepoDir())
+	path := filepath.Join(ws.RepoDir(), cfg.Paths.Intent, ws.Task.Slug+".md")
+
+	a := discovery.Assess(path)
+	if !a.Found {
+		fmt.Printf("no intent captured yet at %s\n", path)
+		fmt.Printf("run: orion run %s --stage intent\n", ws.ID)
+		os.Exit(1)
+	}
+	if a.Open == 0 {
+		fmt.Printf("no open questions in %s\n", path)
+		return
+	}
+
+	// Editing the file is the answer path, not a prompt loop. The answers
+	// belong in the committed artifact where every later stage reads them;
+	// capturing them in a terminal session would put them somewhere no
+	// stage can see.
+	fmt.Printf("%d open question(s) in %s\n\n", a.Open, path)
+	for _, q := range a.Questions {
+		if q.Answered {
+			continue
+		}
+		fmt.Printf("  - %s\n", q.Text)
+	}
+	fmt.Println()
+	fmt.Println("Answer them in the file itself, so every later stage reads the answer:")
+	fmt.Printf("  $EDITOR %s\n\n", path)
+	fmt.Println("Mark each one with [x], ~~strikethrough~~, or an inline \"Answer: ...\".")
+	fmt.Printf("Then: orion run %s --stage spec\n", ws.ID)
+	os.Exit(1)
 }
 
 // createProjectChannel makes the workspace's Slack channel and posts the
