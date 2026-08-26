@@ -134,6 +134,36 @@ func (c *Client) Replies(channelID, ts string) ([]Message, error) {
 // Best effort by design: an approval that cannot be attributed to a NAME is
 // still an approval from a verified id, and failing the merge over a cosmetic
 // lookup would be absurd. Falls back to the raw id.
+// LookupUser resolves a display name and reports why it could not.
+//
+// UserName swallows the error because a cosmetic lookup must never fail a
+// merge. That is right for the hot path and useless for diagnosis: a name
+// that will not resolve looks identical whether the scope is missing, the
+// token is stale, or the user simply does not exist. This is the version
+// that says which.
+func (c *Client) LookupUser(userID string) (string, error) {
+	var out struct {
+		User struct {
+			Name    string `json:"name"`
+			Profile struct {
+				DisplayName string `json:"display_name"`
+				RealName    string `json:"real_name"`
+			} `json:"profile"`
+		} `json:"user"`
+	}
+	if err := c.call("users.info", map[string]any{"user": userID}, &out); err != nil {
+		return "", scopeHint(err, "users:read", "resolve a user's display name")
+	}
+	for _, n := range []string{
+		out.User.Profile.DisplayName, out.User.Profile.RealName, out.User.Name,
+	} {
+		if strings.TrimSpace(n) != "" {
+			return n, nil
+		}
+	}
+	return userID, nil
+}
+
 func (c *Client) UserName(userID string) string {
 	var out struct {
 		User struct {

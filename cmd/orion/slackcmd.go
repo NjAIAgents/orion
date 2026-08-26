@@ -86,7 +86,7 @@ func runSlackCmd(args []string) {
 
 	// 5. The approval scopes, which are separate and easy to miss because
 	// posting works without them.
-	checkApprovalScopes(w, c, channel)
+	checkApprovalScopes(w, c, channel, id.UserID)
 }
 
 // recordChannel writes the channel onto the sandbox workspace bound to a
@@ -168,7 +168,7 @@ func resolveTestChannel(key string) (id, name, source string, err error) {
 // that can post perfectly well may be unable to read a single reaction, and
 // discovering that at the moment someone taps a tick on a merge request is
 // the worst possible time.
-func checkApprovalScopes(w *os.File, c *slack.Client, channel string) {
+func checkApprovalScopes(w *os.File, c *slack.Client, channel, botID string) {
 	fmt.Fprintln(w)
 	ok := true
 	if _, err := c.Reactions(channel, "0000000000.000000"); err != nil &&
@@ -181,6 +181,17 @@ func checkApprovalScopes(w *os.File, c *slack.Client, channel string) {
 		ui.Warn(w, "%v", err)
 		ok = false
 	}
+	// Names are a THIRD, independent scope. Posting works without it,
+	// reactions work without it, and an approval will still be honoured by
+	// user ID -- so the only symptom is a message naming a raw Uxxxx, which
+	// looks like a bug in Orion rather than a missing permission.
+	if name, err := c.LookupUser(botID); err != nil {
+		ui.Warn(w, "%v", err)
+		ok = false
+	} else {
+		ui.Ok(w, "ok", "names resolve (this bot reads as %q)", name)
+	}
+
 	if ok {
 		ui.Ok(w, "ok", "the approval scopes are granted; merge approvals can be read")
 		return

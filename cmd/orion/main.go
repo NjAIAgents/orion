@@ -72,6 +72,8 @@ RUNNING
   orion status <id>           show stage, breaker state and last run
   orion work <KEY> [KEY...]   work tickets, in the order given
   orion queue                 what the watcher would pick up, in order (read-only)
+  orion watch [KEY...]        run the queue by itself: work, collect, repeat
+                              (--once, --interval S, --max-jobs N, --dry-run)
   orion collect [KEY...]      finish tickets awaiting CI: close, refresh, prune
                               (--dry-run for verdicts only, --no-prune, --no-fix)
   orion repos                 project key -> repository, as adoption recorded it
@@ -185,6 +187,8 @@ func main() {
 		runSlackCmd(os.Args[2:])
 	case "collect":
 		runCollect(os.Args[2:])
+	case "watch":
+		runWatch(os.Args[2:])
 	case "reset":
 		runReset(os.Args[2:])
 	case "fix":

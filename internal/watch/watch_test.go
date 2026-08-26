@@ -1,0 +1,215 @@
+package watch
+
+import (
+	"bytes"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/orion-sdlc/orion/internal/collect"
+	"github.com/orion-sdlc/orion/internal/work"
+)
+
+type spy struct {
+	collects  int
+	worked    []string
+	queued    []string
+	queueErr  error
+	busy      bool
+	busyKey   string
+	busyErr   error
+	outcome   work.Outcome
+	sleeps    int
+	maxSleeps int
+}
+
+func (s *spy) deps() Deps {
+	return Deps{
+		Collect: func(collect.Options) []collect.Result {
+			s.collects++
+			return nil
+		},
+		Work: func(o work.Options) []work.Result {
+			s.worked = append(s.worked, o.Keys...)
+			out := s.outcome
+			if out == "" {
+				out = work.OutcomeCIWait
+			}
+			return []work.Result{{Key: o.Keys[0], Outcome: out}}
+		},
+		Queued: func(string, []string, string) ([]string, error) {
+			return s.queued, s.queueErr
+		},
+		InFlight: func(string, []string) (bool, string, error) {
+			return s.busy, s.busyKey, s.busyErr
+		},
+		Sleep: func(time.Duration) bool {
+			s.sleeps++
+			return s.sleeps < s.maxSleeps
+		},
+	}
+}
+
+func runWatch(t *testing.T, s *spy, o Options) string {
+	t.Helper()
+	stopping.Store(false)
+	var buf bytes.Buffer
+	o.Out = &buf
+	o.Home = t.TempDir()
+	if o.Interval == 0 {
+		o.Interval = time.Millisecond
+	}
+	if err := Run(o, s.deps()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return buf.String()
+}
+
+// Reconciling comes first because it is cheap and can FINISH work already
+// paid for. Starting a new job while a merged ticket sat unclosed would mean
+// spending money to begin something before banking something already done.
+func TestATickReconcilesBeforeItStartsAnything(t *testing.T) {
+	s := &spy{queued: []string{"FCIA-7"}}
+	runWatch(t, s, Options{Once: true})
+
+	if s.collects != 1 {
+		t.Errorf("collect ran %d times, want 1", s.collects)
+	}
+	if len(s.worked) != 1 || s.worked[0] != "FCIA-7" {
+		t.Errorf("worked = %v, want [FCIA-7]", s.worked)
+	}
+}
+
+// The claim label is the lock, and it lives on the TICKET. A watcher
+// restarted mid-job, or a second one somebody started by accident, must see
+// the same answer -- two agents in one repository fight over git.
+func TestNothingStartsWhileAJobIsAlreadyRunning(t *testing.T) {
+	s := &spy{busy: true, busyKey: "FCIA-6", queued: []string{"FCIA-7"}}
+	out := runWatch(t, s, Options{Once: true})
+
+	if len(s.worked) != 0 {
+		t.Fatalf("started %v while FCIA-6 was in flight", s.worked)
+	}
+	if !strings.Contains(out, "FCIA-6") {
+		t.Errorf("the reason nothing started must name what is running: %s", out)
+	}
+}
+
+// One at a time, however long the queue. The order a person expressed by
+// ranking their backlog is the whole point of a queue; running three at once
+// spends more to produce a less predictable order.
+func TestOnlyOneJobIsStartedPerTick(t *testing.T) {
+	s := &spy{queued: []string{"FCIA-7", "FCIA-8", "FCIA-9"}}
+	runWatch(t, s, Options{Once: true})
+
+	if len(s.worked) != 1 {
+		t.Fatalf("started %d jobs in one tick: %v", len(s.worked), s.worked)
+	}
+	if s.worked[0] != "FCIA-7" {
+		t.Errorf("started %s; the queue's own order must be respected", s.worked[0])
+	}
+}
+
+// The limit that makes a first unattended run safe to try.
+func TestMaxJobsStopsTheLoop(t *testing.T) {
+	s := &spy{queued: []string{"FCIA-7"}, maxSleeps: 99}
+	out := runWatch(t, s, Options{MaxJobs: 2})
+
+	if len(s.worked) != 2 {
+		t.Fatalf("started %d jobs, want exactly 2", len(s.worked))
+	}
+	if !strings.Contains(out, "the limit for this run") {
+		t.Errorf("stopping at the limit must be stated: %s", out)
+	}
+}
+
+// A ticket refused before spending anything -- budget, a dirty sandbox --
+// has not been "started". Counting it would burn the job limit on work that
+// never happened, and retrying it immediately would hammer the tracker while
+// the condition that refused it is still true.
+func TestASkippedTicketDoesNotCountAsAStartedJob(t *testing.T) {
+	s := &spy{queued: []string{"FCIA-7"}, outcome: work.OutcomeSkipped, maxSleeps: 3}
+	out := runWatch(t, s, Options{MaxJobs: 1})
+
+	if !strings.Contains(out, "not started") {
+		t.Errorf("a skip must be explained: %s", out)
+	}
+	// It kept looping rather than declaring the limit reached.
+	if s.sleeps == 0 {
+		t.Error("the loop ended as though the job limit had been consumed")
+	}
+}
+
+// A tick that fails must not end the watch. The usual causes -- a network
+// blip, an expired token -- are transient or fixable while it keeps running,
+// and a watcher that dies quietly means the fix also requires noticing.
+func TestATickErrorIsReportedAndTheLoopContinues(t *testing.T) {
+	s := &spy{queueErr: errors.New("jira timed out"), maxSleeps: 3}
+	out := runWatch(t, s, Options{})
+
+	if !strings.Contains(out, "jira timed out") {
+		t.Errorf("the error must be surfaced: %s", out)
+	}
+	if s.sleeps < 2 {
+		t.Errorf("the loop stopped after one failure (%d sleeps)", s.sleeps)
+	}
+}
+
+// Dry run is what someone reaches for before trusting this unattended. If it
+// starts an agent, it is worse than useless.
+func TestDryRunStartsNothing(t *testing.T) {
+	s := &spy{queued: []string{"FCIA-7"}}
+	out := runWatch(t, s, Options{Once: true, DryRun: true})
+
+	if len(s.worked) != 0 {
+		t.Fatalf("dry run started %v", s.worked)
+	}
+	if !strings.Contains(out, "would") {
+		t.Errorf("got: %s", out)
+	}
+}
+
+func TestAnEmptyQueueDoesNothingQuietly(t *testing.T) {
+	s := &spy{}
+	out := runWatch(t, s, Options{Once: true})
+
+	if len(s.worked) != 0 {
+		t.Fatal("started something with an empty queue")
+	}
+	// A tick with nothing to do must not produce output, or a watcher left
+	// running overnight fills a terminal with a thousand lines saying
+	// nothing happened -- and the one line that matters is lost in them.
+	if strings.Contains(out, "queued") {
+		t.Errorf("an idle tick should be silent, got: %s", out)
+	}
+}
+
+// Ctrl-c must not kill an agent mid-run: that leaves a ticket claimed with a
+// half-written branch and no process to finish it, which is precisely the
+// state an unattended tool must never create.
+func TestStoppingWaitsForTheCurrentStep(t *testing.T) {
+	stopping.Store(false)
+	s := &spy{queued: []string{"FCIA-7"}, maxSleeps: 99}
+
+	// Signal mid-job, as ctrl-c would.
+	d := s.deps()
+	inner := d.Work
+	d.Work = func(o work.Options) []work.Result {
+		stopping.Store(true)
+		return inner(o)
+	}
+
+	var buf bytes.Buffer
+	if err := Run(Options{Out: &buf, Home: t.TempDir(), Interval: time.Millisecond}, d); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(s.worked) != 1 {
+		t.Fatalf("the in-flight job was abandoned: %v", s.worked)
+	}
+	if !strings.Contains(buf.String(), "stopped") {
+		t.Errorf("stopping must be reported: %s", buf.String())
+	}
+	stopping.Store(false)
+}

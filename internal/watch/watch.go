@@ -1,0 +1,323 @@
+// Package watch is the loop that removes the last manual step.
+//
+// Everything else in Orion is already automatic between the moment a ticket
+// is claimed and the moment its branch merges. What remained was TRIGGERING:
+// a person typing `orion work FCIA-7`, then later `orion collect`. This turns
+// that into a label on a ticket.
+//
+// The design in one line: a tick does the cheap reconciling first, then
+// starts at most one new job, then sleeps.
+//
+// Cheap first, because collect costs one API call per waiting ticket and can
+// finish work already paid for -- closing a merged ticket, pushing a CI fix,
+// asking for an approval. Starting new work before finishing old work would
+// mean paying to begin something while something else sat done-but-unclosed.
+//
+// One job at a time, because two agents in one repository fight over git, and
+// because the ordering a person expressed by ranking their backlog is the
+// entire point of a queue. Concurrency here would spend more money to produce
+// a less predictable order.
+//
+// The state is on the tickets, not in this process. A watcher killed
+// mid-flight loses nothing that matters: the labels say what was claimed,
+// what is awaiting CI, and what failed, so a restart resumes rather than
+// repeats. That is what makes it safe to run this on a laptop that closes.
+package watch
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"strings"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"github.com/orion-sdlc/orion/internal/collect"
+	"github.com/orion-sdlc/orion/internal/registry"
+	"github.com/orion-sdlc/orion/internal/tracker"
+	"github.com/orion-sdlc/orion/internal/ui"
+	"github.com/orion-sdlc/orion/internal/work"
+	"github.com/orion-sdlc/orion/internal/workspace"
+)
+
+// Options configure one watcher.
+type Options struct {
+	Out  io.Writer
+	Home string
+	// Interval between ticks. A short one costs API calls and nothing else,
+	// because a tick with nothing to do does nothing.
+	Interval time.Duration
+	// MaxJobs caps how many tickets this watcher will START. Zero means
+	// unlimited, which is what a long-lived daemon wants and what a first
+	// unattended run very much does not.
+	MaxJobs int
+	// Once runs a single tick and exits. The form to put on a timer, where
+	// the operating system owns the schedule and a crash is somebody else's
+	// problem to restart.
+	Once bool
+	// DryRun reports what each tick would do and starts nothing.
+	DryRun bool
+	// Projects limits the watcher to specific project keys. Empty means
+	// every registered project.
+	Projects []string
+	// QueueLabel is what a ticket carries to ask for work. Empty means
+	// tracker.QueueLabelDefault. One label across every watched project,
+	// because a cross-project query can only ask about one -- a project
+	// using a different label needs its own watcher.
+	QueueLabel string
+	// WorkOpts are passed through to each job.
+	MaxMinutes int
+	MaxTurns   int
+}
+
+// Deps are the seams. Both of these are the real commands, injected so the
+// loop itself can be tested without a tracker, a network, or an agent.
+type Deps struct {
+	// Collect reconciles everything already in flight.
+	Collect func(opts collect.Options) []collect.Result
+	// Work starts one ticket.
+	Work func(opts work.Options) []work.Result
+	// Queued returns the keys waiting to be started, in the order they
+	// should be started.
+	Queued func(home string, projects []string, label string) ([]string, error)
+	// InFlight reports whether a job is already running somewhere. The
+	// claim label is the lock, so this reads the tracker rather than any
+	// state this process holds -- a watcher restarted mid-job must not
+	// start a second agent on the same repository.
+	InFlight func(home string, projects []string) (bool, string, error)
+	Sleep    func(d time.Duration) bool // returns false if interrupted
+	Now      func() time.Time
+}
+
+// Run watches until interrupted, or until MaxJobs tickets have been started.
+func Run(opts Options, deps Deps) error {
+	w := opts.Out
+	if w == nil {
+		w = os.Stdout
+	}
+	if opts.Home == "" {
+		opts.Home = workspace.Home()
+	}
+	if opts.Interval <= 0 {
+		opts.Interval = 2 * time.Minute
+	}
+	if deps.Now == nil {
+		deps.Now = time.Now
+	}
+	if deps.Sleep == nil {
+		deps.Sleep = sleepInterruptible
+	}
+
+	started := 0
+	for tick := 1; ; tick++ {
+		if stopping.Load() {
+			break
+		}
+
+		n, err := oneTick(opts, deps, w, opts.MaxJobs-started)
+		if err != nil {
+			// A tick that fails is not a reason to stop watching: the usual
+			// cause is a network blip or an expired token, and both are
+			// transient or fixable while this keeps running. Stopping would
+			// mean the fix also requires noticing that the watcher died.
+			ui.Warn(w, "tick %d: %v", tick, err)
+		}
+		started += n
+
+		if opts.Once {
+			break
+		}
+		if opts.MaxJobs > 0 && started >= opts.MaxJobs {
+			ui.Ok(w, "ok", "started %d job(s); the limit for this run", started)
+			break
+		}
+		if !deps.Sleep(opts.Interval) {
+			break
+		}
+	}
+
+	if stopping.Load() {
+		fmt.Fprintln(w, "\nstopped. Nothing was left half-done: a ticket's labels say\n"+
+			"where it got to, so the next watcher picks it up from there.")
+	}
+	return nil
+}
+
+// oneTick does the reconciling, then starts at most one job. Returns how many
+// jobs it started, which is always 0 or 1.
+func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (int, error) {
+	// 1. Finish what is already in flight. Cheap, and it can free the job
+	// slot this tick is about to look for.
+	if deps.Collect != nil {
+		deps.Collect(collect.Options{
+			Out: w, Home: opts.Home, DryRun: opts.DryRun,
+		})
+	}
+
+	// 2. Is something already running? The label is the lock, and it lives
+	// on the ticket rather than in this process, so a restarted watcher --
+	// or a second one somebody started by accident -- sees the same answer.
+	if deps.InFlight != nil {
+		busy, key, err := deps.InFlight(opts.Home, opts.Projects)
+		if err != nil {
+			return 0, err
+		}
+		if busy {
+			ui.Ok(w, "working", "%s is still running; not starting anything else", key)
+			return 0, nil
+		}
+	}
+
+	if remaining == 0 && opts.MaxJobs > 0 {
+		return 0, nil
+	}
+
+	// 3. Start the next ticket, and only one.
+	keys, err := deps.Queued(opts.Home, opts.Projects, opts.QueueLabel)
+	if err != nil {
+		return 0, err
+	}
+	if len(keys) == 0 {
+		return 0, nil
+	}
+	next := keys[0]
+
+	if opts.DryRun {
+		ui.Ok(w, "would", "start %s (%d queued)", next, len(keys))
+		return 0, nil
+	}
+
+	ui.Ok(w, "claimed", "%s (%d queued)", next, len(keys))
+	res := deps.Work(work.Options{
+		Keys: []string{next}, Out: w, Home: opts.Home,
+		MaxMinutes: opts.MaxMinutes, MaxTurns: opts.MaxTurns,
+	})
+
+	// A job that was refused before spending anything -- budget, a dirty
+	// sandbox -- must not count against the run's job limit, and must not be
+	// retried immediately: the condition that refused it is still true, and
+	// a tight loop would hammer the tracker to no purpose.
+	for _, r := range res {
+		if r.Outcome == work.OutcomeSkipped {
+			ui.Warn(w, "%s was not started; waiting rather than retrying immediately", r.Key)
+			return 0, nil
+		}
+	}
+	return 1, nil
+}
+
+// Queued lists tickets carrying the queue label, in the tracker's order.
+//
+// Scoped to registered projects. An unscoped query would match a label
+// somebody applied by hand in an unrelated project, and this is the function
+// that decides what an agent is turned loose on.
+func Queued(j *tracker.Jira, home string, projects []string, label string) ([]string, error) {
+	keys, err := scope(home, projects)
+	if err != nil || len(keys) == 0 {
+		return nil, err
+	}
+	if label == "" {
+		label = tracker.QueueLabelDefault
+	}
+	// Excluding the other managed labels is what stops a ticket being picked
+	// up twice. A ticket keeps its queue label while it is worked, so
+	// matching on that alone would re-claim something already in flight the
+	// moment the in-flight check raced or a second watcher existed.
+	jql := fmt.Sprintf("project IN (%s) AND labels = %q AND labels NOT IN (%q, %q, %q) "+
+		"ORDER BY priority DESC, Rank ASC",
+		strings.Join(quoted(keys), ", "), label,
+		tracker.LabelWorking, tracker.LabelCIWait, tracker.LabelFailed)
+
+	issues, err := j.Search(jql, 25)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, i := range issues {
+		out = append(out, i.Key)
+	}
+	return out, nil
+}
+
+// InFlight reports whether any ticket is currently claimed.
+func InFlight(j *tracker.Jira, home string, projects []string) (bool, string, error) {
+	keys, err := scope(home, projects)
+	if err != nil || len(keys) == 0 {
+		return false, "", err
+	}
+	jql := fmt.Sprintf("project IN (%s) AND labels = %q",
+		strings.Join(quoted(keys), ", "), tracker.LabelWorking)
+	issues, err := j.Search(jql, 5)
+	if err != nil {
+		return false, "", err
+	}
+	if len(issues) == 0 {
+		return false, "", nil
+	}
+	return true, issues[0].Key, nil
+}
+
+func scope(home string, projects []string) ([]string, error) {
+	if len(projects) > 0 {
+		out := make([]string, len(projects))
+		for i, p := range projects {
+			out[i] = strings.ToUpper(strings.TrimSpace(p))
+		}
+		return out, nil
+	}
+	f, err := registry.Load(home)
+	if err != nil {
+		return nil, err
+	}
+	return f.Keys(), nil
+}
+
+func quoted(in []string) []string {
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = fmt.Sprintf("%q", s)
+	}
+	return out
+}
+
+// stopping is set by the signal handler and read between steps.
+//
+// A flag rather than a hard exit: ctrl-c must not kill an agent mid-run.
+// Killing one leaves a ticket claimed with a half-written branch and no
+// process to finish it, which is the state that needs a person to untangle
+// it -- exactly what an unattended tool must not create. So the signal
+// arrives, the current job finishes, and the loop stops before the next one.
+var stopping atomic.Bool
+
+// Listen installs the signal handler. Separate from Run so a caller can
+// install it before any long-running work begins.
+func Listen(w io.Writer) {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sig
+		stopping.Store(true)
+		fmt.Fprintln(w, "\nstopping after the current step. Press ctrl-c again to force,\n"+
+			"which risks leaving a ticket claimed with nothing running.")
+		// A second signal restores the default behaviour, so a genuinely
+		// stuck process can still be killed without finding its pid.
+		signal.Stop(sig)
+	}()
+}
+
+func sleepInterruptible(d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			return true
+		case <-time.After(200 * time.Millisecond):
+			if stopping.Load() {
+				return false
+			}
+		}
+	}
+}

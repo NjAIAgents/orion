@@ -327,6 +327,12 @@ func walkADF(n *adfNode, b *strings.Builder) {
 // would re-run the agent and open a SECOND pull request for the same ticket.
 // On the ticket, a restarted watcher sees ci-wait, finds the existing pull
 // request and resumes polling without spending anything.
+// QueueLabelDefault is the label a ticket carries to ask for work. It is
+// per-project config (tracker.queue_label), but a watcher spans projects and
+// a cross-project query can only ask about one label, so this is the value
+// they are expected to share.
+const QueueLabelDefault = "ORION"
+
 const (
 	LabelWorking = "orion-working"
 	LabelCIWait  = "orion-ci-wait"
