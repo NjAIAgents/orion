@@ -60,9 +60,9 @@ type Tracker struct {
 }
 
 type Gates struct {
-	RequirePlanBeforeEdit         bool `json:"require_plan_before_edit"`
-	ProtectTestsDuringFix         bool `json:"protect_tests_during_fix"`
-	ProductionRequiresAuth        bool `json:"production_requires_authorization"`
+	RequirePlanBeforeEdit          bool `json:"require_plan_before_edit"`
+	ProtectTestsDuringFix          bool `json:"protect_tests_during_fix"`
+	ProductionRequiresAuth         bool `json:"production_requires_authorization"`
 	BlockDirectPushToDefaultBranch bool `json:"block_direct_push_to_default_branch"`
 }
 
@@ -77,13 +77,13 @@ type Paths struct {
 }
 
 type AutoMerge struct {
-	Enabled           bool     `json:"enabled"`
-	Environments      []string `json:"environments"`
-	RequireChecks     []string `json:"require_checks"`
-	RequireEvalPass   float64  `json:"require_eval_pass_rate"`
-	MinEvalCases      int      `json:"min_eval_cases"`
-	ForbidPaths       []string `json:"forbid_paths"`
-	MaxChangedFiles   int      `json:"max_changed_files"`
+	Enabled         bool     `json:"enabled"`
+	Environments    []string `json:"environments"`
+	RequireChecks   []string `json:"require_checks"`
+	RequireEvalPass float64  `json:"require_eval_pass_rate"`
+	MinEvalCases    int      `json:"min_eval_cases"`
+	ForbidPaths     []string `json:"forbid_paths"`
+	MaxChangedFiles int      `json:"max_changed_files"`
 }
 
 // VCS describes the branch model.
@@ -111,11 +111,11 @@ type VCS struct {
 }
 
 type Config struct {
-	Version   int               `json:"version"`
-	Limits    Limits            `json:"limits"`
-	Gates     Gates             `json:"gates"`
-	Paths     Paths             `json:"paths"`
-	Autonomy  map[string]string `json:"autonomy"`
+	Version    int               `json:"version"`
+	Limits     Limits            `json:"limits"`
+	Gates      Gates             `json:"gates"`
+	Paths      Paths             `json:"paths"`
+	Autonomy   map[string]string `json:"autonomy"`
 	AutoMerge  AutoMerge         `json:"auto_merge"`
 	VCS        VCS               `json:"vcs"`
 	Tracker    Tracker           `json:"tracker"`

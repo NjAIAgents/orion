@@ -100,12 +100,12 @@ func (in Input) Failed() bool {
 		return false
 	}
 	var tr struct {
-		Success    *bool  `json:"success"`
-		IsError    *bool  `json:"is_error"`
-		ExitCode   *int   `json:"exit_code"`
-		Error      string `json:"error"`
-		Stderr     string `json:"stderr"`
-		Interrupted *bool `json:"interrupted"`
+		Success     *bool  `json:"success"`
+		IsError     *bool  `json:"is_error"`
+		ExitCode    *int   `json:"exit_code"`
+		Error       string `json:"error"`
+		Stderr      string `json:"stderr"`
+		Interrupted *bool  `json:"interrupted"`
 	}
 	if err := json.Unmarshal(in.ToolResponse, &tr); err != nil {
 		// Some tools return a bare string or array. Not a failure signal.

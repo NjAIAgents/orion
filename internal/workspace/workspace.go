@@ -78,12 +78,12 @@ type Workspace struct {
 	Task Task
 }
 
-func (w Workspace) RepoDir()      string { return filepath.Join(w.Dir, "repo") }
-func (w Workspace) MetaDir()      string { return filepath.Join(w.Dir, ".orion") }
-func (w Workspace) LogsDir()      string { return filepath.Join(w.MetaDir(), "logs") }
-func (w Workspace) StateDir()     string { return filepath.Join(w.MetaDir(), "state") }
+func (w Workspace) RepoDir() string      { return filepath.Join(w.Dir, "repo") }
+func (w Workspace) MetaDir() string      { return filepath.Join(w.Dir, ".orion") }
+func (w Workspace) LogsDir() string      { return filepath.Join(w.MetaDir(), "logs") }
+func (w Workspace) StateDir() string     { return filepath.Join(w.MetaDir(), "state") }
 func (w Workspace) SettingsPath() string { return filepath.Join(w.MetaDir(), "settings.json") }
-func (w Workspace) TaskPath()     string { return filepath.Join(w.MetaDir(), "task.json") }
+func (w Workspace) TaskPath() string     { return filepath.Join(w.MetaDir(), "task.json") }
 
 func (w Workspace) SandboxMode() string {
 	if w.Task.Container {

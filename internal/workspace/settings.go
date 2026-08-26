@@ -74,7 +74,7 @@ func writeSettings(ws *Workspace) error {
 			// If the sandbox cannot initialize, refuse to run. The alternative
 			// is running unsandboxed while believing you are sandboxed, which
 			// is worse than not running.
-			"failIfUnavailable":       true,
+			"failIfUnavailable":        true,
 			"allowUnsandboxedCommands": false,
 			"network": map[string]any{
 				"allowedDomains": defaultAllowedDomains,

@@ -275,13 +275,13 @@ func (j *Jira) ProjectExists(key string) (bool, string, error) {
 // and not for most users.
 func (j *Jira) CreateProject(key, name, leadAccountID string) (Binding, error) {
 	payload := map[string]any{
-		"key":            key,
-		"name":           name,
-		"projectTypeKey": "software",
+		"key":                key,
+		"name":               name,
+		"projectTypeKey":     "software",
 		"projectTemplateKey": "com.pyxis.greenhopper.jira:gh-simplified-agility-scrum",
-		"leadAccountId":  leadAccountID,
-		"assigneeType":   "PROJECT_LEAD",
-		"description":    "Provisioned by Orion.",
+		"leadAccountId":      leadAccountID,
+		"assigneeType":       "PROJECT_LEAD",
+		"description":        "Provisioned by Orion.",
 	}
 	code, body, err := j.do("POST", "/rest/api/3/project", payload)
 	if err != nil {
@@ -324,23 +324,45 @@ func DeriveKey(slug string) string {
 	words := strings.FieldsFunc(strings.ToUpper(slug), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
+
+	// Take the first LETTER of each word, not the first character. Taking
+	// the first character turns "2fa-login" into "2L", and stripping the
+	// leading digit afterwards leaves "L", which Jira rejects for being one
+	// character long.
 	var b strings.Builder
 	for _, w := range words {
-		if w == "" {
-			continue
+		for _, r := range w {
+			if unicode.IsLetter(r) {
+				b.WriteRune(r)
+				break
+			}
 		}
-		b.WriteString(w[:1])
 		if b.Len() >= 6 {
 			break
 		}
 	}
 	key := b.String()
-	if len(key) < 2 && len(words) > 0 {
-		key = words[0]
+
+	// A single-word slug yields a one-letter key, which Jira rejects. Fall
+	// back to the first word that actually contains letters: "payments"
+	// becomes PAYMENTS, and "9-lives" becomes LIVES rather than "9".
+	if len(key) < 2 {
+		for _, w := range words {
+			var letters strings.Builder
+			for _, r := range w {
+				if unicode.IsLetter(r) {
+					letters.WriteRune(r)
+				}
+			}
+			if letters.Len() >= 2 {
+				key = letters.String()
+				break
+			}
+		}
 	}
-	// Strip any leading digits: Jira requires a letter first.
-	key = strings.TrimLeftFunc(key, func(r rune) bool { return !unicode.IsLetter(r) })
-	if key == "" {
+	if len(key) < 2 {
+		// Degenerate slug. Deterministic and valid; ResolveKey handles the
+		// collisions this inevitably causes.
 		key = "ORION"
 	}
 	if len(key) > 8 {
@@ -406,8 +428,8 @@ func Provision(t Tracker, slug, humanName, existingKey, leadAccountID string) (B
 	if err != nil {
 		if errors.Is(err, ErrNoPermission) {
 			return Binding{}, "", fmt.Errorf(
-				"cannot create a Jira project: this account lacks the permission.\n"+
-					"  Set tracker.project_key in orion.json to an existing project and Orion\n"+
+				"cannot create a Jira project: this account lacks the permission.\n" +
+					"  Set tracker.project_key in orion.json to an existing project and Orion\n" +
 					"  will create its issues there instead. Nothing else changes.")
 		}
 		return Binding{}, "", err

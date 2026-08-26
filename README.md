@@ -7,8 +7,11 @@ isolated sandboxed workspace, under deterministic guardrails.
 Built on the plays in Anthropic's
 [AI-native SDLC playbook](https://claude.com/blog/the-ai-native-sdlc-playbook).
 
-> **Status: unbuilt.** Not one line of this has been compiled or executed.
-> Run `make test` before trusting any of it. See [Known gaps](#known-gaps).
+> **Status: builds and passes its tests** on go1.26.5 darwin/arm64.
+> `go build`, `go vet` and `go test ./...` are clean, `gofmt` is clean, and
+> the hooks, `doctor` and workspace provisioning have been exercised end to
+> end against the real binary. The tracker's Jira calls have **not** been run
+> against a live instance. See [Known gaps](#known-gaps).
 
 ## Why a binary
 
@@ -28,7 +31,7 @@ So Orion is one static binary, no cgo, empty `go.sum`, builds offline.
 
 ```bash
 git clone https://github.com/orion-sdlc/orion && cd orion
-make test     # do this first; nothing here has been run by its author
+make test     # build, vet and the full test suite
 make install  # to ~/.local/bin
 orion doctor
 ```
@@ -172,8 +175,11 @@ including the deliberate carve-out from its propose-never-act contract.
 
 Read these before relying on it.
 
-- **Nothing has been compiled.** Written without a Go toolchain available.
-  `make test` is the acceptance gate.
+- **The Jira REST calls have never touched a live instance.** Shapes and the
+  project-creation permission key are inferred. The key is discovered at
+  runtime rather than hardcoded, and an unrecognised key is treated as
+  "unknown" rather than "denied", but a real `orion doctor` run against your
+  Jira is what would confirm it.
 - **Unparseable hook input exits 0, allowing the call.** A malformed payload
   from a future harness version must not brick a session. The cost is that a
   harness change could silently disable enforcement. `orion doctor` does not

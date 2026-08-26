@@ -74,6 +74,10 @@ var exhaustionPatterns = []struct {
 	{regexp.MustCompile(`(?i)you('| a)re out of (credits|usage)`), "quota"},
 	{regexp.MustCompile(`(?i)insufficient (quota|credits)`), "quota"},
 	{regexp.MustCompile(`(?i)\bovercapacity\b|\boverloaded_error\b`), "overloaded"},
+	// A server sending Retry-After is throttling us. Without this, a response
+	// that states the wait exactly is not recognised as exhaustion at all, so
+	// the precise answer the server gave is discarded and replaced by a guess.
+	{regexp.MustCompile(`(?i)retry[-_ ]?after["':\s]+\d+`), "rate_limit"},
 }
 
 // resetPatterns extract when the limit clears. Ordered most reliable
@@ -82,9 +86,12 @@ var exhaustionPatterns = []struct {
 var (
 	reRetryAfterSecs = regexp.MustCompile(`(?i)retry[-_ ]?after["':\s]+(\d+)`)
 	reResetUnix      = regexp.MustCompile(`(?i)reset[a-z_]*["':\s]+(\d{10,13})\b`)
-	reResetRFC3339   = regexp.MustCompile(`(?i)reset[a-z_]*["':\s]+(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\S*)`)
-	reResetsAtClock  = regexp.MustCompile(`(?i)reset(?:s|ting)?\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?`)
-	reTryAgainIn     = regexp.MustCompile(`(?i)try again in\s+(\d+)\s*(second|minute|hour)s?`)
+	// The tail must exclude quotes, commas and braces: \S* greedily swallows
+	// the closing quote of "2026-08-25T10:45:00Z", and every parse layout
+	// then fails on the stray character.
+	reResetRFC3339  = regexp.MustCompile(`(?i)reset[a-z_]*["':\s]+(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[^"'\s,}]*)`)
+	reResetsAtClock = regexp.MustCompile(`(?i)reset(?:s|ting)?\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?`)
+	reTryAgainIn    = regexp.MustCompile(`(?i)try again in\s+(\d+)\s*(second|minute|hour)s?`)
 )
 
 // Inspect examines the combined output of a failed run.

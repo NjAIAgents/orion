@@ -5,21 +5,23 @@ package match
 
 import (
 	"path"
-	"path/filepath"
 	"strings"
 )
 
 // Match reports whether name matches pattern. Semantics:
 //
-//	*   matches any sequence of non-separator characters
-//	?   matches any single non-separator character
-//	**  as a whole path segment matches zero or more segments
+//   - matches any sequence of non-separator characters
+//     ?   matches any single non-separator character
+//     **  as a whole path segment matches zero or more segments
 //
 // Comparison is on slash-separated paths; Windows backslashes are
 // normalized first. Matching is case-sensitive, matching git's behaviour.
 func Match(pattern, name string) bool {
-	pattern = filepath.ToSlash(pattern)
-	name = filepath.ToSlash(name)
+	// filepath.ToSlash is a no-op on Unix, so it cannot normalize a Windows
+	// path encountered on a Linux or macOS host (a path from a config file,
+	// a mounted volume, or a cross-platform test). Replace explicitly.
+	pattern = strings.ReplaceAll(pattern, `\`, "/")
+	name = strings.ReplaceAll(name, `\`, "/")
 	name = strings.TrimPrefix(name, "./")
 	pattern = strings.TrimPrefix(pattern, "./")
 	return matchSegments(strings.Split(pattern, "/"), strings.Split(name, "/"))

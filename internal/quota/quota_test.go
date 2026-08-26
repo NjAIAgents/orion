@@ -11,13 +11,13 @@ var base = time.Date(2026, 8, 25, 10, 0, 0, 0, time.UTC)
 
 func TestDetection(t *testing.T) {
 	exhausted := map[string]string{
-		"rate limit":       "Error: rate_limit_error: too many requests",
-		"429":              "HTTP 429 Too Many Requests",
-		"quota exceeded":   "Your quota has been exceeded for this period",
-		"usage limit":      "Usage limit reached. Try again later.",
-		"out of credits":   "You're out of credits",
-		"overloaded":       "overloaded_error: server is busy",
-		"insufficient":     "insufficient quota for this request",
+		"rate limit":     "Error: rate_limit_error: too many requests",
+		"429":            "HTTP 429 Too Many Requests",
+		"quota exceeded": "Your quota has been exceeded for this period",
+		"usage limit":    "Usage limit reached. Try again later.",
+		"out of credits": "You're out of credits",
+		"overloaded":     "overloaded_error: server is busy",
+		"insufficient":   "insufficient quota for this request",
 	}
 	for name, out := range exhausted {
 		t.Run("detects/"+name, func(t *testing.T) {

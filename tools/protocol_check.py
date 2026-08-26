@@ -91,11 +91,25 @@ DEPLOY_VERBS = (
 )
 
 
+INERT = {"echo", "printf", "cat", "true", "false", ":", "#"}
+
+
+def _inert(seg):
+    f = seg.split()
+    return not f or f[0].lstrip("\\") in INERT or f[0].startswith("#")
+
+
 def looks_like_prod_deploy(cmd):
-    low = cmd.lower()
-    if not any(w in low for w in PROD_WORDS):
-        return False
-    return any(v in low for v in DEPLOY_VERBS)
+    # Judged per shell segment by its leading verb: scanning only the first
+    # token misses `echo hi && ./deploy.sh production`, and scanning the whole
+    # string blocks `echo 'deploying to production tomorrow'`.
+    for seg in re.split(r"[;&|\n]+", cmd.lower()):
+        seg = seg.strip()
+        if not seg or _inert(seg):
+            continue
+        if any(w in seg for w in PROD_WORDS) and any(v in seg for v in DEPLOY_VERBS):
+            return True
+    return False
 
 
 DEPLOY_CASES = [
@@ -117,10 +131,12 @@ DEPLOY_CASES = [
 for cmd, want in DEPLOY_CASES:
     check(f"deploy[{cmd}]", looks_like_prod_deploy(cmd), want)
 
-# A known and accepted false positive: the word "production" appearing in a
-# deploy-shaped command that is not a deploy. Asserted rather than ignored so
-# the behaviour is a decision on record, not a surprise.
-check("deploy[known-fp]", looks_like_prod_deploy("echo 'deploy to production tomorrow'"), True)
+# Previously an accepted false positive, now fixed: an inert leading command
+# cannot deploy anything, and blocking it made the gate look stupid, which is
+# how a gate gets disabled. Verified against the real binary end to end.
+check("deploy[inert-echo]", looks_like_prod_deploy("echo 'deploy to production tomorrow'"), False)
+check("deploy[echo-then-real]", looks_like_prod_deploy("echo hi && ./deploy.sh production"), True)
+check("deploy[comment]", looks_like_prod_deploy("# deploy to production later"), False)
 
 
 # --- glob matcher ----------------------------------------------------------

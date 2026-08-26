@@ -26,7 +26,7 @@ func Gate(in Input, cfg config.Config) Decision {
 	low := strings.ToLower(cmd)
 
 	// 1. Production deploys require a named authorization.
-	if cfg.Gates.ProductionRequiresAuth && looksLikeProdDeploy(low) {
+	if cfg.Gates.ProductionRequiresAuth && anySegmentIsProdDeploy(low) {
 		if approval() == "" {
 			return Block("gate: production deploy blocked.\n" +
 				"  A production release needs a named authorization. Orion does not grant one.\n" +
@@ -76,6 +76,48 @@ func approval() string {
 		}
 	}
 	return ""
+}
+
+// anySegmentIsProdDeploy splits on shell separators and asks the question of
+// each part.
+//
+// Two reasons for the split. A command like `echo hi && ./deploy.sh production`
+// must still be caught, so scanning only the first token is not enough. And
+// `echo 'deploying to production tomorrow'` must not be caught, so scanning
+// the whole string is too much. Judging each segment by its own leading verb
+// does both.
+func anySegmentIsProdDeploy(low string) bool {
+	for _, seg := range splitShellSegments(low) {
+		seg = strings.TrimSpace(seg)
+		if seg == "" || isInertCommand(seg) {
+			continue
+		}
+		if looksLikeProdDeploy(seg) {
+			return true
+		}
+	}
+	return false
+}
+
+func splitShellSegments(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool {
+		return r == ';' || r == '&' || r == '|' || r == '\n'
+	})
+}
+
+// isInertCommand reports whether a segment merely prints or comments. These
+// cannot deploy anything, and blocking them makes the gate look stupid, which
+// is how a gate gets disabled.
+func isInertCommand(seg string) bool {
+	fields := strings.Fields(seg)
+	if len(fields) == 0 {
+		return true
+	}
+	switch strings.TrimPrefix(fields[0], "\\") {
+	case "echo", "printf", "cat", "true", "false", ":", "#":
+		return true
+	}
+	return strings.HasPrefix(fields[0], "#")
 }
 
 // looksLikeProdDeploy matches the deploy vocabularies in common use.

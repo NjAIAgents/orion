@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -47,10 +48,10 @@ const (
 type Kind string
 
 const (
-	KindCorrection   Kind = "correction"    // a human said "you got this wrong"
-	KindBreaker      Kind = "breaker"       // a circuit breaker tripped
-	KindReview       Kind = "review"        // a review finding recurred
-	KindIncident     Kind = "incident"      // a production incident
+	KindCorrection Kind = "correction" // a human said "you got this wrong"
+	KindBreaker    Kind = "breaker"    // a circuit breaker tripped
+	KindReview     Kind = "review"     // a review finding recurred
+	KindIncident   Kind = "incident"   // a production incident
 )
 
 // Lesson is one durable record. Records are never mutated; a change is a
@@ -246,7 +247,12 @@ func rank(rs []Record) {
 	score := func(r Record) float64 {
 		ageDays := now.Sub(r.LastSeen).Hours() / 24
 		decay := 1.0 / (1.0 + ageDays/30.0)
-		w := float64(r.Hits) * decay
+		// Recurrence counts with diminishing returns. Linear Hits let an
+		// ancient lesson with a big count outrank a fresh human correction:
+		// 20 hits at 80 days beat 3 hits today, even though the codebase the
+		// old one described may not exist any more. The 20th recurrence is
+		// not twenty times more informative than the first.
+		w := math.Log1p(float64(r.Hits)) * decay
 		if r.Kind == KindCorrection || r.Kind == KindIncident {
 			w *= 1.5 // a human correction and a real incident outrank a heuristic
 		}
