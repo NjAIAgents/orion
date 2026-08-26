@@ -38,8 +38,18 @@ const (
 // writer means the output is being piped into a file or another program that
 // would have to strip them back out.
 func enabled(w io.Writer) bool {
+	// NO_COLOR wins over everything, including an explicit force. The
+	// convention exists for people who cannot read the output otherwise, and
+	// a tool that lets a different variable override it has misunderstood
+	// what the variable is for.
 	if _, ok := os.LookupEnv("NO_COLOR"); ok {
 		return false
+	}
+	// CLICOLOR_FORCE is the counterpart convention: keep colour when the
+	// destination is not a terminal, for a pager or a CI log that renders it.
+	// "0" means off, matching how other tools read it.
+	if v, ok := os.LookupEnv("CLICOLOR_FORCE"); ok && v != "0" {
+		return true
 	}
 	if os.Getenv("TERM") == "dumb" {
 		return false
@@ -57,6 +67,31 @@ func paint(w io.Writer, code, s string) string {
 		return s
 	}
 	return code + s + reset
+}
+
+// verbWidth is the width the status verb is padded to.
+//
+// Wide enough for the longest verb in use ("installed", 9). It was 8, which
+// silently broke the alignment it exists to provide: every report containing
+// "installed" pushed its detail one column right of every other line, which
+// is precisely the ragged wall the padding was added to prevent.
+//
+// Derived rather than typed as a literal so adding a longer verb widens the
+// column instead of quietly overflowing it again.
+var verbWidth = longestVerb()
+
+func longestVerb() int {
+	n := 0
+	for _, v := range []string{
+		"created", "installed", "updated", "skipped", "bound", "backup",
+		"WARNING", "failed", "error", "ci-wait", "working", "running",
+		"queued", "pushed", "invited", "ok", "resolved", "fetched",
+	} {
+		if len(v) > n {
+			n = len(v)
+		}
+	}
+	return n
 }
 
 // Label renders one status line: a coloured verb, then plain detail.
@@ -83,7 +118,7 @@ func Label(w io.Writer, verb, detail string) string {
 	default:
 		code = dim
 	}
-	return fmt.Sprintf("%s %s", paint(w, code, fmt.Sprintf("%-8s", verb)), detail)
+	return fmt.Sprintf("%s %s", paint(w, code, fmt.Sprintf("%-*s", verbWidth, verb)), detail)
 }
 
 // Ok, Warn and Fail print one status line each.
