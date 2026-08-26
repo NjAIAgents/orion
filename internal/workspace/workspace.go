@@ -30,6 +30,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/orion-sdlc/orion/internal/provision"
 )
 
 // Task is the durable record of what a workspace is for. It is the
@@ -49,7 +51,13 @@ type Task struct {
 	// record, not a schedule: nothing sleeps on it, and the user or a cron
 	// decides when to actually come back.
 	ResumeAt time.Time `json:"resume_at,omitempty"`
-	Runs     []RunRec  `json:"runs,omitempty"`
+	// Branches created at provisioning: main (release, protected) and
+	// develop (integration, the pull-request base).
+	Branches []string `json:"branches,omitempty"`
+	// Remote and Tracker are filled by the provision stage.
+	Remote  string          `json:"remote,omitempty"`
+	Tracker json.RawMessage `json:"tracker,omitempty"`
+	Runs    []RunRec        `json:"runs,omitempty"`
 }
 
 // RunRec records one supervised run.
@@ -170,10 +178,27 @@ func initRepo(ws *Workspace, opts NewOptions) error {
 		}
 		return nil
 	}
+	// -b requires git 2.28. Fall back to init plus a rename so older git
+	// still produces the right branch name rather than "master".
 	cmd := exec.Command("git", "init", "-q", "-b", "main", repo)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git init: %w\n%s", err, out)
+		if out2, err2 := exec.Command("git", "init", "-q", repo).CombinedOutput(); err2 != nil {
+			return fmt.Errorf("git init: %w\n%s%s", err, out, out2)
+		}
+		rename := exec.Command("git", "symbolic-ref", "HEAD", "refs/heads/main")
+		rename.Dir = repo
+		if out2, err2 := rename.CombinedOutput(); err2 != nil {
+			return fmt.Errorf("setting initial branch to main: %w\n%s", err2, out2)
+		}
 	}
+	// Establish the two long-lived branches immediately. Doing it at
+	// provisioning time means no work can begin on the wrong branch, which
+	// is the only reliable way to prevent a first commit landing on main.
+	created, err := provision.InitBranches(repo, "main", "develop")
+	if err != nil {
+		return fmt.Errorf("establishing the branch model: %w", err)
+	}
+	ws.Task.Branches = created
 	return nil
 }
 

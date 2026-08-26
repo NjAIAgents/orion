@@ -43,6 +43,22 @@ type Delegation struct {
 	HighRiskPaths []string `json:"high_risk_paths"`
 }
 
+// Tracker configures project-management provisioning.
+type Tracker struct {
+	Provider string `json:"provider"`
+	// ProjectKey binds to an existing project. When empty, Orion creates a
+	// project per idea, which requires the CREATE_PROJECT global permission
+	// and accumulates projects that a non-admin cannot delete.
+	ProjectKey string `json:"project_key"`
+	// CreatePerIdea is what the empty ProjectKey means, stated explicitly so
+	// the intent is reviewable rather than inferred from an absent field.
+	CreatePerIdea bool `json:"create_project_per_idea"`
+	// ConfirmTreeBeforeCreate keeps the whole Epic/Story/Task tree behind one
+	// human approval. This stays true even under auto_merge: a sandboxed
+	// workspace can be deleted, a shared tracker cannot.
+	ConfirmTreeBeforeCreate bool `json:"confirm_tree_before_create"`
+}
+
 type Gates struct {
 	RequirePlanBeforeEdit         bool `json:"require_plan_before_edit"`
 	ProtectTestsDuringFix         bool `json:"protect_tests_during_fix"`
@@ -70,11 +86,28 @@ type AutoMerge struct {
 	MaxChangedFiles   int      `json:"max_changed_files"`
 }
 
+// VCS describes the branch model.
+//
+// Two long-lived branches: main is the release branch and is protected,
+// develop is the integration branch and the default base for pull requests.
+// Named "develop" rather than "dev" so it does not collide with the dev
+// ENVIRONMENT in the autonomy block; they are different things.
+// Feature branches are cut from develop and merge back into it.
+//
+// Both are push-protected. Protecting only main would make the PR into
+// develop optional, and an optional review gate is not a gate.
 type VCS struct {
-	Provider      string `json:"provider"`
+	Provider string `json:"provider"`
+	// DefaultBranch is the release branch. Most protected, merged into only
+	// from WorkBranch.
 	DefaultBranch string `json:"default_branch"`
-	BranchPrefix  string `json:"branch_prefix"`
-	PRDraft       bool   `json:"pr_draft"`
+	// WorkBranch is the integration branch and the default PR base.
+	WorkBranch string `json:"work_branch"`
+	// ProtectedBranches may not be pushed to directly. Defaults to both
+	// long-lived branches.
+	ProtectedBranches []string `json:"protected_branches"`
+	BranchPrefix      string   `json:"branch_prefix"`
+	PRDraft           bool     `json:"pr_draft"`
 }
 
 type Config struct {
@@ -85,6 +118,7 @@ type Config struct {
 	Autonomy  map[string]string `json:"autonomy"`
 	AutoMerge  AutoMerge         `json:"auto_merge"`
 	VCS        VCS               `json:"vcs"`
+	Tracker    Tracker           `json:"tracker"`
 	Delegation Delegation        `json:"delegation"`
 
 	// Root is the resolved project root. Not read from JSON.
@@ -134,7 +168,18 @@ func Defaults() Config {
 		AutoMerge: AutoMerge{
 			Enabled: false, RequireEvalPass: 0.95, MinEvalCases: 20, MaxChangedFiles: 20,
 		},
-		VCS: VCS{Provider: "github", DefaultBranch: "main", BranchPrefix: "orion/"},
+		VCS: VCS{
+			Provider:          "github",
+			DefaultBranch:     "main",
+			WorkBranch:        "develop",
+			ProtectedBranches: []string{"main", "develop"},
+			BranchPrefix:      "orion/",
+		},
+		Tracker: Tracker{
+			Provider:                "jira",
+			CreatePerIdea:           true,
+			ConfirmTreeBeforeCreate: true,
+		},
 		Delegation: Delegation{
 			Enabled:                 true,
 			ExtraToolCallsForReview: 200,
@@ -249,6 +294,14 @@ func normalize(c *Config) {
 	}
 	if c.VCS.BranchPrefix == "" {
 		c.VCS.BranchPrefix = d.VCS.BranchPrefix
+	}
+	if c.VCS.WorkBranch == "" {
+		c.VCS.WorkBranch = d.VCS.WorkBranch
+	}
+	if len(c.VCS.ProtectedBranches) == 0 {
+		// Falling back to protecting nothing would silently remove the
+		// control, so an empty list restores both long-lived branches.
+		c.VCS.ProtectedBranches = []string{c.VCS.DefaultBranch, c.VCS.WorkBranch}
 	}
 	if c.Delegation.ExtraToolCallsForReview <= 0 {
 		c.Delegation.ExtraToolCallsForReview = d.Delegation.ExtraToolCallsForReview

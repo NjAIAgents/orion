@@ -62,9 +62,42 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 			"Write plans/"+ws.Task.Slug+".plan.md and commit it. Do not implement yet.",
 		), nil
 
+	case "scaffold":
+		return join(
+			"Lay out the repository skeleton for this project.",
+			"",
+			"Use the /scaffold-project skill. It grounds the security and governance",
+			"layer in the OpenSSF OSPS Baseline and delegates the stack layout to the",
+			"ecosystem's own generator rather than inventing one.",
+			"",
+			"Read intent/"+ws.Task.Slug+".intent.md and specs/"+ws.Task.Slug+".spec.md first",
+			"so the stack choice follows the design rather than a default.",
+			"",
+			"Work on a branch cut from develop. Do not commit to develop or main directly;",
+			"the gate will refuse it and the refusal is correct.",
+		), nil
+
+	case "decompose":
+		return join(
+			"Decompose plans/"+ws.Task.Slug+".plan.md into tracker work items.",
+			"",
+			"Use /pm-plan. Preview the ENTIRE Epic, Story and Task tree and wait for",
+			"explicit approval before creating anything.",
+			"",
+			"This approval is not optional and is not waived by auto-merge being on.",
+			"A sandboxed workspace can be deleted; issues in a shared tracker are seen",
+			"by other people and cannot be cleanly withdrawn.",
+			"",
+			"Search the tracker first and reconcile, so a re-run never double-creates.",
+		), nil
+
 	case "build", "implement":
 		return join(
 			"Implement plans/"+ws.Task.Slug+".plan.md.",
+			"",
+			"First cut a branch from develop for this task. Every task gets its own",
+			"branch; it merges into develop, and develop reaches main later through",
+			"its own reviewed pull request.",
 			"",
 			"Rules:",
 			"- Follow the plan. If implementation must depart from it, update the plan in the",
@@ -103,15 +136,22 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 		return join(
 			"Open a pull request for this change.",
 			"",
-			"Push the working branch, then open the PR with a body that links intent, spec and",
-			"plan, summarizes what changed and why, and attaches the verification output.",
+			"Use /pr-describe rather than composing the PR by hand. It grounds the title",
+			"and body in the actual commits and diff, and fills the repository's own",
+			"PULL_REQUEST_TEMPLATE.md when one exists.",
 			"",
-			"Never push to the default branch. If the push is refused, that refusal is correct;",
-			"report it rather than working around it.",
+			"The base branch is develop, not main. Feature branches merge into develop;",
+			"develop reaches main later through its own reviewed pull request.",
+			"",
+			"Link intent, spec and plan in the body, and attach the verification output.",
+			"",
+			"Never push to develop or main directly. If a push is refused, the refusal is",
+			"correct: report it rather than working around it.",
 		), nil
 
 	default:
-		return "", fmt.Errorf("unknown stage %q (want: intent, spec, plan, build, verify, review, pr)", stage)
+		return "", fmt.Errorf(
+			"unknown stage %q (want: intent, spec, plan, scaffold, decompose, build, verify, review, pr)", stage)
 	}
 }
 

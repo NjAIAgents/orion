@@ -15,20 +15,20 @@ import (
 // Wired to PreToolUse on Bash. Everything it blocks is something no
 // amount of model persuasion should be able to talk past, so the checks
 // are literal string and pattern matching, never a judgement call.
-func Gate(in Input, cfg config.Config) {
+func Gate(in Input, cfg config.Config) Decision {
 	if in.HookEventName != "PreToolUse" {
-		Allow("")
+		return Allow("")
 	}
 	cmd := in.Command()
 	if strings.TrimSpace(cmd) == "" {
-		Allow("")
+		return Allow("")
 	}
 	low := strings.ToLower(cmd)
 
 	// 1. Production deploys require a named authorization.
 	if cfg.Gates.ProductionRequiresAuth && looksLikeProdDeploy(low) {
 		if approval() == "" {
-			Block("gate: production deploy blocked.\n" +
+			return Block("gate: production deploy blocked.\n" +
 				"  A production release needs a named authorization. Orion does not grant one.\n" +
 				"  Route: ask the release manager to authorize, then re-run with\n" +
 				"  ORION_RELEASE_APPROVAL set to the approval reference (change ticket or release ID).\n" +
@@ -36,27 +36,37 @@ func Gate(in Input, cfg config.Config) {
 		}
 	}
 
-	// 2. Never push to the default branch, and never force push anywhere.
-	// The whole separation-of-duties story rests on the agent's work
-	// arriving as a pull request. A direct push erases it.
+	// 2. Never push directly to a long-lived branch, and never force push.
+	//
+	// Both main and develop are protected. Protecting only main would make the
+	// pull request into develop optional, and an optional review gate is not a
+	// gate. Feature branches are cut from develop and merge back into it.
 	if cfg.Gates.BlockDirectPushToDefaultBranch {
-		if reason := badPush(cmd, cfg.VCS.DefaultBranch); reason != "" {
-			Block("gate: %s\n"+
-				"  Orion's changes reach %s only through a reviewed pull request.\n"+
-				"  Push your branch and open a PR instead:\n"+
-				"    git push -u origin <branch> && gh pr create --fill",
-				reason, cfg.VCS.DefaultBranch)
+		for _, branch := range cfg.VCS.ProtectedBranches {
+			if branch == "" {
+				continue
+			}
+			if reason := badPush(cmd, branch); reason != "" {
+				return Block("gate: %s\n"+
+					"  %s is protected. Work reaches it only through a reviewed pull request.\n"+
+					"  Cut a branch from %s, push that, and open a PR:\n"+
+					"    git switch -c %s<name> %s\n"+
+					"    git push -u origin %s<name>\n"+
+					"  Then use the PR helper rather than opening it by hand.",
+					reason, branch, cfg.VCS.WorkBranch,
+					cfg.VCS.BranchPrefix, cfg.VCS.WorkBranch, cfg.VCS.BranchPrefix)
+			}
 		}
 	}
 
 	// 3. History rewrites on shared refs.
 	if reHardReset.MatchString(cmd) && strings.Contains(low, "origin/") {
-		Block("gate: refusing to hard-reset onto a remote ref.\n" +
+		return Block("gate: refusing to hard-reset onto a remote ref.\n" +
 			"  This discards local work irrecoverably. If that is genuinely intended,\n" +
 			"  a human should run it.")
 	}
 
-	Allow("")
+	return Allow("")
 }
 
 func approval() string {

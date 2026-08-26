@@ -198,7 +198,20 @@ const defaultProjectConfig = `{
   "vcs": {
     "provider": "github",
     "default_branch": "main",
+    "work_branch": "develop",
+    "protected_branches": ["main", "develop"],
     "branch_prefix": "orion/"
+  },
+  "tracker": {
+    "provider": "jira",
+    "project_key": "",
+    "create_project_per_idea": true,
+    "confirm_tree_before_create": true
+  },
+  "delegation": {
+    "enabled": true,
+    "extra_tool_calls_for_review": 200,
+    "deep_security_review_when": "high-risk"
   }
 }
 `

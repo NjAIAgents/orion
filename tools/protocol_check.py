@@ -32,24 +32,28 @@ RE_PUSH = re.compile(r"\bgit\s+push\b")
 RE_FORCE = re.compile(r"git\s+push\b[^|;&]*(--force\b|--force-with-lease\b|\s-f\b)")
 
 
-def bad_push(cmd, default_branch="main"):
+def bad_push(cmd, protected=("main", "develop")):
     if not RE_PUSH.search(cmd):
         return ""
     if RE_FORCE.search(cmd):
         return "force push blocked."
-    db = re.escape(default_branch)
-    for pat in (
-        r"\bgit\s+push\b[^|;&]*\s" + db + r"\s*($|[|;&])",
-        r"\bgit\s+push\b[^|;&]*:" + db + r"\b",
-    ):
-        if re.search(pat, cmd):
-            return f"direct push to {default_branch} blocked."
+    for branch in protected:
+        db = re.escape(branch)
+        for pat in (
+            r"\bgit\s+push\b[^|;&]*\s" + db + r"\s*($|[|;&])",
+            r"\bgit\s+push\b[^|;&]*:" + db + r"\b",
+        ):
+            if re.search(pat, cmd):
+                return f"direct push to {branch} blocked."
     return ""
 
 
 PUSH_CASES = [
     # (command, should_block)
     ("git push origin main", True),
+    ("git push origin develop", True),
+    ("git push origin HEAD:develop", True),
+    ("git push origin orion/thing:develop", True),
     ("git push origin HEAD:main", True),
     ("git push origin feature:main", True),
     ("git push --force origin feature", True),
@@ -65,6 +69,9 @@ PUSH_CASES = [
     ("git push origin main-fix", False),
     ("git push origin feature/main", False),
     ("git push origin mainline", False),
+    ("git push origin developer-notes", False),
+    ("git push origin dev-tools", False),
+    ("git push -u origin orion/claim-status", False),
 ]
 
 for cmd, want_block in PUSH_CASES:

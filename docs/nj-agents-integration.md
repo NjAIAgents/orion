@@ -85,7 +85,7 @@ Even there it is off by default and requires all of:
 Green means nothing when the eval suite is empty, which is why the case count
 is a precondition rather than a suggestion.
 
-Set `autonomy.dev` to `gated_write` to withdraw the carve-out entirely and
+Set `autonomy.dev` (the dev ENVIRONMENT, not the develop branch) to `gated_write` to withdraw the carve-out entirely and
 stop at the PR everywhere, matching nj-agents exactly.
 
 ## Conforming to the harness

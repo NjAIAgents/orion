@@ -66,12 +66,17 @@ func TestGateProductionDeployWithApproval(t *testing.T) {
 
 func TestGatePushProtection(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.VCS.DefaultBranch = "main"
 
+	// Both long-lived branches are protected. Protecting only main would
+	// leave the pull request into develop optional, and an optional gate is not
+	// a gate.
 	blocked := []string{
 		"git push origin main",
 		"git push origin HEAD:main",
 		"git push origin feature:main",
+		"git push origin develop",
+		"git push origin HEAD:develop",
+		"git push origin orion/thing:develop",
 		"git push --force origin feature",
 		"git push -f origin feature",
 		"git push --force-with-lease origin feature",
@@ -85,15 +90,21 @@ func TestGatePushProtection(t *testing.T) {
 			if !strings.Contains(d.Msg, "pull request") {
 				t.Error("block must point at the PR route")
 			}
+			if !strings.Contains(d.Msg, "git switch -c") {
+				t.Error("block must give the exact command to cut a branch instead")
+			}
 		})
 	}
 
 	allowed := []string{
 		"git push -u origin feature/thing",
+		"git push -u origin orion/claim-status",
 		"git push origin my-branch",
 		"git push",
 		"git commit -m 'main change'",
 		"git log --oneline main",
+		"git push origin developer-notes", // near-miss on "develop"
+		"git push origin dev-tools",
 	}
 	for _, c := range allowed {
 		t.Run("allows/"+c, func(t *testing.T) {

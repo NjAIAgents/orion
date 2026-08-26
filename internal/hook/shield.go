@@ -24,20 +24,20 @@ const FixModeMarker = "fix-mode"
 //  3. Plan gate: no implementation before an approved plan exists.
 //
 // Wired to PreToolUse on Edit, Write, MultiEdit and NotebookEdit.
-func Shield(in Input, cfg config.Config) {
+func Shield(in Input, cfg config.Config) Decision {
 	if in.HookEventName != "PreToolUse" {
-		Allow("")
+		return Allow("")
 	}
 	target := in.FilePath()
 	if target == "" {
-		Allow("")
+		return Allow("")
 	}
 
 	rel := relToRoot(target, cfg.Root)
 
 	// 1. Protected paths.
 	if match.MatchAny(cfg.Paths.Protected, rel) {
-		Block("shield: %s is a protected path.\n"+
+		return Block("shield: %s is a protected path.\n"+
 			"  Orion cannot edit its own controls, CI configuration or managed settings.\n"+
 			"  If this change is genuinely needed, a human edits it and reviews the diff.",
 			rel)
@@ -46,7 +46,7 @@ func Shield(in Input, cfg config.Config) {
 	// 2. Test files during a bug fix.
 	if cfg.Gates.ProtectTestsDuringFix && fixModeActive(cfg) {
 		if match.MatchAny(cfg.Paths.TestGlobs, rel) {
-			Block("shield: %s is a test file and a fix is in progress.\n"+
+			return Block("shield: %s is a test file and a fix is in progress.\n"+
 				"  The failing test defines what \"fixed\" means. Changing it moves the goalposts.\n"+
 				"  Fix the code so the test passes as written.\n"+
 				"  If the test itself is genuinely wrong, stop and say so; a human decides that.",
@@ -57,13 +57,13 @@ func Shield(in Input, cfg config.Config) {
 	// 3. Plan gate. Artifacts themselves are always writable, otherwise
 	// there would be no way to produce the plan the gate demands.
 	if cfg.Gates.RequirePlanBeforeEdit && !isArtifact(rel, cfg) && !planExists(cfg) {
-		Block("shield: no approved plan found in %s/.\n"+
+		return Block("shield: no approved plan found in %s/.\n"+
 			"  Nothing gets implemented before a written plan exists.\n"+
 			"  Run /orion:plan to produce and commit one, then implement against it.",
 			cfg.Paths.Plans)
 	}
 
-	Allow("")
+	return Allow("")
 }
 
 func relToRoot(target, root string) string {

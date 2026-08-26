@@ -56,9 +56,13 @@ func Run(w io.Writer, path string) int {
 		checkClaude(),
 		checkGit(),
 		checkGH(),
+		checkGHScopes(),
+		checkNJAgents(),
 		checkSandbox(),
 		checkHome(),
+		checkDisk(),
 		checkProject(path),
+		checkJira(false),
 	}
 
 	fmt.Fprintf(w, "orion doctor  (%s/%s)\n\n", runtime.GOOS, runtime.GOARCH)
@@ -80,6 +84,16 @@ func Run(w io.Writer, path string) int {
 	}
 
 	fmt.Fprintln(w)
+
+	// Cache the verdict so a run does not re-probe a remote service on every
+	// invocation, while keeping the TTL short enough that an expired token
+	// is caught within half a day rather than at the worst moment.
+	results := map[string]string{}
+	for _, c := range checks {
+		results[c.name] = c.grade.label() + " " + c.detail
+	}
+	SaveCache(configHash(path), results)
+
 	switch {
 	case failed > 0:
 		fmt.Fprintf(w, "%d blocking problem(s). Orion cannot run until these are fixed.\n", failed)
@@ -91,6 +105,23 @@ func Run(w io.Writer, path string) int {
 		fmt.Fprintln(w, "Ready.")
 		return 0
 	}
+}
+
+// configHash fingerprints the config so a cached capability verdict is
+// invalidated when the thing it was about changes.
+func configHash(path string) string {
+	root, err := config.FindRoot(path)
+	if err != nil {
+		root = path
+	}
+	b, _ := os.ReadFile(filepath.Join(root, "orion.json"))
+	seed := string(b) + os.Getenv("ORION_JIRA_URL") + os.Getenv("ORION_JIRA_EMAIL")
+	var h uint64 = 14695981039346656037
+	for i := 0; i < len(seed); i++ {
+		h ^= uint64(seed[i])
+		h *= 1099511628211
+	}
+	return fmt.Sprintf("%016x", h)
 }
 
 func checkClaude() check {

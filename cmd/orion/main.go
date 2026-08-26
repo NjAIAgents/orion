@@ -10,6 +10,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,8 +21,10 @@ import (
 	"github.com/orion-sdlc/orion/internal/doctor"
 	"github.com/orion-sdlc/orion/internal/hook"
 	"github.com/orion-sdlc/orion/internal/lessons"
+	"github.com/orion-sdlc/orion/internal/provision"
 	"github.com/orion-sdlc/orion/internal/state"
 	"github.com/orion-sdlc/orion/internal/supervisor"
+	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -37,6 +40,7 @@ WORKSPACES
   orion rm <id>               remove a workspace
 
 RUNNING
+  orion provision <id>        create the remote repo, branches, and tracker
   orion run <id> [--stage S]  supervise a sandboxed claude run in a workspace
   orion status <id>           show stage, breaker state and last run
 
@@ -81,6 +85,9 @@ func main() {
 	case "rm":
 		mustArg(os.Args, 2, "orion rm <id>")
 		exitOn(workspace.Remove(os.Args[2], hasFlag(os.Args[3:], "--force")))
+	case "provision":
+		mustArg(os.Args, 2, "orion provision <id>")
+		runProvision(os.Args[2], os.Args[3:])
 	case "run":
 		mustArg(os.Args, 2, "orion run <id>")
 		runSupervised(os.Args[2], os.Args[3:])
@@ -279,6 +286,98 @@ func runFix(action string) {
 		fmt.Fprintln(os.Stderr, "orion: fix takes start or end")
 		os.Exit(64)
 	}
+}
+
+// runProvision creates the remote repository, its branch model and the
+// tracker project. Everything here touches systems outside the sandbox, so
+// each destructive step confirms first and each is idempotent.
+func runProvision(id string, rest []string) {
+	ws, err := workspace.Open(id)
+	exitOn(err)
+	cfg := config.Load(ws.RepoDir())
+
+	yes := hasFlag(rest, "--yes")
+	confirm := func(prompt string) bool {
+		if yes {
+			fmt.Println(prompt + " [--yes]")
+			return true
+		}
+		fmt.Printf("%s [y/N] ", prompt)
+		var answer string
+		fmt.Scanln(&answer)
+		return strings.EqualFold(strings.TrimSpace(answer), "y")
+	}
+
+	// 1. Remote repository and branch model.
+	if !hasFlag(rest, "--skip-repo") {
+		res, err := provision.Remote(provision.Options{
+			Dir:           ws.RepoDir(),
+			Name:          ws.Task.Slug,
+			Description:   truncateStr(ws.Task.Idea, 200),
+			DefaultBranch: cfg.VCS.DefaultBranch,
+			WorkBranch:    cfg.VCS.WorkBranch,
+			Private:       true,
+			Org:           argFlag(rest, "--org", ""),
+			Confirm:       confirm,
+			Out:           os.Stdout,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "orion: repository provisioning failed: %v\n", err)
+		} else {
+			fmt.Print(res.Summary())
+			ws.Task.Remote = res.RemoteURL
+			_ = ws.SaveTask()
+		}
+	}
+
+	// 2. Tracker project. Separated from the repo step so a Jira failure
+	// does not strand a repository that was created successfully.
+	if !hasFlag(rest, "--skip-tracker") {
+		runTrackerProvision(ws, cfg, confirm)
+	}
+
+	fmt.Printf("\nnext: orion run %s --stage plan\n", ws.ID)
+}
+
+func runTrackerProvision(ws *workspace.Workspace, cfg config.Config, confirm func(string) bool) {
+	j, err := tracker.NewJiraFromEnv()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orion: skipping tracker (%v)\n", err)
+		return
+	}
+	cap, err := j.Probe()
+	if err != nil || !cap.Authenticated {
+		fmt.Fprintf(os.Stderr, "orion: skipping tracker (%s)\n", cap.Detail)
+		return
+	}
+
+	what := "Create a new Jira project for %q?"
+	if cfg.Tracker.ProjectKey != "" {
+		what = "Bind to existing Jira project " + cfg.Tracker.ProjectKey + " for %q?"
+	}
+	if !confirm(fmt.Sprintf(what, truncateStr(ws.Task.Idea, 60))) {
+		fmt.Println("orion: tracker step cancelled")
+		return
+	}
+
+	b, note, err := tracker.Provision(j, ws.Task.Slug, ws.Task.Idea,
+		cfg.Tracker.ProjectKey, cap.AccountID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orion: %v\n", err)
+		return
+	}
+	raw, _ := json.Marshal(b)
+	ws.Task.Tracker = raw
+	_ = ws.SaveTask()
+
+	fmt.Printf("tracker    %s (%s)\n", b.Key, note)
+	fmt.Printf("           %s/browse/%s\n", b.BaseURL, b.Key)
+	// The decomposition is the agent's job, and it stays behind a human
+	// approval even under auto-merge: a sandboxed workspace can be deleted,
+	// a shared tracker cannot.
+	fmt.Println("\nNext, decompose the plan into issues. The whole tree is previewed")
+	fmt.Println("for one approval before anything is created:")
+	fmt.Printf("  claude -p \"Use /pm-plan to decompose plans/*.plan.md into %s. Preview the full tree and wait for approval.\"\n", b.Key)
 }
 
 // runLessons manages the cross-project memory. Deliberately human-facing:

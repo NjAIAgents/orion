@@ -44,7 +44,7 @@
     ]
   },
 
-  "_comment_autonomy": "Per-environment ceiling. propose_only means Orion opens a PR and stops.",
+  "_comment_autonomy": "Per-ENVIRONMENT ceiling. Note the collision: 'dev' here is the dev environment, not the dev branch. propose_only means Orion opens a PR and stops.",
   "autonomy": {
     "dev": "auto_merge_on_green",
     "staging": "gated_write",
@@ -67,11 +67,33 @@
     "max_changed_files": 20
   },
 
-  "_comment_vcs": "gh CLI is the default path. Orion never pushes to the default branch.",
+  "_comment_vcs": "Two long-lived branches. main is the release branch. develop is the integration branch and the default PR base (named develop, not dev, so it does not collide with the dev ENVIRONMENT in the autonomy block). Every task gets its own branch cut from develop. BOTH are push-protected: protecting only main would make the PR into dev optional, and an optional gate is not a gate.",
   "vcs": {
     "provider": "github",
     "default_branch": "main",
+    "work_branch": "develop",
+    "protected_branches": ["main", "develop"],
     "branch_prefix": "orion/",
     "pr_draft": false
+  },
+
+  "_comment_tracker": "Leave project_key empty to create a Jira project per idea. That needs the CREATE_PROJECT global permission and accumulates projects a non-admin cannot delete; set project_key to bind an existing project instead. confirm_tree_before_create stays true even under auto_merge: a sandboxed workspace can be deleted, a shared tracker cannot.",
+  "tracker": {
+    "provider": "jira",
+    "project_key": "",
+    "create_project_per_idea": true,
+    "confirm_tree_before_create": true
+  },
+
+  "_comment_delegation": "Handoff to nj-agents. extra_tool_calls_for_review exists because /security-deep-review costs 15-30 agent calls and the breaker counts every one; without a wider envelope a deep review trips the breaker mid-review.",
+  "delegation": {
+    "enabled": true,
+    "extra_tool_calls_for_review": 200,
+    "deep_security_review_when": "high-risk",
+    "high_risk_paths": [
+      "**/auth/**", "**/security/**", "**/crypto/**",
+      "**/payment*/**", "**/migrations/**",
+      "**/*deserial*", "**/Dockerfile", "**/*.tf"
+    ]
   }
 }
