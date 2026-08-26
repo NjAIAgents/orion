@@ -92,9 +92,20 @@ type Workspace struct {
 	ID   string
 	Dir  string
 	Task Task
+	// RepoPath overrides RepoDir for a single job, pointing at a per-job git
+	// worktree instead of the shared sandbox clone. Runtime only and never
+	// persisted: the workspace belongs to the repository, the worktree
+	// belongs to one run, and conflating them would let a finished job's
+	// path outlive it.
+	RepoPath string
 }
 
-func (w Workspace) RepoDir() string      { return filepath.Join(w.Dir, "repo") }
+func (w Workspace) RepoDir() string {
+	if w.RepoPath != "" {
+		return w.RepoPath
+	}
+	return filepath.Join(w.Dir, "repo")
+}
 func (w Workspace) MetaDir() string      { return filepath.Join(w.Dir, ".orion") }
 func (w Workspace) LogsDir() string      { return filepath.Join(w.MetaDir(), "logs") }
 func (w Workspace) StateDir() string     { return filepath.Join(w.MetaDir(), "state") }
