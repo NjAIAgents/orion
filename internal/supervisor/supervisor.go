@@ -482,7 +482,8 @@ func childEnv(ws *workspace.Workspace) []string {
 		out = append(out, kv)
 	}
 	out = append(out, "ORION_WORKSPACE="+ws.ID, "ORION_WORKSPACE_DIR="+ws.Dir)
-	return append(out, agentAuthorEnv(ws.RepoDir())...)
+	out = append(out, agentAuthorEnv(ws.RepoDir())...)
+	return append(out, agentTrackerEnv(ws.RepoDir())...)
 }
 
 // agentAuthorEnv marks commits the agent makes as authored by the alias,
@@ -515,6 +516,38 @@ func agentAuthorEnv(repoDir string) []string {
 		}
 	}
 	return []string{"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email}
+}
+
+// agentTrackerEnv publishes the tracker contract to the child.
+//
+// Orion's own Go code creates the PROJECT and stops there; the Epic/Story/
+// Task tree is filed by the agent through nj-agents, so a label can only be
+// applied where the issues are actually created. These variables are that
+// contract: the skill reads them and stamps every issue it files.
+//
+// Stated plainly because it is a real limit -- exporting a variable does not
+// make an agent use it. Until the PM skill reads ORION_TRACKER_LABEL, this
+// makes the intent available and enforces nothing. The alternative, filing
+// the tree from Go, would duplicate decomposition logic that belongs in the
+// skill and drift from it.
+func agentTrackerEnv(repoDir string) []string {
+	cfg := config.Load(repoDir)
+	if !cfg.Tracker.Enabled {
+		return nil
+	}
+	var out []string
+	if k := strings.TrimSpace(cfg.Tracker.ProjectKey); k != "" {
+		out = append(out, "ORION_TRACKER_PROJECT="+k)
+	}
+	if l := strings.TrimSpace(cfg.Tracker.AgentLabel); l != "" {
+		out = append(out, "ORION_TRACKER_LABEL="+l)
+	}
+	if n := strings.TrimSpace(cfg.VCS.AgentAuthorName); n != "" {
+		// The same alias as the git author, so a commit and the issue it
+		// closes carry one name rather than two names for one actor.
+		out = append(out, "ORION_AGENT_NAME="+n)
+	}
+	return out
 }
 
 // classify turns an exit code into something a human can act on, checking

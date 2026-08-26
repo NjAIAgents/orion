@@ -114,6 +114,16 @@ type Tracker struct {
 	// human approval. This stays true even under auto_merge: a sandboxed
 	// workspace can be deleted, a shared tracker cannot.
 	ConfirmTreeBeforeCreate bool `json:"confirm_tree_before_create"`
+	// AgentLabel is stamped on every issue Orion's agent creates, so
+	// agent-filed work is separable from work a person filed. The tracker
+	// equivalent of VCS.AgentAuthorName, and needed for the same reason: once
+	// the two are mixed in a backlog, no query can pull them apart again.
+	//
+	// A LABEL rather than a reporter, deliberately. Jira's reporter must be a
+	// real account; there is no way to file as a synthetic identity without
+	// paying for a licence for it, and impersonating the human would be worse
+	// than leaving it unmarked.
+	AgentLabel string `json:"agent_label"`
 }
 
 type Gates struct {
@@ -288,6 +298,7 @@ func Defaults() Config {
 		Tracker: Tracker{
 			Enabled:                 false,
 			Provider:                "jira",
+			AgentLabel:              "orion_agent",
 			CreatePerIdea:           true,
 			ConfirmTreeBeforeCreate: true,
 		},

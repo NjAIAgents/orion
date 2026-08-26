@@ -588,7 +588,10 @@ const defaultConfig = `{
     "provider": "jira",
     "project_key": "",
     "create_project_per_idea": true,
-    "confirm_tree_before_create": true
+    "confirm_tree_before_create": true,
+
+    "_comment_agent_label": "Stamped on every issue the agent files, so agent-filed work stays separable from work a person filed. The tracker equivalent of vcs.agent_author_name. A label rather than a reporter because Jira's reporter must be a real licensed account, and impersonating you would be worse than leaving it unmarked. Exported to the agent as ORION_TRACKER_LABEL.",
+    "agent_label": "orion_agent"
   },
 
   "slack": {
