@@ -46,13 +46,16 @@ type Client struct {
 // pasted here will fail in confusing ways later, so both are rejected now
 // with an explanation rather than at the first API call.
 func FromEnv() (*Client, error) {
-	tok := strings.TrimSpace(os.Getenv("ORION_SLACK_TOKEN"))
+	// Environment first, then Orion's own config file, for the same reason
+	// the tracker does: a shell profile does not reach cron.
+	tok := credsGet()
 	if tok == "" {
 		return nil, fmt.Errorf("ORION_SLACK_TOKEN is not set.\n" +
 			"  A channel per project needs a Slack app bot token (xoxb-), not an\n" +
 			"  incoming webhook: a webhook is bound to one channel and cannot create any.\n" +
 			"  Scopes required: channels:manage (public) or groups:write (private),\n" +
-			"  plus chat:write.")
+			"  plus chat:write.\n\n" +
+			"  Set it interactively: orion config")
 	}
 	if strings.HasPrefix(tok, "https://") {
 		return nil, fmt.Errorf("ORION_SLACK_TOKEN looks like a webhook URL.\n" +
@@ -66,6 +69,18 @@ func FromEnv() (*Client, error) {
 			"orion: ORION_SLACK_TOKEN does not start with xoxb-; a bot token is expected")
 	}
 	return &Client{Token: tok, HTTP: &http.Client{Timeout: 20 * time.Second}}, nil
+}
+
+// credsGet is a tiny indirection so this package does not import workspace
+// directly, which would make an import cycle through notify.
+var credsGet = func() string { return "" }
+
+// SetResolver lets the CLI supply credential lookup at startup. Kept as a
+// hook rather than an import so the dependency runs one way only.
+func SetResolver(f func() string) {
+	if f != nil {
+		credsGet = f
+	}
 }
 
 func (c *Client) call(method string, payload any, out any) error {
@@ -137,6 +152,10 @@ func (e *APIError) Error() string {
 		hint = "\n  The token is not valid. Check ORION_SLACK_TOKEN, or reinstall the app."
 	case "ratelimited":
 		hint = "\n  Rate limited by Slack. Retry shortly."
+	case "not_in_channel", "channel_not_found":
+		hint = "\n  The bot is not a member of that channel. It joins public channels" +
+			"\n  automatically, but Slack provides no way to self-join a PRIVATE one:" +
+			"\n  invite it in Slack with /invite @Orion, then re-run."
 	}
 	return "slack " + e.Method + ": " + e.Code + hint
 }
@@ -193,9 +212,35 @@ func (c *Client) CreateChannel(name string, private bool) (*Channel, error) {
 		if findErr != nil {
 			return nil, fmt.Errorf("%s exists but could not be resolved: %w", name, findErr)
 		}
+		// A bot is automatically a member of a channel it CREATED, but not
+		// of one it merely found. conversations.setTopic requires membership
+		// and chat.postMessage to a public channel needs either membership or
+		// chat:write.public, so a reused channel must be joined first or
+		// every later call fails with not_in_channel.
+		//
+		// A private channel cannot be self-joined: Slack has no API for it,
+		// by design. Someone has to invite the bot.
+		if !private {
+			if joinErr := c.Join(found.ID); joinErr != nil {
+				return found, fmt.Errorf(
+					"found #%s but could not join it: %w\n"+
+						"  Add the channels:join scope, or invite the bot in Slack with /invite @Orion",
+					found.Name, joinErr)
+			}
+		}
 		return found, nil
 	}
 	return nil, err
+}
+
+// Join adds the bot to a public channel.
+//
+// Only public channels. Slack provides no way for an app to add itself to a
+// private channel, deliberately: a human must invite it. That is a policy
+// choice rather than a gap, and pretending otherwise would produce a
+// confusing failure instead of a clear instruction.
+func (c *Client) Join(channelID string) error {
+	return c.call("conversations.join", map[string]any{"channel": channelID}, nil)
 }
 
 // FindChannel locates a channel by name.

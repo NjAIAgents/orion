@@ -66,7 +66,7 @@ func Run(w io.Writer, path string, autoFix bool) int {
 		checkHome(),
 		checkDisk(),
 		checkProject(path),
-		checkJira(false),
+		checkJira(trackerRequired(rootOr(path))),
 		checkSlack(config.Load(rootOr(path)).Slack.Enabled),
 	}
 
@@ -110,6 +110,12 @@ func Run(w io.Writer, path string, autoFix bool) int {
 		fmt.Fprintln(w, "Ready.")
 		return 0
 	}
+}
+
+// trackerRequired reports whether this project actually asks for a tracker.
+// Only then can a Jira problem be a blocking one.
+func trackerRequired(root string) bool {
+	return config.Load(root).Tracker.Enabled
 }
 
 // rootOr resolves the project root, falling back to the given path so a

@@ -69,7 +69,9 @@ func Send(e Event) []error {
 			}
 		}
 	}
-	if url := strings.TrimSpace(os.Getenv("ORION_NOTIFY_WEBHOOK")); url != "" {
+	// Resolved through the same hook as the Slack token, so a webhook stored
+	// in Orion's config file works under cron where a shell profile does not.
+	if url := webhookURL(); url != "" {
 		if err := webhook(url, e); err != nil {
 			errs = append(errs, fmt.Errorf("webhook: %w", err))
 		}
@@ -85,6 +87,17 @@ func Send(e Event) []error {
 // desktop raises a native notification. Silently a no-op where no
 // mechanism exists, since a missing notifier is not an error worth
 // reporting on every event.
+// webhookURL is supplied by the CLI at startup; the fallback keeps the
+// environment working when nothing set a resolver.
+var webhookURL = func() string { return strings.TrimSpace(os.Getenv("ORION_NOTIFY_WEBHOOK")) }
+
+// SetWebhookResolver wires in credential lookup without importing workspace.
+func SetWebhookResolver(f func() string) {
+	if f != nil {
+		webhookURL = f
+	}
+}
+
 func desktop(e Event) error {
 	title := "Orion"
 	if e.Workspace != "" {

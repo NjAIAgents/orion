@@ -193,3 +193,67 @@ func TestChannelURL(t *testing.T) {
 		t.Errorf("an unknown team must yield no link, got %q", got)
 	}
 }
+
+// A bot is a member of a channel it CREATED, but not of one it merely found.
+// setTopic requires membership, so the reuse path must join first or every
+// later call fails with not_in_channel.
+func TestReusedPublicChannelIsJoined(t *testing.T) {
+	joined := false
+	c, srv := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "conversations.create"):
+			_, _ = w.Write([]byte(`{"ok":false,"error":"name_taken"}`))
+		case strings.HasSuffix(r.URL.Path, "conversations.list"):
+			_, _ = w.Write([]byte(`{"ok":true,"channels":[{"id":"C1","name":"reused"}],"response_metadata":{"next_cursor":""}}`))
+		case strings.HasSuffix(r.URL.Path, "conversations.join"):
+			joined = true
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	})
+	defer srv.Close()
+
+	if _, err := c.CreateChannel("reused", false); err != nil {
+		t.Fatal(err)
+	}
+	if !joined {
+		t.Error("a reused PUBLIC channel must be joined, or setTopic fails with not_in_channel")
+	}
+}
+
+// Slack provides no way for an app to add itself to a private channel. That
+// is a policy choice, so Orion must not attempt it and pretend otherwise.
+func TestReusedPrivateChannelIsNotJoined(t *testing.T) {
+	joined := false
+	c, srv := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "conversations.create"):
+			_, _ = w.Write([]byte(`{"ok":false,"error":"name_taken"}`))
+		case strings.HasSuffix(r.URL.Path, "conversations.list"):
+			_, _ = w.Write([]byte(`{"ok":true,"channels":[{"id":"C2","name":"secret"}],"response_metadata":{"next_cursor":""}}`))
+		case strings.HasSuffix(r.URL.Path, "conversations.join"):
+			joined = true
+			_, _ = w.Write([]byte(`{"ok":false,"error":"method_not_supported_for_channel_type"}`))
+		default:
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	})
+	defer srv.Close()
+
+	if _, err := c.CreateChannel("secret", true); err != nil {
+		t.Fatalf("a reused private channel should still resolve: %v", err)
+	}
+	if joined {
+		t.Error("must not attempt to self-join a private channel; a human has to invite the bot")
+	}
+}
+
+// not_in_channel is the error a user will actually hit, so it must explain
+// the private-channel invite rather than just naming the code.
+func TestNotInChannelExplainsTheInvite(t *testing.T) {
+	e := &APIError{Method: "chat.postMessage", Code: "not_in_channel"}
+	if !strings.Contains(e.Error(), "/invite") {
+		t.Errorf("not_in_channel should tell the user to invite the bot, got: %v", e)
+	}
+}

@@ -21,6 +21,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/creds"
 	"github.com/orion-sdlc/orion/internal/discovery"
 	"github.com/orion-sdlc/orion/internal/doctor"
 	"github.com/orion-sdlc/orion/internal/hook"
@@ -40,6 +41,11 @@ import (
 var Version = "dev"
 
 const usage = `orion - AI-native SDLC orchestrator
+
+CONFIGURATION
+  orion config                interactive setup for Jira, Slack and webhooks
+  orion config show           what is set, where it came from, secrets masked
+  orion config path           print the config file location
 
 ADOPT AN EXISTING REPO
   orion init [--plan-gate]    config, artifact dirs and hooks, idempotent
@@ -97,11 +103,22 @@ func main() {
 		os.Exit(64)
 	}
 
+	// Slack resolves its token through this hook rather than importing
+	// workspace directly, which would create an import cycle via notify.
+	slack.SetResolver(func() string {
+		return creds.Get(workspace.Home(), creds.SlackToken)
+	})
+	notify.SetWebhookResolver(func() string {
+		return creds.Get(workspace.Home(), creds.Webhook)
+	})
+
 	switch os.Args[1] {
 	case "hook":
 		runHook(os.Args[2:])
 	case "doctor":
 		os.Exit(doctor.Run(os.Stdout, argFlag(os.Args[2:], "--path", "."), hasFlag(os.Args[2:], "--fix")))
+	case "config":
+		runConfig(os.Args[2:])
 	case "init":
 		runInit(os.Args[2:])
 	case "answer":
@@ -254,6 +271,42 @@ func runNew(idea string, rest []string) {
 		fmt.Printf("it is answered (orion answer %s).\n", ws.ID)
 		fmt.Println()
 		fmt.Printf("Skip this next time with: orion new \"...\" --skip-discovery\n")
+	}
+}
+
+// runConfig is the credential wizard.
+//
+// It exists because a shell profile is read by interactive shells only, so
+// credentials exported in a terminal are invisible to cron and launchd. Orion
+// reading its own file removes that whole class of "works for me, not for the
+// scheduled run".
+func runConfig(args []string) {
+	home := workspace.Home()
+	sub := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub = args[0]
+		args = args[1:]
+	}
+
+	switch sub {
+	case "", "set", "edit":
+		var only []string
+		if v := argFlag(args, "--only", ""); v != "" {
+			for _, k := range strings.Split(v, ",") {
+				only = append(only, strings.TrimSpace(k))
+			}
+		}
+		exitOn(creds.Wizard(home, os.Stdin, os.Stdout, only))
+
+	case "show", "list":
+		exitOn(creds.Show(home, os.Stdout))
+
+	case "path":
+		fmt.Println(creds.Path(home))
+
+	default:
+		fmt.Fprintf(os.Stderr, "orion: unknown config subcommand %q (set|show|path)\n", sub)
+		os.Exit(64)
 	}
 }
 

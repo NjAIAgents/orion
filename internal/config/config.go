@@ -88,6 +88,11 @@ type Budget struct {
 
 // Tracker configures project-management provisioning.
 type Tracker struct {
+	// Enabled is opt-in, mirroring Slack. Without it, create_project_per_idea
+	// (which defaults true) was read as "a tracker is required", so a bad
+	// Jira token made Orion refuse to run at all. That field answers "if you
+	// use a tracker, how", not "must you use one".
+	Enabled  bool   `json:"enabled"`
 	Provider string `json:"provider"`
 	// ProjectKey binds to an existing project. When empty, Orion creates a
 	// project per idea, which requires the CREATE_PROJECT global permission
@@ -228,6 +233,7 @@ func Defaults() Config {
 			Private:                 true,
 		},
 		Tracker: Tracker{
+			Enabled:                 false,
 			Provider:                "jira",
 			CreatePerIdea:           true,
 			ConfirmTreeBeforeCreate: true,

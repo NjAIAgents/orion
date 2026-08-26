@@ -55,6 +55,17 @@ cd nj-agents && ./install.sh
 Orion reads a global install and never writes to it. Only a clone Orion
 fetched itself is one Orion will update.
 
+### Configure credentials (optional)
+
+```bash
+orion config        # Jira, Slack, webhooks; secrets are not echoed
+orion config show   # what is set, where from, masked
+```
+
+Stored in `~/.orion/config.env` at mode 0600 and read by the binary itself,
+so it works under cron and launchd where a shell profile would not. An
+exported environment variable still overrides it.
+
 ### Confirm the machine is ready
 
 ```bash
@@ -327,6 +338,9 @@ The digest leads with what is actionable — quota-parked workspaces, an
 unacknowledged budget checkpoint, failed runs with their log paths — because
 a digest that buries the actionable part under a status table becomes
 wallpaper.
+
+> **Setting the tokens up: [docs/SETUP-CREDENTIALS.md](SETUP-CREDENTIALS.md)**
+> — a paste-ready Slack app manifest, and the Jira token steps.
 
 ### Slack: a channel per project
 
