@@ -54,10 +54,21 @@ type Task struct {
 	// Branches created at provisioning: main (release, protected) and
 	// develop (integration, the pull-request base).
 	Branches []string `json:"branches,omitempty"`
+	// Slack is the project's channel, when one was created. It is the medium
+	// the run reports into.
+	Slack *SlackChannel `json:"slack,omitempty"`
 	// Remote and Tracker are filled by the provision stage.
 	Remote  string          `json:"remote,omitempty"`
 	Tracker json.RawMessage `json:"tracker,omitempty"`
 	Runs    []RunRec        `json:"runs,omitempty"`
+}
+
+// SlackChannel is a project's channel.
+type SlackChannel struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	TeamID string `json:"team_id,omitempty"`
+	URL    string `json:"url,omitempty"`
 }
 
 // RunRec records one supervised run.

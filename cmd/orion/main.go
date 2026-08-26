@@ -27,6 +27,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/provision"
 	"github.com/orion-sdlc/orion/internal/report"
+	"github.com/orion-sdlc/orion/internal/slack"
 	"github.com/orion-sdlc/orion/internal/state"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
@@ -208,11 +209,61 @@ func runNew(idea string, rest []string) {
 	}
 	ws, err := workspace.New(opts)
 	exitOn(err)
+
+	// The project channel, if Slack is configured. Failure here is reported
+	// and never fatal: a workspace that exists without a channel is usable,
+	// while refusing to provision because Slack was unreachable is not.
+	if ch := createProjectChannel(ws); ch != nil {
+		ws.Task.Slack = ch
+		_ = ws.SaveTask()
+	}
+
 	fmt.Printf("workspace  %s\n", ws.ID)
 	fmt.Printf("path       %s\n", ws.Dir)
 	fmt.Printf("repo       %s\n", ws.RepoDir())
 	fmt.Printf("sandbox    %s\n", ws.SandboxMode())
 	fmt.Printf("\nnext: orion run %s --stage intent\n", ws.ID)
+}
+
+// createProjectChannel makes the workspace's Slack channel and posts the
+// opening message, so the channel is useful the moment it appears rather
+// than being an empty room someone has to interpret.
+func createProjectChannel(ws *workspace.Workspace) *workspace.SlackChannel {
+	cfg := config.Load(ws.RepoDir())
+	if !cfg.Slack.Enabled || !cfg.Slack.CreateChannelPerProject {
+		return nil
+	}
+	c, err := slack.FromEnv()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orion: slack enabled but not usable: %v\n", err)
+		return nil
+	}
+	id, err := c.AuthTest()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orion: slack: %v\n", err)
+		return nil
+	}
+	ch, err := c.CreateChannel(cfg.Slack.ChannelPrefix+ws.Task.Slug, cfg.Slack.Private)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orion: could not create the project channel: %v\n", err)
+		return nil
+	}
+	_ = c.SetTopic(ch.ID, truncateStr(ws.Task.Idea, 240))
+	_ = c.Post(ch.ID, fmt.Sprintf(
+		"*%s*\n%s\n\nWorkspace `%s`. Orion will report stage results, failures, "+
+			"budget checkpoints and quota waits here.\n"+
+			"Drive it with `orion run %s --stage <stage>`; `orion status %s` for state.",
+		ch.Name, ws.Task.Idea, ws.ID, ws.ID, ws.ID))
+
+	verb := "created"
+	if !ch.Created {
+		verb = "reusing"
+	}
+	fmt.Printf("slack      #%s (%s)\n", ch.Name, verb)
+	return &workspace.SlackChannel{
+		ID: ch.ID, Name: ch.Name, TeamID: id.TeamID,
+		URL: slack.ChannelURL(id.TeamID, ch.ID),
+	}
 }
 
 func runSupervised(id string, rest []string) {

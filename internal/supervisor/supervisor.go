@@ -148,7 +148,7 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 		if opts.NoWait {
 			res.Reason = "quota exhausted (--no-wait set, not waiting)"
 			notify.Send(notify.Event{
-				Level: notify.Blocked, Workspace: ws.ID,
+				Level: notify.Blocked, Workspace: ws.ID, Channel: channelFor(ws),
 				Title: "Orion stopped: quota exhausted",
 				Body:  msg + "\nRe-run when the limit resets: orion run " + ws.ID + " --stage " + opts.Stage,
 			})
@@ -167,7 +167,7 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 			_ = ws.SaveTask()
 
 			notify.Send(notify.Event{
-				Level: notify.Blocked, Workspace: ws.ID,
+				Level: notify.Blocked, Workspace: ws.ID, Channel: channelFor(ws),
 				Title: "Orion paused: quota exhausted",
 				Body: msg + "\n\nToo long to wait inline. Resume with:\n  orion run " +
 					ws.ID + " --stage " + opts.Stage,
@@ -176,7 +176,7 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 		}
 
 		notify.Send(notify.Event{
-			Level: notify.Warning, Workspace: ws.ID,
+			Level: notify.Warning, Workspace: ws.ID, Channel: channelFor(ws),
 			Title: fmt.Sprintf("Orion waiting %s for quota reset", v.Wait.Round(time.Second)),
 			Body:  msg + fmt.Sprintf("\nWill retry automatically (attempt %d of %d).", attempt+1, quota.MaxAttempts),
 		})
@@ -220,12 +220,22 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	// checking.
 	if last != nil && last.ExitCode != 0 {
 		notify.Send(notify.Event{
-			Level: notify.Blocked, Workspace: ws.ID,
+			Level: notify.Blocked, Workspace: ws.ID, Channel: channelFor(ws),
 			Title: fmt.Sprintf("orion: %s failed in %s", opts.Stage, ws.ID),
 			Body:  fmt.Sprintf("exit %d after %d attempt(s): %s\nlog: %s", last.ExitCode, last.Attempts, last.Reason, last.LogPath),
 		})
 	}
 	return last, nil
+}
+
+// channelFor returns the workspace's Slack channel id, or "" when it has
+// none. Keeping this in one place means a new notify call site cannot
+// forget to route a project's message to that project's room.
+func channelFor(ws *workspace.Workspace) string {
+	if ws.Task.Slack != nil {
+		return ws.Task.Slack.ID
+	}
+	return ""
 }
 
 // recordUsage books what a run actually cost. Failures here are reported and
@@ -326,7 +336,7 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 		terminate(cmd, done)
 		fmt.Fprintf(logFile, "\n[orion] %s\n", res.Reason)
 		notify.Send(notify.Event{
-			Level: notify.Blocked, Workspace: ws.ID,
+			Level: notify.Blocked, Workspace: ws.ID, Channel: channelFor(ws),
 			Title: "Orion killed a runaway session",
 			Body:  res.Reason + "\nLog: " + logPath,
 		})

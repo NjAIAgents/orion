@@ -67,6 +67,7 @@ func Run(w io.Writer, path string, autoFix bool) int {
 		checkDisk(),
 		checkProject(path),
 		checkJira(false),
+		checkSlack(config.Load(rootOr(path)).Slack.Enabled),
 	}
 
 	fmt.Fprintf(w, "orion doctor  (%s/%s)\n\n", runtime.GOOS, runtime.GOARCH)

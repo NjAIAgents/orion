@@ -286,7 +286,54 @@ unacknowledged budget checkpoint, failed runs with their log paths — because
 a digest that buries the actionable part under a status table becomes
 wallpaper.
 
-### Slack
+### Slack: a channel per project
+
+Orion can create a Slack channel for every workspace and report into it. This
+needs a **Slack app bot token**, not an incoming webhook — a webhook is bound
+to one channel at creation and cannot create any, which is the single thing
+most likely to waste an afternoon here.
+
+1. Create an app at api.slack.com/apps, then under **OAuth & Permissions**
+   add these **bot** scopes:
+   - `channels:manage` for public channels, or `groups:write` for private
+   - `chat:write`
+   - `channels:read` or `groups:read` so an existing channel can be found again
+2. Install the app to the workspace and copy the bot token (`xoxb-...`).
+   **Adding a scope later requires reinstalling** — an existing token does not
+   gain scopes retroactively, and the resulting `missing_scope` error is
+   otherwise baffling.
+3. Configure:
+
+```bash
+export ORION_SLACK_TOKEN='xoxb-...'
+```
+
+```json
+"slack": { "enabled": true, "create_channel_per_project": true,
+           "channel_prefix": "orion-", "private": true }
+```
+
+`orion doctor` then reports the workspace the token belongs to by name. That
+check matters more than it looks: a token for the *wrong* workspace
+authenticates perfectly and posts into a room nobody reads, which is
+indistinguishable from working.
+
+`orion new` creates `#orion-<slug>`, sets the channel topic to the idea, and
+posts an opening message naming the workspace id and the commands to drive
+it. Every stage failure, breaker trip, quota wait and budget checkpoint for
+that project then lands in that channel rather than one shared firehose.
+
+Two things worth knowing before turning it on. Channels **accumulate** exactly
+as the Jira projects do, and a bot cannot delete them — archive a finished
+project's channel instead. And `private: true` is the default because a public
+channel cannot be made private afterwards, while a slug can easily reveal an
+unreleased project.
+
+If Slack is unreachable when a workspace is created, Orion says so and carries
+on. A workspace without a channel is usable; refusing to provision because
+Slack was down would not be.
+
+### Webhook-only, without an app
 
 Outbound works today with no extra software. Create a Slack incoming webhook
 and export it:

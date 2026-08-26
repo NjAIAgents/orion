@@ -74,6 +74,14 @@
     "pause_at_percent": [50, 75, 90, 95]
   },
 
+  "_comment_slack": "A channel per project, and the medium Orion reports into. Needs a Slack APP BOT TOKEN in ORION_SLACK_TOKEN, not an incoming webhook: a webhook is bound to one channel at creation and cannot create any. Scopes: channels:manage (public) or groups:write (private), plus chat:write; after adding a scope you must REINSTALL the app or the existing token will not have it. Channels accumulate like Jira projects and a bot cannot delete them, so archive rather than delete when a project is done. private defaults true because a public channel cannot be made private afterwards, and a slug can reveal an unreleased project.",
+  "slack": {
+    "enabled": false,
+    "create_channel_per_project": true,
+    "channel_prefix": "orion-",
+    "private": true
+  },
+
   "_comment_vcs": "Two long-lived branches. main is the release branch. develop is the integration branch and the default PR base (named develop, not dev, so it does not collide with the dev ENVIRONMENT in the autonomy block). Every task gets its own branch cut from develop. BOTH are push-protected: protecting only main would make the PR into dev optional, and an optional gate is not a gate.",
   "vcs": {
     "provider": "github",

@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/njagents"
+	"github.com/orion-sdlc/orion/internal/slack"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -176,6 +178,30 @@ func checkJira(required bool) check {
 		return check{"jira", warn, "cannot create projects", cap.Detail}
 	}
 	return check{"jira", ok, cap.Detail, ""}
+}
+
+// checkSlack verifies the bot token can actually do what Orion needs.
+//
+// Naming the workspace is the point. A token for the wrong workspace
+// authenticates perfectly and posts into somewhere nobody reads, which looks
+// exactly like working until someone asks why they never saw a message.
+func checkSlack(enabled bool) check {
+	c, err := slack.FromEnv()
+	if err != nil {
+		g := warn
+		if !enabled {
+			// Not configured and not asked for: this is not a problem.
+			return check{"slack", ok, "not configured (optional)", ""}
+		}
+		return check{"slack", g, "enabled in config but not configured", err.Error()}
+	}
+	id, err := c.AuthTest()
+	if err != nil {
+		return check{"slack", warn, "token rejected", err.Error()}
+	}
+	return check{"slack", ok,
+		fmt.Sprintf("%s as %s (workspace %s)", id.Team, id.User, id.TeamID),
+		""}
 }
 
 // checkDisk catches the failure that looks like everything else failing.

@@ -51,6 +51,25 @@ type Delegation struct {
 	HighRiskPaths []string `json:"high_risk_paths"`
 }
 
+// Slack configures the per-project channel.
+//
+// This needs a Slack app bot token, not an incoming webhook: a webhook is
+// bound to one channel at creation and cannot create any. The two are
+// independent, and both can be on.
+type Slack struct {
+	Enabled bool `json:"enabled"`
+	// CreateChannelPerProject makes one channel per workspace. Channels
+	// accumulate exactly as Jira projects do, and a bot cannot delete them;
+	// `orion slack archive` is the cleanup.
+	CreateChannelPerProject bool `json:"create_channel_per_project"`
+	// ChannelPrefix namespaces Orion's channels so they sort together and
+	// are obviously machine-made.
+	ChannelPrefix string `json:"channel_prefix"`
+	// Private channels by default: a workspace name can reveal an unreleased
+	// project, and a public channel cannot be made private afterwards.
+	Private bool `json:"private"`
+}
+
 // Budget caps what Orion spends over a rolling seven days.
 //
 // These are YOUR limits, not the provider's. Nothing reports how much of an
@@ -142,6 +161,7 @@ type Config struct {
 	Autonomy   map[string]string `json:"autonomy"`
 	AutoMerge  AutoMerge         `json:"auto_merge"`
 	Budget     Budget            `json:"budget"`
+	Slack      Slack             `json:"slack"`
 	VCS        VCS               `json:"vcs"`
 	Tracker    Tracker           `json:"tracker"`
 	Delegation Delegation        `json:"delegation"`
@@ -201,6 +221,12 @@ func Defaults() Config {
 			BranchPrefix:      "orion/",
 		},
 		Budget: Budget{PauseAtPercent: []int{50, 75, 90, 95}},
+		Slack: Slack{
+			Enabled:                 false,
+			CreateChannelPerProject: true,
+			ChannelPrefix:           "orion-",
+			Private:                 true,
+		},
 		Tracker: Tracker{
 			Provider:                "jira",
 			CreatePerIdea:           true,
@@ -320,6 +346,9 @@ func normalize(c *Config) {
 	}
 	if c.VCS.BranchPrefix == "" {
 		c.VCS.BranchPrefix = d.VCS.BranchPrefix
+	}
+	if c.Slack.ChannelPrefix == "" {
+		c.Slack.ChannelPrefix = d.Slack.ChannelPrefix
 	}
 	if len(c.Budget.PauseAtPercent) == 0 {
 		c.Budget.PauseAtPercent = d.Budget.PauseAtPercent
