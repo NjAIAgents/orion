@@ -67,13 +67,18 @@ type Options struct {
 
 type Result struct {
 	// Limit is what this run reported about the account's plan limits.
-	Limit    RateLimit
-	ExitCode int
-	Reason   string
-	Duration time.Duration
-	LogPath  string
-	Killed   bool
-	Attempts int
+	Limit RateLimit
+	// PeakContext is the largest prompt any single turn sent, in tokens, and
+	// ContextWindow is what the model had to hold it. A zero window means
+	// the stream never said; the result JSON usually has it instead.
+	PeakContext   int
+	ContextWindow int
+	ExitCode      int
+	Reason        string
+	Duration      time.Duration
+	LogPath       string
+	Killed        bool
+	Attempts      int
 	// ResumeAt is set when a quota wall was hit and the wait was too long
 	// to sit through. The caller reports it; nothing sleeps on it.
 	ResumeAt time.Time
@@ -169,6 +174,12 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	for attempt := 1; attempt <= quota.MaxAttempts; attempt++ {
 		res, output := runOnce(ws, bin, prompt, opts, attempt)
 		recordUsage(ws, opts.Stage, output)
+		// Numerator from the stream (a peak over turns), denominator from
+		// wherever it was actually reported. Splitting the two sources is
+		// deliberate: the window is a static property of the model and is
+		// safe to take from the result JSON, while the occupancy is not --
+		// taking THAT from the result JSON is what produced "656%".
+		reportContextPressure(res.PeakContext, windowFor(res, output))
 		res.Attempts = attempt
 		last = res
 
@@ -295,6 +306,52 @@ func channelFor(ws *workspace.Workspace) string {
 	return ""
 }
 
+// reportContextPressure warns when a stage ran close to filling its window.
+//
+// peak is the largest single turn's prompt, measured off the stream; window
+// is what the run said it had. Both come from the run itself, and when
+// either is missing this says NOTHING rather than guessing -- the previous
+// version guessed, and printed "context reached 656% of the 1M window",
+// which was cumulative throughput divided by a window size and could not be
+// true of any context.
+//
+// The threshold is high because the consequence is real: Orion cannot
+// compact mid-run, so a stage that fills its window will start losing the
+// earliest part of its own reasoning.
+// windowFor finds the context window, preferring the stream and falling back
+// to the result JSON.
+//
+// Both are legitimate sources for THIS number, unlike the occupancy: the
+// window is a fixed property of the model, so a cumulative document reports
+// it just as accurately as a per-turn one. The CLI version in use here does
+// not put context_window on the stream at all -- only modelUsage in the final
+// result carries it -- so without this fallback the warning would go silent
+// forever instead of being wrong, which is quieter but no more useful.
+func windowFor(res *Result, out string) int {
+	if res != nil && res.ContextWindow > 0 {
+		return res.ContextWindow
+	}
+	if run, ok := budget.FromResultJSON(out); ok {
+		return run.ContextWindow
+	}
+	return 0
+}
+
+func reportContextPressure(peak, window int) {
+	if peak <= 0 || window <= 0 {
+		return
+	}
+	p := peak * 100 / window
+	if p < 70 {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"orion: context peaked at %d%% of the %s window on this stage (%s in one turn).\n"+
+			"  Orion cannot compact mid-run; the CLI exposes no control for it.\n"+
+			"  If this recurs, split the stage: each stage starts a fresh session.\n",
+		p, humanTokens(window), humanTokens(peak))
+}
+
 // recordUsage books what a run actually cost. Failures here are reported and
 // never fatal: losing an accounting row must not lose the work.
 func recordUsage(ws *workspace.Workspace, stage, out string) {
@@ -309,13 +366,9 @@ func recordUsage(ws *workspace.Workspace, stage, out string) {
 		fmt.Fprintf(os.Stderr, "orion: could not record usage: %v\n", err)
 		return
 	}
-	if p := budget.ContextPressure(run); p >= 70 {
-		fmt.Fprintf(os.Stderr,
-			"orion: context reached %d%% of the %s window on this stage.\n"+
-				"  Orion cannot compact mid-run; the CLI exposes no control for it.\n"+
-				"  If this recurs, split the stage: each stage starts a fresh session.\n",
-			p, humanTokens(run.ContextWindow))
-	}
+	// Context pressure is NOT computed here any more. The result JSON reports
+	// cumulative session usage, which cannot answer "how full did the context
+	// get" -- see reportContextPressure, which reads the peak off the stream.
 }
 
 func humanTokens(n int) string {
@@ -418,6 +471,11 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 		// whether to start another needs to know that now rather than by
 		// being refused next time.
 		res.Limit = activity.Limit()
+		// Measured off the stream, per turn, so it is a peak rather than a
+		// session total. Carried on the Result rather than reported here,
+		// because the WINDOW it must be divided by is not always on the
+		// stream -- the caller has the result JSON, which is.
+		res.PeakContext, res.ContextWindow = activity.Context()
 	case <-ctx.Done():
 		res.Killed = true
 		res.Duration = time.Since(started)

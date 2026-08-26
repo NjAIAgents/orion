@@ -27,10 +27,24 @@ import (
 // the version most people read, and it teaches them that Orion's messages
 // are approximately true. Once a reader believes that, every message is
 // worth less, including the ones that matter.
-func msgMerged(key string, pr PR, checkout string, pruned bool, refreshed string) (string, string) {
+// work and prod name the integration branch this landed on and the branch a
+// release goes to. Passed in rather than hardcoded: "develop" was written
+// into this message as a literal, so a project using any other name was told
+// its work was somewhere it is not.
+func msgMerged(key string, pr PR, checkout string, pruned bool, refreshed, work, prod string) (string, string) {
+	if work == "" {
+		work = "develop"
+	}
 	title := fmt.Sprintf("%s merged", key)
 
-	checkoutLine := "• your checkout `" + checkout + "` was fast-forwarded"
+	// The sync line answers one question: do I need to pull?
+	//
+	// "was fast-forwarded" is git's word for it and assumes the reader
+	// translates it. Say the thing they actually care about -- the merged
+	// work is already in their working copy and there is nothing to pull --
+	// and keep the branch name so it is checkable rather than reassuring.
+	checkoutLine := "• your local copy `" + checkout + "` is up to date — " +
+		"the merged changes have been pulled into `" + work + "`, nothing to do"
 	if !strings.Contains(refreshed, "fast-forwarded") {
 		// It did not move. Say what stopped it, since the reader's next
 		// action -- pulling by hand -- depends on which reason it was.
@@ -38,15 +52,27 @@ func msgMerged(key string, pr PR, checkout string, pruned bool, refreshed string
 		if reason == "" {
 			reason = "it was not updated"
 		}
-		checkoutLine = "• your checkout `" + checkout + "` is BEHIND: " + reason
+		checkoutLine = "• your local copy `" + checkout + "` is BEHIND: " + reason +
+			"\n• pull it yourself: `git -C " + checkout + " pull --ff-only`"
 	}
 
-	tail := "_The ticket is closed and its worktree removed. Nothing is waiting on you._"
+	// What is left, said plainly.
+	//
+	// This used to end "Nothing is waiting on you", which is false: landing
+	// on the integration branch is not landing in production. Somebody still
+	// has to take work -> prod, and a message that says the opposite invites
+	// the reader to assume a release happened.
+	closing := "Over to you for the " + prod + " merge."
+	if prod == "" || prod == work {
+		closing = "Nothing is waiting on you."
+	}
+	tail := "_The ticket is closed and its worktree removed. " + closing + "_"
 	if !pruned {
-		tail = "_The ticket is closed. The worktree was kept -- see `orion sandbox " + key + "`._"
+		tail = "_The ticket is closed. The worktree was kept -- see `orion sandbox " +
+			key + "`. " + closing + "_"
 	}
 	body := strings.Join([]string{
-		"*The work is on " + "`develop`" + ".*",
+		"*The work is on " + "`" + work + "`" + ".*",
 		"",
 		"• pull request  " + link(pr.URL, "what merged"),
 		checkoutLine,

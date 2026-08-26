@@ -111,12 +111,13 @@ func Run(opts Options, deps Deps) error {
 	}
 
 	started := 0
+	draining := false
 	for tick := 1; ; tick++ {
 		if stopping.Load() {
 			break
 		}
 
-		n, err := oneTick(opts, deps, w, opts.MaxJobs-started)
+		n, unfinished, err := oneTick(opts, deps, w, opts.MaxJobs-started)
 		if err != nil {
 			// A misconfiguration will NEVER fix itself, so retrying it every
 			// two minutes forever is not resilience -- it is a watcher that
@@ -140,9 +141,30 @@ func Run(opts Options, deps Deps) error {
 		if opts.Once || opts.DryRun {
 			break
 		}
+		// The job limit caps how many tickets are STARTED. It must not end the
+		// watcher while one of those tickets is still in flight.
+		//
+		// It used to. `--max-jobs 1` started FCIA-7, pushed it, opened the
+		// pull request, moved it to orion-ci-wait -- and exited on the same
+		// tick, before any tick could reconcile it. CI went green into an
+		// empty room: no approval was ever requested, nothing merged, no
+		// worktree was pruned, and the ticket sat in ci-wait indefinitely
+		// waiting for a watcher that had already stopped. The limit was
+		// abandoning the very job it had just paid for.
+		//
+		// So the cap now stops STARTING and keeps DRAINING: reconcile only,
+		// until the tickets this run began have merged, failed, or been
+		// closed. Ctrl-c still exits at the end of the current step.
 		if opts.MaxJobs > 0 && started >= opts.MaxJobs {
-			ui.Ok(w, "ok", "started %d job(s); the limit for this run", started)
-			break
+			if !unfinished {
+				ui.Ok(w, "ok", "started %d job(s) and finished them; the limit for this run", started)
+				break
+			}
+			if !draining {
+				draining = true
+				ui.Ok(w, "draining", "started %d job(s), the limit for this run; "+
+					"starting nothing more, but staying up until they finish", started)
+			}
 		}
 		if !deps.Sleep(opts.Interval) {
 			break
@@ -167,14 +189,25 @@ func permanent(err error) bool {
 }
 
 // oneTick does the reconciling, then starts at most one job. Returns how many
-// jobs it started, which is always 0 or 1.
-func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (int, error) {
+// jobs it started (always 0 or 1) and whether anything is still unfinished.
+//
+// The unfinished flag is what lets the loop know it must not exit yet. A
+// ticket that has been pushed and is awaiting CI is Orion's responsibility
+// until it merges or fails, and nothing else in the system will pick it up.
+func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (started int, unfinished bool, err error) {
 	// 1. Finish what is already in flight. Cheap, and it can free the job
 	// slot this tick is about to look for.
 	if deps.Collect != nil {
-		deps.Collect(collect.Options{
+		for _, r := range deps.Collect(collect.Options{
 			Out: w, Home: opts.Home, DryRun: opts.DryRun,
-		})
+		}) {
+			// Pending means CI is still running; passing means CI is green
+			// and a human has not approved yet. Both are work this watcher
+			// still owes, and exiting on either strands the ticket.
+			if r.Verdict == collect.VerdictPending || r.Verdict == collect.VerdictPassing {
+				unfinished = true
+			}
+		}
 	}
 
 	// 2. Is something already running? The label is the lock, and it lives
@@ -183,25 +216,25 @@ func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (int, error) {
 	if deps.InFlight != nil {
 		busy, key, err := deps.InFlight(opts.Home, opts.Projects)
 		if err != nil {
-			return 0, err
+			return 0, unfinished, err
 		}
 		if busy {
 			ui.Ok(w, "working", "%s is still running; not starting anything else", key)
-			return 0, nil
+			return 0, unfinished, nil
 		}
 	}
 
 	if remaining == 0 && opts.MaxJobs > 0 {
-		return 0, nil
+		return 0, unfinished, nil
 	}
 
 	// 3. Start the next ticket, and only one.
 	keys, err := deps.Queued(opts.Home, opts.Projects, opts.QueueLabel)
 	if err != nil {
-		return 0, err
+		return 0, unfinished, err
 	}
 	if len(keys) == 0 {
-		return 0, nil
+		return 0, unfinished, nil
 	}
 	next := keys[0]
 
@@ -231,7 +264,7 @@ func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (int, error) {
 				fmt.Sprintf("no job limit: it would work all %d, one at a time, and keep watching.",
 					len(keys))))
 		}
-		return 0, nil
+		return 0, unfinished, nil
 	}
 
 	ui.Ok(w, "claimed", "%s (%d queued)", next, len(keys))
@@ -254,10 +287,10 @@ func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (int, error) {
 				// -- hundreds of them, for hours, saying the same thing.
 				ui.Ok(w, "ci-wait", "sleeping until %s", until.Local().Format("15:04 Mon"))
 				if !deps.Sleep(d + time.Minute) {
-					return 0, nil
+					return 0, unfinished, nil
 				}
 			}
-			return 0, nil
+			return 0, unfinished, nil
 		}
 	}
 
@@ -268,10 +301,10 @@ func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (int, error) {
 	for _, r := range res {
 		if r.Outcome == work.OutcomeSkipped {
 			ui.Warn(w, "%s was not started; waiting rather than retrying immediately", r.Key)
-			return 0, nil
+			return 0, unfinished, nil
 		}
 	}
-	return 1, nil
+	return 1, unfinished, nil
 }
 
 // Queued lists tickets carrying the queue label, in the tracker's order.

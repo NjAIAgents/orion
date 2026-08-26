@@ -34,6 +34,11 @@ type Request struct {
 type requestFile struct {
 	Version  int                `json:"version"`
 	Requests map[string]Request `json:"requests"`
+	// Conflicts maps a ticket to the HEAD commit whose conflict has already
+	// been announced. Keyed on the commit, not a bare flag, so a pushed
+	// rebase that still conflicts is reported again -- something genuinely
+	// changed -- while an unchanged branch stays quiet.
+	Conflicts map[string]string `json:"conflicts"`
 }
 
 func requestPath(wsDir string) string {
@@ -41,7 +46,7 @@ func requestPath(wsDir string) string {
 }
 
 func loadRequests(wsDir string) requestFile {
-	f := requestFile{Version: 1, Requests: map[string]Request{}}
+	f := requestFile{Version: 1, Requests: map[string]Request{}, Conflicts: map[string]string{}}
 	b, err := os.ReadFile(requestPath(wsDir))
 	if err != nil {
 		return f
@@ -50,9 +55,33 @@ func loadRequests(wsDir string) requestFile {
 	// duplicate merge request in Slack; the alternative is a collector that
 	// refuses to run at all because of a file it can rewrite.
 	if json.Unmarshal(b, &f) != nil || f.Requests == nil {
-		return requestFile{Version: 1, Requests: map[string]Request{}}
+		return requestFile{Version: 1, Requests: map[string]Request{}, Conflicts: map[string]string{}}
+	}
+	// A file written before conflicts were tracked has no map at all, and
+	// writing to a nil map panics.
+	if f.Conflicts == nil {
+		f.Conflicts = map[string]string{}
 	}
 	return f
+}
+
+// markConflict records that this ticket's conflict has been announced at
+// this commit, so the next pass does not announce it again.
+func markConflict(wsDir, key, head string) error {
+	f := loadRequests(wsDir)
+	f.Conflicts[key] = head
+	return writeRequests(wsDir, f)
+}
+
+// clearConflict forgets a ticket's conflict, so a later one is announced
+// afresh rather than being mistaken for the same unresolved problem.
+func clearConflict(wsDir, key string) error {
+	f := loadRequests(wsDir)
+	if _, ok := f.Conflicts[key]; !ok {
+		return nil
+	}
+	delete(f.Conflicts, key)
+	return writeRequests(wsDir, f)
 }
 
 func saveRequest(wsDir string, r Request) error {

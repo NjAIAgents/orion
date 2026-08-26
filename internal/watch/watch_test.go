@@ -23,12 +23,20 @@ type spy struct {
 	outcome   work.Outcome
 	sleeps    int
 	maxSleeps int
+	// pendingTicks makes Collect report a ticket still awaiting CI for that
+	// many ticks, then report nothing -- the shape of a real run, where CI
+	// takes several minutes to go green after the branch is pushed.
+	pendingTicks int
 }
 
 func (s *spy) deps() Deps {
 	return Deps{
 		Collect: func(collect.Options) []collect.Result {
 			s.collects++
+			if s.pendingTicks > 0 {
+				s.pendingTicks--
+				return []collect.Result{{Key: "FCIA-7", Verdict: collect.VerdictPending}}
+			}
 			return nil
 		},
 		Work: func(o work.Options) []work.Result {
@@ -122,6 +130,54 @@ func TestMaxJobsStopsTheLoop(t *testing.T) {
 	}
 	if !strings.Contains(out, "the limit for this run") {
 		t.Errorf("stopping at the limit must be stated: %s", out)
+	}
+}
+
+// The job limit caps STARTS, and must not abandon a ticket mid-flight.
+//
+// This is the bug it was written for, observed in full: `orion watch fcia
+// --max-jobs 1` claimed FCIA-7, ran the agent, pushed the branch, opened the
+// pull request, moved the ticket to orion-ci-wait -- and exited on that same
+// tick. CI went green minutes later with no watcher left to notice. No
+// approval was requested in Slack, nothing merged, the worktree was never
+// pruned, and the ticket sat in ci-wait forever. Every line of output said
+// success. The limit had abandoned the one job it just paid for.
+//
+// Reaching the cap must stop STARTING, not stop WATCHING.
+func TestTheJobLimitDrainsInFlightWorkInsteadOfAbandoningIt(t *testing.T) {
+	// CI is still running for the first two ticks after the job starts.
+	s := &spy{queued: []string{"FCIA-7"}, maxSleeps: 20, pendingTicks: 2}
+	out := runWatch(t, s, Options{MaxJobs: 1})
+
+	if len(s.worked) != 1 {
+		t.Fatalf("started %d jobs, want exactly 1 -- the cap must still cap", len(s.worked))
+	}
+	// The tick that started the job collected BEFORE starting it, so
+	// finishing that job needs at least two more reconciles.
+	if s.collects < 3 {
+		t.Errorf("collected %d times; the watcher exited before the ticket it started could finish",
+			s.collects)
+	}
+	if !strings.Contains(out, "draining") {
+		t.Errorf("staying up to finish in-flight work must be stated, or it looks hung:\n%s", out)
+	}
+	if !strings.Contains(out, "finished them") {
+		t.Errorf("the watcher must say the work actually completed:\n%s", out)
+	}
+}
+
+// The counterpart: with nothing in flight, the cap exits immediately. A
+// watcher that lingered after finishing everything would be a daemon the
+// person did not ask for.
+func TestTheJobLimitExitsAtOnceWhenNothingIsInFlight(t *testing.T) {
+	s := &spy{queued: []string{"FCIA-7"}, maxSleeps: 20}
+	out := runWatch(t, s, Options{MaxJobs: 1})
+
+	if s.sleeps > 1 {
+		t.Errorf("slept %d times with nothing to wait for", s.sleeps)
+	}
+	if strings.Contains(out, "draining") {
+		t.Errorf("nothing was in flight, so there was nothing to drain:\n%s", out)
 	}
 }
 

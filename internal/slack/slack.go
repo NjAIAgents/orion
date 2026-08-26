@@ -325,6 +325,42 @@ func (c *Client) FindChannel(name string, private bool) (*Channel, error) {
 	return nil, fmt.Errorf("channel %q not found", name)
 }
 
+// Members lists the user IDs in a channel.
+//
+// Exists to answer one question that nothing else could: is anybody actually
+// in the room? Posting to a private channel whose only member is the bot
+// succeeds -- Slack returns ok, the message is really there -- and no human
+// can read it, or find it by search, or learn that it exists. So a delivery
+// test could pass every check it had and still be wrong about the only thing
+// it was asked.
+//
+// Paginates, for the same reason FindChannel does.
+func (c *Client) Members(channelID string) ([]string, error) {
+	var out []string
+	cursor := ""
+	for page := 0; page < 20; page++ {
+		var res struct {
+			Members []string `json:"members"`
+			Meta    struct {
+				NextCursor string `json:"next_cursor"`
+			} `json:"response_metadata"`
+		}
+		payload := map[string]any{"channel": channelID, "limit": 200}
+		if cursor != "" {
+			payload["cursor"] = cursor
+		}
+		if err := c.call("conversations.members", payload, &res); err != nil {
+			return nil, err
+		}
+		out = append(out, res.Members...)
+		cursor = res.Meta.NextCursor
+		if cursor == "" {
+			break
+		}
+	}
+	return out, nil
+}
+
 // Post sends a message to a channel id.
 func (c *Client) Post(channelID, text string) error {
 	return c.call("chat.postMessage", map[string]any{

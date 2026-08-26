@@ -56,12 +56,25 @@ const (
 	VerdictClosed Verdict = "closed"
 	// VerdictUnknown: no pull request found for the branch.
 	VerdictUnknown Verdict = "unknown"
+	// VerdictConflicted: the branch will not merge into its base without a
+	// human resolving an overlap. Reported rather than retried: no amount of
+	// polling resolves a conflict, and Orion must not rewrite a branch a
+	// reviewer is already looking at.
+	VerdictConflicted Verdict = "conflicted"
 )
 
 // PR is the state of one pull request, reduced to what a decision needs.
 type PR struct {
 	URL     string
 	Verdict Verdict
+	// Conflicted means git cannot merge this branch into its base without a
+	// human resolving something. Separate from Verdict rather than a value
+	// of it, because it is orthogonal: a conflicted pull request usually has
+	// PASSING checks, which ran before the base moved underneath it.
+	Conflicted bool
+	// Head is the branch's current commit, used to notice when somebody has
+	// pushed a rebase and the situation has changed.
+	Head string
 	// Detail is the human-readable why: which check failed, or why nothing
 	// could be determined. Carried into the tracker comment, since a bare
 	// "CI failed" sends the reader to GitHub to find out anything.
@@ -125,6 +138,21 @@ type Options struct {
 	// For when you want to see the failure yourself before anything spends
 	// money reacting to it.
 	NoFix bool
+	// AwaitApproval makes this pass WAIT for the approval reaction rather
+	// than asking and returning. Zero means do not wait.
+	//
+	// Set only for a person running `orion collect` at a terminal, never by
+	// `orion watch`. The distinction is the whole design: a watcher must
+	// come straight back to reconcile everything else, so for it the two
+	// passes are free -- the next tick is the second pass. But a person
+	// running collect by hand is doing so precisely BECAUSE no watcher is
+	// running, usually after a run failed midway. For them "asked in Slack"
+	// followed by an exit means the approval they then give is read by
+	// nobody, and the pipeline stalls with every indication of success.
+	AwaitApproval time.Duration
+	// Poll is how often to re-read the reaction while waiting. Zero uses a
+	// sane default; a test sets it small.
+	Poll time.Duration
 }
 
 // Result is one ticket's reconciliation.
@@ -250,6 +278,23 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	res.Verdict, res.PR = pr.Verdict, pr.URL
 	log.Emit(events.Event{Kind: events.KindCI, Actor: events.ActorCI,
 		Msg: string(pr.Verdict) + ": " + firstLine(pr.Detail)})
+
+	// A branch that cannot be merged is not a branch to ask about.
+	//
+	// Checked BEFORE the verdict switch, because a conflicted pull request is
+	// usually also a PASSING one: its checks ran, and they ran against a base
+	// that has since moved. Asking someone to approve it would be asking them
+	// to authorise a merge git will refuse, and the old code then retried that
+	// refusal every tick forever -- it never asked gh for `mergeable`, so it
+	// could not tell a conflict from any other failure, and "leave the request
+	// in place so a later pass retries" became an unbounded loop with no exit.
+	//
+	// Stays in ci-wait deliberately. The moment somebody rebases the branch
+	// the conflict clears, CI re-runs, and the normal flow resumes without
+	// anyone having to re-label anything.
+	if pr.Conflicted {
+		return conflicted(res, key, pr, branch, opts, deps, ws, log, w)
+	}
 
 	switch pr.Verdict {
 	case VerdictPending:
@@ -433,7 +478,8 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 		}
 	}
 
-	title, body := msgMerged(key, pr, entry.Source, pruned, refreshed)
+	title, body := msgMerged(key, pr, entry.Source, pruned, refreshed,
+		cfg.VCS.WorkBranch, cfg.VCS.DefaultBranch)
 	tell(w, log, notify.Event{
 		Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
 		Title: title, Body: body,

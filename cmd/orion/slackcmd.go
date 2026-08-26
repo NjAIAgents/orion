@@ -82,11 +82,65 @@ func runSlackCmd(args []string) {
 		}
 		os.Exit(1)
 	}
-	ui.Ok(w, "ok", "posted to #%s -- go and look", name)
+	ui.Ok(w, "ok", "posted to #%s", name)
+
+	// 4. Is anyone in the room?
+	//
+	// A successful post is NOT proof a person will see it. Slack accepted
+	// every message Orion sent to a private channel whose only member was the
+	// bot: delivered, stored, unreadable. The channel does not appear in the
+	// sidebar, does not appear in search, and generates no notification, so
+	// from the outside it is indistinguishable from Slack being broken --
+	// which is precisely how it was diagnosed, repeatedly, as Slack being
+	// broken.
+	//
+	// This is the check that separates "the message did not send" from "the
+	// message sent to a room you are not in", and those have opposite fixes.
+	checkAudience(w, c, channel, name, id.UserID)
 
 	// 5. The approval scopes, which are separate and easy to miss because
 	// posting works without them.
 	checkApprovalScopes(w, c, channel, id.UserID)
+}
+
+// humansAmong returns the members who are not the bot itself.
+//
+// Split out so the judgement can be tested without a Slack workspace. The
+// judgement is the whole point: "the channel has one member" is fine if that
+// member is a person and catastrophic if it is the bot, and those two cases
+// differ by one string comparison that nothing was checking.
+func humansAmong(members []string, botID string) []string {
+	var people []string
+	for _, m := range members {
+		if m != botID && strings.TrimSpace(m) != "" {
+			people = append(people, m)
+		}
+	}
+	return people
+}
+
+// checkAudience reports whether a human can actually read what was posted.
+func checkAudience(w *os.File, c *slack.Client, channel, name, botID string) {
+	members, err := c.Members(channel)
+	if err != nil {
+		// Not fatal. Missing the read scope means this check cannot run; it
+		// does not mean the channel is empty, and claiming so would be worse
+		// than saying nothing.
+		ui.Warn(w, "could not check who is in #%s: %v", name, err)
+		return
+	}
+	people := humansAmong(members, botID)
+	if len(people) > 0 {
+		ui.Ok(w, "ok", "%d person/people can read #%s -- go and look", len(people), name)
+		return
+	}
+	ui.Fail(w, "#%s has no members except the bot, so NOBODY can read that message.", name)
+	fmt.Fprintf(w, "  The post above succeeded. Slack accepted it. It is sitting in a private\n"+
+		"  channel you are not in, which is invisible to you -- not in the sidebar,\n"+
+		"  not in search, with no notification that it exists.\n\n"+
+		"  Fix it one of two ways:\n"+
+		"    - add your Slack user ID to slack.invite_users in orion.json, or\n"+
+		"    - point the workspace record at a channel you ARE in\n")
 }
 
 // recordChannel writes the channel onto the sandbox workspace bound to a
@@ -112,10 +166,24 @@ func recordChannel(dir string, ch *slack.Channel) {
 	}
 }
 
+// resolveTestChannel answers the same question a run answers, the same way.
+//
+// It used to answer it two different ways. With a KEY it read the workspace
+// record; without one it skipped the record entirely and re-derived a channel
+// name from config -- so the test and the thing it tests could disagree, and
+// did. A passing `orion slack test` proved nothing about where `orion work`
+// would actually post.
+//
+// Worse, the no-key branch slugified the repository's ABSOLUTE PATH, so
+// standing in the fcia checkout asked Slack for a channel called
+// "users-navjyotnishant-desktop-github-njai" -- correctly not found, and the
+// error named a channel nobody had ever created or could recognise.
+//
+// Both branches now end in one resolver, which reads the workspace record
+// first exactly like work.resolveChannel does.
 func resolveTestChannel(key string) (id, name, source string, err error) {
-	home := workspace.Home()
 	if key != "" {
-		entry, lErr := registry.Lookup(home, key)
+		entry, lErr := registry.Lookup(workspace.Home(), key)
 		if lErr != nil {
 			return "", "", "", lErr
 		}
@@ -123,43 +191,59 @@ func resolveTestChannel(key string) (id, name, source string, err error) {
 		if oErr != nil {
 			return "", "", "", oErr
 		}
-		if ws.Task.Slack != nil && ws.Task.Slack.ID != "" {
-			return ws.Task.Slack.ID, ws.Task.Slack.Name, "the workspace record", nil
-		}
-		cfg := config.Load(ws.RepoDir())
-		if !cfg.Slack.Enabled {
-			return "", "", "", fmt.Errorf("slack is disabled in %s/orion.json", ws.RepoDir())
-		}
-		c, _ := slack.FromEnv()
-		ch, cErr := c.CreateChannel(cfg.Slack.ChannelPrefix+ws.Task.Slug, cfg.Slack.Private)
-		if cErr != nil {
-			return "", "", "", cErr
-		}
-		// Record it, so the next run does not have to work this out again --
-		// and so notify, which only sends when a channel is already known,
-		// starts working.
-		ws.Task.Slack = &workspace.SlackChannel{ID: ch.ID, Name: ch.Name}
-		if sErr := ws.SaveTask(); sErr != nil {
-			return ch.ID, ch.Name, "Slack (could not record it: " + sErr.Error() + ")", nil
-		}
-		return ch.ID, ch.Name, "Slack, and recorded on the workspace", nil
+		return channelFor(ws)
 	}
 
-	// No key: use the current repository's own configuration.
+	// No key: the repository you are standing in, resolved through ITS
+	// workspace, so this reports what a run from here would really use.
 	root, fErr := config.FindRoot(".")
 	if fErr != nil {
 		return "", "", "", fmt.Errorf("not inside an Orion project; name one: orion slack test FCIA")
 	}
-	cfg := config.Load(root)
-	if !cfg.Slack.Enabled {
-		return "", "", "", fmt.Errorf("slack is disabled in %s/orion.json", root)
+	ws := workspace.FindBySource(root)
+	if ws == nil {
+		return "", "", "", fmt.Errorf(
+			"%s has no Orion sandbox, so there is no channel bound to it yet.\n"+
+				"  Run orion init here, or name a registered project: orion slack test FCIA", root)
 	}
-	c, _ := slack.FromEnv()
-	ch, cErr := c.FindChannel(cfg.Slack.ChannelPrefix+workspace.Slugify(root), cfg.Slack.Private)
+	return channelFor(ws)
+}
+
+// channelFor mirrors work.resolveChannel: the recorded channel wins, and
+// config is consulted only when there is nothing recorded.
+//
+// The precedence is worth stating out loud because it caused a whole evening
+// of silence. Editing channel_prefix in orion.json does NOTHING once a
+// channel has been recorded -- the record wins, forever, and the only
+// evidence is messages arriving somewhere nobody is looking. So the source
+// string here is not decoration; it is the difference between "your config
+// is wrong" and "your config is irrelevant".
+func channelFor(ws *workspace.Workspace) (id, name, source string, err error) {
+	if ws.Task.Slack != nil && ws.Task.Slack.ID != "" {
+		return ws.Task.Slack.ID, ws.Task.Slack.Name,
+			"the workspace record (this WINS over orion.json; edit " +
+				ws.TaskPath() + " to change it)", nil
+	}
+	cfg := config.Load(ws.RepoDir())
+	if !cfg.Slack.Enabled {
+		return "", "", "", fmt.Errorf("slack is disabled in %s/orion.json", ws.RepoDir())
+	}
+	c, cliErr := slack.FromEnv()
+	if cliErr != nil {
+		return "", "", "", cliErr
+	}
+	ch, cErr := c.CreateChannel(cfg.Slack.ChannelPrefix+ws.Task.Slug, cfg.Slack.Private)
 	if cErr != nil {
 		return "", "", "", cErr
 	}
-	return ch.ID, ch.Name, "this repository's config", nil
+	// Record it, so the next run does not have to work this out again -- and
+	// so notify, which only sends when a channel is already known, starts
+	// working.
+	ws.Task.Slack = &workspace.SlackChannel{ID: ch.ID, Name: ch.Name}
+	if sErr := ws.SaveTask(); sErr != nil {
+		return ch.ID, ch.Name, "Slack (could not record it: " + sErr.Error() + ")", nil
+	}
+	return ch.ID, ch.Name, "Slack, and recorded on the workspace", nil
 }
 
 // checkApprovalScopes probes the two read surfaces an approval needs.

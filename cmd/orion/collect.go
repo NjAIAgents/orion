@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/slack"
@@ -14,13 +15,14 @@ import (
 )
 
 func runCollect(args []string) {
-	keys := positional(args)
+	keys := positional(args, "--wait")
 	res := collect.Run(collect.Options{
-		Keys:    keys,
-		Out:     os.Stdout,
-		DryRun:  hasFlag(args, "--dry-run"),
-		NoPrune: hasFlag(args, "--no-prune"),
-		NoFix:   hasFlag(args, "--no-fix"),
+		Keys:          keys,
+		Out:           os.Stdout,
+		DryRun:        hasFlag(args, "--dry-run"),
+		NoPrune:       hasFlag(args, "--no-prune"),
+		NoFix:         hasFlag(args, "--no-fix"),
+		AwaitApproval: waitFor(args),
 	}, collect.Deps{
 		Jira:    mustJiraSearch(),
 		Status:  prStatus,
@@ -40,6 +42,47 @@ func runCollect(args []string) {
 	}
 }
 
+// defaultCollectWait is how long a hand-run collect waits for an approval.
+//
+// Long enough to cover stepping away from the desk, short enough that a
+// forgotten terminal does not sit open overnight holding a request nobody
+// remembers making.
+const defaultCollectWait = 30 * time.Minute
+
+// waitFor decides how long this pass should wait for an approval reaction.
+//
+// Waiting is the DEFAULT here and nowhere else. `orion collect` is run by a
+// person, at a terminal, generally because a run or a watcher failed midway
+// -- which is exactly the situation in which no other process will ever come
+// back to read the answer. Asking someone to approve and then exiting leaves
+// their approval unread and the pipeline stalled while every line of output
+// says success. `orion watch` passes zero and keeps its old behaviour,
+// because for a watcher the next tick IS the second pass.
+//
+//	(no flag)      wait 30m
+//	--wait 5m      wait 5m
+//	--wait 0       do not wait; ask and return
+//	--no-wait      the same, spelled the way people reach for
+func waitFor(args []string) time.Duration {
+	if hasFlag(args, "--no-wait") || hasFlag(args, "--dry-run") {
+		return 0
+	}
+	v := argFlag(args, "--wait", "")
+	if v == "" {
+		return defaultCollectWait
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		ui.Warn(os.Stdout, "--wait %q is not a duration (try 30m, 2h); waiting %s instead",
+			v, defaultCollectWait)
+		return defaultCollectWait
+	}
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
 // prStatus asks gh for the pull request on a branch.
 //
 // One call, with the fields a decision needs. `gh pr checks` would give a
@@ -50,8 +93,12 @@ func prStatus(dir, branch string) (collect.PR, error) {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return collect.PR{}, fmt.Errorf("gh is not installed, so CI cannot be read")
 	}
+	// mergeable and headRefOid are asked for so a CONFLICTING branch can be
+	// recognised as such. Without them a conflict looked like any other merge
+	// failure, and the retry-on-failure path re-attempted an impossible merge
+	// every tick forever.
 	cmd := exec.Command("gh", "pr", "view", branch,
-		"--json", "url,state,mergedAt,statusCheckRollup")
+		"--json", "url,state,mergedAt,statusCheckRollup,mergeable,headRefOid")
 	// The repository comes from the working directory. Getting this wrong is
 	// what broke openPR on the first real run.
 	cmd.Dir = dir
@@ -69,10 +116,12 @@ func prStatus(dir, branch string) (collect.PR, error) {
 	}
 
 	var v struct {
-		URL      string `json:"url"`
-		State    string `json:"state"`
-		MergedAt string `json:"mergedAt"`
-		Rollup   []struct {
+		URL       string `json:"url"`
+		State     string `json:"state"`
+		MergedAt  string `json:"mergedAt"`
+		Mergeable string `json:"mergeable"`  // MERGEABLE, CONFLICTING, UNKNOWN
+		HeadOid   string `json:"headRefOid"` // the branch tip, to notice a rebase
+		Rollup    []struct {
 			Name       string `json:"name"`
 			Status     string `json:"status"`     // checks: QUEUED, IN_PROGRESS, COMPLETED
 			Conclusion string `json:"conclusion"` // SUCCESS, FAILURE, CANCELLED, ...
@@ -85,7 +134,12 @@ func prStatus(dir, branch string) (collect.PR, error) {
 		return collect.PR{}, fmt.Errorf("could not read gh output: %w", err)
 	}
 
-	pr := collect.PR{URL: v.URL}
+	pr := collect.PR{URL: v.URL, Head: v.HeadOid}
+	// CONFLICTING only. UNKNOWN means GitHub has not finished computing
+	// mergeability yet -- common for seconds after a push -- and treating
+	// that as a conflict would announce a rebase nobody needs.
+	pr.Conflicted = strings.EqualFold(v.Mergeable, "CONFLICTING")
+
 	switch {
 	case v.MergedAt != "" || strings.EqualFold(v.State, "MERGED"):
 		pr.Verdict = collect.VerdictMerged

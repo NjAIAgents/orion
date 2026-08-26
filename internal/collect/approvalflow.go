@@ -3,6 +3,9 @@ package collect
 import (
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/config"
@@ -11,6 +14,84 @@ import (
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
+
+// defaultPoll is how often a waiting collect re-reads the reaction. Slack
+// reactions are cheap to read and a person who has just tapped one is
+// watching the terminal, so a slow poll would be felt as a hang.
+const defaultPoll = 10 * time.Second
+
+// awaitDecision reads the approval, optionally waiting for one to arrive.
+//
+// With AwaitApproval unset this is a single read and the behaviour is
+// unchanged -- which is what `orion watch` needs, since it has somewhere
+// better to be and will look again on the next tick.
+//
+// With it set, this polls until somebody answers, the deadline passes, or
+// the person interrupts. It exists because the manual path is used exactly
+// when no watcher is running, so "ask and exit" leaves the approval with
+// nothing to read it.
+//
+// Interruption is not an error and is not silent. Ctrl-c during a wait
+// leaves a posted request and a reaction that may already be there, so the
+// one thing the person must be told is that the state is intact and the
+// command is safe to re-run -- otherwise the reasonable guess is that
+// stopping it cancelled the request.
+func awaitDecision(req Request, key string, cfg config.Config,
+	opts Options, deps Deps, w io.Writer) (Decision, error) {
+
+	read := func() (Decision, error) {
+		return ReadDecision(deps.Slack, req.Channel, req.TS,
+			deps.Slack.BotID(), cfg.Slack.MergeApprovers)
+	}
+	if opts.AwaitApproval <= 0 {
+		return read()
+	}
+
+	poll := opts.Poll
+	if poll <= 0 {
+		poll = defaultPoll
+	}
+	deadline := deps.Now().Add(opts.AwaitApproval)
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(stop)
+
+	fmt.Fprintf(w, "          %s\n", ui.Dim(w, fmt.Sprintf(
+		"waiting up to %s for a reaction; ctrl-c to stop waiting",
+		opts.AwaitApproval.Round(time.Second))))
+
+	for {
+		d, err := read()
+		if err != nil {
+			return d, err
+		}
+		if d.Approved || d.Rejected {
+			return d, nil
+		}
+		if !deps.Now().Before(deadline) {
+			ui.Warn(w, "%s: nobody answered within %s. Nothing was merged.",
+				key, opts.AwaitApproval.Round(time.Second))
+			leaveNote(w, key)
+			return d, nil
+		}
+		select {
+		case <-stop:
+			fmt.Fprintln(w)
+			ui.Warn(w, "%s: stopped waiting.", key)
+			leaveNote(w, key)
+			return d, nil
+		case <-time.After(poll):
+		}
+	}
+}
+
+// leaveNote says the request survives, and how to come back to it.
+func leaveNote(w io.Writer, key string) {
+	fmt.Fprintf(w, "          %s\n", ui.Dim(w, fmt.Sprintf(
+		"the request is still in Slack and still valid -- react there, then run "+
+			"`orion collect %s` again. Nothing was cancelled.", key)))
+}
 
 // The merge approval loop.
 //
@@ -67,11 +148,29 @@ func approvalFlow(res Result, key string, pr PR, cfg config.Config, branch strin
 			Msg: "asked for merge approval in Slack"})
 		res.Changed = true
 		ui.Ok(w, "ok", "%s: checks pass; asked for approval in Slack", key)
-		return res
+
+		// Say that a SECOND pass is required, and how to get one.
+		//
+		// The message used to say only "asked for approval in Slack" and
+		// return. Someone who then approved -- promptly, correctly, on their
+		// phone -- watched nothing happen and reasonably concluded the
+		// approval had not been read. It had not: nothing was looking.
+		if opts.AwaitApproval <= 0 {
+			fmt.Fprintf(w, "          %s\n", ui.Dim(w, fmt.Sprintf(
+				"react there, then run `orion collect %s` again to act on it "+
+					"(orion watch does this on its next tick)", key)))
+			return res
+		}
+		// Waiting: carry the request forward and fall through to read it,
+		// rather than returning and making the person re-run the command
+		// they are already sitting in front of.
+		existing = Request{
+			Key: key, Channel: channel, TS: ts, PR: pr.URL,
+			AskedAt: deps.Now(), Approvers: cfg.Slack.MergeApprovers,
+		}
 	}
 
-	d, err := ReadDecision(deps.Slack, existing.Channel, existing.TS,
-		deps.Slack.BotID(), cfg.Slack.MergeApprovers)
+	d, err := awaitDecision(existing, key, cfg, opts, deps, w)
 	if err != nil {
 		res.Err = err
 		ui.Warn(w, "%s: could not read the approval: %v", key, err)
@@ -92,6 +191,10 @@ func approvalFlow(res Result, key string, pr PR, cfg config.Config, branch strin
 			"%s declined the merge in Slack (%s).\n\nThe branch and pull request are kept.",
 			d.By, d.How))
 		_ = clearRequest(ws.Dir, key)
+		// Forget any conflict too. This ticket is finished either way, and a
+		// stale entry would silence the announcement for a FUTURE conflict on a
+		// re-used key.
+		_ = clearConflict(ws.Dir, key)
 		log.Emit(events.Event{Kind: events.KindBlocked, Actor: events.ActorHuman,
 			Msg: d.By + " declined the merge"})
 		res.Changed = true
@@ -122,6 +225,10 @@ func approvalFlow(res Result, key string, pr PR, cfg config.Config, branch strin
 		return res
 	}
 	_ = clearRequest(ws.Dir, key)
+	// Forget any conflict too. This ticket is finished either way, and a
+	// stale entry would silence the announcement for a FUTURE conflict on a
+	// re-used key.
+	_ = clearConflict(ws.Dir, key)
 	log.Emit(events.Event{Kind: events.KindMerge, Actor: events.ActorHuman,
 		Msg: "merged on " + d.By + "'s approval"})
 	ui.Ok(w, "ok", "%s: merged on %s's approval", key, d.By)

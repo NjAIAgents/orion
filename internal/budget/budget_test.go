@@ -151,14 +151,14 @@ func TestMessageDisclaimsProviderQuota(t *testing.T) {
 	}
 }
 
-func TestContextPressure(t *testing.T) {
-	if p := ContextPressure(Run{InputTokens: 500_000, ContextWindow: 1_000_000}); p != 50 {
-		t.Errorf("pressure = %d, want 50", p)
-	}
-	if p := ContextPressure(Run{InputTokens: 500_000}); p != 0 {
-		t.Errorf("pressure = %d: unknown window must report 0, not divide by zero", p)
-	}
-}
+// TestContextPressure was removed with the function it tested.
+//
+// Worth recording why it never caught the bug: it asserted that 500k of
+// InputTokens against a 1M window reports 50%, which is arithmetically true
+// and describes a situation that cannot occur. InputTokens is a cumulative
+// session total, so the test fed it a value only a peak measurement would
+// have. It tested the division, and the division was never the mistake --
+// the meaning of the numerator was.
 
 func TestTokenBreakdownWeighting(t *testing.T) {
 	b := TokenBreakdown{Input: 1000, CacheRead: 10000, CacheCreation: 1000, Output: 1000}

@@ -297,8 +297,8 @@ func one(key string, opts Options, deps Deps) (res Result) {
 
 	log.Emitf(events.KindRunStart, events.ActorImplementer, "implementing %s", key)
 	stTitle, stBody := msgStarted(key, issue.Summary, job.Branch, issue.URL)
-	tell(w, log, notify.Event{
-		Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
+	tell(w, log, ws, notify.Event{
+		Level: notify.Info, Workspace: ws.ID,
 		Title: stTitle, Body: stBody,
 	})
 
@@ -378,8 +378,8 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		ui.Ok(w, "created", "%s", rel)
 
 		anTitle, anBody := msgAnswered(key, ans, question)
-		tell(w, log, notify.Event{
-			Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
+		tell(w, log, ws, notify.Event{
+			Level: notify.Info, Workspace: ws.ID,
 			Title: anTitle, Body: anBody,
 		})
 
@@ -433,8 +433,8 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		}
 		_ = deps.Jira.Comment(key, body)
 		blTitle, blBody := msgBlocked(key, issue.Summary, res.Question, issue.URL, res.Advice)
-		tell(w, log, notify.Event{
-			Channel: channelOf(ws), Level: notify.Blocked, Workspace: ws.ID,
+		tell(w, log, ws, notify.Event{
+			Level: notify.Blocked, Workspace: ws.ID,
 			Title: blTitle, Body: blBody,
 		})
 		return res
@@ -480,8 +480,8 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	_ = deps.Jira.TransitionTo(key, "In Review")
 
 	ciTitle, ciBody := msgCIWait(key, issue.Summary, job.Branch, url, issue.URL, commits)
-	tell(w, log, notify.Event{
-		Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
+	tell(w, log, ws, notify.Event{
+		Level: notify.Info, Workspace: ws.ID,
 		Title: ciTitle, Body: ciBody,
 	})
 	ui.Ok(w, "bound", "%s awaiting CI; the job slot is free", key)
@@ -583,8 +583,8 @@ func failAndTell(res Result, err error, key string, ws *workspace.Workspace,
 		summary = key
 	}
 	title, body := msgFailed(key, summary, err.Error(), res.Branch, res.IssueURL, res.LogPath)
-	tell(w, log, notify.Event{
-		Channel: channelOf(ws), Level: notify.Blocked, Workspace: ws.ID,
+	tell(w, log, ws, notify.Event{
+		Level: notify.Blocked, Workspace: ws.ID,
 		Title: title, Body: body,
 	})
 	return fail(res, err)
@@ -625,11 +625,6 @@ func fail(res Result, err error) Result {
 //
 // Resolving here rather than only fixing init means workspaces bound by an
 // older build heal on their next run instead of needing to be re-created.
-func channelOf(ws *workspace.Workspace) string {
-	id, _ := resolveChannel(ws)
-	return id
-}
-
 // resolveChannel returns the channel and, when there is none, WHY -- so the
 // caller can say so instead of going quiet. Silence is the failure mode this
 // whole package exists to avoid.
@@ -664,15 +659,35 @@ func resolveChannel(ws *workspace.Workspace) (string, string) {
 	return ch.ID, ""
 }
 
-// tell sends a notification and reports what failed.
+// tell sends a notification, resolving the channel itself, and reports every
+// way it can fail to arrive.
 //
 // notify.Send returns the errors it collected, and every call site here used
 // to discard them. A Slack token that had expired therefore produced exactly
 // the same output as a successful post: nothing.
-func tell(w io.Writer, log *events.Log, e notify.Event) {
-	if e.Channel == "" {
+//
+// It also used to take a pre-resolved Channel from channelOf, which threw away
+// the REASON resolveChannel had computed -- so an empty channel returned
+// here in silence, holding a precise diagnosis ("slack is disabled in
+// orion.json", "slack is enabled but not usable: ...") that nobody would
+// ever see. That is the same silent-Slack failure this package exists to
+// prevent, one layer down from where it was fixed.
+//
+// Taking the workspace instead of the channel is also no more work: every
+// call site called channelOf(ws), which re-resolved on each call anyway.
+func tell(w io.Writer, log *events.Log, ws *workspace.Workspace, e notify.Event) {
+	id, why := resolveChannel(ws)
+	if id == "" {
+		if why == "" {
+			why = "no channel is bound to this workspace"
+		}
+		ui.Warn(w, "not sending to Slack: %s", why)
+		if log != nil {
+			log.Emitf(events.KindNote, events.ActorOrion, "slack skipped: %s", why)
+		}
 		return
 	}
+	e.Channel = id
 	for _, err := range notify.Send(e) {
 		ui.Warn(w, "%v", err)
 		if log != nil {

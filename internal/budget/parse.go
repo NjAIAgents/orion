@@ -82,20 +82,21 @@ func lastJSONObject(out string) string {
 	return ""
 }
 
-// ContextPressure reports how full the context got, as a percentage.
+// ContextPressure was removed, deliberately, rather than fixed in place.
 //
-// Orion cannot trigger compaction: the CLI exposes no flag or setting for it.
-// What it can do is report when a stage is running close to the window, which
-// is the signal that the stage is doing too much and should be split.
+// It divided Run.InputTokens by the context window and called the answer
+// "how full the context got". Run.InputTokens is the CUMULATIVE prompt total
+// for the whole session -- input plus cache-creation plus cache-read, summed
+// over every turn -- and cache_read re-counts the entire cached prefix on
+// every single turn. A long run therefore reports several times the window
+// size no matter how small its actual context was: an observed run printed
+// "context reached 656% of the 1M window".
 //
-// In practice Orion's design already avoids the usual accumulation problem,
-// because every stage is a separate invocation that reads committed artifacts
-// rather than inheriting a transcript. Context resets at each stage boundary
-// by construction, which is why the artifact chain is also the compaction
-// strategy.
-func ContextPressure(r Run) int {
-	if r.ContextWindow <= 0 {
-		return 0
-	}
-	return int(float64(r.InputTokens) / float64(r.ContextWindow) * 100)
-}
+// That is not a fixable coefficient. Nothing in the final result JSON records
+// peak occupancy, so the number could not be computed from this data at all.
+// Supervisor.reportContextPressure measures it off the stream instead, as a
+// maximum over turns, where the information actually exists.
+//
+// Left as a comment because an exported function whose name promises one
+// thing and computes another is worse than an absent one: it reads correct
+// at every call site.

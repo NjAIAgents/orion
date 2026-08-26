@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -128,5 +129,82 @@ func TestPathsRenderRelativeToTheWorktree(t *testing.T) {
 	// absolute path that pushes the useful part off the edge of a terminal.
 	if got := short("/repo", "/etc/hosts"); got != "hosts" {
 		t.Errorf("short() = %q, want %q", got, "hosts")
+	}
+}
+
+// Context occupancy: a peak over turns, never a sum.
+//
+// The bug being locked out: Orion printed "context reached 656% of the 1M
+// window on this stage" during a real FCIA-7 run. That figure came from
+// dividing the session's CUMULATIVE prompt tokens by the window. cache_read
+// re-counts the whole cached prefix every turn, so the numerator grows
+// without bound while the actual context sits still. The warning could
+// therefore never be right: over 100% on any long run, silent on a genuinely
+// full one.
+//
+// These fixtures use per-turn usage exactly as the stream carries it.
+func usageLine(input, cacheRead, cacheCreate, output, window int) string {
+	return fmt.Sprintf(`{"type":"assistant","session_id":"s1","message":{`+
+		`"model":"claude-opus-4-1-20250805","context_window":%d,`+
+		`"usage":{"input_tokens":%d,"cache_read_input_tokens":%d,`+
+		`"cache_creation_input_tokens":%d,"output_tokens":%d},`+
+		`"content":[{"type":"text","text":"working"}]}}`,
+		window, input, cacheRead, cacheCreate, output)
+}
+
+func TestContextIsMeasuredAsAPeakNotASum(t *testing.T) {
+	w := newActivityWriter("/repo", func(Activity) {})
+	// Forty turns, each re-reading a 150k cached prefix. Summing these gives
+	// ~6M against a 1M window -- the 656% that shipped.
+	for i := 0; i < 40; i++ {
+		if _, err := w.Write([]byte(usageLine(2_000, 150_000, 0, 1_000, 1_000_000) + "\n")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	peak, window := w.Context()
+	if window != 1_000_000 {
+		t.Fatalf("window = %d, want 1000000", window)
+	}
+	if peak != 153_000 {
+		t.Fatalf("peak = %d, want 153000 (one turn's prompt, not forty)", peak)
+	}
+	// The number that matters to a person: this run was nowhere near full.
+	if pct := peak * 100 / window; pct >= 70 {
+		t.Errorf("a 15%%-full context reported %d%%; that warning would be false", pct)
+	}
+}
+
+func TestTheLargestTurnWins(t *testing.T) {
+	w := newActivityWriter("/repo", func(Activity) {})
+	for _, l := range []string{
+		usageLine(1_000, 10_000, 0, 500, 200_000),
+		usageLine(1_000, 180_000, 5_000, 2_000, 200_000), // the peak
+		usageLine(1_000, 20_000, 0, 500, 200_000),        // a later, smaller turn
+	} {
+		w.Write([]byte(l + "\n"))
+	}
+	peak, window := w.Context()
+	if peak != 188_000 {
+		t.Errorf("peak = %d, want 188000", peak)
+	}
+	// 94% of the window IS worth warning about, and this is the case the
+	// old calculation would have buried among false positives.
+	if pct := peak * 100 / window; pct < 70 {
+		t.Errorf("a nearly-full context reported only %d%%", pct)
+	}
+}
+
+// A run whose stream never reports usage must produce no percentage at all.
+// Inventing a denominator is how the previous version justified printing a
+// number it could not support.
+func TestNoUsageMeansNoClaim(t *testing.T) {
+	got := collect(t, "/repo", initLine, toolLine("t1", "Read", `{"file_path":"/repo/a.py"}`))
+	if len(got) == 0 {
+		t.Fatal("the fixture should still produce activities")
+	}
+	w := newActivityWriter("/repo", func(Activity) {})
+	w.Write([]byte(initLine + "\n"))
+	if peak, window := w.Context(); peak != 0 || window != 0 {
+		t.Errorf("peak=%d window=%d; both must stay zero when nothing was reported", peak, window)
 	}
 }

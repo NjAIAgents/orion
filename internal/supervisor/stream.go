@@ -53,6 +53,25 @@ type activityWriter struct {
 	model string
 	// limit is the last plan-limit verdict the run reported.
 	limit RateLimit
+	// peakContext is the largest prompt any single turn sent, in tokens --
+	// which is what "how full did the context get" actually means.
+	//
+	// It has to be a MAX over turns, and it used to be computed as a SUM.
+	// The final result JSON reports cumulative usage for the whole session,
+	// and cache_read re-counts the entire cached prefix on every turn: a
+	// forty-turn run re-reads a 150k prefix forty times and reports six
+	// million tokens. Dividing that by a one-million window produced "context
+	// reached 656% of the 1M window", which is not a context measurement at
+	// all -- it is total throughput, and it exceeds 100% on any long run
+	// while staying silent on a genuinely full one.
+	//
+	// A warning that fires when nothing is wrong is worse than no warning.
+	// This reads each turn's own prompt size off the stream instead.
+	peakContext int
+	// window is the model's context size, reported per turn alongside usage
+	// on newer CLIs. Zero means it was never reported, and no percentage can
+	// honestly be computed.
+	window int
 }
 
 // Limit returns the plan limit last reported by this run.
@@ -60,6 +79,15 @@ func (w *activityWriter) Limit() RateLimit {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.limit
+}
+
+// Context returns the largest single-turn prompt and the window it ran
+// against. A zero window means the run never said, and the caller must not
+// invent a denominator.
+func (w *activityWriter) Context() (peak, window int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.peakContext, w.window
 }
 
 // maxLine bounds the accumulator. A single stream-json line carries whole
@@ -126,10 +154,34 @@ func (w *activityWriter) emit(line []byte) {
 				Name  string          `json:"name"`
 				Input json.RawMessage `json:"input"`
 			} `json:"content"`
+			// Usage is THIS turn's accounting, not the session's. The three
+			// prompt fields do not overlap, so their sum is what the model
+			// was actually holding when it produced this message.
+			Usage struct {
+				InputTokens   int `json:"input_tokens"`
+				CacheRead     int `json:"cache_read_input_tokens"`
+				CacheCreation int `json:"cache_creation_input_tokens"`
+				OutputTokens  int `json:"output_tokens"`
+			} `json:"usage"`
+			ContextWindow int `json:"context_window"`
 		} `json:"message"`
 	}
 	if json.Unmarshal(line, &m) != nil {
 		return
+	}
+
+	// Context occupancy, tracked as a running maximum.
+	//
+	// Output counts too: what this turn wrote is part of what the NEXT turn
+	// must hold, so including it is the closest honest estimate of the peak
+	// the conversation ever reached.
+	if u := m.Message.Usage; u.InputTokens+u.CacheRead+u.CacheCreation > 0 {
+		if n := u.InputTokens + u.CacheRead + u.CacheCreation + u.OutputTokens; n > w.peakContext {
+			w.peakContext = n
+		}
+	}
+	if m.Message.ContextWindow > w.window {
+		w.window = m.Message.ContextWindow
 	}
 
 	// The plan's own limit. Parsed before the type switch because it is a
