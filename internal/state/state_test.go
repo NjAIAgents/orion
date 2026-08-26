@@ -135,3 +135,28 @@ func TestCorruptStateStartsCleanRatherThanFailing(t *testing.T) {
 		t.Error("corrupt state should yield a usable zeroed session")
 	}
 }
+
+// acquire must never hand back a nil release function. Every caller does
+// `defer release()`, so a nil is an instant panic, and a panic inside a hook
+// gives Claude Code a crash instead of a verdict: enforcement disappears
+// exactly when it is under the most pressure. Windows CI found this by
+// racing 25 goroutines on one lock directory.
+func TestAcquireNeverReturnsNilRelease(t *testing.T) {
+	s := New(t.TempDir())
+	release, _ := s.acquire("sess")
+	if release == nil {
+		t.Fatal("acquire returned a nil release on the happy path")
+	}
+	release()
+
+	// Unwritable store directory: the error path must still be callable.
+	bad := New(filepath.Join(t.TempDir(), "file-not-dir"))
+	if err := os.WriteFile(filepath.Dir(bad.path("x")), []byte("x"), 0o600); err == nil {
+		r2, err2 := bad.acquire("sess")
+		if r2 == nil {
+			t.Fatal("acquire returned a nil release on an error path")
+		}
+		r2() // must not panic
+		_ = err2
+	}
+}
