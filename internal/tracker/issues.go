@@ -307,3 +307,39 @@ func walkADF(n *adfNode, b *strings.Builder) {
 		b.WriteString("\n")
 	}
 }
+
+// The queue's state machine lives in labels on the ticket.
+//
+//	<QueueLabel>   queued: a human asked for this
+//	orion-working  claimed: a run is in flight
+//	orion-failed   stopped: needs a person
+//
+// Done is the ABSENCE of all three, deliberately. A "done" label would
+// accumulate forever on every ticket Orion ever touched, and the tracker
+// already records completion in the issue's own status.
+const (
+	LabelWorking = "orion-working"
+	LabelFailed  = "orion-failed"
+)
+
+// State reports where an issue sits in Orion's queue, given the label that
+// marks work as requested.
+func State(labels []string, queueLabel string) string {
+	has := func(want string) bool {
+		for _, l := range labels {
+			if strings.EqualFold(l, want) {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case has(LabelFailed):
+		return "failed"
+	case has(LabelWorking):
+		return "working"
+	case has(queueLabel):
+		return "queued"
+	}
+	return ""
+}

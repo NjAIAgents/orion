@@ -621,18 +621,47 @@ func runQueue(args []string) {
 			cfg.Tracker.QueueLabel, cfg.Tracker.ProjectKey)
 		return
 	}
-	for n, i := range issues {
-		pr := i.Priority
-		if pr == "" {
-			// Priority is disabled on some team-managed projects. Saying so
-			// beats printing a blank column and letting the order look
-			// arbitrary.
-			pr = "no priority field"
-		}
-		fmt.Fprintf(w, "  %2d. %-10s %-8s %s\n", n+1, i.Key, pr, i.Summary)
-		fmt.Fprintf(w, "      %s\n", ui.Dim(w, i.Status+"  "+i.URL))
+	// Group by queue state, not by Jira order. What is running and what
+	// broke are the two things you look for first; making them the top of
+	// the list is the difference between a report and a wall of text.
+	// Within a group the tracker's own ordering is preserved, because that
+	// is the execution order.
+	groups := []struct {
+		state string
+		verb  string
+	}{
+		{"working", "working"},
+		{"failed", "failed"},
+		{"queued", "queued"},
 	}
-	fmt.Fprintf(w, "\n  %d issue(s). Nothing has been started: this command only reads.\n", len(issues))
+	counts := map[string]int{}
+	n := 0
+	for _, g := range groups {
+		for _, i := range issues {
+			if tracker.State(i.Labels, cfg.Tracker.QueueLabel) != g.state {
+				continue
+			}
+			counts[g.state]++
+			n++
+			pr := i.Priority
+			if pr == "" {
+				// Priority is disabled on some team-managed projects. Saying
+				// so beats a blank column that makes the order look arbitrary.
+				pr = "none"
+			}
+			fmt.Fprintf(w, "  %2d. %s %-9s %-7s %-12s %s\n",
+				n, ui.Label(w, g.verb, ""), i.Key, pr, i.Status, i.Summary)
+			fmt.Fprintf(w, "      %s\n", ui.Dim(w, i.URL))
+		}
+	}
+
+	fmt.Fprintf(w, "\n  %d working, %d queued, %d failed.\n",
+		counts["working"], counts["queued"], counts["failed"])
+	if counts["failed"] > 0 {
+		fmt.Fprintf(w, "  A failed ticket is not retried: remove %s and add %s to requeue it.\n",
+			tracker.LabelFailed, cfg.Tracker.QueueLabel)
+	}
+	fmt.Fprintln(w, "  Nothing has been started: this command only reads.")
 }
 
 // queueJQL builds the query from config, scoped to the bound project so a
@@ -642,7 +671,13 @@ func queueJQL(cfg config.Config) string {
 	if k := strings.TrimSpace(cfg.Tracker.ProjectKey); k != "" {
 		fmt.Fprintf(&b, "project = %s AND ", k)
 	}
-	fmt.Fprintf(&b, "labels = %q", cfg.Tracker.QueueLabel)
+	// Match the in-flight and failed states too, not just the queued one.
+	// Matching only the queue label means a ticket DISAPPEARS from this view
+	// the moment Orion claims it, so the one thing you most want to see --
+	// what is running right now, and what stopped -- is the one thing the
+	// command could not show.
+	fmt.Fprintf(&b, "labels in (%q, %q, %q)",
+		cfg.Tracker.QueueLabel, tracker.LabelWorking, tracker.LabelFailed)
 	if o := strings.TrimSpace(cfg.Tracker.QueueOrder); o != "" {
 		fmt.Fprintf(&b, " ORDER BY %s", o)
 	}
