@@ -174,6 +174,13 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			"  Re-create it with: orion init (in %s)", entry.Workspace, err, entry.Source))
 	}
 	cfg := config.Load(ws.RepoDir())
+	// Same reason as in collect: policy is read from the sandbox clone, so a
+	// stale clone serves stale policy. Branch bases are already taken from
+	// origin/<base> by AddWorktree, so this is only about the config.
+	if msg, syncErr := workspace.SyncSandbox(ws, cfg.VCS.WorkBranch); syncErr == nil && msg != "" {
+		ui.Ok(w, "refresh", "%s", msg)
+		cfg = config.Load(ws.RepoDir())
+	}
 
 	log, logErr := events.Open(events.Path(ws.Dir), events.Event{
 		Project: registry.ProjectOf(key), Key: key,

@@ -156,8 +156,49 @@ go test ./... -race -count=1
 # Prefer the project's virtualenv when there is one, so a local run uses the
 # same interpreter and pinned versions as CI rather than whatever python3
 # happens to be first on PATH.
+#
+# Also look in the MAIN worktree. Orion runs agents in a git worktree, which
+# is a separate directory that shares history but not ignored files -- so
+# .venv is simply absent there, and the agent asked to "run the suite before
+# finishing" hits a bare "No module named pytest" with nothing telling it
+# that the environment, not the code, is what is missing.
 PY=python3
-[ -x .venv/bin/python ] && PY=.venv/bin/python
+if [ -x .venv/bin/python ]; then
+  PY=.venv/bin/python
+elif command -v git >/dev/null 2>&1; then
+  main_root=$(dirname "$(git rev-parse --git-common-dir 2>/dev/null || echo .)")
+  [ -x "$main_root/.venv/bin/python" ] && PY="$main_root/.venv/bin/python"
+fi
+
+# Bootstrap when there is nothing to run with.
+#
+# A fresh clone -- and every Orion sandbox is one -- has no virtualenv,
+# because it is not in version control. Refusing at that point would mean the
+# single entry point only works on a machine somebody had already prepared by
+# hand, which is most of the value gone: CI installs its own dependencies, so
+# a script that cannot do the same is not running what CI runs.
+#
+# Only when this project actually declares dependencies. Building an empty
+# venv for a repository that never asked for one is a surprise, not a help.
+if ! "$PY" -c "import pytest" >/dev/null 2>&1; then
+  if [ -f pyproject.toml ] || [ -f requirements.txt ]; then
+    echo "==> no environment found; creating .venv"
+    python3 -m venv .venv
+    PY=.venv/bin/python
+    "$PY" -m pip install --quiet --upgrade pip
+    [ -f requirements.txt ] && "$PY" -m pip install --quiet -r requirements.txt
+    if [ -f pyproject.toml ]; then
+      "$PY" -m pip install --quiet -e ".[dev]" || "$PY" -m pip install --quiet -e . || true
+    fi
+  fi
+fi
+
+if ! "$PY" -c "import pytest" >/dev/null 2>&1; then
+  echo "pytest is still not available to $PY after bootstrapping." >&2
+  echo "Install this project's dependencies by hand and try again:" >&2
+  echo "  python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'" >&2
+  exit 1
+fi
 
 echo "==> tests"
 "$PY" -m pytest -q

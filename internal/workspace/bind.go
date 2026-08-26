@@ -227,6 +227,64 @@ func Refresh(sourcePath, branch string) (string, error) {
 	return "fetched and fast-forwarded " + branch, nil
 }
 
+// SyncSandbox fast-forwards the sandbox clone's own checked-out branch.
+//
+// Orion reads a project's POLICY -- orion.json -- from the sandbox clone,
+// not from the user's working copy, because policy must be the committed
+// version rather than whatever is on one machine. The consequence is that a
+// sandbox created days ago serves a days-old config: turning on
+// require_approval, pushing it, and watching Orion carry on as though
+// nothing had changed. The setting was correct, committed and pushed; the
+// thing reading it was behind.
+//
+// AddWorktree already fetches and branches from origin/<base>, so agent work
+// was never cut from a stale base. This closes the remaining gap, which is
+// the clone's own checkout.
+//
+// Fast-forward only, and never over local changes. A sandbox should not have
+// any -- but "should not" is not "cannot", and discarding an agent's
+// uncommitted work to freshen a config file would be a spectacularly bad
+// trade.
+func SyncSandbox(ws *Workspace, branch string) (string, error) {
+	repo := ws.RepoDir()
+	g := func(args ...string) (string, error) {
+		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	if _, err := os.Stat(repo); err != nil {
+		return "", err
+	}
+	if out, err := g("fetch", "--prune", "origin"); err != nil {
+		return "", fmt.Errorf("fetching in the sandbox: %w\n%s", err, out)
+	}
+	cur, _ := g("branch", "--show-current")
+	if branch == "" {
+		branch = cur
+	}
+	if cur != branch {
+		return fmt.Sprintf("the sandbox has %s checked out, not %s", cur, branch), nil
+	}
+	if dirty, _ := g("status", "--porcelain"); dirty != "" {
+		return "the sandbox has uncommitted changes; not fast-forwarding", nil
+	}
+	before, _ := g("rev-parse", "HEAD")
+	if out, err := g("merge", "--ff-only", "origin/"+branch); err != nil {
+		return fmt.Sprintf("%s has diverged from origin: %s", branch, firstLineOf(out)), nil
+	}
+	after, _ := g("rev-parse", "HEAD")
+	if before == after {
+		return "", nil // already current; nothing worth saying
+	}
+	return "fast-forwarded the sandbox to " + after[:min(7, len(after))], nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func firstLineOf(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		return s[:i]

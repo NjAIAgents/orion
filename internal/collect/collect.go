@@ -221,7 +221,16 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		ui.Fail(w, "%s: %v", key, err)
 		return res
 	}
+	// Freshen the sandbox BEFORE reading policy from it. Its orion.json is
+	// the committed config, and a clone made days ago serves a days-old one
+	// -- which looks exactly like a setting that does not work.
 	cfg := config.Load(ws.RepoDir())
+	if msg, syncErr := workspace.SyncSandbox(ws, cfg.VCS.WorkBranch); syncErr != nil {
+		ui.Warn(w, "could not refresh the sandbox: %v", syncErr)
+	} else if msg != "" {
+		ui.Ok(w, "refresh", "%s", msg)
+		cfg = config.Load(ws.RepoDir()) // re-read: the config may have moved
+	}
 	branch := branchFor(cfg.VCS.BranchPrefix, key)
 
 	log, logErr := events.Open(events.Path(ws.Dir), events.Event{
