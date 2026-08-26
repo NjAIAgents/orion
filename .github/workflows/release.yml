@@ -45,12 +45,22 @@ jobs:
           ORION_LICENSE: ${{ vars.ORION_LICENSE }}
         run: scripts/render-packaging.sh "${{ steps.v.outputs.version }}"
 
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/orion_*
-            dist/checksums.txt
-          generate_release_notes: true
+      # Artifacts go to a PUBLIC repo while the source stays private.
+      # Homebrew and Scoop download release assets unauthenticated, so a
+      # formula pointing at a private repository 404s for everyone, including
+      # the author on a new machine.
+      - name: Publish artifacts to the public releases repo
+        env:
+          TOKEN: ${{ secrets.RELEASES_GITHUB_TOKEN }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          [ -n "$TOKEN" ] || { echo "RELEASES_GITHUB_TOKEN is not set" >&2; exit 1; }
+          export GH_TOKEN="$TOKEN"
+          gh release create "v${VERSION}" \
+            --repo NjAIAgents/orion-releases \
+            --title "orion v${VERSION}" \
+            --notes "Binaries for orion v${VERSION}. Source is maintained privately; these archives include LICENSE and NOTICE." \
+            dist/orion_* dist/checksums.txt
 
       - uses: actions/upload-artifact@v4
         with:

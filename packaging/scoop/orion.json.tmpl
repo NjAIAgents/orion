@@ -1,16 +1,16 @@
 {
     "version": "{{VERSION}}",
     "description": "AI-native SDLC orchestrator: idea to reviewed pull request, under deterministic guardrails.",
-    "homepage": "https://github.com/navjyotnishant/orion",
+    "homepage": "https://github.com/NjAIAgents/orion-releases",
     "license": "{{LICENSE}}",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/navjyotnishant/orion/releases/download/v{{VERSION}}/orion_v{{VERSION}}_windows_amd64.zip",
+            "url": "https://github.com/NjAIAgents/orion-releases/releases/download/v{{VERSION}}/orion_v{{VERSION}}_windows_amd64.zip",
             "hash": "{{SHA_WINDOWS_AMD64}}",
             "bin": [["orion.exe", "orion"]]
         },
         "arm64": {
-            "url": "https://github.com/navjyotnishant/orion/releases/download/v{{VERSION}}/orion_v{{VERSION}}_windows_arm64.zip",
+            "url": "https://github.com/NjAIAgents/orion-releases/releases/download/v{{VERSION}}/orion_v{{VERSION}}_windows_arm64.zip",
             "hash": "{{SHA_WINDOWS_ARM64}}",
             "bin": [["orion.exe", "orion"]]
         }
@@ -25,19 +25,19 @@
         "Run `orion doctor` to see which capabilities are degraded here."
     ],
     "checkver": {
-        "github": "https://github.com/navjyotnishant/orion"
+        "github": "https://github.com/NjAIAgents/orion-releases"
     },
     "autoupdate": {
         "architecture": {
             "64bit": {
-                "url": "https://github.com/navjyotnishant/orion/releases/download/v$version/orion_v$version_windows_amd64.zip"
+                "url": "https://github.com/NjAIAgents/orion-releases/releases/download/v$version/orion_v$version_windows_amd64.zip"
             },
             "arm64": {
-                "url": "https://github.com/navjyotnishant/orion/releases/download/v$version/orion_v$version_windows_arm64.zip"
+                "url": "https://github.com/NjAIAgents/orion-releases/releases/download/v$version/orion_v$version_windows_arm64.zip"
             }
         },
         "hash": {
-            "url": "https://github.com/navjyotnishant/orion/releases/download/v$version/checksums.txt"
+            "url": "https://github.com/NjAIAgents/orion-releases/releases/download/v$version/checksums.txt"
         }
     }
 }

@@ -29,6 +29,10 @@ So Orion is one static binary, no cgo, empty `go.sum`, builds offline.
 
 ## Install
 
+Source lives privately in `NjAIAgents/orion`; binaries are published to the
+public `NjAIAgents/orion-releases` so Homebrew and Scoop can fetch them
+unauthenticated.
+
 ```bash
 brew install navjyotnishant/tap/orion     # macOS, Linux
 scoop bucket add navjyotnishant https://github.com/navjyotnishant/scoop-bucket
@@ -38,10 +42,34 @@ scoop install orion                        # Windows
 From source:
 
 ```bash
-git clone https://github.com/navjyotnishant/orion && cd orion
+git clone https://github.com/NjAIAgents/orion && cd orion
 make test     # build, vet and the full test suite
 make install  # to ~/.local/bin
 orion doctor --fix
+```
+
+## Releasing
+
+```bash
+make release TAG=v0.1.0 DRY=1   # rehearse, publishes nothing
+make release TAG=v0.1.0
+```
+
+This uses the `gh` login already on your machine, so there are no tokens to
+create or rotate. It refuses to release from a dirty tree, from a branch other
+than `main`, or from a `main` that differs from origin, and it runs build, vet,
+gofmt and the full test suite before anything is published. Then it tags,
+builds every archive, publishes to `NjAIAgents/orion-releases`, and updates the
+Homebrew formula and Scoop manifest.
+
+What it cannot do is prove the build works on a machine other than yours. The
+GitHub Actions workflow does that, and is the reason it still exists, but it
+runs on GitHub's servers where your `gh` credentials do not reach, so it needs
+`RELEASES_GITHUB_TOKEN` and `TAP_GITHUB_TOKEN` as repository secrets:
+
+```bash
+gh secret set RELEASES_GITHUB_TOKEN --repo NjAIAgents/orion   # contents:write on orion-releases
+gh secret set TAP_GITHUB_TOKEN      --repo NjAIAgents/orion   # contents:write on the tap and bucket
 ```
 
 ## nj-agents is a hard dependency
@@ -222,11 +250,10 @@ including the deliberate carve-out from its propose-never-act contract.
 
 Read these before relying on it.
 
-- **A private repo cannot feed a public tap.** Homebrew and Scoop download
-  release assets unauthenticated, so if this repository stays private the
-  formula and manifest will 404 for everyone, including you on a new
-  machine. Publishing to the tap only becomes useful when the repo is public
-  or the release assets are hosted somewhere reachable.
+- **The GitHub Actions release path needs two PATs**, because Actions runs on
+  GitHub's servers and cannot see your local `gh` credentials. The local path
+  (`make release`) needs none. Pick one; the Actions workflow is dormant
+  until its secrets exist.
 - **The Jira REST calls have never touched a live instance.** Shapes and the
   project-creation permission key are inferred. The key is discovered at
   runtime rather than hardcoded, and an unrecognised key is treated as
