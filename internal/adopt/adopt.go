@@ -304,6 +304,14 @@ const defaultConfig = `{
     "pause_at_percent": [50, 75, 90, 95]
   },
 
+  "tracker": {
+    "enabled": false,
+    "provider": "jira",
+    "project_key": "",
+    "create_project_per_idea": true,
+    "confirm_tree_before_create": true
+  },
+
   "slack": {
     "enabled": false,
     "create_channel_per_project": true,

@@ -203,6 +203,7 @@ const defaultProjectConfig = `{
     "branch_prefix": "orion/"
   },
   "tracker": {
+    "enabled": false,
     "provider": "jira",
     "project_key": "",
     "create_project_per_idea": true,

@@ -151,21 +151,33 @@ func checkNJAgents(configured string, autoFix bool) check {
 // permission. The permission check is the point: Orion is configured to
 // create a project per idea, and discovering mid-run that the account is not
 // an admin wastes the whole run.
-func checkJira(required bool) check {
+func checkJira(enabled bool) check {
 	j, err := tracker.NewJiraFromEnv()
 	if err != nil {
 		g := warn
-		if required {
+		if enabled {
 			g = fail
 		}
 		return check{"jira", g, "not configured", err.Error()}
 	}
+	// Grade against whether Jira is actually required. Orion runs perfectly
+	// without a tracker, so a bad token on an OPTIONAL integration must not
+	// report "Orion cannot run": that turns a degraded capability into a
+	// hard stop and sends someone fixing Jira before they can do anything
+	// else. Only a tracker the config asks for can block.
+	g := warn
+	if enabled {
+		g = fail
+	}
 	cap, err := j.Probe()
 	if err != nil {
-		return check{"jira", fail, "unreachable", cap.Detail}
+		return check{"jira", g, "unreachable", cap.Detail}
 	}
 	if !cap.Authenticated {
-		return check{"jira", fail, "authentication failed", cap.Detail}
+		return check{"jira", g, "authentication failed", cap.Detail +
+			"\n  A 401 looks the same whether the token was revoked, the email does not\n" +
+			"  match the account that created it, or the token was truncated on copy.\n" +
+			"  Re-run: orion config --only ORION_JIRA_EMAIL,ORION_JIRA_TOKEN"}
 	}
 	if cap.Undetermined {
 		// Distinct from a denial. Reporting "cannot create projects" here

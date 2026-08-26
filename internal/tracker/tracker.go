@@ -22,7 +22,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
+
+	"github.com/orion-sdlc/orion/internal/creds"
+	"github.com/orion-sdlc/orion/internal/workspace"
 	"strings"
 	"time"
 	"unicode"
@@ -77,9 +79,13 @@ type Jira struct {
 // NewJiraFromEnv builds a client from the environment. Credentials are read
 // here and nowhere else, and are never written to a log or a task file.
 func NewJiraFromEnv() (*Jira, error) {
-	base := strings.TrimRight(strings.TrimSpace(os.Getenv("ORION_JIRA_URL")), "/")
-	email := strings.TrimSpace(os.Getenv("ORION_JIRA_EMAIL"))
-	token := strings.TrimSpace(os.Getenv("ORION_JIRA_TOKEN"))
+	// Environment first, then Orion's own config file. A shell profile is
+	// read by interactive shells only, so credentials that work in a
+	// terminal are invisible to cron; the file is not.
+	home := workspace.Home()
+	base := strings.TrimRight(creds.Get(home, creds.JiraURL), "/")
+	email := creds.Get(home, creds.JiraEmail)
+	token := creds.Get(home, creds.JiraToken)
 
 	var missing []string
 	if base == "" {
@@ -92,7 +98,7 @@ func NewJiraFromEnv() (*Jira, error) {
 		missing = append(missing, "ORION_JIRA_TOKEN (create at id.atlassian.com/manage-profile/security/api-tokens)")
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("Jira is not configured. Missing:\n  %s", strings.Join(missing, "\n  "))
+		return nil, fmt.Errorf("Jira is not configured. Missing:\n  %s\n\n  Set them interactively: orion config", strings.Join(missing, "\n  "))
 	}
 	return &Jira{
 		BaseURL: base, Email: email, Token: token,

@@ -1,7 +1,26 @@
 # Getting the Slack and Jira credentials
 
+## The short version
+
+```bash
+orion config          # asks for everything, stores it, secrets never echoed
+orion config show     # what is set and where it came from, masked
+orion doctor          # proves the credentials actually work
+```
+
+`orion config` writes `~/.orion/config.env` at mode 0600. **Orion reads that
+file itself**, which is the point: a shell profile like `~/.zshrc` is read by
+*interactive* shells only, so credentials exported in a terminal are invisible
+to cron and launchd. A scheduled `orion report --notify` would silently see
+nothing. An exported environment variable still wins over the file, so a
+one-off override works as expected.
+
+The rest of this document is how to obtain the values `orion config` asks for.
+
 Both are optional. Orion works without either; `orion doctor` reports them as
-degraded capabilities rather than failures.
+degraded capabilities rather than failures. Set `tracker.enabled` or
+`slack.enabled` in `orion.json` and a broken one becomes blocking instead,
+which is the point of opting in.
 
 - **Slack** gives you a channel per project and the notification stream.
 - **Jira** gives you a project per idea and the decomposed work tree.
@@ -88,12 +107,12 @@ Still under **Install App**, or under **OAuth & Permissions**, copy the **Bot
 User OAuth Token**. It starts `xoxb-`.
 
 ```bash
-export ORION_SLACK_TOKEN='xoxb-...'
+orion config --only ORION_SLACK_TOKEN
 ```
 
-Put it in your shell profile (`~/.zshrc`) so it survives a new terminal, and
-keep it out of any repo. Orion never writes it to a file, a log, or a task
-record.
+The prompt disables terminal echo, so the token does not land in your
+scrollback or a screen recording. It is stored at mode 0600 and never written
+to a log or a task record.
 
 ### 4. Turn it on and verify
 
@@ -151,17 +170,24 @@ Go to
 **Create API token** → name it `orion` → copy it immediately. Atlassian shows
 it once.
 
-### 2. Export all three
+### 2. Give them to Orion
+
+```bash
+orion config --only ORION_JIRA_URL,ORION_JIRA_EMAIL,ORION_JIRA_TOKEN
+```
+
+The email must be the account the token was created under. Jira answers
+**HTTP 401** for a revoked token, a mismatched email, and a token truncated on
+copy — all three look identical, so if it fails, re-enter both rather than
+assuming the token is bad.
+
+Environment variables still work if you prefer them, and override the file:
 
 ```bash
 export ORION_JIRA_URL='https://yourorg.atlassian.net'   # no trailing slash
-export ORION_JIRA_EMAIL='you@example.com'               # the account that owns the token
+export ORION_JIRA_EMAIL='you@example.com'
 export ORION_JIRA_TOKEN='...'
 ```
-
-The email must be the account the token was created under. A token paired with
-a different email fails as `invalid_auth`, which reads like a bad token and
-sends you to regenerate a perfectly good one.
 
 ### 3. Verify
 
@@ -212,9 +238,12 @@ Orion then creates its issues inside `PLAT` and never tries to make a project.
 
 ## Keeping the secrets out of the way
 
-Both tools read from the environment, never from a config file, so a token
-cannot be committed by accident. Keep them in `~/.zshrc`, or in a
-`direnv`/`.envrc` that is gitignored.
+Credentials live in `~/.orion/config.env`, outside any repository, at mode
+0600. `orion config show` reports the mode and tells you how to fix it if it
+ever widens.
+
+Nothing is ever echoed: the prompt turns off terminal echo for secrets, and
+`config show` masks them to a recognisable prefix and suffix only.
 
 Orion's generated workspace settings already deny the agent read access to
 `.env*`, `~/.ssh` and cloud credential files, and the supervisor strips cloud

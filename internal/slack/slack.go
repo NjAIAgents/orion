@@ -46,13 +46,16 @@ type Client struct {
 // pasted here will fail in confusing ways later, so both are rejected now
 // with an explanation rather than at the first API call.
 func FromEnv() (*Client, error) {
-	tok := strings.TrimSpace(os.Getenv("ORION_SLACK_TOKEN"))
+	// Environment first, then Orion's own config file, for the same reason
+	// the tracker does: a shell profile does not reach cron.
+	tok := credsGet()
 	if tok == "" {
 		return nil, fmt.Errorf("ORION_SLACK_TOKEN is not set.\n" +
 			"  A channel per project needs a Slack app bot token (xoxb-), not an\n" +
 			"  incoming webhook: a webhook is bound to one channel and cannot create any.\n" +
 			"  Scopes required: channels:manage (public) or groups:write (private),\n" +
-			"  plus chat:write.")
+			"  plus chat:write.\n\n" +
+			"  Set it interactively: orion config")
 	}
 	if strings.HasPrefix(tok, "https://") {
 		return nil, fmt.Errorf("ORION_SLACK_TOKEN looks like a webhook URL.\n" +
@@ -66,6 +69,18 @@ func FromEnv() (*Client, error) {
 			"orion: ORION_SLACK_TOKEN does not start with xoxb-; a bot token is expected")
 	}
 	return &Client{Token: tok, HTTP: &http.Client{Timeout: 20 * time.Second}}, nil
+}
+
+// credsGet is a tiny indirection so this package does not import workspace
+// directly, which would make an import cycle through notify.
+var credsGet = func() string { return "" }
+
+// SetResolver lets the CLI supply credential lookup at startup. Kept as a
+// hook rather than an import so the dependency runs one way only.
+func SetResolver(f func() string) {
+	if f != nil {
+		credsGet = f
+	}
 }
 
 func (c *Client) call(method string, payload any, out any) error {
