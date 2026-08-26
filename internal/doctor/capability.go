@@ -177,10 +177,16 @@ func checkJira(enabled bool) check {
 		return check{"jira", g, "unreachable", cap.Detail}
 	}
 	if !cap.Authenticated {
-		return check{"jira", g, "authentication failed", cap.Detail +
-			"\n  A 401 looks the same whether the token was revoked, the email does not\n" +
-			"  match the account that created it, or the token was truncated on copy.\n" +
-			"  Re-run: orion config --only ORION_JIRA_EMAIL,ORION_JIRA_TOKEN"}
+		// Name the SOURCE before the remedy. Without it this message lists the
+		// two variables and sends the user to `orion config`, which edits the
+		// config FILE: the one place that may already be correct. If the shell
+		// is exporting a stale value, the file wins nothing, the failure never
+		// moves, and the loop has no exit. Observed costing an hour.
+		src, hint := jiraCredSource()
+		return check{"jira", g, "authentication failed (credentials from: " + src + ")",
+			cap.Detail + hint +
+				"\n  A 401 looks the same whether the token was revoked, the email does not\n" +
+				"  match the account that created it, or the token was truncated on copy."}
 	}
 	if cap.Undetermined {
 		// Distinct from a denial. Reporting "cannot create projects" here
@@ -193,6 +199,53 @@ func checkJira(enabled bool) check {
 		return check{"jira", warn, "cannot create projects", cap.Detail}
 	}
 	return check{"jira", ok, cap.Detail, ""}
+}
+
+// jiraCredSource reports where the Jira credentials actually came from, and
+// warns when an exported variable is shadowing a stored one.
+//
+// Environment beats file by design, so a correct config.env can sit behind a
+// stale export indefinitely. That state is invisible to every obvious check:
+// an export made in one terminal is in no rc file and no config, so nothing on
+// disk reveals it, and the same command passes in a new shell.
+func jiraCredSource() (string, string) {
+	home := workspace.Home()
+	file, _ := creds.Load(home)
+
+	keys := []string{creds.JiraURL, creds.JiraEmail, creds.JiraToken}
+	var fromEnv, shadowed []string
+	for _, k := range keys {
+		if creds.Source(home, k) != "environment" {
+			continue
+		}
+		fromEnv = append(fromEnv, k)
+		if file[k] != "" {
+			shadowed = append(shadowed, k)
+		}
+	}
+
+	if len(fromEnv) == 0 {
+		return "config file " + creds.Path(home),
+			"\n  Re-run: orion config --only ORION_JIRA_EMAIL,ORION_JIRA_TOKEN"
+	}
+
+	src := "environment"
+	if len(fromEnv) < len(keys) {
+		src = "environment + config file"
+	}
+	h := "\n  Exported in this shell: " + strings.Join(fromEnv, " ") +
+		"\n  These OVERRIDE " + creds.Path(home) + "."
+	if len(shadowed) > 0 {
+		verb := " also has a stored value, which is being ignored."
+		if len(shadowed) > 1 {
+			verb = " also have stored values, which are being ignored."
+		}
+		h += "\n  " + strings.Join(shadowed, " ") + verb
+	}
+	h += "\n  If the exported value is stale, clear it and retry:" +
+		"\n    unset " + strings.Join(fromEnv, " ") +
+		"\n  Otherwise correct the export, or re-run: orion config"
+	return src, h
 }
 
 // checkSlack verifies the bot token can actually do what Orion needs.
