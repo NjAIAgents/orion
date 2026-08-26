@@ -20,13 +20,14 @@
 package slack
 
 import (
-	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -38,6 +39,9 @@ const api = "https://slack.com/api/"
 type Client struct {
 	Token string
 	HTTP  *http.Client
+	// botID caches this token's own user id. Looked up lazily because most
+	// commands never need it, and it costs an API call.
+	botID string
 }
 
 // FromEnv builds a client from ORION_SLACK_TOKEN.
@@ -83,16 +87,47 @@ func SetResolver(f func() string) {
 	}
 }
 
-func (c *Client) call(method string, payload any, out any) error {
-	var body io.Reader
-	contentType := "application/json; charset=utf-8"
-	if payload != nil {
-		b, err := json.Marshal(payload)
-		if err != nil {
-			return err
+// call posts to the Slack Web API using FORM encoding.
+//
+// Not JSON, and the difference is not cosmetic. Slack accepts a JSON body
+// only for a subset of write methods; the cursor-paginated read methods
+// (conversations.list among them) ignore it entirely and answer as if no
+// arguments were sent. There is no error: the call returns ok:true with the
+// DEFAULT result set, so the bug looks like a correct answer.
+//
+// Concretely, with a JSON body conversations.list dropped types, limit,
+// cursor and exclude_archived. Private channels were therefore invisible --
+// and private is Orion's default -- so an existing channel read as missing,
+// the name_taken reuse path could never resolve, and pagination re-fetched
+// page one up to twenty times without ever advancing.
+func (c *Client) call(method string, payload map[string]any, out any) error {
+	form := url.Values{}
+	for k, v := range payload {
+		switch t := v.(type) {
+		case nil:
+			continue
+		case string:
+			form.Set(k, t)
+		case bool:
+			form.Set(k, strconv.FormatBool(t))
+		case int:
+			form.Set(k, strconv.Itoa(t))
+		case int64:
+			form.Set(k, strconv.FormatInt(t, 10))
+		case float64:
+			form.Set(k, strconv.FormatFloat(t, 'f', -1, 64))
+		default:
+			// Structured arguments such as blocks travel as a JSON-encoded
+			// string in a form field, which is what Slack documents.
+			b, err := json.Marshal(t)
+			if err != nil {
+				return err
+			}
+			form.Set(k, string(b))
 		}
-		body = bytes.NewReader(b)
 	}
+	var body io.Reader = strings.NewReader(form.Encode())
+	contentType := "application/x-www-form-urlencoded; charset=utf-8"
 	req, err := http.NewRequest("POST", api+method, body)
 	if err != nil {
 		return err
@@ -100,7 +135,15 @@ func (c *Client) call(method string, payload any, out any) error {
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	req.Header.Set("Content-Type", contentType)
 
-	resp, err := c.HTTP.Do(req)
+	// Default rather than dereference. A Client built directly (a test, a
+	// caller that does not go through FromEnv) would otherwise panic with a
+	// nil pointer inside net/http, which reads as a crash in the HTTP stack
+	// rather than a missing field here.
+	hc := c.HTTP
+	if hc == nil {
+		hc = &http.Client{Timeout: 20 * time.Second}
+	}
+	resp, err := hc.Do(req)
 	if err != nil {
 		return fmt.Errorf("%s: %w", method, err)
 	}
@@ -308,6 +351,54 @@ func (c *Client) SetTopic(channelID, topic string) error {
 // the channel worth having.
 func (c *Client) Archive(channelID string) error {
 	return c.call("conversations.archive", map[string]any{"channel": channelID}, nil)
+}
+
+// Invite adds people to a channel.
+//
+// This is not optional polish. A private channel is invisible to everyone
+// who is not in it, and the bot is the only member of one it just created,
+// so without this Orion produces a "communication medium" that no human can
+// see or even find by search. Slack has no notification for it either: the
+// channel simply does not exist as far as you are concerned.
+//
+// Entries may be user IDs (U...) or email addresses. Emails need the
+// users:read.email scope, which is not in Orion's default manifest, so a
+// lookup failure is reported per-entry rather than failing the whole call.
+func (c *Client) Invite(channelID string, people []string) (invited []string, errs []error) {
+	var ids []string
+	for _, p := range people {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if !strings.Contains(p, "@") {
+			ids = append(ids, p)
+			continue
+		}
+		var res struct {
+			User struct {
+				ID string `json:"id"`
+			} `json:"user"`
+		}
+		if err := c.call("users.lookupByEmail", map[string]any{"email": p}, &res); err != nil {
+			errs = append(errs, fmt.Errorf("looking up %s: %w", p, err))
+			continue
+		}
+		ids = append(ids, res.User.ID)
+	}
+	if len(ids) == 0 {
+		return nil, errs
+	}
+	// already_in_channel is success: re-running provisioning must not fail
+	// because someone is already where they should be.
+	err := c.call("conversations.invite", map[string]any{
+		"channel": channelID, "users": strings.Join(ids, ","),
+	}, nil)
+	var apiErr *APIError
+	if err != nil && (!errors.As(err, &apiErr) || apiErr.Code != "already_in_channel") {
+		return nil, append(errs, err)
+	}
+	return ids, errs
 }
 
 // NormalizeChannelName makes a slug Slack will accept.

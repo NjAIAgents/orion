@@ -335,3 +335,77 @@ func TestInitWarnsWhenTheHookBinaryIsMissing(t *testing.T) {
 		t.Errorf("the warning must reach the printed summary:\n%s", res.Summary())
 	}
 }
+
+// A locally built binary (orion-dev, orion.exe) is still our hook. Requiring
+// the name to be exactly "orion" meant a re-run did not recognise it and
+// appended a second full set beside it -- the duplication this is meant to
+// prevent, caused by the fix for it.
+func TestRetargetRecognisesOrionPrefixedBinaries(t *testing.T) {
+	hooks := map[string]any{
+		"PreToolUse": []any{map[string]any{"hooks": []any{
+			map[string]any{"command": "/tmp/orion-dev hook gate"},
+			map[string]any{"command": "/usr/bin/orion.exe hook shield"},
+			map[string]any{"command": "/usr/bin/orionade hook nonsense"},
+		}}},
+	}
+	if n := retargetOrionHooks(hooks, "/opt/homebrew/bin/orion"); n != 2 {
+		t.Fatalf("repointed %d, want 2", n)
+	}
+	got := hooks["PreToolUse"].([]any)[0].(map[string]any)["hooks"].([]any)
+	if c := got[2].(map[string]any)["command"].(string); c != "/usr/bin/orionade hook nonsense" {
+		t.Errorf("an unknown hook subcommand must not be rewritten: %q", c)
+	}
+}
+
+// Duplicates are not cosmetic: Claude Code runs every matching hook, so a
+// doubled breaker counts each tool call twice and trips at half the limit.
+func TestReRunRemovesDuplicateHooks(t *testing.T) {
+	d := repo(t)
+	if _, err := Run(Options{Dir: d, Binary: "/tmp/orion-dev"}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the older binary that failed to recognise orion-dev and
+	// appended its own set alongside.
+	p := filepath.Join(d, ".claude", "settings.json")
+	b, _ := os.ReadFile(p)
+	var root map[string]any
+	if err := json.Unmarshal(b, &root); err != nil {
+		t.Fatal(err)
+	}
+	hooks := root["hooks"].(map[string]any)
+	for ev, raw := range hooks {
+		for _, re := range raw.([]any) {
+			e := re.(map[string]any)
+			clone := map[string]any{"hooks": []any{map[string]any{
+				"type": "command",
+				"command": strings.Replace(e["hooks"].([]any)[0].(map[string]any)["command"].(string),
+					"/tmp/orion-dev", "/opt/homebrew/bin/orion", 1),
+			}}}
+			if m, ok := e["matcher"]; ok {
+				clone["matcher"] = m
+			}
+			hooks[ev] = append(hooks[ev].([]any), clone)
+		}
+	}
+	nb, _ := json.MarshalIndent(root, "", "  ")
+	if err := os.WriteFile(p, nb, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(Options{Dir: d, Binary: "/opt/homebrew/bin/orion"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	for _, entries := range readSettings(t, d)["hooks"].(map[string]any) {
+		for _, re := range entries.([]any) {
+			n += len(re.(map[string]any)["hooks"].([]any))
+		}
+	}
+	if n != len(specs()) {
+		t.Errorf("got %d hooks, want %d; duplicates survived", n, len(specs()))
+	}
+	if !strings.Contains(strings.Join(res.Updated, " "), "duplicate") {
+		t.Errorf("the removal must be reported, got %v", res.Updated)
+	}
+}

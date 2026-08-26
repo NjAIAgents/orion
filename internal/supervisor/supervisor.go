@@ -16,6 +16,7 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -45,12 +46,28 @@ type Options struct {
 	// exists for the acknowledge-and-continue path, never as a default.
 	SkipBudgetCheck bool
 	DryRun          bool
+	// Resume continues an existing session rather than starting one. The
+	// Prompt is then the next message in that conversation.
+	Resume string
+	// Model overrides the default: sonnet for advisors, opus for the
+	// implementer, haiku for routing. Empty uses whatever the CLI is
+	// configured with.
+	Model string
 	// NoWait skips quota waiting entirely and fails fast instead. For CI,
 	// where sleeping a runner for forty minutes costs real money.
 	NoWait bool
+	// OnActivity is called for each observable thing the agent does, as it
+	// does it. Optional: nil means the stream is still logged, just not
+	// narrated. Callers use it to write the live event log.
+	//
+	// Called from the process's output goroutine, so an implementation that
+	// blocks holds up the agent it is reporting on.
+	OnActivity func(Activity)
 }
 
 type Result struct {
+	// Limit is what this run reported about the account's plan limits.
+	Limit    RateLimit
 	ExitCode int
 	Reason   string
 	Duration time.Duration
@@ -60,6 +77,18 @@ type Result struct {
 	// ResumeAt is set when a quota wall was hit and the wait was too long
 	// to sit through. The caller reports it; nothing sleeps on it.
 	ResumeAt time.Time
+	// SessionID identifies the conversation, so a caller can CONTINUE it
+	// rather than starting again.
+	//
+	// This is what makes an advisor loop affordable. Without it, answering an
+	// implementer's question means re-running from the top: the agent
+	// re-reads the spec, re-explores the code and re-derives everything it
+	// already knew, paying for the whole context a second time and possibly
+	// making different choices. Resuming costs one message.
+	SessionID string
+	// Final is the agent's closing message. When a run stops to ask
+	// something, this is the question.
+	Final string
 }
 
 const (
@@ -303,17 +332,32 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	logPath := filepath.Join(ws.LogsDir(),
 		fmt.Sprintf("%s-%s-a%d.log", stamp, safe(opts.Stage), attempt))
 
-	args := []string{
+	args := []string{}
+	if opts.Resume != "" {
+		// Continue the existing conversation. The prompt here is the ANSWER
+		// to what the agent asked, not a fresh instruction.
+		args = append(args, "--resume", opts.Resume)
+	}
+	args = append(args,
 		"-p", prompt,
 		"--settings", ws.SettingsPath(),
-		// JSON so the run's own usage and cost can be accounted rather than
-		// estimated. Text output reports neither.
-		"--output-format", "json",
+		// stream-json rather than json: both carry the run's own usage and
+		// cost (text output reports neither), but json emits a single object
+		// AT EXIT, so a forty minute run is indistinguishable from a hung one
+		// while it happens. NDJSON lets the same run be narrated live.
+		//
+		// --verbose is not optional here: the CLI refuses stream-json in
+		// print mode without it.
+		"--output-format", "stream-json",
+		"--verbose",
 		// Undocumented: --max-turns is absent from `claude --help` but is
 		// accepted (exit 0). Passed as a best-effort belt to the braces of
 		// Orion's own tool-call breaker and wall clock, which are the
 		// controls actually relied upon.
 		"--max-turns", fmt.Sprint(opts.MaxTurns),
+	)
+	if opts.Model != "" {
+		args = append(args, "--model", opts.Model)
 	}
 
 	if opts.DryRun {
@@ -328,6 +372,7 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	defer logFile.Close()
 
 	tail := &ringWriter{max: captureBytes}
+	activity := newActivityWriter(ws.RepoDir(), opts.OnActivity)
 
 	ctx, cancel := context.WithTimeout(context.Background(),
 		time.Duration(opts.MaxMinutes)*time.Minute)
@@ -336,10 +381,16 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = ws.RepoDir()
 	cmd.Env = childEnv(ws)
-	// Three destinations: the terminal so a watching user sees progress,
-	// the log so the postmortem survives, and the ring buffer so quota
-	// detection has something to match without holding the whole stream.
-	cmd.Stdout = io.MultiWriter(os.Stdout, logFile, tail)
+	// Four destinations, and NOT the terminal: with stream-json the raw
+	// stream is machine output, and printing it would replace the missing
+	// progress with unreadable progress. The activity writer produces the
+	// human-facing lines; the log keeps the stream verbatim for postmortems;
+	// the ring buffer holds the tail for quota detection and for the closing
+	// result object.
+	cmd.Stdout = io.MultiWriter(logFile, tail, activity)
+	// stderr stays on the terminal. It is where the CLI reports its own
+	// failures -- a bad flag, an auth problem -- and swallowing those would
+	// turn a clear error into a silent empty run.
 	cmd.Stderr = io.MultiWriter(os.Stderr, logFile, tail)
 
 	started := time.Now()
@@ -356,6 +407,17 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 		res.Duration = time.Since(started)
 		res.ExitCode = exitCode(err)
 		res.Reason = classify(res.ExitCode, ws)
+		// The session id and the closing message come from the run's own JSON
+		// result. Both are needed to answer a question the agent asked: the
+		// message IS the question, and the id is what lets the conversation
+		// continue rather than start over.
+		res.SessionID, res.Final = sessionAndFinal(tail.String())
+		// The plan limit the run itself reported. Recorded on every result,
+		// not only on failures: a run that succeeded while already on
+		// overage is the last one that will, and the caller deciding
+		// whether to start another needs to know that now rather than by
+		// being refused next time.
+		res.Limit = activity.Limit()
 	case <-ctx.Done():
 		res.Killed = true
 		res.Duration = time.Since(started)
@@ -482,21 +544,28 @@ func childEnv(ws *workspace.Workspace) []string {
 		out = append(out, kv)
 	}
 	out = append(out, "ORION_WORKSPACE="+ws.ID, "ORION_WORKSPACE_DIR="+ws.Dir)
-	return append(out, agentAuthorEnv(ws.RepoDir())...)
+	out = append(out, agentAuthorEnv(ws.RepoDir())...)
+	return append(out, agentTrackerEnv(ws.RepoDir())...)
 }
 
-// agentAuthorEnv marks commits the agent makes as authored by the alias,
-// while leaving the COMMITTER as the human.
+// agentAuthorEnv marks commits the agent makes as its own, in both fields.
 //
-// Author and committer are separate fields for exactly this: the alias says
-// who wrote the change, the committer says who is answerable for it landing.
-// Setting only the author keeps `git log`, `git blame` and a bisect able to
-// tell agent work from yours, without pretending a person did not approve it.
+// This used to set only GIT_AUTHOR_*, on the reasoning that the alias should
+// say who wrote the change while the committer said who was answerable for
+// it landing. That reasoning was sound and the result was still wrong: the
+// commits went up authored orionbot and GitHub displayed the account owner's
+// name and avatar, because GitHub resolves commits by EMAIL and shows the
+// COMMITTER for the "X committed" line. Leaving the committer as the human
+// while sharing the human's address meant the alias existed only in `git log`
+// -- true, and invisible in the place anyone reviewing a pull request looks.
 //
-// The email deliberately stays yours unless overridden, because GitHub
-// matches commits to accounts by email. A synthetic address would render
-// every agent commit as an unrecognised author and drop it out of the
-// repository's history of who did what.
+// A commit landing on a branch is not an approval, either. Orion pushes and
+// opens the pull request; the human approves at the MERGE, which is where
+// accountability actually attaches. Naming the human as committer implied a
+// review that had not happened yet.
+//
+// The email is what decides the display. See config.AgentAuthorEmail for the
+// trade this makes with contribution graphs and email allowlists.
 func agentAuthorEnv(repoDir string) []string {
 	cfg := config.Load(repoDir)
 	name := strings.TrimSpace(cfg.VCS.AgentAuthorName)
@@ -514,12 +583,88 @@ func agentAuthorEnv(repoDir string) []string {
 			return nil
 		}
 	}
-	return []string{"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email}
+	return []string{
+		"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email,
+		// Both, or the alias is invisible: GitHub's "X committed" line reads
+		// the committer, and a mismatched pair also makes every agent commit
+		// display the misleading "authored and committed by different people"
+		// badge on a change no second person touched.
+		"GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email,
+	}
+}
+
+// agentTrackerEnv publishes the tracker contract to the child.
+//
+// Orion's own Go code creates the PROJECT and stops there; the Epic/Story/
+// Task tree is filed by the agent through nj-agents, so a label can only be
+// applied where the issues are actually created. These variables are that
+// contract: the skill reads them and stamps every issue it files.
+//
+// Stated plainly because it is a real limit -- exporting a variable does not
+// make an agent use it. Until the PM skill reads ORION_TRACKER_LABEL, this
+// makes the intent available and enforces nothing. The alternative, filing
+// the tree from Go, would duplicate decomposition logic that belongs in the
+// skill and drift from it.
+func agentTrackerEnv(repoDir string) []string {
+	cfg := config.Load(repoDir)
+	if !cfg.Tracker.Enabled {
+		return nil
+	}
+	var out []string
+	if k := strings.TrimSpace(cfg.Tracker.ProjectKey); k != "" {
+		out = append(out, "ORION_TRACKER_PROJECT="+k)
+	}
+	if l := strings.TrimSpace(cfg.Tracker.AgentLabel); l != "" {
+		out = append(out, "ORION_TRACKER_LABEL="+l)
+	}
+	if n := strings.TrimSpace(cfg.VCS.AgentAuthorName); n != "" {
+		// The same alias as the git author, so a commit and the issue it
+		// closes carry one name rather than two names for one actor.
+		out = append(out, "ORION_AGENT_NAME="+n)
+	}
+	return out
 }
 
 // classify turns an exit code into something a human can act on, checking
 // breaker state so "exit 1" becomes "a breaker tripped" when that is what
 // actually happened.
+// sessionAndFinal pulls the session id and the agent's last message out of
+// the --output-format json result.
+//
+// Scans for the LAST JSON object in the stream rather than parsing the whole
+// thing: the tail buffer may begin mid-object, and with stream-json there are
+// several. Failing to find them is not an error -- it costs the ability to
+// resume, which degrades to a fresh run, never to a wrong one.
+func sessionAndFinal(out string) (sessionID, final string) {
+	dec := json.NewDecoder(strings.NewReader(out))
+	for {
+		var m map[string]any
+		if err := dec.Decode(&m); err != nil {
+			break
+		}
+		if v, ok := m["session_id"].(string); ok && v != "" {
+			sessionID = v
+		}
+		if v, ok := m["result"].(string); ok && strings.TrimSpace(v) != "" {
+			final = strings.TrimSpace(v)
+		}
+	}
+	if sessionID != "" || final != "" {
+		return sessionID, final
+	}
+	// The buffer probably starts mid-object. Try from the last opening brace
+	// that parses, which is the common shape for a truncated tail.
+	if i := strings.LastIndex(out, "{\"is_error\""); i >= 0 {
+		var m map[string]any
+		if json.Unmarshal([]byte(out[i:]), &m) == nil {
+			sid, _ := m["session_id"].(string)
+			fin, _ := m["result"].(string)
+			return sid, strings.TrimSpace(fin)
+		}
+	}
+	return "", ""
+}
+
 func classify(code int, ws *workspace.Workspace) string {
 	if b, err := os.ReadFile(filepath.Join(ws.StateDir(), "tripped")); err == nil {
 		if s := strings.TrimSpace(string(b)); s != "" {

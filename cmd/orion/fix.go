@@ -1,0 +1,145 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+
+	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/supervisor"
+	"github.com/orion-sdlc/orion/internal/ui"
+	"github.com/orion-sdlc/orion/internal/workspace"
+)
+
+// fixRun sends a CI failure back to an agent on the branch that caused it.
+//
+// The worktree is reused rather than recreated. The branch already has the
+// agent's commits and its decision records; a fresh checkout would discard
+// the context that explains why the code is shaped the way it is, and the
+// fix would be attempted by something that had never seen the reasoning.
+//
+// Returns whether anything was actually pushed. Exit 0 with no new commit
+// means the agent could not see what to change, and that is a stop condition
+// rather than an attempt to repeat -- a second identical run produces the
+// same nothing at the same price.
+func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, error) {
+	w := os.Stdout
+
+	jobs, err := workspace.ListWorktrees(ws)
+	if err != nil {
+		return false, err
+	}
+	var dir string
+	for _, j := range jobs {
+		if j.Branch == branch {
+			dir = j.Path
+			break
+		}
+	}
+	if dir == "" {
+		return false, fmt.Errorf("no worktree for %s.\n"+
+			"  It was pruned, so there is nowhere to apply a fix. "+
+			"Re-queue the ticket to start again", branch)
+	}
+
+	// The full log, not the summary. "test (failure)" names which check went
+	// red and nothing about why; an agent handed only that has to re-run the
+	// suite locally to discover what a log already says.
+	detail := failure
+	if full := failingLog(dir, branch); strings.TrimSpace(full) != "" {
+		detail = full
+	}
+
+	before, err := headOf(dir)
+	if err != nil {
+		return false, err
+	}
+
+	cfg := config.Load(ws.RepoDir())
+	jobWS := *ws
+	jobWS.RepoPath = dir
+
+	res, err := supervisor.Run(&jobWS, supervisor.Options{
+		Stage:      "ci-fix",
+		Prompt:     supervisor.FixPrompt(key, branch, detail),
+		MaxMinutes: cfg.Limits.MaxSessionMinutes,
+		MaxTurns:   cfg.Limits.MaxToolCalls,
+		OnActivity: func(a supervisor.Activity) {
+			if a.Kind == "tool" {
+				ui.Ok(w, "working", "%s %s", a.Tool, a.Detail)
+			}
+		},
+	})
+	if err != nil {
+		return false, err
+	}
+	if res.ExitCode != 0 {
+		return false, fmt.Errorf("the fix run exited %d: %s", res.ExitCode, res.Reason)
+	}
+
+	after, err := headOf(dir)
+	if err != nil {
+		return false, err
+	}
+	if after == before {
+		return false, nil
+	}
+
+	if err := pushBranch(dir, branch); err != nil {
+		return false, fmt.Errorf("the fix was committed but not pushed: %w", err)
+	}
+	return true, nil
+}
+
+func headOf(dir string) (string, error) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("reading HEAD in %s: %w", dir, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// failingLog fetches the output of the failed job.
+//
+// --log-failed rather than the whole run: a green job's output is thousands
+// of lines of noise that would push the actual error out of the agent's
+// context, and paying to read a passing test suite is paying for nothing.
+func failingLog(dir, branch string) string {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return ""
+	}
+	list := exec.Command("gh", "run", "list", "--branch", branch,
+		"--limit", "1", "--json", "databaseId,conclusion", "--jq", ".[0].databaseId")
+	list.Dir = dir
+	idOut, err := list.Output()
+	id := strings.TrimSpace(string(idOut))
+	if err != nil || id == "" || id == "null" {
+		return ""
+	}
+
+	view := exec.Command("gh", "run", "view", id, "--log-failed")
+	view.Dir = dir
+	out, err := view.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return clipLog(string(out))
+}
+
+// clipLog bounds what is sent to the model.
+//
+// Keeps the TAIL. A test runner prints its failures and summary at the end,
+// so truncating from the front would drop precisely the part that says what
+// went wrong and keep the part that says the dependencies installed.
+func clipLog(s string) string {
+	const max = 12000
+	if len(s) <= max {
+		return s
+	}
+	cut := s[len(s)-max:]
+	if i := strings.IndexByte(cut, '\n'); i >= 0 {
+		cut = cut[i+1:]
+	}
+	return "… (earlier output omitted)\n" + cut
+}

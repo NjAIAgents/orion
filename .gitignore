@@ -3,3 +3,4 @@ dist/
 .orion/
 evals/results/
 *.log
+coverage.out

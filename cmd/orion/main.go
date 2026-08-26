@@ -12,7 +12,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -20,20 +22,25 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/budget"
+	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/creds"
 	"github.com/orion-sdlc/orion/internal/discovery"
 	"github.com/orion-sdlc/orion/internal/doctor"
+	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/hook"
 	"github.com/orion-sdlc/orion/internal/lessons"
 	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/provision"
+	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/report"
 	"github.com/orion-sdlc/orion/internal/slack"
 	"github.com/orion-sdlc/orion/internal/state"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
+	"github.com/orion-sdlc/orion/internal/ui"
+	"github.com/orion-sdlc/orion/internal/work"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -61,7 +68,23 @@ WORKSPACES
 RUNNING
   orion provision <id>        create the remote repo, branches, and tracker
   orion run <id> [--stage S]  supervise a sandboxed claude run in a workspace
+  orion status                show this repo: branch, hooks, Jira, Slack, spend
   orion status <id>           show stage, breaker state and last run
+  orion work <KEY> [KEY...]   work tickets, in the order given
+  orion queue                 what the watcher would pick up, in order (read-only)
+  orion watch [KEY...]        run the queue by itself: work, collect, repeat
+                              (--once, --interval S, --max-jobs N, --dry-run)
+  orion collect [KEY...]      finish tickets awaiting CI: close, refresh, prune
+                              (--dry-run for verdicts only, --no-prune, --no-fix)
+  orion repos                 project key -> repository, as adoption recorded it
+  orion repos unbind <KEY>    forget one mapping
+  orion sandbox               where agents actually worked: clones and worktrees
+  orion sandbox <KEY>         one ticket's worktree: branch, commits, dirt
+  orion sandbox <KEY> --code  open it in VS Code
+  orion sandbox <KEY> --shell start a shell in it
+  orion sandbox <KEY> --path  print the path only (use with cd)
+  orion sandbox prune         remove worktrees whose branch is merged and clean
+  orion slack test [KEY]      send a real message and report exactly what breaks
 
 GUARDRAILS
   orion doctor [--fix]        preflight: tools, auth, sandbox, config
@@ -75,9 +98,11 @@ DEPENDENCIES
   orion njagents install      wire Orion's clone into a dir (only if no global)
 
 MONITORING
-  orion report [--since 7d]   digest: failures, workspaces, budget, usage
+  orion changelog [--version vX.Y.Z]  generate CHANGELOG.md (nj-agents changelog)
+  orion report [KEY] [--since 7d]  digest: failures, workspaces, budget, usage
   orion report --notify       also send it to ORION_NOTIFY_WEBHOOK (Slack)
-  orion logs <id> [--tail n]  the failing tail of a workspace's runs
+  orion logs <KEY> [-f]       what Orion is doing, live (FCIA or FCIA-6)
+  orion logs <KEY> --transcript   the raw agent output instead
 
 BUDGET (rolling 7 days, your limit, not your plan's)
   orion budget status         spend, tokens and the next checkpoint
@@ -142,8 +167,31 @@ func main() {
 		mustArg(os.Args, 2, "orion run <id>")
 		runSupervised(os.Args[2], os.Args[3:])
 	case "status":
-		mustArg(os.Args, 2, "orion status <id>")
-		exitOn(workspace.Status(os.Stdout, os.Args[2]))
+		// With an id, the workspace view. Without one, the project view:
+		// asking "what is Orion's state here" should not require knowing a
+		// workspace id you may not have created yet.
+		if len(os.Args) > 2 {
+			exitOn(workspace.Status(os.Stdout, os.Args[2]))
+		} else {
+			runProjectStatus(os.Stdout)
+		}
+	case "work":
+		mustArg(os.Args, 2, "orion work <KEY> [KEY...]")
+		runWork(os.Args[2:])
+	case "queue":
+		runQueue(os.Args[2:])
+	case "repos":
+		runRepos(os.Args[2:])
+	case "sandbox":
+		runSandbox(os.Args[2:])
+	case "slack":
+		runSlackCmd(os.Args[2:])
+	case "collect":
+		runCollect(os.Args[2:])
+	case "watch":
+		runWatch(os.Args[2:])
+	case "changelog":
+		runChangelog(os.Args[2:])
 	case "reset":
 		runReset(os.Args[2:])
 	case "fix":
@@ -153,9 +201,8 @@ func main() {
 		runNJAgents(os.Args[2:])
 	case "report":
 		runReport(os.Args[2:])
-	case "logs":
-		mustArg(os.Args, 2, "orion logs <id>")
-		runLogs(os.Args[2], os.Args[3:])
+	case "logs", "log":
+		runLogs(os.Args[2:])
 	case "budget":
 		runBudget(os.Args[2:])
 	case "lessons":
@@ -326,7 +373,7 @@ func runInit(args []string) {
 		Force:          hasFlag(args, "--force"),
 	})
 	if res != nil {
-		fmt.Print(res.Summary())
+		res.Write(os.Stdout)
 	}
 	exitOn(err)
 
@@ -336,19 +383,57 @@ func runInit(args []string) {
 	// task branch while no such branch exists, and nothing notices until the
 	// first PR has nowhere to go.
 	if created, warns, bErr := adopt.EnsureWorkBranch(abs, cfg.VCS.WorkBranch); bErr != nil {
-		fmt.Fprintf(os.Stderr, "WARNING  %v\n", bErr)
+		ui.Warn(os.Stdout, "%v", bErr)
 	} else {
 		if created {
-			fmt.Printf("created  branch %s (switched to it; it is the PR base for all task branches)\n",
+			ui.Ok(os.Stdout, "created", "branch %s (switched to it; the PR base for all task branches)",
 				cfg.VCS.WorkBranch)
+		} else {
+			ui.Ok(os.Stdout, "bound", "branch %s (already exists)", cfg.VCS.WorkBranch)
 		}
 		for _, w := range warns {
-			fmt.Printf("WARNING  %s\n", w)
+			ui.Warn(os.Stdout, "%s", w)
 		}
 	}
 
+	// Attribution tooling. Separate from the author alias: the alias marks a
+	// commit as coming from an Orion run, dun records which agent, which
+	// model and how much of the diff it actually produced, from the session
+	// transcripts afterwards.
+	if cfg.Attribution.Enabled {
+		ask := func(p string) bool { return confirm(p) }
+		if hasFlag(args, "--yes") {
+			ask = func(string) bool { return true }
+		}
+		lines, warns := adopt.EnsureDun(abs, cfg.Attribution.AutoInstall, ask)
+		for _, l := range lines {
+			if v, d, ok := strings.Cut(l, " "); ok && !strings.HasPrefix(l, "  dun |") {
+				ui.Ok(os.Stdout, strings.TrimSpace(v), "%s", strings.TrimSpace(d))
+			} else {
+				fmt.Println(ui.Dim(os.Stdout, l))
+			}
+		}
+		for _, w := range warns {
+			ui.Warn(os.Stdout, "%s", w)
+		}
+	}
+
+	// CI. Without a workflow, GitHub reports no checks at all and Orion has
+	// no honest verdict to gate a merge on -- so it treats the branch as
+	// passing, because the alternative leaves every ticket waiting forever
+	// for a verdict nobody will produce. Scaffolding here is what makes
+	// "no checks configured" a deliberate state rather than the default one.
+	ensureCI(abs)
+
 	if !hasFlag(args, "--no-provision") {
 		provisionRemote(abs, cfg, hasFlag(args, "--yes"))
+	}
+
+	// The sandbox. Built at adoption rather than lazily at the first run, so
+	// a bad remote, missing auth or a dirty working copy surfaces now --
+	// while you are watching -- instead of halfway through a paid run.
+	if !hasFlag(args, "--no-sandbox") {
+		ensureSandbox(abs, cfg, hasFlag(args, "--force"))
 	}
 
 	fmt.Println()
@@ -377,11 +462,19 @@ func provisionRemote(dir string, cfg config.Config, assumeYes bool) {
 		SlackIsPriv: cfg.Slack.Private,
 	}
 
+	var jiraLead string
 	j, jErr := tracker.NewJiraFromEnv()
 	switch {
 	case jErr != nil:
 		plan.JiraSkip = "not configured"
 	default:
+		// Jira rejects project creation without a lead, and the error
+		// ("You must specify a valid project lead") arrives only after the
+		// confirmation has been given. Resolve the authenticated account up
+		// front and use it: whoever ran init is the obvious lead.
+		if cap, err := j.Probe(); err == nil && cap.AccountID != "" {
+			jiraLead = cap.AccountID
+		}
 		plan.JiraSite = j.BaseURL
 		plan.JiraKey = cfg.Tracker.ProjectKey
 		if plan.JiraKey == "" {
@@ -406,6 +499,13 @@ func provisionRemote(dir string, cfg config.Config, assumeYes bool) {
 		}
 		plan.SlackTeam = id.Team
 		plan.SlackName = slack.NormalizeChannelName(cfg.Slack.ChannelPrefix + name)
+		// Check before describing, so the plan does not offer to create a
+		// channel it would in fact bind. The Jira line already distinguishes
+		// the two; a plan that is honest about one and not the other trains
+		// people to skim it.
+		if ch, err := sc.FindChannel(plan.SlackName, cfg.Slack.Private); err == nil && ch != nil {
+			plan.SlackExists = true
+		}
 	}
 
 	if plan.JiraSkip != "" && plan.SlackSkip != "" {
@@ -416,7 +516,7 @@ func provisionRemote(dir string, cfg config.Config, assumeYes bool) {
 	fmt.Print(plan.Describe())
 	if !plan.Nothing() && !assumeYes {
 		if !confirm("Proceed?") {
-			fmt.Println("skipped  remote provisioning (re-run orion init to do it later)")
+			ui.Ok(os.Stdout, "skipped", "remote provisioning (re-run orion init to do it later)")
 			return
 		}
 	}
@@ -424,13 +524,17 @@ func provisionRemote(dir string, cfg config.Config, assumeYes bool) {
 	cfgPath := filepath.Join(dir, "orion.json")
 	if plan.JiraSkip == "" && plan.JiraKey != "" {
 		if !plan.JiraExists {
-			if _, err := j.CreateProject(plan.JiraKey, name, ""); err != nil {
-				fmt.Fprintf(os.Stderr, "WARNING  could not create Jira project %s: %v\n", plan.JiraKey, err)
+			if jiraLead == "" {
+				ui.Warn(os.Stdout, "no Jira account resolved to lead the project; not creating it")
 				goto slackStep
 			}
-			fmt.Printf("created  Jira project %s (%s)\n", plan.JiraKey, j.BaseURL)
+			if _, err := j.CreateProject(plan.JiraKey, name, jiraLead); err != nil {
+				ui.Fail(os.Stdout, "Jira project %s: %v", plan.JiraKey, err)
+				goto slackStep
+			}
+			ui.Ok(os.Stdout, "created", "Jira project %s  %s/browse/%s", plan.JiraKey, j.BaseURL, plan.JiraKey)
 		} else {
-			fmt.Printf("bound    Jira project %s (already existed)\n", plan.JiraKey)
+			ui.Ok(os.Stdout, "bound", "Jira project %s  %s/browse/%s", plan.JiraKey, j.BaseURL, plan.JiraKey)
 		}
 		patchConfig(cfgPath, map[string][2]string{
 			"tracker": {"enabled", "true"},
@@ -441,15 +545,166 @@ slackStep:
 	if plan.SlackSkip == "" && plan.SlackName != "" {
 		ch, err := sc.CreateChannel(plan.SlackName, cfg.Slack.Private)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "WARNING  could not create Slack channel #%s: %v\n", plan.SlackName, err)
+			ui.Fail(os.Stdout, "Slack channel #%s: %v", plan.SlackName, err)
 			return
 		}
-		verb := "bound   "
+		verb := "bound"
 		if ch.Created {
-			verb = "created "
+			verb = "created"
 		}
-		fmt.Printf("%s Slack channel #%s\n", verb, ch.Name)
+		ui.Ok(os.Stdout, verb, "Slack channel #%s", ch.Name)
+		inviteToChannel(sc, ch, cfg)
 		patchConfig(cfgPath, map[string][2]string{"slack": {"enabled", "true"}}, "")
+
+		// Record the channel ON THE WORKSPACE, which is the only place
+		// anything later looks for it.
+		//
+		// Without this, adoption created the channel, enabled Slack in the
+		// config, printed a success line -- and left the workspace's own
+		// record nil, so notify was handed an empty channel and skipped
+		// Slack entirely, without error, for every run. Nothing failed,
+		// because nothing had been asked. The whole feature looked broken
+		// while every part of it was working.
+		recordChannel(dir, ch)
+	}
+}
+
+// ensureSandbox creates the isolated clone this repo's runs happen in.
+//
+// Orion never runs the agent in your working copy. An agent editing the
+// directory you have open in an editor can destroy uncommitted work with no
+// undo, so the sandbox clones from the REMOTE and your checkout stays
+// read-only, fast-forwarded afterwards rather than written to.
+func ensureSandbox(dir string, cfg config.Config, force bool) {
+	w := os.Stdout
+
+	if existing := workspace.FindBySource(dir); existing != nil {
+		ui.Ok(w, "bound", "sandbox %s (%s)", existing.ID, existing.RepoDir())
+		registerRepo(dir, cfg, existing)
+		return
+	}
+	remote, err := workspace.RemoteOf(dir)
+	if err != nil {
+		ui.Warn(w, "no sandbox: %v", err)
+		return
+	}
+	if problems := workspace.Preflight(dir); len(problems) > 0 && !force {
+		ui.Warn(w, "no sandbox yet: the working copy is not in a state worth cloning")
+		for _, p := range problems {
+			fmt.Fprintf(w, "         %s\n", p)
+		}
+		fmt.Fprintf(w, "         Commit and push, then re-run orion init (or --force).\n")
+		return
+	}
+	ws, err := workspace.Bind(workspace.BindOptions{
+		SourcePath: dir, Remote: remote, Force: force,
+		DefaultBranch: cfg.VCS.DefaultBranch, WorkBranch: cfg.VCS.WorkBranch,
+	})
+	if err != nil {
+		ui.Fail(w, "sandbox: %v", err)
+		return
+	}
+	ui.Ok(w, "created", "sandbox %s", ws.ID)
+	fmt.Fprintf(w, "         %s\n", ui.Dim(w, ws.RepoDir()))
+	registerRepo(dir, cfg, ws)
+	if len(ws.Task.Branches) > 0 {
+		ui.Ok(w, "created", "branches %s in the sandbox", strings.Join(ws.Task.Branches, ", "))
+	}
+}
+
+// registerRepo records the project-key to repository mapping.
+//
+// Without it every command has to be run from inside a checkout, and the
+// daemon -- which has no meaningful working directory -- cannot act on a
+// ticket at all. The ticket key already names the project; this supplies the
+// other half.
+func registerRepo(dir string, cfg config.Config, ws *workspace.Workspace) {
+	key := strings.TrimSpace(cfg.Tracker.ProjectKey)
+	if key == "" {
+		return // no tracker bound: nothing to key the mapping on
+	}
+	var channel string
+	if ws.Task.Slack != nil {
+		channel = ws.Task.Slack.ID
+	}
+	err := registry.Bind(workspace.Home(), registry.Entry{
+		Key: key, Source: dir, Workspace: ws.ID,
+		Channel: channel, Remote: ws.Task.Remote,
+	})
+	if err != nil {
+		// A collision is a real problem, not a warning to scroll past: two
+		// repositories claiming one key means work lands in whichever ran
+		// last, so say it loudly and leave the original binding intact.
+		ui.Fail(os.Stdout, "%v", err)
+		return
+	}
+	ui.Ok(os.Stdout, "bound", "project %s -> this repository", key)
+}
+
+// runRepos lists what is registered, so a mapping that has gone wrong is
+// visible rather than something you deduce from a failure.
+func runRepos(args []string) {
+	home := workspace.Home()
+	w := os.Stdout
+
+	if len(args) > 0 && args[0] == "unbind" {
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: orion repos unbind <PROJECT>")
+			os.Exit(64)
+		}
+		exitOn(registry.Unbind(home, args[1]))
+		ui.Ok(w, "updated", "unbound %s", strings.ToUpper(args[1]))
+		return
+	}
+
+	f, err := registry.Load(home)
+	exitOn(err)
+	if len(f.Repos) == 0 {
+		fmt.Fprintln(w, "no repositories registered. Run orion init inside one.")
+		return
+	}
+	fmt.Fprintf(w, "%s\n\n", ui.Heading(w, "registered repositories"))
+	for _, k := range f.Keys() {
+		e := f.Repos[k]
+		fmt.Fprintf(w, "  %-10s %s\n", k, e.Source)
+		fmt.Fprintf(w, "             %s\n", ui.Dim(w, "sandbox "+e.Workspace))
+	}
+	missing, err := registry.Prune(home)
+	if err == nil && len(missing) > 0 {
+		fmt.Fprintln(w)
+		for _, e := range missing {
+			ui.Warn(w, "%s: %s is gone.\n"+
+				"         Not unbound automatically: an unmounted volume looks the same as a\n"+
+				"         deletion, and freeing the key would let another repo claim it.\n"+
+				"         Remove it deliberately with: orion repos unbind %s", e.Key, e.Source, e.Key)
+		}
+	}
+}
+
+// inviteToChannel adds the configured humans to a channel Orion just made.
+//
+// Without this a PRIVATE channel is useless: the bot is its only member, and
+// Slack shows a private channel to nobody outside it -- not in the sidebar,
+// not in search, with no notification that it exists. Orion would create a
+// "communication medium" its audience cannot see, and report success.
+func inviteToChannel(sc *slack.Client, ch *slack.Channel, cfg config.Config) {
+	if !ch.Created {
+		return // an existing channel already has whoever belongs in it
+	}
+	if len(cfg.Slack.InviteUsers) == 0 {
+		if cfg.Slack.Private {
+			ui.Warn(os.Stdout, "#%s is private and the bot is its only member, so nobody can see it.\n"+
+				"         Add Slack user IDs to slack.invite_users in orion.json and re-run,\n"+
+				"         or open Slack and add yourself to the channel.", ch.Name)
+		}
+		return
+	}
+	invited, errs := sc.Invite(ch.ID, cfg.Slack.InviteUsers)
+	for _, e := range errs {
+		ui.Warn(os.Stdout, "inviting to #%s: %v", ch.Name, e)
+	}
+	if len(invited) > 0 {
+		ui.Ok(os.Stdout, "invited", "%d to #%s", len(invited), ch.Name)
 	}
 }
 
@@ -458,7 +713,7 @@ slackStep:
 func patchConfig(path string, fields map[string][2]string, jiraKey string) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING  could not update %s: %v\n", path, err)
+		ui.Warn(os.Stdout, "could not update %s: %v", path, err)
 		return
 	}
 	src := string(b)
@@ -477,10 +732,10 @@ func patchConfig(path string, fields map[string][2]string, jiraKey string) {
 		return
 	}
 	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING  could not write %s: %v\n", path, err)
+		ui.Warn(os.Stdout, "could not write %s: %v", path, err)
 		return
 	}
-	fmt.Printf("updated  orion.json\n")
+	ui.Ok(os.Stdout, "updated", "orion.json")
 }
 
 // confirm asks once. A non-interactive shell answers no: creating something
@@ -496,6 +751,457 @@ func confirm(prompt string) bool {
 	_, _ = fmt.Scanln(&ans)
 	ans = strings.ToLower(strings.TrimSpace(ans))
 	return ans == "y" || ans == "yes"
+}
+
+// runWork implements one or more tickets.
+func runWork(args []string) {
+	var keys []string
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			keys = append(keys, a)
+		}
+	}
+	if len(keys) == 0 {
+		fmt.Fprintln(os.Stderr, "orion work needs at least one ticket: orion work FCIA-6")
+		os.Exit(64)
+	}
+
+	results := work.Run(work.Options{
+		Keys: keys, Out: os.Stdout, Home: workspace.Home(),
+		DryRun:     hasFlag(args, "--dry-run"),
+		MaxMinutes: intFlag(args, "--max-minutes", 0),
+		MaxTurns:   intFlag(args, "--max-turns", 0),
+	}, work.Deps{
+		Jira:      mustJira(),
+		Supervise: supervisor.Run,
+		Advise:    adviseRunner,
+		Describe:  describeRunner,
+		Push:      pushBranch,
+		OpenPR:    openPR,
+	})
+
+	// Exit non-zero when anything needs a person, so a wrapper script or a
+	// cron entry can tell "done" from "someone has to look at this".
+	worst := 0
+	for _, r := range results {
+		switch r.Outcome {
+		case work.OutcomeFailed:
+			worst = 1
+		case work.OutcomeBlocked:
+			if worst == 0 {
+				worst = 2
+			}
+		}
+	}
+	os.Exit(worst)
+}
+
+// adviseRunner runs one READ-ONLY agent turn for an advisor or the router.
+//
+// Read-only is enforced by --allowedTools, not by asking politely in the
+// prompt. Two agents writing to one worktree is a race with no referee, and
+// an architect that "just fixes it while it is here" destroys the separation
+// that makes its answer worth anything -- an advisor that edits is no longer
+// an independent opinion, it is a second implementer.
+//
+// --max-turns is low: an advisor reads three documents and decides. One that
+// needs twenty turns is exploring the codebase, which is precisely what it
+// was told not to do, and the cap makes that a bounded cost rather than a
+// second implementation run.
+func adviseRunner(dir, model, prompt string) (string, error) {
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		return "", fmt.Errorf("claude CLI not found on PATH")
+	}
+	args := []string{
+		"-p", prompt,
+		"--output-format", "json",
+		"--model", model,
+		"--max-turns", "8",
+		"--allowedTools", "Read,Glob,Grep",
+	}
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = dir
+	// Advisors read committed artifacts, nothing else. Scrubbing the
+	// environment matters more here than for the implementer: this agent has
+	// no reason to touch a credential at all.
+	cmd.Env = append(os.Environ(), "ORION_ROLE=advisor")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("advisor run failed: %w", err)
+	}
+	var res struct {
+		Result  string `json:"result"`
+		IsError bool   `json:"is_error"`
+	}
+	if jsonErr := json.Unmarshal(out, &res); jsonErr != nil {
+		return strings.TrimSpace(string(out)), nil
+	}
+	if res.IsError {
+		return "", fmt.Errorf("the advisor reported an error: %s", truncateStr(res.Result, 200))
+	}
+	return res.Result, nil
+}
+
+func mustJira() work.TrackerAPI {
+	j, err := tracker.NewJiraFromEnv()
+	exitOn(err)
+	return j
+}
+
+// mustJiraSearch is the same client through the collector's wider interface,
+// which also needs Search to find what is waiting.
+func mustJiraSearch() collect.TrackerAPI {
+	j, err := tracker.NewJiraFromEnv()
+	exitOn(err)
+	return j
+}
+
+// pushBranch sets upstream on first push so a later `git push` in that
+// worktree does the obvious thing.
+func pushBranch(dir, branch string) error {
+	out, err := exec.Command("git", "-C", dir, "push", "-u", "origin", branch).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// prCommand builds the gh invocation.
+//
+// Split out from openPR so the working directory can be asserted in a test
+// without running gh. That is the whole reason this exists: openPR took a
+// dir and never used it, so gh ran in Orion's own cwd -- which is wherever
+// the user was standing, and on the first real end-to-end run was ~/.claude.
+// The branch pushed, then the PR failed with "not a git repository", leaving
+// a ticket marked failed over work that had entirely succeeded.
+func prCommand(dir, branch, title, body, base string) *exec.Cmd {
+	cmd := exec.Command("gh", "pr", "create", "--head", branch, "--base", base,
+		"--title", title, "--body", body)
+	// gh resolves the repository from the working directory, and the branch
+	// lives in a worktree, never in the cwd.
+	cmd.Dir = dir
+	return cmd
+}
+
+// openPR shells out to gh. Orion does not embed a GitHub client: gh already
+// holds the auth, and a second credential path is a second thing to expire.
+func openPR(dir, branch, title, body, base string) (string, error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return "", fmt.Errorf("gh is not installed, so the branch is pushed but no pull request was opened.\n" +
+			"  Open it yourself, or install gh and re-run")
+	}
+	out, err := prCommand(dir, branch, title, body, base).CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil {
+		return "", fmt.Errorf("%v\n%s", err, text)
+	}
+	// gh prints the URL as the last line.
+	for i := len(strings.Split(text, "\n")) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(strings.Split(text, "\n")[i])
+		if strings.HasPrefix(line, "http") {
+			return line, nil
+		}
+	}
+	return text, nil
+}
+
+// runQueue shows what the watcher WOULD work, in the order it would work
+// it, and does nothing else.
+//
+// Read-only on purpose. The queue is driven by a Jira label, so the obvious
+// failure is a JQL that matches more than you meant -- and the moment that
+// query drives real runs, discovering the mistake costs money and writes to
+// your repo. This lets you see the query and its result first.
+func runQueue(args []string) {
+	root, err := config.FindRoot(".")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "not inside an Orion project (no orion.json or .git found)")
+		os.Exit(1)
+	}
+	cfg := config.Load(root)
+	w := os.Stdout
+
+	if !cfg.Tracker.Enabled {
+		fmt.Fprintln(w, "tracker is disabled in orion.json; nothing to queue from")
+		return
+	}
+	j, err := tracker.NewJiraFromEnv()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	jql := queueJQL(cfg)
+	fmt.Fprintf(w, "%s\n  %s\n\n", ui.Heading(w, "queue"), ui.Dim(w, jql))
+
+	issues, err := j.Search(jql, intFlag(args, "--limit", 25))
+	if err != nil {
+		ui.Fail(w, "%v", err)
+		os.Exit(1)
+	}
+	if len(issues) == 0 {
+		fmt.Fprintf(w, "  nothing labelled %s in %s\n",
+			cfg.Tracker.QueueLabel, cfg.Tracker.ProjectKey)
+		return
+	}
+	// Group by queue state, not by Jira order. What is running and what
+	// broke are the two things you look for first; making them the top of
+	// the list is the difference between a report and a wall of text.
+	// Within a group the tracker's own ordering is preserved, because that
+	// is the execution order.
+	groups := []struct {
+		state string
+		verb  string
+	}{
+		{"working", "working"},
+		{"ci-wait", "ci-wait"},
+		{"failed", "failed"},
+		{"queued", "queued"},
+	}
+	counts := map[string]int{}
+	n := 0
+	for _, g := range groups {
+		for _, i := range issues {
+			if tracker.State(i.Labels, cfg.Tracker.QueueLabel) != g.state {
+				continue
+			}
+			counts[g.state]++
+			n++
+			pr := i.Priority
+			if pr == "" {
+				// Priority is disabled on some team-managed projects. Saying
+				// so beats a blank column that makes the order look arbitrary.
+				pr = "none"
+			}
+			fmt.Fprintf(w, "  %2d. %s %-9s %-7s %-12s %s\n",
+				n, ui.Label(w, g.verb, ""), i.Key, pr, i.Status, i.Summary)
+			fmt.Fprintf(w, "      %s\n", ui.Dim(w, i.URL))
+		}
+	}
+
+	fmt.Fprintf(w, "\n  %d working, %d awaiting CI, %d queued, %d failed.\n",
+		counts["working"], counts["ci-wait"], counts["queued"], counts["failed"])
+	if counts["failed"] > 0 {
+		fmt.Fprintf(w, "  A failed ticket is not retried: remove %s and add %s to requeue it.\n",
+			tracker.LabelFailed, cfg.Tracker.QueueLabel)
+	}
+	fmt.Fprintln(w, "  Nothing has been started: this command only reads.")
+}
+
+// queueJQL builds the query from config, scoped to the bound project so a
+// label someone reused in another project cannot pull work into this repo.
+func queueJQL(cfg config.Config) string {
+	var b strings.Builder
+	if k := strings.TrimSpace(cfg.Tracker.ProjectKey); k != "" {
+		fmt.Fprintf(&b, "project = %s AND ", k)
+	}
+	// Match the in-flight and failed states too, not just the queued one.
+	// Matching only the queue label means a ticket DISAPPEARS from this view
+	// the moment Orion claims it, so the one thing you most want to see --
+	// what is running right now, and what stopped -- is the one thing the
+	// command could not show.
+	quoted := make([]string, 0, 4)
+	for _, l := range tracker.Managed(cfg.Tracker.QueueLabel) {
+		quoted = append(quoted, fmt.Sprintf("%q", l))
+	}
+	fmt.Fprintf(&b, "labels in (%s)", strings.Join(quoted, ", "))
+	if o := strings.TrimSpace(cfg.Tracker.QueueOrder); o != "" {
+		fmt.Fprintf(&b, " ORDER BY %s", o)
+	}
+	return b.String()
+}
+
+// runProjectStatus reports Orion's state for the repository you are in:
+// what is wired, where the tracker and channel are, and what has been spent.
+//
+// Kept separate from `orion doctor`. doctor answers "can Orion work here",
+// a pass/fail health check; this answers "what is it connected to", which is
+// what you actually want when returning to a project after a week. Merging
+// them would make one command that does neither job clearly.
+func runProjectStatus(w io.Writer) {
+	root, err := config.FindRoot(".")
+	if err != nil {
+		fmt.Fprintln(w, "not inside an Orion project (no orion.json or .git found)")
+		fmt.Fprintln(w, "  adopt this repo with: orion init")
+		os.Exit(1)
+	}
+	cfg := config.Load(root)
+	name := adopt.DeriveProjectName(root)
+
+	fmt.Fprintf(w, "orion status  %s\n\n", name)
+	fmt.Fprintf(w, "  repo        %s\n", root)
+	if cfg.Degraded {
+		fmt.Fprintf(w, "  config      DEGRADED: %s\n", cfg.DegradedReason)
+	} else {
+		fmt.Fprintf(w, "  config      orion.json (max_tool_calls=%d, plan gate=%v)\n",
+			cfg.Limits.MaxToolCalls, cfg.Gates.RequirePlanBeforeEdit)
+	}
+
+	// Branches.
+	cur := gitOut(root, "branch", "--show-current")
+	fmt.Fprintf(w, "  branch      %s", cur)
+	if cur != cfg.VCS.WorkBranch && cur != cfg.VCS.DefaultBranch {
+		fmt.Fprintf(w, "  (work branch is %s)", cfg.VCS.WorkBranch)
+	}
+	fmt.Fprintln(w)
+	if gitOut(root, "rev-parse", "--verify", "--quiet", "refs/heads/"+cfg.VCS.WorkBranch) == "" {
+		fmt.Fprintf(w, "              WARNING %s does not exist; task branches have no PR base\n",
+			cfg.VCS.WorkBranch)
+	}
+
+	// Hooks: the limits above are advisory unless these resolve.
+	if st := hookState(root); st != "" {
+		fmt.Fprintf(w, "  hooks       %s\n", st)
+	}
+
+	// Attribution.
+	dun := adopt.DunLook(root)
+	switch {
+	case dun.Path == "":
+		fmt.Fprintln(w, "  dun         not installed; commits carry no attribution trailer")
+	case !dun.Instrumented:
+		fmt.Fprintf(w, "  dun         %s installed, this repo NOT instrumented (orion init)\n", dun.Version)
+	default:
+		fmt.Fprintf(w, "  dun         %s, instrumented\n", dun.Version)
+		if s := dunSummary(dun.Path, root); s != "" {
+			fmt.Fprintf(w, "              %s\n", s)
+		}
+	}
+
+	// Tracker.
+	switch {
+	case !cfg.Tracker.Enabled:
+		fmt.Fprintln(w, "  jira        disabled in orion.json")
+	case cfg.Tracker.ProjectKey == "":
+		fmt.Fprintln(w, "  jira        enabled, no project bound (a project is created per idea)")
+	default:
+		line := cfg.Tracker.ProjectKey
+		if j, err := tracker.NewJiraFromEnv(); err == nil {
+			line += "  " + j.BaseURL + "/browse/" + cfg.Tracker.ProjectKey
+			if ok, _, err := j.ProjectExists(cfg.Tracker.ProjectKey); err == nil && !ok {
+				line += "  WARNING not found on this instance"
+			}
+		} else {
+			line += "  (credentials not configured, so it cannot be reached)"
+		}
+		fmt.Fprintf(w, "  jira        %s\n", line)
+	}
+
+	// Chat.
+	if !cfg.Slack.Enabled {
+		fmt.Fprintln(w, "  slack       disabled in orion.json")
+	} else {
+		chName := slack.NormalizeChannelName(cfg.Slack.ChannelPrefix + name)
+		line := "#" + chName
+		if c, err := slack.FromEnv(); err == nil {
+			if id, err := c.AuthTest(); err == nil {
+				// Distinguish "the workspace says no such channel" from "the
+				// lookup itself failed". Reporting a missing scope as a
+				// missing channel sends you to create one that already
+				// exists, which is how the Jira 401 wasted an hour earlier.
+				ch, err := c.FindChannel(chName, cfg.Slack.Private)
+				switch {
+				case err == nil && ch != nil:
+					if u := slack.ChannelURL(id.TeamID, ch.ID); u != "" {
+						line += "  " + u
+					}
+				case err != nil && strings.Contains(err.Error(), "not found"):
+					line += "  WARNING not in " + id.Team + " (orion init creates it)"
+				default:
+					line += "  WARNING lookup failed: " + err.Error()
+				}
+			} else {
+				line += "  WARNING token rejected: " + err.Error()
+			}
+		} else {
+			line += "  (no bot token, so nothing will be posted)"
+		}
+		fmt.Fprintf(w, "  slack       %s\n", line)
+	}
+
+	// Spend. Named as the user's own budget so it is never read as the
+	// provider's remaining quota, which nothing reports.
+	if l, err := budget.Load(workspace.Home()); err == nil {
+		lim := budget.Limits{WeeklyUSD: cfg.Budget.WeeklyUSD, WeeklyTokens: cfg.Budget.WeeklyTokens}
+		s := l.Status(lim)
+		if !lim.Set() {
+			fmt.Fprintf(w, "  budget      no weekly limit set, so the %v%% checkpoints can never fire\n",
+				cfg.Budget.PauseAtPercent)
+			fmt.Fprintf(w, "              $%.2f and %d runs in the last 7 days\n", s.SpentUSD, s.Runs)
+		} else {
+			fmt.Fprintf(w, "  budget      %d%% used  ($%.2f, %d runs, last 7 days)\n",
+				s.Percent, s.SpentUSD, s.Runs)
+		}
+	}
+	fmt.Fprintln(w)
+}
+
+func gitOut(dir string, args ...string) string {
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// hookState reuses what doctor checks, so status cannot report a healthier
+// picture than doctor would for the same repo.
+func hookState(root string) string {
+	b, err := os.ReadFile(filepath.Join(root, ".claude", "settings.json"))
+	if err != nil {
+		return "no .claude/settings.json; nothing enforces the limits above"
+	}
+	var doc struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if json.Unmarshal(b, &doc) != nil {
+		return "settings.json is not valid JSON; no hook is running"
+	}
+	total, broken := 0, 0
+	for _, entries := range doc.Hooks {
+		for _, e := range entries {
+			for _, h := range e.Hooks {
+				f := strings.Fields(h.Command)
+				if len(f) == 0 || !strings.HasPrefix(filepath.Base(f[0]), "orion") {
+					continue
+				}
+				total++
+				if _, err := exec.LookPath(f[0]); err != nil {
+					broken++
+				}
+			}
+		}
+	}
+	switch {
+	case total == 0:
+		return "none wired; the limits above are advisory (orion init)"
+	case broken > 0:
+		return fmt.Sprintf("%d of %d do not resolve; every gate is silently doing nothing", broken, total)
+	}
+	return fmt.Sprintf("%d wired and resolvable", total)
+}
+
+// dunSummary pulls the coverage line out of `dun status`, which is the one
+// number worth surfacing here. Coverage is not adoption: it counts commits
+// carrying any valid trailer, including `undetermined`.
+func dunSummary(bin, root string) string {
+	out, err := exec.Command(bin, "status", "--repo", root).Output()
+	if err != nil {
+		if out, err = exec.Command(bin, "status").Output(); err != nil {
+			return ""
+		}
+	}
+	for _, l := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "coverage:") {
+			return strings.Join(strings.Fields(l), " ")
+		}
+	}
+	return ""
 }
 
 // runAnswer walks the open questions blocking a workspace.
@@ -778,8 +1484,16 @@ func runTrackerProvision(ws *workspace.Workspace, cfg config.Config, confirm fun
 func runReport(args []string) {
 	since := time.Now().Add(-parseDuration(argFlag(args, "--since", "7d"), 7*24*time.Hour))
 	cfg := config.Load(rootOrCwd())
+
+	// The same filter vocabulary as `orion logs`: a project key, an issue key
+	// or a workspace id. Two commands describing the same work should not
+	// disagree about how to name it.
+	only := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		only = args[0]
+	}
 	d := report.Build(workspace.Home(), since,
-		budget.Limits{WeeklyUSD: cfg.Budget.WeeklyUSD, WeeklyTokens: cfg.Budget.WeeklyTokens})
+		budget.Limits{WeeklyUSD: cfg.Budget.WeeklyUSD, WeeklyTokens: cfg.Budget.WeeklyTokens}, only)
 
 	text := d.Text()
 	fmt.Print(text)
@@ -809,8 +1523,151 @@ func runReport(args []string) {
 
 // runLogs shows the tail of a workspace's runs, which is what someone wants
 // when a stage failed: not the whole transcript, the end of it.
-func runLogs(id string, args []string) {
-	ws, err := workspace.Open(id)
+// runLogs shows Orion's own event stream by default, and the raw agent
+// transcript only when asked.
+//
+// Two logs, and the default matters. The transcript is tens of thousands of
+// tokens per run; the events are a dozen lines saying what Orion did. Showing
+// the transcript first buries the line anyone actually wants -- which ticket
+// was claimed, what the architect answered, whether CI passed -- inside a
+// wall of tool output.
+//
+// The target may be a project key (FCIA), an issue key (FCIA-6) or a
+// workspace id. A key is what a person has in their hand; requiring the
+// workspace id would mean looking it up first, every time.
+func runLogs(args []string) {
+	target := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		target = args[0]
+		args = args[1:]
+	}
+	if hasFlag(args, "--transcript") {
+		runTranscript(target, args)
+		return
+	}
+	runEventLog(target, args)
+}
+
+// resolveWorkspace turns a project key, an issue key or a workspace id into
+// a workspace, trying the registry first because that is what a person will
+// type.
+func resolveWorkspace(target string) (*workspace.Workspace, string, error) {
+	if target == "" {
+		return nil, "", fmt.Errorf("which project? try: orion logs FCIA")
+	}
+	if e, err := registry.Lookup(workspace.Home(), target); err == nil {
+		ws, wErr := workspace.Open(e.Workspace)
+		return ws, e.Key, wErr
+	}
+	ws, err := workspace.Open(target)
+	if err != nil {
+		return nil, "", fmt.Errorf("no project or workspace matches %q.\n"+
+			"  Registered projects: orion repos\n  Workspaces: orion ls", target)
+	}
+	return ws, "", nil
+}
+
+func runEventLog(target string, args []string) {
+	w := os.Stdout
+	ws, _, err := resolveWorkspace(target)
+	exitOn(err)
+
+	path := events.Path(ws.Dir)
+	all, err := events.Read(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(w, "no events yet for %s.\n  They appear once a run starts: orion work <KEY>\n", ws.ID)
+			return
+		}
+		exitOn(err)
+	}
+
+	// Filter to one ticket when an issue key was given, so `orion logs
+	// FCIA-6` is about that ticket rather than everything the project did.
+	if key := registry.NormalizeKey(target); strings.Contains(key, "-") {
+		var kept []events.Event
+		for _, e := range all {
+			if strings.EqualFold(e.Key, key) {
+				kept = append(kept, e)
+			}
+		}
+		all = kept
+	}
+
+	n := intFlag(args, "--tail", 50)
+	if len(all) > n {
+		all = all[len(all)-n:]
+	}
+	for _, e := range all {
+		printEvent(w, e)
+	}
+
+	if !hasFlag(args, "--follow") && !hasFlag(args, "-f") {
+		return
+	}
+	fi, statErr := os.Stat(path)
+	var from int64
+	if statErr == nil {
+		from = fi.Size()
+	}
+	fmt.Fprintln(w, ui.Dim(w, "  following; ctrl-c to stop"))
+	stop := make(chan struct{})
+	exitOn(events.Follow(path, from, time.Second, stop, func(e events.Event) {
+		printEvent(w, e)
+	}))
+}
+
+// printEvent renders one line: time, actor, kind, message. Colour marks the
+// kind, and the word is still there, so a piped log reads the same.
+func printEvent(w io.Writer, e events.Event) {
+	verb := e.Kind
+	switch e.Kind {
+	case events.KindFailed, events.KindBlocked:
+		verb = "failed"
+	case events.KindAnswer, events.KindMerge, events.KindPR, events.KindPush:
+		verb = "ok"
+	case events.KindRunStart, events.KindAsk:
+		verb = "working"
+	case events.KindCI:
+		verb = "ci-wait"
+	case events.KindEscalate, events.KindRefuse, events.KindBudget:
+		verb = "warning"
+	}
+	stamp := e.At.Local().Format("15:04:05")
+	// actor(model): which agent, and which model it was. A run involves
+	// three, and "implementer" alone does not say whether the thing that
+	// just decided something was opus or haiku.
+	who := e.Actor
+	if e.Model != "" {
+		who += "(" + shortModel(e.Model) + ")"
+	}
+	if e.Key != "" {
+		who = e.Key + " " + who
+	}
+	fmt.Fprintf(w, "  %s %s %-22s %s\n",
+		ui.Dim(w, stamp), ui.Label(w, verb, ""), who, e.Msg)
+	for k, v := range e.Detail {
+		fmt.Fprintf(w, "           %s\n", ui.Dim(w, fmt.Sprintf("%s: %v", k, v)))
+	}
+}
+
+// shortModel reduces an API model id to the name people use.
+//
+// The stream reports claude-opus-4-1-20250805; a log column has room for
+// "opus". The full id stays in the JSONL for anyone reconciling a bill, and
+// an unrecognised id is passed through rather than mangled, so a model this
+// build has never heard of still appears.
+func shortModel(m string) string {
+	for _, name := range []string{"opus", "sonnet", "haiku", "fable"} {
+		if strings.Contains(m, name) {
+			return name
+		}
+	}
+	return m
+}
+
+func runTranscript(target string, args []string) {
+	ws, _, err := resolveWorkspace(target)
 	exitOn(err)
 	logs, err := report.LogsFor(ws)
 	exitOn(err)
@@ -1157,6 +2014,39 @@ func argFlag(args []string, name, def string) string {
 		}
 	}
 	return def
+}
+
+// positional returns the arguments that are NOT flags and not the value of
+// a flag.
+//
+// A naive "anything not starting with -" filter reads `--max-jobs 1` as a
+// flag and a positional `1`, so `orion watch fcia --max-jobs 1` watched two
+// projects: FCIA and "1". The value belongs to the flag before it.
+//
+// takesValue lists the flags that consume the next argument. Boolean flags
+// must NOT appear, or a positional after one is silently swallowed.
+func positional(args []string, takesValue ...string) []string {
+	consumes := map[string]bool{}
+	for _, f := range takesValue {
+		consumes[f] = true
+	}
+	var out []string
+	skip := false
+	for _, a := range args {
+		if skip {
+			skip = false
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			// --flag=value carries its own value; --flag takes the next one.
+			if consumes[a] {
+				skip = true
+			}
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 func intFlag(args []string, name string, def int) int {

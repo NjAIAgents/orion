@@ -64,6 +64,13 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 			"Write plans/"+ws.Task.Slug+".plan.md and commit it. Do not implement yet.",
 		), nil
 
+	case "ticket":
+		// Filled in by TicketPrompt, which needs the issue. Reaching this
+		// through stagePrompt means a caller forgot to supply one, and
+		// inventing a task from the workspace idea would be the agent
+		// working on something nobody asked for.
+		return "", fmt.Errorf("the ticket stage requires an issue: use TicketPrompt")
+
 	case "scaffold":
 		return join(
 			"Lay out the repository skeleton for this project.",
@@ -165,4 +172,131 @@ func quote(s string) string {
 		b.WriteString("  " + line + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// FixPrompt asks an agent to make its own branch pass CI.
+//
+// Narrower than the ticket prompt on purpose. The agent already built this
+// change and believed it worked; what it needs now is not latitude but a
+// specific failure and a boundary. The failure mode being guarded against is
+// an agent that "fixes" CI by weakening the test that caught it, which
+// produces a green build and a defect, and is the single most likely wrong
+// move available here.
+func FixPrompt(key, branch, failure string) string {
+	return strings.Join([]string{
+		"CI failed on your branch. Fix it.",
+		"",
+		"Ticket: " + key,
+		"Branch: " + branch + " (you are already on it; do not create another)",
+		"",
+		"THE FAILURE",
+		strings.TrimSpace(failure),
+		"",
+		"WHAT TO DO",
+		"Reproduce it locally first -- run ./scripts/test.sh if it exists, or the",
+		"project's own suite. A fix for a failure you have not seen is a guess.",
+		"Then make the smallest change that makes it pass.",
+		"",
+		"WHAT NOT TO DO",
+		"Do not delete, skip, weaken or rewrite a test to make it pass unless the",
+		"TEST is what is wrong -- and if it is, say so explicitly and explain why",
+		"in the commit message. A green build bought by removing the check that",
+		"failed is worse than a red one: the defect is still there and nothing is",
+		"watching for it any more.",
+		"Do not fix unrelated failures or tidy code you happen to be reading. This",
+		"branch is under review, and a diff that also changes three other things",
+		"is one a reviewer cannot approve without re-reading all of it.",
+		"",
+		"IF YOU CANNOT FIX IT",
+		"Stop and say why, as the last thing you say. Do not commit a partial or",
+		"speculative change hoping CI disagrees. Orion re-runs CI on whatever you",
+		"push, so a guess costs a full build to disprove -- and if you produce no",
+		"commit, Orion stops and asks a person, which is the correct outcome when",
+		"the answer is not available to you.",
+		"",
+		"COMMITS",
+		"Commit on this branch. Say in the message what was broken and why the",
+		"change fixes it; 'fix CI' tells a reviewer nothing they did not know.",
+		"Do not push, merge, or open a pull request: Orion does that.",
+	}, "\n")
+}
+
+// TicketPrompt is the instruction for implementing one tracker issue.
+//
+// Every clause here is load-bearing, because this text is what decides how
+// the agent spends money and what it does to the repository.
+//
+// The scope rule comes first and is absolute. An agent given a ticket and a
+// codebase will find other things worth fixing; a pull request that also
+// tidies three unrelated files is one a reviewer cannot approve without
+// reading all of it, which destroys the reason for slicing work at all.
+//
+// The stop-and-ask rule matters more than it looks. An agent that hits a
+// genuine ambiguity has three options: guess, loop, or stop. Guessing is the
+// expensive one -- it produces a confident, wrong implementation that passes
+// its own tests, and the cost is discovered in review or production. Stopping
+// costs one run. So the prompt makes stopping the explicitly correct answer
+// rather than an admission of failure.
+//
+// Tests are named as the acceptance evidence rather than "please test",
+// because "I added tests" and "the tests I added would fail if the behaviour
+// regressed" are different claims and only the second is worth anything.
+func TicketPrompt(key, summary, description, url string, artifacts []string) string {
+	var b strings.Builder
+
+	b.WriteString(join(
+		"Implement this tracker issue, and only this issue.",
+		"",
+		key+": "+summary,
+		url,
+		"",
+	))
+	b.WriteString("\n")
+	if strings.TrimSpace(description) != "" {
+		b.WriteString(join("The issue says:", quote(description), ""))
+		b.WriteString("\n")
+	}
+	if len(artifacts) > 0 {
+		b.WriteString(join(
+			"Read these first. They are the agreed design and they outrank your own",
+			"judgement about what this project should do:",
+			"  "+strings.Join(artifacts, "\n  "),
+			"",
+		))
+		b.WriteString("\n")
+	}
+
+	b.WriteString(join(
+		"SCOPE",
+		"Change only what this issue requires. If you notice an unrelated bug, a",
+		"missing test elsewhere, or code you would write differently, leave it and",
+		"say so at the end. A pull request that also fixes three other things is one",
+		"a reviewer cannot approve without reading all of it, which defeats the point",
+		"of a small slice.",
+		"",
+		"WHEN THE ANSWER IS NOT IN THE ARTIFACTS",
+		"If something genuinely cannot be decided from the issue, the spec or the",
+		"plan, STOP and write the question as the last thing you say. Do not guess.",
+		"A guess produces a confident implementation that passes its own tests and is",
+		"wrong in a way nobody catches until review or production; stopping costs one",
+		"run and is the correct outcome, not a failure.",
+		"Ask only when the answer changes what you build. Anything you can derive",
+		"from the artifacts is not a question.",
+		"",
+		"EVIDENCE",
+		"Add or extend tests that would FAIL if this behaviour regressed. 'I added",
+		"tests' and 'these tests prove the change' are different claims and only the",
+		"second is worth committing. Run the full suite before you finish; a green",
+		"suite you did not run is not evidence.",
+		"",
+		"COMMITS",
+		"Commit as you go, in small steps, on the branch you are already on. Do not",
+		"create branches, do not merge, do not push, do not open a pull request:",
+		"Orion does that after you exit, and doing it yourself makes the run",
+		"unreviewable.",
+		"",
+		"Write the commit message so someone who has not read this ticket understands",
+		"why the change exists, not merely what changed. The diff already says what.",
+	))
+	return b.String()
 }

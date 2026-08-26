@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/budget"
+	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -30,6 +31,10 @@ type Digest struct {
 	Budget     budget.Status
 	Usage      budget.TranscriptUsage
 	Attention  []string
+	// Only records the filter that produced this digest, so the rendered
+	// output can say it is partial. A narrowed report that looks complete is
+	// how someone concludes nothing else is running.
+	Only string
 }
 
 // WorkspaceLine is one project's state.
@@ -56,14 +61,24 @@ type Failure struct {
 // Build assembles the digest. Errors are folded into Attention rather than
 // returned: a digest that refuses to render because one workspace is
 // unreadable is worse than one that says so.
-func Build(home string, since time.Time, lim budget.Limits) *Digest {
-	d := &Digest{Generated: time.Now(), Since: since}
+// Build assembles the digest, optionally narrowed to one project.
+//
+// `only` accepts what a person has in their hand: a project key (FCIA), an
+// issue key (FCIA-6) or a workspace id. Empty means everything. Matching the
+// same inputs as `orion logs` is deliberate -- two commands that describe the
+// same work should not disagree about how to name it.
+func Build(home string, since time.Time, lim budget.Limits, only string) *Digest {
+	d := &Digest{Generated: time.Now(), Since: since, Only: only}
 
 	ids, err := workspace.IDs()
 	if err != nil {
 		d.Attention = append(d.Attention, "could not list workspaces: "+err.Error())
 	}
+	want := resolveFilter(home, only)
 	for _, id := range ids {
+		if want != "" && id != want {
+			continue
+		}
 		ws, openErr := workspace.Open(id)
 		if openErr != nil {
 			d.Attention = append(d.Attention, "workspace "+id+" unreadable: "+openErr.Error())
@@ -118,12 +133,42 @@ func Build(home string, since time.Time, lim budget.Limits) *Digest {
 	return d
 }
 
+// resolveFilter turns a project key, issue key or workspace id into the
+// workspace id to keep, or "" for everything.
+//
+// Unresolvable input yields a sentinel that matches nothing rather than
+// falling back to "show everything". Silently widening a filter someone
+// typed wrong would answer a question they did not ask, and they would read
+// the result as though they had.
+func resolveFilter(home, only string) string {
+	only = strings.TrimSpace(only)
+	if only == "" {
+		return ""
+	}
+	if e, err := registry.Lookup(home, only); err == nil {
+		return e.Workspace
+	}
+	if ids, err := workspace.IDs(); err == nil {
+		for _, id := range ids {
+			if strings.EqualFold(id, only) || strings.HasPrefix(id, only) {
+				return id
+			}
+		}
+	}
+	return "\x00no-such-workspace"
+}
+
 // Text renders the digest. Kept narrow enough to survive Slack's wrapping.
 func (d *Digest) Text() string {
 	var b strings.Builder
 	window := time.Since(d.Since).Round(time.Hour)
 	fmt.Fprintf(&b, "orion report  %s  (last %s)\n",
 		d.Generated.Local().Format("2006-01-02 15:04"), window)
+	if d.Only != "" {
+		// Say the report is narrowed. Otherwise an empty section reads as
+		// "nothing is running" rather than "nothing matched your filter".
+		fmt.Fprintf(&b, "filtered to %s\n", d.Only)
+	}
 
 	// Attention first. Burying the actionable part under a status table is
 	// how a digest becomes wallpaper.

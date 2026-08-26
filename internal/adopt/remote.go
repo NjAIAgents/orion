@@ -88,12 +88,13 @@ type RemotePlan struct {
 	SlackTeam   string
 	SlackSkip   string
 	SlackIsPriv bool
+	SlackExists bool
 }
 
 // Nothing reports whether the plan would create anything at all.
 func (p RemotePlan) Nothing() bool {
 	return (p.JiraKey == "" || p.JiraExists || p.JiraSkip != "") &&
-		(p.SlackName == "" || p.SlackSkip != "")
+		(p.SlackName == "" || p.SlackExists || p.SlackSkip != "")
 }
 
 // Describe renders the plan, leading with the consequence that cannot be
@@ -113,6 +114,9 @@ func (p RemotePlan) Describe() string {
 	switch {
 	case p.SlackSkip != "":
 		fmt.Fprintf(&b, "  Slack          skipped: %s\n", p.SlackSkip)
+	case p.SlackExists:
+		fmt.Fprintf(&b, "  Slack channel  #%s already exists in %s; it will be bound, not created\n",
+			p.SlackName, p.SlackTeam)
 	case p.SlackName != "":
 		vis := "public"
 		if p.SlackIsPriv {

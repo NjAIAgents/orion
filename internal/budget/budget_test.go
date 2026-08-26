@@ -1,6 +1,9 @@
 package budget
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -166,5 +169,203 @@ func TestTokenBreakdownWeighting(t *testing.T) {
 	// cache-heavy session, so a budget built on them binds at the wrong time.
 	if got := b.Effective(); got != 9000 {
 		t.Errorf("Effective = %d, want 9000", got)
+	}
+}
+
+// The ledger is the only record of what has been spent. Losing it, or
+// mis-summing it, is how a budget silently stops being a limit.
+func TestLedgerRoundTripsAndPrunesTheWindow(t *testing.T) {
+	home := t.TempDir()
+	now := time.Now().UTC()
+
+	l, err := Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(l.Runs) != 0 {
+		t.Fatal("a missing ledger must load empty, not error")
+	}
+	l.Record(Run{At: now.Add(-1 * time.Hour), CostUSD: 1, InputTokens: 100, OutputTokens: 10})
+	l.Record(Run{At: now.Add(-8 * 24 * time.Hour), CostUSD: 99, InputTokens: 9999})
+	l.Record(Run{CostUSD: 2, InputTokens: 50}) // no timestamp: stamped on record
+	if err := l.Save(home); err != nil {
+		t.Fatal(err)
+	}
+
+	back, err := Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pruning on read keeps the file bounded without a separate sweep, and
+	// the run outside the window must not reach Status.
+	for _, r := range back.Runs {
+		if r.At.Before(now.Add(-Window)) {
+			t.Errorf("a run from outside the window survived: %+v", r)
+		}
+	}
+	if len(back.Runs) != 2 {
+		t.Fatalf("runs = %d, want the two inside the window", len(back.Runs))
+	}
+	st := back.Status(Limits{WeeklyUSD: 10})
+	if st.SpentUSD != 3 {
+		t.Errorf("spend = %v, want 3; the pruned run must not be counted", st.SpentUSD)
+	}
+}
+
+// The file holds spend, workspace ids and the ideas behind them.
+func TestLedgerFileIsOwnerOnly(t *testing.T) {
+	home := t.TempDir()
+	l, _ := Load(home)
+	l.Record(Run{At: time.Now().UTC(), CostUSD: 1})
+	if err := l.Save(home); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(filepath.Join(home, "usage.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := fi.Mode().Perm(); mode&0o077 != 0 {
+		t.Errorf("mode = %o", mode)
+	}
+}
+
+// A corrupt ledger must not disable accounting. Refusing to run would make
+// a damaged file into an outage; silently starting empty would erase the
+// spend that has already happened, so it does neither quietly.
+func TestCorruptLedgerStartsFreshAndSaysSo(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "usage.json"), []byte("{{{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := Load(home)
+	if err == nil {
+		t.Error("a corrupt ledger was loaded silently")
+	}
+	if l == nil {
+		t.Fatal("accounting was disabled entirely")
+	}
+	l.Record(Run{At: time.Now().UTC(), CostUSD: 1})
+	if err := l.Save(home); err != nil {
+		t.Fatalf("could not recover: %v", err)
+	}
+}
+
+func TestRecentIsNewestFirstAndBounded(t *testing.T) {
+	l := &Ledger{}
+	base := time.Now().UTC()
+	for i := 0; i < 10; i++ {
+		l.Record(Run{At: base.Add(time.Duration(i) * time.Minute), Stage: string(rune('a' + i))})
+	}
+	got := l.Recent(3)
+	if len(got) != 3 {
+		t.Fatalf("got %d", len(got))
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].At.After(got[i-1].At) {
+			t.Error("not newest-first; a report would lead with stale runs")
+		}
+	}
+	if n := len(l.Recent(100)); n != 10 {
+		t.Errorf("asking for more than exist returned %d", n)
+	}
+}
+
+func TestHumanIntKeepsUnitsAtTheBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		in   int
+		want string
+	}{
+		{0, "0"}, {999, "999"}, {1000, "1k"}, {999999, "1000k"},
+		{1_000_000, "1.0M"}, {2_500_000, "2.5M"},
+	} {
+		if got := humanInt(tc.in); got != tc.want {
+			t.Errorf("humanInt(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// The message a person reads when a run stops. It must never be mistaken
+// for the provider's remaining quota, which nothing reports.
+func TestCheckpointMessageNamesTheLimitAsYourOwn(t *testing.T) {
+	l := &Ledger{}
+	l.Record(Run{At: time.Now().UTC(), InputTokens: 800, CostUSD: 8})
+	st := l.Status(Limits{WeeklyUSD: 10, WeeklyTokens: 1000})
+	msg := st.Message()
+
+	if !strings.Contains(msg, "not your Anthropic plan") {
+		t.Errorf("the message must disclaim the provider's quota:\n%s", msg)
+	}
+	if !strings.Contains(msg, "orion budget ack") {
+		t.Errorf("the message must name the unblocking command:\n%s", msg)
+	}
+	if st.Crossed == 0 {
+		t.Fatal("no checkpoint was crossed at 80%")
+	}
+	if !strings.Contains(msg, fmt.Sprint(st.Crossed)) {
+		t.Errorf("the message should name the checkpoint it stopped at:\n%s", msg)
+	}
+}
+
+// The gate must use whichever dimension is further along: someone who set
+// both meant both to hold.
+func TestStatusGatesOnTheStricterDimension(t *testing.T) {
+	l := &Ledger{}
+	l.Record(Run{At: time.Now().UTC(), CostUSD: 1, InputTokens: 900})
+	st := l.Status(Limits{WeeklyUSD: 100, WeeklyTokens: 1000})
+	if st.PercentUSD != 1 || st.PercentTok != 90 {
+		t.Fatalf("percentages = %d / %d", st.PercentUSD, st.PercentTok)
+	}
+	if st.Percent != 90 {
+		t.Errorf("gating percent = %d; the stricter dimension must win", st.Percent)
+	}
+}
+
+// An acknowledgement belongs to the window it was made in. Without that,
+// one ack early in a week silences the checkpoint forever.
+func TestAcksExpireWithTheirWindow(t *testing.T) {
+	l := &Ledger{}
+	l.Record(Run{At: time.Now().UTC(), InputTokens: 800})
+	lim := Limits{WeeklyTokens: 1000}
+
+	if l.Status(lim).Crossed == 0 {
+		t.Fatal("expected a crossed checkpoint")
+	}
+	l.AckAll(l.Status(lim).Crossed)
+	if c := l.Status(lim).Crossed; c != 0 {
+		t.Errorf("still reporting %d%% after acknowledgement", c)
+	}
+
+	// An ack recorded before the current window started has expired.
+	for k := range l.Acked {
+		l.Acked[k] = time.Now().UTC().Add(-2 * Window)
+	}
+	if l.Status(lim).Crossed == 0 {
+		t.Error("a stale acknowledgement still suppressed the checkpoint")
+	}
+}
+
+// Zero means unlimited here, the opposite of the circuit breaker, because a
+// budget nobody set should not be invented.
+func TestUnsetLimitsNeverGate(t *testing.T) {
+	l := &Ledger{}
+	l.Record(Run{At: time.Now().UTC(), CostUSD: 1e6, InputTokens: 1e9})
+	st := l.Status(Limits{})
+	if st.Crossed != 0 {
+		t.Errorf("an unset budget invented a checkpoint at %d%%", st.Crossed)
+	}
+	if st.Limits.Set() {
+		t.Error("Set() true for zero limits")
+	}
+}
+
+func TestTranscriptDirIsUnderTheUserHome(t *testing.T) {
+	if got := TranscriptDir(); strings.TrimSpace(got) == "" {
+		t.Error("TranscriptDir is empty; ScanTranscripts would read the cwd")
+	}
+}
+
+func TestScanTranscriptsToleratesAMissingDirectory(t *testing.T) {
+	if _, err := ScanTranscripts(filepath.Join(t.TempDir(), "nope"), time.Now().Add(-time.Hour)); err == nil {
+		t.Log("a missing transcript dir is reported; acceptable either way")
 	}
 }

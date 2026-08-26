@@ -68,17 +68,74 @@ type Slack struct {
 	// Private channels by default: a workspace name can reveal an unreleased
 	// project, and a public channel cannot be made private afterwards.
 	Private bool `json:"private"`
+	// InviteUsers are added to a channel Orion creates. Slack user IDs (U...)
+	// or email addresses; emails need the users:read.email scope.
+	//
+	// Required for a PRIVATE channel to be of any use. The bot is the only
+	// member of a channel it just made, and Slack shows a private channel to
+	// nobody outside it -- not in the sidebar, not in search. Without this
+	// Orion creates a "communication medium" that no human can see, and there
+	// is no notification to tell them it happened.
+	InviteUsers []string `json:"invite_users"`
+	// MergeApprovers may approve a merge from Slack. Slack usernames or
+	// display names.
+	//
+	// EMPTY MEANS NOBODY, never everybody. Being in a channel is not
+	// authority: a project room contains people with no idea what they are
+	// approving, and a gate any member can satisfy is decoration. Defaulting
+	// to open would also mean the first repository someone forgot to
+	// configure merges on a stranger's thumbs up.
+	MergeApprovers []string `json:"merge_approvers"`
+	// RequireApproval gates merging on a Slack approval. With it off, Orion
+	// reports that checks pass and waits for a human to merge on GitHub --
+	// which is the safe default and needs no extra OAuth scopes.
+	RequireApproval bool `json:"require_approval"`
+	// Mention are Slack user IDs (U...) to @-mention when a message needs
+	// somebody to act. Empty falls back to InviteUsers.
+	//
+	// ONLY on messages that require action: blocked, failed, and approval
+	// requests. Mentioning on every routine event is how a channel gets
+	// muted, and a muted channel delivers nothing at all -- so a mention
+	// attached to good news costs the delivery of the bad.
+	Mention []string `json:"mention"`
+}
+
+// CI is the build gate and what Orion does when it goes red.
+type CI struct {
+	// AutoFix sends a failing build back to an agent on the same branch
+	// rather than stopping for a person.
+	//
+	// Off by default. It spends money without being asked, and on a
+	// repository whose tests are flaky it will spend it on nothing.
+	AutoFix bool `json:"auto_fix"`
+	// MaxFixAttempts bounds that loop. Zero means the built-in 3.
+	//
+	// A ceiling is not the only brake and not the most important one --
+	// an identical repeated failure stops the loop immediately, because an
+	// agent that gets back a byte-identical error has learned nothing and
+	// spending the remaining attempts proves only that it can fail the same
+	// way three times.
+	MaxFixAttempts int `json:"max_fix_attempts"`
 }
 
 // Budget caps what Orion spends over a rolling seven days.
 //
-// These are YOUR limits, not the provider's. Nothing reports how much of an
-// Anthropic subscription's weekly allowance remains, so Orion accounts only
-// for what it spends itself, from the cost and token figures each run
-// returns. Zero means unlimited, deliberately: a budget nobody set should
-// not be invented. That is the opposite of the circuit-breaker convention,
-// where zero restores a default, because there "no limit" is never safe and
-// here it is the honest default.
+// NOT the plan limit. That one is now read from the runs themselves: the CLI
+// reports its own rate_limit_info on every run, so Orion knows when the
+// account is refused and exactly when the window resets, and a watcher
+// sleeps until then. Nothing here needs to approximate it.
+//
+// What remains is a limit YOU choose, for reasons the plan knows nothing
+// about -- a cap on a project, a spend you want to notice before the plan
+// would. Zero means unlimited, and zero is the right default: a budget
+// nobody set should not be invented, and an invented ceiling stops work for
+// a reason that was never true.
+//
+// The percentage in `claude /usage` is not available here. That view fetches
+// it from an API this process cannot reach, and it is in no file on disk, so
+// Orion cannot warn at 80%. It gets a yes/no and a reset time instead --
+// which is the more actionable half, since "when can I try again" is the
+// only question a refusal actually raises.
 type Budget struct {
 	WeeklyUSD    float64 `json:"weekly_usd"`
 	WeeklyTokens int     `json:"weekly_tokens"`
@@ -105,6 +162,30 @@ type Tracker struct {
 	// human approval. This stays true even under auto_merge: a sandboxed
 	// workspace can be deleted, a shared tracker cannot.
 	ConfirmTreeBeforeCreate bool `json:"confirm_tree_before_create"`
+	// AgentLabel is stamped on every issue Orion's agent creates, so
+	// agent-filed work is separable from work a person filed. The tracker
+	// equivalent of VCS.AgentAuthorName, and needed for the same reason: once
+	// the two are mixed in a backlog, no query can pull them apart again.
+	//
+	// A LABEL rather than a reporter, deliberately. Jira's reporter must be a
+	// real account; there is no way to file as a synthetic identity without
+	// paying for a licence for it, and impersonating the human would be worse
+	// than leaving it unmarked.
+	AgentLabel string `json:"agent_label"`
+	// QueueLabel marks an issue as work Orion should pick up.
+	QueueLabel string `json:"queue_label"`
+	// QueueOrder is the JQL ORDER BY clause for the queue.
+	//
+	// Priority first, then Rank. Rank alone would mean an urgent ticket
+	// filed today waits behind everything already in the backlog; priority
+	// alone gives no way to sequence the ties, which is most of them.
+	// Together they read as "most important first, and within equal
+	// importance the order I dragged them into".
+	//
+	// Configurable because priority is DISABLED by default on some
+	// team-managed projects, and ordering by a field the project does not
+	// expose is not a useful default to force on everyone.
+	QueueOrder string `json:"queue_order"`
 }
 
 type Gates struct {
@@ -168,26 +249,88 @@ type VCS struct {
 	//
 	// Empty disables the alias and commits are authored as you.
 	AgentAuthorName string `json:"agent_author_name"`
-	// AgentAuthorEmail defaults to the repo's configured user.email when
-	// empty. Keeping YOUR address is deliberate: the email is what GitHub
-	// matches commits against, so a made-up one shows every agent commit as
-	// an unrecognised author with no avatar and no link, and quietly drops
-	// them out of the contribution history of a repo you are accountable for.
+	// AgentAuthorEmail is the address recorded with that name, and it is the
+	// field that actually decides what GitHub displays: GitHub matches
+	// commits to accounts by EMAIL and ignores the name entirely. Setting
+	// only agent_author_name therefore changes `git log` and changes nothing
+	// on the web, which is exactly what happened on the first real run --
+	// the commits were authored orion_agent and GitHub still said the
+	// account owner had made them.
+	//
+	// The default is a noreply address, because the email is the field that
+	// actually decides attribution: GitHub matches commits to accounts by
+	// ADDRESS and ignores the name entirely. Sharing the owner's address
+	// means the web UI keeps saying the owner made the change however the
+	// name fields read, which is what happened on the first real run.
+	//
+	// orionbot@users.noreply.github.com carries no account id, so it
+	// resolves to nobody and the commit displays as a plain "orionbot".
+	// Two consequences, both intended:
+	//   - these commits leave the owner's contribution graph, which is
+	//     correct, since the owner did not write them;
+	//   - a branch rule demanding a verified or allowlisted committer email
+	//     will reject them, and the fix is a real bot account.
+	//
+	// For a genuine avatar and profile, create a GitHub account for the bot
+	// and use its own ID+name@users.noreply.github.com here.
+	//
+	// Setting this to the owner's real address restores the old behaviour:
+	// the alias then lives only in `git log`, `git blame` and a bisect.
 	AgentAuthorEmail string `json:"agent_author_email"`
+	// MergeStrategy is how an approved pull request lands: "rebase",
+	// "squash" or "merge". Empty means rebase.
+	//
+	// This decides whether the agent's authorship survives onto the trunk,
+	// which is not obvious and was got wrong here first time round.
+	//
+	//	squash  collapses the branch into ONE new commit, authored by the
+	//	        pull request's author -- which is whoever's token opened it,
+	//	        i.e. you. Every orionbot commit vanishes from the trunk's
+	//	        history. Tidiest log, worst attribution.
+	//	merge   keeps every commit, author intact, plus a merge commit.
+	//	        Best attribution, noisiest history.
+	//	rebase  replays each commit onto the base, preserving its author.
+	//	        Linear history AND orionbot attribution, which is why it is
+	//	        the default.
+	//
+	// The cost of rebase is that the branch's incremental commits and its
+	// decision records all land on the trunk rather than being collapsed.
+	// That is a real downside; it is chosen because "who wrote this" is
+	// harder to reconstruct later than "which commits belong together".
+	MergeStrategy string `json:"merge_strategy"`
+}
+
+// Attribution instruments commits with whodunit (`dun`), which records what
+// evidence exists about how each change was written.
+//
+// Distinct from VCS.AgentAuthorName, which only marks that a commit came from
+// an Orion run. The alias is set before the work happens and cannot say which
+// agent, which model, or how much of the diff the agent produced; dun answers
+// that from the session transcripts afterwards.
+type Attribution struct {
+	Enabled bool `json:"enabled"`
+	// AutoInstall lets `orion init` fetch dun through the platform's package
+	// manager. Package-managed installs put the binary on PATH under the name
+	// `dun`, which matters: the git hook resolves it by name at commit time,
+	// and a dun that is not on PATH silently stamps every commit
+	// `undetermined` -- read downstream as "no AI was used".
+	AutoInstall bool `json:"auto_install"`
 }
 
 type Config struct {
-	Version    int               `json:"version"`
-	Limits     Limits            `json:"limits"`
-	Gates      Gates             `json:"gates"`
-	Paths      Paths             `json:"paths"`
-	Autonomy   map[string]string `json:"autonomy"`
-	AutoMerge  AutoMerge         `json:"auto_merge"`
-	Budget     Budget            `json:"budget"`
-	Slack      Slack             `json:"slack"`
-	VCS        VCS               `json:"vcs"`
-	Tracker    Tracker           `json:"tracker"`
-	Delegation Delegation        `json:"delegation"`
+	Version     int               `json:"version"`
+	Limits      Limits            `json:"limits"`
+	Gates       Gates             `json:"gates"`
+	Paths       Paths             `json:"paths"`
+	Autonomy    map[string]string `json:"autonomy"`
+	AutoMerge   AutoMerge         `json:"auto_merge"`
+	Budget      Budget            `json:"budget"`
+	Slack       Slack             `json:"slack"`
+	CI          CI                `json:"ci"`
+	VCS         VCS               `json:"vcs"`
+	Tracker     Tracker           `json:"tracker"`
+	Delegation  Delegation        `json:"delegation"`
+	Attribution Attribution       `json:"attribution"`
 
 	// Root is the resolved project root. Not read from JSON.
 	Root string `json:"-"`
@@ -197,6 +340,12 @@ type Config struct {
 	Degraded bool `json:"-"`
 	// DegradedReason explains why, for the block message.
 	DegradedReason string `json:"-"`
+
+	// slackPrefixSet records whether channel_prefix was actually present in
+	// the file. Without it an explicit "" is indistinguishable from absent,
+	// so the prefix could be changed but never removed: the config said one
+	// thing and the channel was named another.
+	slackPrefixSet bool
 }
 
 // Defaults returns the shipped baseline. These are deliberately
@@ -242,9 +391,11 @@ func Defaults() Config {
 			WorkBranch:        "develop",
 			ProtectedBranches: []string{"main", "develop"},
 			BranchPrefix:      "orion/",
-			AgentAuthorName:   "orion_agent",
+			AgentAuthorName:   "orionbot",
+			AgentAuthorEmail:  "orionbot@users.noreply.github.com",
 		},
-		Budget: Budget{PauseAtPercent: []int{50, 75, 90, 95}},
+		Budget:      Budget{PauseAtPercent: []int{50, 75, 90, 95}},
+		Attribution: Attribution{Enabled: true, AutoInstall: true},
 		Slack: Slack{
 			Enabled:                 false,
 			CreateChannelPerProject: true,
@@ -254,6 +405,9 @@ func Defaults() Config {
 		Tracker: Tracker{
 			Enabled:                 false,
 			Provider:                "jira",
+			AgentLabel:              "orion_agent",
+			QueueLabel:              "ORION",
+			QueueOrder:              "priority DESC, Rank ASC",
 			CreatePerIdea:           true,
 			ConfirmTreeBeforeCreate: true,
 		},
@@ -318,6 +472,17 @@ func Load(root string) Config {
 			delete(raw, k)
 		}
 	}
+	// Note whether channel_prefix was actually written, before defaults are
+	// applied. Without this an explicit "" is indistinguishable from absent
+	// and the prefix can be changed but never removed.
+	prefixSet := false
+	if sb, ok := raw["slack"]; ok {
+		var probe map[string]json.RawMessage
+		if json.Unmarshal(sb, &probe) == nil {
+			_, prefixSet = probe["channel_prefix"]
+		}
+	}
+
 	clean, _ := json.Marshal(raw)
 	if err := json.Unmarshal(clean, &cfg); err != nil {
 		fresh := Defaults()
@@ -327,6 +492,7 @@ func Load(root string) Config {
 		return fresh
 	}
 	cfg.Root = root
+	cfg.slackPrefixSet = prefixSet
 	normalize(&cfg)
 	return cfg
 }
@@ -372,7 +538,12 @@ func normalize(c *Config) {
 	if c.VCS.BranchPrefix == "" {
 		c.VCS.BranchPrefix = d.VCS.BranchPrefix
 	}
-	if c.Slack.ChannelPrefix == "" {
+	// An explicitly empty channel_prefix means "no prefix", not "use the
+	// default". Coercing it back made the setting impossible to turn off:
+	// you could change the prefix but never remove it, and the file said one
+	// thing while the channel was named another. The generated orion.json
+	// writes "orion-" explicitly, so new repos still get it.
+	if !c.slackPrefixSet {
 		c.Slack.ChannelPrefix = d.Slack.ChannelPrefix
 	}
 	if len(c.Budget.PauseAtPercent) == 0 {

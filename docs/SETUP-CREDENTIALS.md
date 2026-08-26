@@ -54,7 +54,7 @@ display_information:
   background_color: "#1a1a2e"
 features:
   bot_user:
-    display_name: Orion
+    display_name: Orionbot
     always_online: false
 oauth_config:
   scopes:
@@ -66,6 +66,7 @@ oauth_config:
       - groups:read
       - chat:write
       - chat:write.public
+      - users:read
 settings:
   org_deploy_enabled: false
   socket_mode_enabled: false
@@ -82,6 +83,7 @@ Why each scope is there, so you can cut any you do not want:
 | `channels:join` | joining a **reused** public channel. A bot is a member of a channel it created, but not one it merely found, and `setTopic` requires membership |
 | `chat:write` | posting anything at all |
 | `chat:write.public` | posting to a public channel without joining it first |
+| `users:read` | inviting people to a channel Orion creates |
 
 If you only ever want private channels, drop `channels:manage` and
 `channels:read`. If only public, drop the `groups:*` pair and set
@@ -128,7 +130,7 @@ orion doctor
 You should see the workspace named:
 
 ```
-[OK  ] slack    Your Workspace as orion (workspace T01ABCDEF)
+[OK  ] slack    Your Workspace as orionbot (workspace T01ABCDEF)
 ```
 
 **Read that line, do not just check it is green.** A token for the wrong
@@ -149,7 +151,18 @@ opening message. Bear in mind:
 - **Channels accumulate.** A bot cannot delete them. Archive a finished
   project's channel rather than deleting it.
 - **Private is the default** because a public channel cannot be made private
-  afterwards, and a slug can reveal an unreleased project.
+  afterwards, and a slug can reveal an unreleased project. That makes
+  `slack.invite_users` in `orion.json` effectively required: the bot is the
+  only member of a channel it just created, and Slack shows a private channel
+  to nobody outside it — not in the sidebar, not in search, with no
+  notification that it exists. Without an invite list Orion creates a channel
+  you cannot see and reports success. Put your Slack user ID (`U...`) there;
+  find it in Slack under your profile, **More** → **Copy member ID**.
+
+- **Renaming the bot** is done in the Slack app config, not by Orion:
+  **App Home** → **Your App's Presence in Slack** → edit **Display Name (Bot
+  Name)**. It takes effect immediately and needs no reinstall, unlike a scope
+  change.
 - **Orion still cannot listen.** The channel is the record and the
   notification stream. To talk back, drive Orion from a Claude session with
   the Slack MCP connected.

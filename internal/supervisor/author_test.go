@@ -36,21 +36,36 @@ func repoWithEmail(t *testing.T, email, cfg string) string {
 	return d
 }
 
-// The alias must set the AUTHOR only. Author says who wrote it, committer
-// says who is answerable for it landing; overwriting both would erase the
-// human from a change they approved.
-func TestAgentAliasSetsAuthorNotCommitter(t *testing.T) {
-	d := repoWithEmail(t, "me@example.com", `{"vcs":{"agent_author_name":"orion_agent"}}`)
+// The alias must set BOTH author and committer.
+//
+// It once set only the author, on the reasoning that the committer should
+// stay the human who was answerable for the change landing. The result was
+// commits authored orionbot that GitHub displayed under the account owner's
+// name and avatar: its "X committed" line reads the committer, so the alias
+// existed only in `git log`. A mismatched pair also earns the "authored and
+// committed by different people" badge on a change no second person touched.
+func TestAgentAliasSetsBothAuthorAndCommitter(t *testing.T) {
+	d := repoWithEmail(t, "me@example.com", `{"vcs":{"agent_author_name":"orionbot"}}`)
 	env := agentAuthorEnv(d)
 
-	if got, _ := kv(env, "GIT_AUTHOR_NAME"); got != "orion_agent" {
-		t.Errorf("GIT_AUTHOR_NAME = %q", got)
+	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
+		if got, _ := kv(env, k); got != "orionbot" {
+			t.Errorf("%s = %q, want orionbot", k, got)
+		}
 	}
-	if got, _ := kv(env, "GIT_AUTHOR_EMAIL"); got != "me@example.com" {
-		t.Errorf("GIT_AUTHOR_EMAIL = %q; the address must stay the human's so GitHub still links the commit", got)
-	}
-	if _, ok := kv(env, "GIT_COMMITTER_NAME"); ok {
-		t.Error("the committer must remain the human")
+	// And the shipped noreply address, NOT the repository owner's, because
+	// the email is the field that decides attribution: GitHub matches
+	// commits to accounts by address and ignores the name. Falling back to
+	// me@example.com here would put the alias in git log and leave GitHub
+	// still crediting the human.
+	for _, k := range []string{"GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"} {
+		got, _ := kv(env, k)
+		if got == "me@example.com" {
+			t.Errorf("%s fell back to the owner's address; GitHub will credit them for the agent's work", k)
+		}
+		if !strings.Contains(got, "orionbot") {
+			t.Errorf("%s = %q, want the bot's own address", k, got)
+		}
 	}
 }
 
@@ -64,9 +79,14 @@ func TestAgentAliasHonoursAnExplicitEmail(t *testing.T) {
 
 // Git refuses to commit with an empty author email, so an alias with no
 // address would break every commit the agent makes. No alias beats that.
+//
+// Reachable only by blanking the address explicitly -- an empty value in
+// orion.json overwrites the shipped default rather than being read as
+// absent -- and someone doing that to opt out of the bot identity must not
+// get a repository where nothing can commit.
 func TestNoEmailAnywhereDisablesTheAliasRatherThanBreakingCommits(t *testing.T) {
-	d := repoWithEmail(t, "", `{"vcs":{"agent_author_name":"orion_agent"}}`)
-	t.Setenv("HOME", t.TempDir())          // no global user.email either
+	d := repoWithEmail(t, "", `{"vcs":{"agent_author_name":"orionbot","agent_author_email":""}}`)
+	t.Setenv("HOME", t.TempDir()) // no global user.email either
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	if env := agentAuthorEnv(d); len(env) != 0 {
 		t.Errorf("expected no alias, got %v", env)

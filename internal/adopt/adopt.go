@@ -14,12 +14,16 @@ package adopt
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/ui"
 )
 
 // StableBinaryPath returns the path to write into hook commands, plus any
@@ -190,7 +194,12 @@ func Run(opts Options) (*Result, error) {
 			"no .git here: the artifact chain is meant to be committed, so init a repo when you can")
 	}
 
-	for _, d := range []string{"docs/intent", "specs", "plans", "evals"} {
+	// Use the CONFIGURED paths, not a hardcoded list. A repo whose artifacts
+	// live at the root points these at "." -- and creating docs/intent,
+	// specs and plans anyway left empty directories that the sandbox
+	// preflight then read as uncommitted changes, so `orion init` created
+	// the very condition that made it refuse to finish.
+	for _, d := range artifactDirs(opts.Dir) {
 		p := filepath.Join(opts.Dir, d)
 		if _, err := os.Stat(p); err == nil {
 			res.Skipped = append(res.Skipped, d+"/")
@@ -217,6 +226,28 @@ func Run(opts Options) (*Result, error) {
 		return res, err
 	}
 	return res, nil
+}
+
+// artifactDirs resolves which directories adoption should create, honouring
+// an existing orion.json. "." means the artifacts live at the repo root and
+// there is nothing to make.
+func artifactDirs(dir string) []string {
+	want := []string{"docs/intent", "specs", "plans", "evals"}
+	if _, err := os.Stat(filepath.Join(dir, "orion.json")); err == nil {
+		cfg := config.Load(dir)
+		want = []string{cfg.Paths.Intent, cfg.Paths.Specs, cfg.Paths.Plans, cfg.Paths.Evals}
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, d := range want {
+		d = strings.TrimSpace(d)
+		if d == "" || d == "." || d == "./" || seen[d] {
+			continue
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	return out
 }
 
 func writeConfig(opts Options, res *Result) error {
@@ -299,6 +330,11 @@ func mergeSettings(opts Options, res *Result) error {
 	// twice, one of them against a path that no longer exists, and the
 	// re-run that was supposed to fix the repo has made it worse.
 	repaired := retargetOrionHooks(hooks, opts.Binary)
+	// Repointing can leave two entries with the same command, when a repo
+	// picked up a second set from a binary an earlier version failed to
+	// recognise. Identical hooks run twice, so every tool call is counted
+	// twice by the breaker and trips it at half the configured limit.
+	deduped := dedupeOrionHooks(hooks)
 
 	added := 0
 	for _, s := range specs() {
@@ -319,7 +355,7 @@ func mergeSettings(opts Options, res *Result) error {
 	}
 	root["hooks"] = hooks
 
-	if added == 0 && repaired == 0 {
+	if added == 0 && repaired == 0 && deduped == 0 {
 		res.Skipped = append(res.Skipped, ".claude/settings.json (hooks already wired)")
 		// Nothing changed, so the backup is noise. Remove it rather than
 		// littering a .bak per invocation.
@@ -337,7 +373,13 @@ func mergeSettings(opts Options, res *Result) error {
 	if err := os.WriteFile(p, append(b, '\n'), 0o644); err != nil {
 		return err
 	}
+	if deduped > 0 {
+		res.Updated = append(res.Updated, fmt.Sprintf(
+			".claude/settings.json (%d duplicate hook(s) removed)", deduped))
+	}
 	switch {
+	case added == 0 && repaired == 0:
+		// Only the dedupe line above applies.
 	case added > 0 && repaired > 0:
 		res.Updated = append(res.Updated, fmt.Sprintf(
 			".claude/settings.json (+%d hook(s), %d repointed to the current binary)", added, repaired))
@@ -348,6 +390,71 @@ func mergeSettings(opts Options, res *Result) error {
 		res.Updated = append(res.Updated, fmt.Sprintf(".claude/settings.json (+%d hook(s))", added))
 	}
 	return nil
+}
+
+// isOrionHookName reports whether a hook subcommand is one of ours. Checked
+// alongside the "hook" keyword so the shape match cannot capture a foreign
+// command that merely lives in a similarly named directory.
+func isOrionHookName(name string) bool {
+	for _, s := range specs() {
+		if s.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// dedupeOrionHooks removes Orion hook entries whose command duplicates one
+// already kept, and reports how many it dropped.
+//
+// A duplicate is not cosmetic. Claude Code runs every matching hook, so a
+// doubled PostToolUse breaker counts each tool call twice and trips at half
+// the configured max_tool_calls -- a limit that reads as 400 in orion.json
+// and behaves as 200.
+func dedupeOrionHooks(hooks map[string]any) int {
+	dropped := 0
+	for event, raw := range hooks {
+		entries, _ := raw.([]any)
+		seen := map[string]bool{}
+		kept := make([]any, 0, len(entries))
+		for _, re := range entries {
+			entry, ok := re.(map[string]any)
+			if !ok {
+				kept = append(kept, re)
+				continue
+			}
+			matcher, _ := entry["matcher"].(string)
+			inner, _ := entry["hooks"].([]any)
+
+			keptInner := make([]any, 0, len(inner))
+			for _, h := range inner {
+				hm, ok := h.(map[string]any)
+				if !ok {
+					keptInner = append(keptInner, h)
+					continue
+				}
+				cmd, _ := hm["command"].(string)
+				f := strings.Fields(cmd)
+				isOurs := len(f) >= 3 && f[len(f)-2] == "hook" && isOrionHookName(f[len(f)-1])
+				key := matcher + "\x00" + cmd
+				if isOurs && seen[key] {
+					dropped++
+					continue
+				}
+				if isOurs {
+					seen[key] = true
+				}
+				keptInner = append(keptInner, h)
+			}
+			if len(keptInner) == 0 {
+				continue // the whole entry was a duplicate
+			}
+			entry["hooks"] = keptInner
+			kept = append(kept, entry)
+		}
+		hooks[event] = kept
+	}
+	return dropped
 }
 
 // retargetOrionHooks rewrites the binary in every Orion hook command that
@@ -373,11 +480,16 @@ func retargetOrionHooks(hooks map[string]any, binary string) int {
 				}
 				cmd, _ := hm["command"].(string)
 				f := strings.Fields(cmd)
-				if len(f) < 3 || f[len(f)-2] != "hook" {
+				if len(f) < 3 || f[len(f)-2] != "hook" || !isOrionHookName(f[len(f)-1]) {
 					continue
 				}
+				// Match any binary whose name STARTS with orion, not just
+				// "orion" exactly. A locally built orion-dev, or orion.exe,
+				// is still our hook; requiring an exact name meant a re-run
+				// failed to recognise it and appended a duplicate set beside
+				// it, which is the bug this whole function exists to avoid.
 				base := strings.TrimSuffix(filepath.Base(f[0]), ".exe")
-				if base != "orion" || f[0] == binary {
+				if !strings.HasPrefix(base, "orion") || f[0] == binary {
 					continue
 				}
 				f[0] = binary
@@ -415,25 +527,34 @@ func hasCommand(list []any, command, matcher string) bool {
 }
 
 // Summary renders what happened, leading with anything that needs a human.
-func (r *Result) Summary() string {
-	var b strings.Builder
+//
+// Written to a specific io.Writer rather than returning a bare string so the
+// colouring can tell whether it is going to a terminal: escape codes piped
+// into a log file are noise someone then has to strip.
+func (r *Result) Write(w io.Writer) {
 	sort.Strings(r.Created)
 	sort.Strings(r.Skipped)
-	for _, w := range r.Warnings {
-		fmt.Fprintf(&b, "WARNING  %s\n", w)
+	for _, warn := range r.Warnings {
+		ui.Warn(w, "%s", warn)
 	}
 	for _, c := range r.Created {
-		fmt.Fprintf(&b, "created  %s\n", c)
+		ui.Ok(w, "created", "%s", c)
 	}
 	for _, u := range r.Updated {
-		fmt.Fprintf(&b, "updated  %s\n", u)
+		ui.Ok(w, "updated", "%s", u)
 	}
 	for _, s := range r.Skipped {
-		fmt.Fprintf(&b, "skipped  %s\n", s)
+		ui.Ok(w, "skipped", "%s", s)
 	}
 	if r.Backup != "" {
-		fmt.Fprintf(&b, "backup   %s\n", r.Backup)
+		ui.Ok(w, "backup", "%s", r.Backup)
 	}
+}
+
+// Summary keeps the plain-text rendering for tests and non-terminal callers.
+func (r *Result) Summary() string {
+	var b strings.Builder
+	r.Write(&b)
 	return b.String()
 }
 
@@ -478,9 +599,9 @@ const defaultConfig = `{
     "protected_branches": ["main", "develop"],
     "branch_prefix": "orion/",
 
-    "_comment_author": "Commits the agent makes are AUTHORED by this alias; the committer stays you. Without it an agent commit is indistinguishable from a hand-written one in git log, blame and bisect. The email defaults to your user.email because GitHub matches commits to accounts by address, and a synthetic one would show every agent commit as an unrecognised author. Empty name disables the alias.",
-    "agent_author_name": "orion_agent",
-    "agent_author_email": ""
+    "_comment_author": "Commits the agent makes are authored AND committed under this alias, so git log, blame, bisect and GitHub all show orionbot rather than you. The EMAIL is what decides that: GitHub matches commits to accounts by address and ignores the name. The default noreply address carries no account id, so it resolves to nobody and displays as a plain 'orionbot' -- which also means these commits leave your contribution graph (correct: you did not write them) and will be rejected by any branch rule demanding a verified or allowlisted committer email. For a real avatar and profile, create a GitHub account for the bot and use its own ID+name@users.noreply.github.com. Putting your own address here reverts to commits appearing as yours on GitHub. Empty name disables the alias entirely.",
+    "agent_author_name": "orionbot",
+    "agent_author_email": "orionbot@users.noreply.github.com"
   },
 
   "_comment_budget": "YOUR weekly budget, not your Anthropic plan's allowance. Zero means unlimited.",
@@ -495,14 +616,26 @@ const defaultConfig = `{
     "provider": "jira",
     "project_key": "",
     "create_project_per_idea": true,
-    "confirm_tree_before_create": true
+    "confirm_tree_before_create": true,
+
+    "_comment_agent_label": "Stamped on every issue the agent files, so agent-filed work stays separable from work a person filed. The tracker equivalent of vcs.agent_author_name. A label rather than a reporter because Jira's reporter must be a real licensed account, and impersonating you would be worse than leaving it unmarked. Exported to the agent as ORION_TRACKER_LABEL.",
+    "agent_label": "orion_agent"
   },
 
   "slack": {
     "enabled": false,
     "create_channel_per_project": true,
     "channel_prefix": "orion-",
-    "private": true
+    "private": true,
+
+    "_comment_invite": "A private channel is invisible to everyone who is not in it, and the bot is the only member of one it just created. Without these, Orion makes a channel no human can see or find. Slack user IDs (U...) or emails; emails need the users:read.email scope, which is not in the default manifest.",
+    "invite_users": []
+  },
+
+  "_comment_attribution": "Stamps each commit with an AI-Attribution trailer via whodunit (dun), recording which agent and model produced the change and how much of the diff was theirs. Distinct from vcs.agent_author_name, which only marks that a commit came from an Orion run. auto_install fetches dun through brew or scoop; a package-managed install puts it on PATH under the name dun, which matters because the git hook resolves it by name at commit time and a missing dun silently stamps every commit undetermined.",
+  "attribution": {
+    "enabled": true,
+    "auto_install": true
   },
 
   "delegation": {
