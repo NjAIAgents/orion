@@ -48,6 +48,30 @@ make install  # to ~/.local/bin
 orion doctor --fix
 ```
 
+## Releasing
+
+```bash
+make release TAG=v0.1.0 DRY=1   # rehearse, publishes nothing
+make release TAG=v0.1.0
+```
+
+This uses the `gh` login already on your machine, so there are no tokens to
+create or rotate. It refuses to release from a dirty tree, from a branch other
+than `main`, or from a `main` that differs from origin, and it runs build, vet,
+gofmt and the full test suite before anything is published. Then it tags,
+builds every archive, publishes to `NjAIAgents/orion-releases`, and updates the
+Homebrew formula and Scoop manifest.
+
+What it cannot do is prove the build works on a machine other than yours. The
+GitHub Actions workflow does that, and is the reason it still exists, but it
+runs on GitHub's servers where your `gh` credentials do not reach, so it needs
+`RELEASES_GITHUB_TOKEN` and `TAP_GITHUB_TOKEN` as repository secrets:
+
+```bash
+gh secret set RELEASES_GITHUB_TOKEN --repo NjAIAgents/orion   # contents:write on orion-releases
+gh secret set TAP_GITHUB_TOKEN      --repo NjAIAgents/orion   # contents:write on the tap and bucket
+```
+
 ## nj-agents is a hard dependency
 
 Orion delegates review, secret scanning, test and build verification, PR
@@ -226,9 +250,10 @@ including the deliberate carve-out from its propose-never-act contract.
 
 Read these before relying on it.
 
-- **Two tokens are needed for a release.** `RELEASES_GITHUB_TOKEN` to publish
-  artifacts to `NjAIAgents/orion-releases`, and `TAP_GITHUB_TOKEN` to update
-  the tap and bucket. Without them the build succeeds and nothing ships.
+- **The GitHub Actions release path needs two PATs**, because Actions runs on
+  GitHub's servers and cannot see your local `gh` credentials. The local path
+  (`make release`) needs none. Pick one; the Actions workflow is dormant
+  until its secrets exist.
 - **The Jira REST calls have never touched a live instance.** Shapes and the
   project-creation permission key are inferred. The key is discovered at
   runtime rather than hardcoded, and an unrecognised key is treated as
