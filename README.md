@@ -41,12 +41,33 @@ FAIL blocks.
 
 ```bash
 orion new "customers should see claim status in the portal"
-orion run <id> --stage intent
-orion run <id> --stage spec
-orion run <id> --stage plan
-orion run <id> --stage build
+orion run  <id> --stage intent
+orion run  <id> --stage spec
+orion run  <id> --stage plan
+orion provision <id>                 # remote repo, branches, Jira project
+orion run  <id> --stage decompose    # /pm-plan tree, approved before creation
+orion run  <id> --stage build
 orion status <id>
 ```
+
+## Branch model
+
+Two long-lived branches, created at `git init` before any work can start:
+
+- **`main`** is the release branch.
+- **`develop`** is the integration branch and the base for every pull request.
+
+Every task gets its own branch cut from `develop`, merges back into
+`develop`, and `develop` reaches `main` later through its own reviewed pull
+request.
+
+Both are push-protected by the gate hook, and both get server-side protection
+at provisioning time. Protecting only `main` would leave the pull request
+into `develop` optional, and an optional review gate is not a gate.
+
+It is `develop` rather than `dev` on purpose: `dev` already means the dev
+*environment* in the `autonomy` block, and one word meaning two things in the
+same config file is a trap.
 
 Inside Claude Code, `/orion:start`, `/orion:next`, `/orion:status`,
 `/orion:learn`.
@@ -169,6 +190,13 @@ Read these before relying on it.
 - **State locking is best-effort** with a 3 second timeout, then proceeds
   unserialized and says so. A wedged lock blocking every tool call would be
   worse than a briefly racy counter.
+- **Branch protection fails on free-plan private repositories.** Provisioning
+  reports this rather than swallowing it. Orion's gate hook still refuses
+  pushes to `main` and `develop`, but that constrains the agent only; a human
+  with a terminal is unconstrained until server-side protection exists.
+- **Creating a Jira project per idea accumulates.** Keys are globally unique
+  per instance, capped at 10 characters, and a non-admin cannot delete a
+  project. Set `tracker.project_key` to bind an existing project instead.
 - **Auto-merge is off by default** and should stay off until `evals/` holds
   at least 20 real cases. Green means nothing when the suite is empty.
 
