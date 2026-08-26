@@ -114,7 +114,7 @@ func approvalFlow(res Result, key string, pr PR, cfg config.Config, branch strin
 	// and six months from now the PR is the only place anyone will look.
 	_ = deps.Jira.Comment(key, fmt.Sprintf("%s approved the merge in Slack (%s).", d.By, d.How))
 	if err := deps.Merge(ws.RepoDir(), branch, fmt.Sprintf(
-		"Approved by %s in Slack (%s).", d.By, d.How)); err != nil {
+		"Approved by %s in Slack (%s).", d.By, d.How), cfg.VCS.MergeStrategy); err != nil {
 		res.Err = err
 		ui.Fail(w, "%s: approved by %s, but the merge failed: %v", key, d.By, err)
 		// Leave the request in place. The approval still stands, so a later

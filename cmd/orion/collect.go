@@ -163,19 +163,32 @@ func slackForApproval() collect.SlackAPI {
 	return c
 }
 
-// mergePR merges an approved pull request.
+// mergePR merges an approved pull request, using the configured strategy.
 //
-// --squash, and the reason goes in the commit body: the branch carries the
-// agent's incremental commits and its decision records, which are worth
-// reading on the branch and noise on the trunk. The one line that must
-// survive into develop's history is who authorised it.
+// The strategy is not cosmetic: it decides whether the agent's authorship
+// survives onto the trunk. A --squash merge collapses the branch into one
+// new commit authored by the PULL REQUEST's author -- whoever's token opened
+// it -- so every orionbot commit disappears from develop's history, which is
+// exactly what the first real merge produced. --rebase replays each commit
+// with its author intact. See config.VCS.MergeStrategy.
 //
 // NOT --admin. That flag bypasses branch protection, which would mean Orion
 // merging past the very rules a repository set up to constrain it -- and it
 // would do so on the authority of a Slack reaction.
-func mergePR(dir, branch, reason string) error {
+func mergePR(dir, branch, reason, strategy string) error {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return fmt.Errorf("gh is not installed, so the merge cannot be performed")
+	}
+	flag := "--rebase"
+	switch strings.ToLower(strings.TrimSpace(strategy)) {
+	case "squash":
+		flag = "--squash"
+	case "merge":
+		flag = "--merge"
+	case "", "rebase":
+		// The default. See config.VCS.MergeStrategy for why.
+	default:
+		return fmt.Errorf("unknown merge strategy %q: use rebase, squash or merge", strategy)
 	}
 	// NOT --delete-branch. gh deletes the local branch too, and that branch
 	// is checked out in the job worktree -- git refuses, gh exits 1, and the
@@ -186,8 +199,13 @@ func mergePR(dir, branch, reason string) error {
 	//
 	// Orion removes the worktree first and the branch second, in that order,
 	// during the prune that follows a confirmed merge.
-	cmd := exec.Command("gh", "pr", "merge", branch,
-		"--squash", "--body", reason)
+	args := []string{"pr", "merge", branch, flag}
+	// --body only means anything to a strategy that writes a new commit
+	// message. A rebase replays the branch's own commits, so gh rejects it.
+	if flag != "--rebase" {
+		args = append(args, "--body", reason)
+	}
+	cmd := exec.Command("gh", args...)
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%v\n%s", err, strings.TrimSpace(string(out)))

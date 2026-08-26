@@ -37,14 +37,16 @@ func (s *slackSpy) React(_, _, emoji string) { s.reacted = append(s.reacted, emo
 func (s *slackSpy) BotID() string            { return bot }
 
 type mergeSpy struct {
-	calls  int
-	reason string
-	err    error
+	calls    int
+	reason   string
+	strategy string
+	err      error
 }
 
-func (m *mergeSpy) merge(_, _, reason string) error {
+func (m *mergeSpy) merge(_, _, reason, strategy string) error {
 	m.calls++
 	m.reason = reason
+	m.strategy = strategy
 	return m.err
 }
 
@@ -263,5 +265,32 @@ func TestApprovalDisabledFallsBackToWaiting(t *testing.T) {
 	}
 	if !strings.Contains(out, "waiting for you to merge") {
 		t.Errorf("got: %s", out)
+	}
+}
+
+// The merge strategy reaches the merge command.
+//
+// Not cosmetic: --squash collapses the branch into one commit authored by
+// whoever opened the pull request, so every orionbot commit disappears from
+// the trunk. Which flag is used decides whether the agent's authorship
+// survives, and that is worth a test rather than a comment.
+func TestTheConfiguredMergeStrategyIsUsed(t *testing.T) {
+	home, _ := approvalRepo(t, `"navjyot"`)
+	s := &slackSpy{fakeSlack: fakeSlack{names: map[string]string{"UNAV": "navjyot"}}}
+	m := &mergeSpy{}
+	pr := PR{Verdict: VerdictPassing, URL: "https://pr/1"}
+
+	runApproval(t, home, s, m, pr, Options{})
+	s.reactions = []slack.Reaction{{Name: "white_check_mark", Users: []string{"UNAV"}}}
+	runApproval(t, home, s, m, pr, Options{})
+
+	if m.calls != 1 {
+		t.Fatalf("expected one merge, got %d", m.calls)
+	}
+	// The fixture sets no strategy, so the default must arrive as empty and
+	// be resolved at the edge -- where the flag is chosen -- rather than
+	// being silently defaulted here to something else.
+	if m.strategy != "" {
+		t.Errorf("strategy = %q, want the config's value passed through untouched", m.strategy)
 	}
 }

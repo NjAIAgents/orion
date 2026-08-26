@@ -81,7 +81,7 @@ type Deps struct {
 	// Merge lands an approved pull request. Separate from everything else
 	// because it is the only irreversible action in this package, and the
 	// only one a person explicitly authorised.
-	Merge func(dir, branch, reason string) error
+	Merge func(dir, branch, reason, strategy string) error
 	// Fix sends a CI failure back to an agent on the same branch and reports
 	// whether it pushed anything. Nil disables the fix loop.
 	Fix func(ws *workspace.Workspace, key, branch, failure string) (pushed bool, err error)

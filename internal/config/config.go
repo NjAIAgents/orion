@@ -268,6 +268,27 @@ type VCS struct {
 	// Setting this to the owner's real address restores the old behaviour:
 	// the alias then lives only in `git log`, `git blame` and a bisect.
 	AgentAuthorEmail string `json:"agent_author_email"`
+	// MergeStrategy is how an approved pull request lands: "rebase",
+	// "squash" or "merge". Empty means rebase.
+	//
+	// This decides whether the agent's authorship survives onto the trunk,
+	// which is not obvious and was got wrong here first time round.
+	//
+	//	squash  collapses the branch into ONE new commit, authored by the
+	//	        pull request's author -- which is whoever's token opened it,
+	//	        i.e. you. Every orionbot commit vanishes from the trunk's
+	//	        history. Tidiest log, worst attribution.
+	//	merge   keeps every commit, author intact, plus a merge commit.
+	//	        Best attribution, noisiest history.
+	//	rebase  replays each commit onto the base, preserving its author.
+	//	        Linear history AND orionbot attribution, which is why it is
+	//	        the default.
+	//
+	// The cost of rebase is that the branch's incremental commits and its
+	// decision records all land on the trunk rather than being collapsed.
+	// That is a real downside; it is chosen because "who wrote this" is
+	// harder to reconstruct later than "which commits belong together".
+	MergeStrategy string `json:"merge_strategy"`
 }
 
 // Attribution instruments commits with whodunit (`dun`), which records what
