@@ -250,10 +250,29 @@ func artifactDirs(dir string) []string {
 	return out
 }
 
+// writeConfig writes orion.json, and NEVER over an existing one.
+//
+// --force used to overwrite it, and that is the wrong meaning for the flag.
+// People reach for --force to repair WIRING -- hooks pointing at a binary
+// that moved, which is the exact state `orion doctor` tells them to fix with
+// "orion init --force". Running it then silently reset every policy in the
+// project: approval requirements, the merge allowlist, the CI fix loop, the
+// Slack channel prefix.
+//
+// Observed for real: a repair reverted channel_prefix to its default, so the
+// next run bound a DIFFERENT Slack channel and reported success. Nothing
+// said the configuration had been replaced, because from init's point of
+// view it had done exactly what it was told.
+//
+// Configuration is the thing a person spent time deciding; hooks are the
+// thing a tool can always rebuild. --force may rebuild what is derivable and
+// must not touch what was chosen. To start over, delete the file first --
+// which is a deliberate act, and reversible while it is still in git.
 func writeConfig(opts Options, res *Result) error {
 	p := filepath.Join(opts.Dir, "orion.json")
-	if _, err := os.Stat(p); err == nil && !opts.Force {
-		res.Skipped = append(res.Skipped, "orion.json (exists; --force to overwrite)")
+	if _, err := os.Stat(p); err == nil {
+		res.Skipped = append(res.Skipped,
+			"orion.json (kept; delete it first if you want the defaults back)")
 		return nil
 	}
 	body := fmt.Sprintf(defaultConfig, opts.PlanGate)

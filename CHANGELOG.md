@@ -4,6 +4,31 @@ Notable changes per release. Written for someone deciding whether to upgrade
 and what to watch afterwards, so each entry says what changed **and what it
 now refuses to do**.
 
+## v0.4.1
+
+`orion init --force` no longer touches `orion.json`.
+
+Before this, `--force` was the documented repair for broken hooks (e.g. after
+`brew cleanup` moved the binary) — but it rebuilt hooks *and* silently reset
+the whole config file to defaults: `require_approval`, `merge_approvers`,
+`mention`, the `ci` block, `channel_prefix`, all reverted. A reverted prefix
+can rebind Slack notifications to a different channel than the one a project
+actually uses, with no error, because from `init`'s point of view it did
+exactly what it was asked.
+
+`--force` now rebuilds only the wiring (hooks, symlinks) and refuses to
+reset configuration — a person's policy decisions stay put. To actually
+start over, delete `orion.json` first; that's a deliberate, reversible act
+while it's still in git. `orion doctor`'s repair hint now says as much, so
+the moment someone reaches for `--force` they're told it's safe.
+
+### Fixed
+
+- `orion init --force` reset `orion.json` to defaults while repairing hook
+  wiring, silently discarding `require_approval`, `merge_approvers`, `ci`
+  settings, and `channel_prefix` — a reverted `channel_prefix` could rebind
+  Slack delivery to the wrong channel with no error
+
 ## v0.4.0
 
 The release where Orion runs a ticket end to end without being asked.
