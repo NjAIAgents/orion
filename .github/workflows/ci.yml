@@ -1,7 +1,10 @@
 name: ci
 
 on:
-  push: { branches: [main] }
+  # develop is the integration branch and where work actually lands, so CI
+  # must run there too. Triggering only on main meant every commit between
+  # releases was unverified by CI.
+  push: { branches: [main, develop] }
   pull_request:
 
 jobs:
