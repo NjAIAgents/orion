@@ -330,6 +330,27 @@ func runInit(args []string) {
 	}
 	exitOn(err)
 
+	cfg := config.Load(abs)
+
+	// The work branch. orion.json can name `develop` as the base for every
+	// task branch while no such branch exists, and nothing notices until the
+	// first PR has nowhere to go.
+	if created, warns, bErr := adopt.EnsureWorkBranch(abs, cfg.VCS.WorkBranch); bErr != nil {
+		fmt.Fprintf(os.Stderr, "WARNING  %v\n", bErr)
+	} else {
+		if created {
+			fmt.Printf("created  branch %s (switched to it; it is the PR base for all task branches)\n",
+				cfg.VCS.WorkBranch)
+		}
+		for _, w := range warns {
+			fmt.Printf("WARNING  %s\n", w)
+		}
+	}
+
+	if !hasFlag(args, "--no-provision") {
+		provisionRemote(abs, cfg, hasFlag(args, "--yes"))
+	}
+
 	fmt.Println()
 	fmt.Println("Orion is wired into this repo. Restart any running Claude Code session:")
 	fmt.Println("hooks are read at session start, so an open session is still unguarded.")
@@ -340,6 +361,141 @@ func runInit(args []string) {
 		fmt.Println("The plan gate is off. Turn on gates.require_plan_before_edit in orion.json")
 		fmt.Println("when you want implementation blocked until a plan exists.")
 	}
+}
+
+// provisionRemote offers to create the tracker project and chat channel for
+// an adopted repo, then records them in orion.json.
+//
+// It describes before it acts, and asks once. A Jira project cannot be
+// deleted without admin rights, and `orion init` is a command people re-run
+// casually, so silent creation would let a stray invocation in the wrong
+// directory litter a shared tracker permanently.
+func provisionRemote(dir string, cfg config.Config, assumeYes bool) {
+	name := adopt.DeriveProjectName(dir)
+	plan := adopt.RemotePlan{
+		ProjectName: name,
+		SlackIsPriv: cfg.Slack.Private,
+	}
+
+	j, jErr := tracker.NewJiraFromEnv()
+	switch {
+	case jErr != nil:
+		plan.JiraSkip = "not configured"
+	default:
+		plan.JiraSite = j.BaseURL
+		plan.JiraKey = cfg.Tracker.ProjectKey
+		if plan.JiraKey == "" {
+			plan.JiraKey = adopt.DeriveJiraKey(name)
+		}
+		if exists, _, err := j.ProjectExists(plan.JiraKey); err != nil {
+			plan.JiraSkip = "could not check " + plan.JiraKey + ": " + err.Error()
+		} else {
+			plan.JiraExists = exists
+		}
+	}
+
+	sc, sErr := slack.FromEnv()
+	switch {
+	case sErr != nil:
+		plan.SlackSkip = "not configured"
+	default:
+		id, err := sc.AuthTest()
+		if err != nil {
+			plan.SlackSkip = "token rejected: " + err.Error()
+			break
+		}
+		plan.SlackTeam = id.Team
+		plan.SlackName = slack.NormalizeChannelName(cfg.Slack.ChannelPrefix + name)
+	}
+
+	if plan.JiraSkip != "" && plan.SlackSkip != "" {
+		return // nothing configured; say nothing rather than nagging
+	}
+
+	fmt.Println()
+	fmt.Print(plan.Describe())
+	if !plan.Nothing() && !assumeYes {
+		if !confirm("Proceed?") {
+			fmt.Println("skipped  remote provisioning (re-run orion init to do it later)")
+			return
+		}
+	}
+
+	cfgPath := filepath.Join(dir, "orion.json")
+	if plan.JiraSkip == "" && plan.JiraKey != "" {
+		if !plan.JiraExists {
+			if _, err := j.CreateProject(plan.JiraKey, name, ""); err != nil {
+				fmt.Fprintf(os.Stderr, "WARNING  could not create Jira project %s: %v\n", plan.JiraKey, err)
+				goto slackStep
+			}
+			fmt.Printf("created  Jira project %s (%s)\n", plan.JiraKey, j.BaseURL)
+		} else {
+			fmt.Printf("bound    Jira project %s (already existed)\n", plan.JiraKey)
+		}
+		patchConfig(cfgPath, map[string][2]string{
+			"tracker": {"enabled", "true"},
+		}, plan.JiraKey)
+	}
+
+slackStep:
+	if plan.SlackSkip == "" && plan.SlackName != "" {
+		ch, err := sc.CreateChannel(plan.SlackName, cfg.Slack.Private)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING  could not create Slack channel #%s: %v\n", plan.SlackName, err)
+			return
+		}
+		verb := "bound   "
+		if ch.Created {
+			verb = "created "
+		}
+		fmt.Printf("%s Slack channel #%s\n", verb, ch.Name)
+		patchConfig(cfgPath, map[string][2]string{"slack": {"enabled", "true"}}, "")
+	}
+}
+
+// patchConfig edits orion.json as text rather than round-tripping the JSON,
+// so the "_comment_*" keys stay next to the settings they explain.
+func patchConfig(path string, fields map[string][2]string, jiraKey string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING  could not update %s: %v\n", path, err)
+		return
+	}
+	src := string(b)
+	changed := false
+	for block, kv := range fields {
+		if out, ok := adopt.SetBlockField(src, block, kv[0], kv[1]); ok {
+			src, changed = out, true
+		}
+	}
+	if jiraKey != "" {
+		if out, ok := adopt.SetBlockField(src, "tracker", "project_key", `"`+jiraKey+`"`); ok {
+			src, changed = out, true
+		}
+	}
+	if !changed {
+		return
+	}
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING  could not write %s: %v\n", path, err)
+		return
+	}
+	fmt.Printf("updated  orion.json\n")
+}
+
+// confirm asks once. A non-interactive shell answers no: creating something
+// undeletable because nobody was there to object is the wrong default.
+func confirm(prompt string) bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		fmt.Println("(not a terminal; skipping. Re-run with --yes to provision unattended.)")
+		return false
+	}
+	fmt.Printf("%s [y/N] ", prompt)
+	var ans string
+	_, _ = fmt.Scanln(&ans)
+	ans = strings.ToLower(strings.TrimSpace(ans))
+	return ans == "y" || ans == "yes"
 }
 
 // runAnswer walks the open questions blocking a workspace.
