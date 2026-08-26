@@ -38,7 +38,7 @@ scoop install orion                        # Windows
 From source:
 
 ```bash
-git clone https://github.com/navjyotnishant/orion && cd orion
+git clone https://github.com/NjAIAgents/orion && cd orion
 make test     # build, vet and the full test suite
 make install  # to ~/.local/bin
 orion doctor --fix
