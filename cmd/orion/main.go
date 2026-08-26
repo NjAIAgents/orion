@@ -2013,6 +2013,39 @@ func argFlag(args []string, name, def string) string {
 	return def
 }
 
+// positional returns the arguments that are NOT flags and not the value of
+// a flag.
+//
+// A naive "anything not starting with -" filter reads `--max-jobs 1` as a
+// flag and a positional `1`, so `orion watch fcia --max-jobs 1` watched two
+// projects: FCIA and "1". The value belongs to the flag before it.
+//
+// takesValue lists the flags that consume the next argument. Boolean flags
+// must NOT appear, or a positional after one is silently swallowed.
+func positional(args []string, takesValue ...string) []string {
+	consumes := map[string]bool{}
+	for _, f := range takesValue {
+		consumes[f] = true
+	}
+	var out []string
+	skip := false
+	for _, a := range args {
+		if skip {
+			skip = false
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			// --flag=value carries its own value; --flag takes the next one.
+			if consumes[a] {
+				skip = true
+			}
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 func intFlag(args []string, name string, def int) int {
 	s := argFlag(args, name, "")
 	if s == "" {

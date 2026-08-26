@@ -14,12 +14,7 @@ import (
 )
 
 func runCollect(args []string) {
-	var keys []string
-	for _, a := range args {
-		if !strings.HasPrefix(a, "-") {
-			keys = append(keys, a)
-		}
-	}
+	keys := positional(args)
 	res := collect.Run(collect.Options{
 		Keys:    keys,
 		Out:     os.Stdout,

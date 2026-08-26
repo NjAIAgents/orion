@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/collect"
+	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/work"
 )
 
@@ -212,4 +213,88 @@ func TestStoppingWaitsForTheCurrentStep(t *testing.T) {
 		t.Errorf("stopping must be reported: %s", buf.String())
 	}
 	stopping.Store(false)
+}
+
+// A mistyped project must FAIL, not look like an empty queue.
+//
+// `orion watch fcra` -- one letter wrong -- searched a project that does not
+// exist, found nothing, and printed "nothing is waiting on CI", which is
+// exactly what a correct key with an empty queue prints. The watcher then
+// sat there all night watching nothing, reporting success every two minutes.
+//
+// A typo that looks like success is worse than one that fails.
+func TestAnUnregisteredProjectIsRefusedAndNamed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ORION_HOME", home)
+	if err := registry.Bind(home, registry.Entry{
+		Key: "FCIA", Source: t.TempDir(), Workspace: "ws-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := scope(home, []string{"fcra"})
+	if err == nil {
+		t.Fatal("a project that is not registered was accepted")
+	}
+	if !strings.Contains(err.Error(), "FCRA") {
+		t.Errorf("the error must name what was not found: %v", err)
+	}
+	if !strings.Contains(err.Error(), "FCIA") {
+		t.Errorf("it must list what IS registered, or a typo is hard to spot: %v", err)
+	}
+
+	// The correct key still works, and case does not matter.
+	got, err := scope(home, []string{"fcia"})
+	if err != nil || len(got) != 1 || got[0] != "FCIA" {
+		t.Errorf("scope(fcia) = %v, %v", got, err)
+	}
+}
+
+// A misconfiguration will never fix itself. Retrying it every two minutes
+// forever is not resilience -- it is a watcher that looks alive while
+// watching nothing.
+func TestAPermanentErrorStopsTheWatcherRatherThanRetryingForever(t *testing.T) {
+	stopping.Store(false)
+	s := &spy{maxSleeps: 99}
+	d := s.deps()
+	d.Queued = func(string, []string, string) ([]string, error) {
+		return nil, errors.New(`not a registered project: FCRA`)
+	}
+
+	var buf bytes.Buffer
+	err := Run(Options{Out: &buf, Home: t.TempDir(), Interval: time.Millisecond}, d)
+
+	if err == nil {
+		t.Fatal("a permanent error must stop the watcher and be returned")
+	}
+	if s.sleeps != 0 {
+		t.Errorf("it slept %d times before giving up on an error that cannot resolve", s.sleeps)
+	}
+}
+
+// A dry run changes nothing, so a second tick prints the identical thing.
+// Without --once it looped forever, which is why `orion watch fcia
+// --dry-run --max-jobs 1` appeared to hang.
+func TestADryRunRehearsesOnceAndStops(t *testing.T) {
+	s := &spy{queued: []string{"FCIA-7"}, maxSleeps: 99}
+	runWatch(t, s, Options{DryRun: true})
+
+	if s.sleeps != 0 {
+		t.Errorf("a dry run looped %d times; once is the whole point", s.sleeps)
+	}
+}
+
+// Rehearsing is for checking the ORDER, which a count cannot show.
+func TestADryRunPrintsTheWholeQueueInOrder(t *testing.T) {
+	s := &spy{queued: []string{"FCIA-7", "FCIA-8", "FCIA-10"}}
+	out := runWatch(t, s, Options{DryRun: true, MaxJobs: 2})
+
+	for _, k := range []string{"FCIA-7", "FCIA-8", "FCIA-10"} {
+		if !strings.Contains(out, k) {
+			t.Errorf("%s is missing from the rehearsal: %s", k, out)
+		}
+	}
+	if !strings.Contains(out, "first 2") {
+		t.Errorf("it must say how far --max-jobs would get: %s", out)
+	}
 }

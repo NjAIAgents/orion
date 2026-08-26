@@ -118,15 +118,26 @@ func Run(opts Options, deps Deps) error {
 
 		n, err := oneTick(opts, deps, w, opts.MaxJobs-started)
 		if err != nil {
-			// A tick that fails is not a reason to stop watching: the usual
-			// cause is a network blip or an expired token, and both are
-			// transient or fixable while this keeps running. Stopping would
-			// mean the fix also requires noticing that the watcher died.
+			// A misconfiguration will NEVER fix itself, so retrying it every
+			// two minutes forever is not resilience -- it is a watcher that
+			// looks alive while watching nothing. `orion watch fcra` (one
+			// letter wrong) did exactly that.
+			//
+			// A transient failure is different: a network blip or an expired
+			// token is fixable while this keeps running, and stopping would
+			// mean the fix also requires noticing the watcher died.
+			if permanent(err) {
+				ui.Fail(w, "%v", err)
+				return err
+			}
 			ui.Warn(w, "tick %d: %v", tick, err)
 		}
 		started += n
 
-		if opts.Once {
+		// A dry run has nothing to learn from a second tick: it changes
+		// nothing, so every subsequent tick prints the identical thing
+		// forever. Rehearsing once is the whole point.
+		if opts.Once || opts.DryRun {
 			break
 		}
 		if opts.MaxJobs > 0 && started >= opts.MaxJobs {
@@ -143,6 +154,16 @@ func Run(opts Options, deps Deps) error {
 			"where it got to, so the next watcher picks it up from there.")
 	}
 	return nil
+}
+
+// permanent reports whether an error will still be true in two minutes.
+//
+// Conservative: only errors this code RAISES about configuration count.
+// Treating an unfamiliar error as permanent would turn a transient blip
+// into a stopped watcher, which is the failure this whole loop is built to
+// survive.
+func permanent(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "not a registered project")
 }
 
 // oneTick does the reconciling, then starts at most one job. Returns how many
@@ -185,7 +206,31 @@ func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (int, error) {
 	next := keys[0]
 
 	if opts.DryRun {
-		ui.Ok(w, "would", "start %s (%d queued)", next, len(keys))
+		// Show the WHOLE queue in the order it would be worked, not just the
+		// head. "would start FCIA-7 (3 queued)" says a number; the point of
+		// rehearsing is to see whether the ORDER is the one you meant, and
+		// that cannot be checked against a count.
+		ui.Ok(w, "would", "start %s, then work down this queue:", next)
+		for i, k := range keys {
+			marker := "  "
+			if i == 0 {
+				marker = "->"
+			}
+			fmt.Fprintf(w, "          %s %d. %s\n", marker, i+1, k)
+		}
+		if opts.MaxJobs > 0 {
+			n := opts.MaxJobs
+			if n > len(keys) {
+				n = len(keys)
+			}
+			fmt.Fprintf(w, "          %s\n", ui.Dim(w,
+				fmt.Sprintf("--max-jobs %d: it would start the first %d and stop.",
+					opts.MaxJobs, n)))
+		} else {
+			fmt.Fprintf(w, "          %s\n", ui.Dim(w,
+				fmt.Sprintf("no job limit: it would work all %d, one at a time, and keep watching.",
+					len(keys))))
+		}
 		return 0, nil
 	}
 
@@ -281,16 +326,41 @@ func InFlight(j *tracker.Jira, home string, projects []string) (bool, string, er
 }
 
 func scope(home string, projects []string) ([]string, error) {
-	if len(projects) > 0 {
-		out := make([]string, len(projects))
-		for i, p := range projects {
-			out[i] = strings.ToUpper(strings.TrimSpace(p))
-		}
-		return out, nil
-	}
 	f, err := registry.Load(home)
 	if err != nil {
 		return nil, err
+	}
+	if len(projects) > 0 {
+		// Check every name against the registry rather than trusting it.
+		//
+		// `orion watch fcra` -- one letter wrong -- searched a project that
+		// does not exist, found nothing, and reported "nothing is waiting"
+		// exactly as it would for a correct key with an empty queue. A typo
+		// that looks like success is worse than one that fails, because the
+		// watcher then sits there all night watching nothing.
+		known := map[string]bool{}
+		for _, k := range f.Keys() {
+			known[strings.ToUpper(k)] = true
+		}
+		var out, unknown []string
+		for _, p := range projects {
+			u := strings.ToUpper(strings.TrimSpace(p))
+			if u == "" {
+				continue
+			}
+			if !known[u] {
+				unknown = append(unknown, u)
+				continue
+			}
+			out = append(out, u)
+		}
+		if len(unknown) > 0 {
+			return nil, fmt.Errorf("not a registered project: %s\n"+
+				"  Registered: %s\n"+
+				"  Bind one with: orion init (inside its repository)",
+				strings.Join(unknown, ", "), strings.Join(f.Keys(), ", "))
+		}
+		return out, nil
 	}
 	return f.Keys(), nil
 }
