@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/creds"
 	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/slack"
 	"github.com/orion-sdlc/orion/internal/tracker"
@@ -63,8 +64,10 @@ func SaveCache(configHash string, results map[string]string) {
 	if err != nil {
 		return
 	}
-	_ = os.MkdirAll(workspace.Home(), 0o755)
-	_ = os.WriteFile(cachePath(), b, 0o644)
+	_ = os.MkdirAll(workspace.Home(), workspace.HomeDirMode)
+	// The cache records who you authenticated as; it lives beside the
+	// credentials file and should not be more readable than it is.
+	_ = os.WriteFile(cachePath(), b, workspace.PrivateFileMode)
 }
 
 // checkGHScopes verifies gh can actually create a repository, not merely
@@ -220,14 +223,26 @@ func checkSlack(enabled bool) check {
 // A workspace, its logs and a node_modules will not fit in 200MB, and the
 // resulting errors are wildly misleading.
 func checkDisk() check {
-	dir := workspace.Home()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	dir, err := workspace.EnsureHome()
+	if err != nil {
 		return check{"disk", fail, "cannot write to " + dir, err.Error()}
 	}
 	probe := filepath.Join(dir, ".write-probe")
-	if err := os.WriteFile(probe, []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(probe, []byte("x"), workspace.PrivateFileMode); err != nil {
 		return check{"disk", fail, dir + " is not writable", err.Error()}
 	}
 	_ = os.Remove(probe)
-	return check{"disk", ok, dir + " writable", ""}
+
+	// Report the tree's exposure, not just that it is writable. This holds
+	// credentials, a spend ledger and full agent transcripts; a 0755 home
+	// from an earlier version is a quiet, durable leak to every other
+	// account on the machine.
+	if creds.PermsSupported() {
+		if fi, statErr := os.Stat(dir); statErr == nil && fi.Mode().Perm()&0o077 != 0 {
+			return check{"disk", warn,
+				fmt.Sprintf("%s is mode %o, readable by other users", dir, fi.Mode().Perm()),
+				"It holds credentials, usage and full run transcripts.\nFix with: chmod -R go-rwx " + dir}
+		}
+	}
+	return check{"disk", ok, dir + " writable, owner-only", ""}
 }

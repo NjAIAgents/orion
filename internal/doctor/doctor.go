@@ -217,8 +217,10 @@ func checkSandbox() check {
 }
 
 func checkHome() check {
-	h := workspace.Home()
-	if err := os.MkdirAll(filepath.Join(h, "projects"), 0o755); err != nil {
+	h, _ := workspace.EnsureHome()
+	// Same mode as the rest of the tree. One inconsistent directory is how
+	// someone later "tidies" the parent and reopens everything beneath it.
+	if err := os.MkdirAll(filepath.Join(h, "projects"), workspace.HomeDirMode); err != nil {
 		return check{"orion home", fail, h + " is not writable",
 			"Set ORION_HOME to a writable location."}
 	}
