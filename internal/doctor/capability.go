@@ -139,6 +139,11 @@ func checkJira(required bool) check {
 	if !cap.Authenticated {
 		return check{"jira", fail, "authentication failed", cap.Detail}
 	}
+	if cap.Undetermined {
+		// Distinct from a denial. Reporting "cannot create projects" here
+		// would send the user to fix a permission they may already have.
+		return check{"jira", warn, "permission undetermined", cap.Detail}
+	}
 	if !cap.CanCreateProject {
 		// WARN rather than FAIL: Orion degrades to binding an existing
 		// project key, so this is a reduced capability, not a dead stop.

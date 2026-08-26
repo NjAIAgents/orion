@@ -43,12 +43,16 @@ type Binding struct {
 // Capability is what the precheck discovered. Kept separate from Binding so
 // doctor can report readiness without touching a workspace.
 type Capability struct {
-	Reachable       bool
-	Authenticated   bool
-	AccountID       string
-	DisplayName     string
+	Reachable        bool
+	Authenticated    bool
+	AccountID        string
+	DisplayName      string
 	CanCreateProject bool
-	Detail          string
+	// Undetermined means the permission question could not be answered, as
+	// distinct from being answered "no". Collapsing the two would send a
+	// user to fix a problem they may not have.
+	Undetermined bool
+	Detail       string
 }
 
 // Tracker is the interface a provider implements. Jira is the only
@@ -126,10 +130,9 @@ func (j *Jira) do(method, path string, body any) (int, []byte, error) {
 }
 
 // Probe answers the questions the precheck needs, before any workspace
-// exists. Crucially it checks the CREATE_PROJECT permission explicitly
-// rather than discovering it by trying: finding out mid-run that you lack
-// admin rights, after an idea has been captured and planned, wastes the
-// whole run.
+// exists. It checks the project-creation permission explicitly rather than
+// discovering it by trying: finding out mid-run that you lack the right,
+// after an idea has been captured and planned, wastes the whole run.
 func (j *Jira) Probe() (Capability, error) {
 	cap := Capability{}
 
@@ -162,37 +165,90 @@ func (j *Jira) Probe() (Capability, error) {
 	cap.AccountID = me.AccountID
 	cap.DisplayName = me.DisplayName
 
-	// Global permission check. ADMINISTER implies project creation;
-	// CREATE_PROJECT may be granted on its own.
-	code, body, err = j.do("POST", "/rest/api/3/permissions/check", map[string]any{
-		"globalPermissions": []string{"ADMINISTER", "CREATE_PROJECT"},
-	})
-	if err != nil || code >= 400 {
-		// Not fatal. Some deployments restrict this endpoint, and a probe
-		// that cannot answer must say so rather than assert a negative.
-		cap.Detail = "could not verify project-creation permission" +
-			" (the permissions endpoint returned " + fmt.Sprint(code) + ")." +
-			" Orion will attempt creation and fall back to binding an existing key."
+	// Global permission check.
+	//
+	// The key is DISCOVERED, not hardcoded. Atlassian has renamed this
+	// permission ("Create team-managed projects", latterly "Create
+	// team-managed spaces"), the key differs between Cloud and Data Center,
+	// and the bulk-permissions endpoint returns 400 on a key it does not
+	// recognise. Hardcoding one guess means a wrong guess reads as "no
+	// permission", which sends the user off to fix a problem they do not
+	// have.
+	//
+	// Note on scope: the team-managed creation permission covers exactly the
+	// kind of project CreateProject makes. Company-managed projects need
+	// ADMINISTER, which is why ADMINISTER is checked too rather than assumed
+	// to be a superset.
+	granted, determined := j.globalPermissions(projectCreateKeys)
+	if !determined {
+		// A probe that cannot answer must say so. Asserting a negative here
+		// would be worse than admitting uncertainty: Orion still attempts
+		// creation and degrades cleanly if it is refused.
+		cap.Detail = "authenticated as " + me.DisplayName +
+			", but project-creation permission could not be determined on this instance.\n" +
+			"  Orion will attempt creation and fall back to binding an existing key."
+		cap.Undetermined = true
 		return cap, nil
 	}
-	var perms struct {
-		GlobalPermissions []string `json:"globalPermissions"`
-	}
-	_ = json.Unmarshal(body, &perms)
-	for _, p := range perms.GlobalPermissions {
-		if p == "ADMINISTER" || p == "CREATE_PROJECT" {
-			cap.CanCreateProject = true
-		}
-	}
+	cap.CanCreateProject = len(granted) > 0
 	if !cap.CanCreateProject {
 		cap.Detail = "authenticated as " + me.DisplayName +
 			", but this account cannot create Jira projects.\n" +
-			"  Either grant it the CREATE_PROJECT global permission, or set\n" +
-			"  tracker.project_key in orion.json to bind an existing project instead."
+			"  Either grant it the \"Create team-managed projects\" global permission,\n" +
+			"  or set tracker.project_key in orion.json to bind an existing project."
 	} else {
-		cap.Detail = "authenticated as " + me.DisplayName + ", can create projects"
+		cap.Detail = "authenticated as " + me.DisplayName +
+			", can create projects (via " + strings.Join(granted, ", ") + ")"
 	}
 	return cap, nil
+}
+
+// projectCreateKeys are the keys that have meant "may create a project"
+// across Jira versions and deployment types. Probed in order; the first the
+// instance recognises wins. ADMINISTER and SYSTEM_ADMIN are included because
+// they imply the capability even where the narrower key is absent.
+var projectCreateKeys = []string{
+	"CREATE_PROJECT", // Jira Cloud: "Create team-managed projects"
+	"ADMINISTER",     // implies project creation, incl. company-managed
+	"SYSTEM_ADMIN",
+}
+
+// globalPermissions returns which of the candidate keys are granted, and
+// whether the question could be answered at all.
+//
+// The second return value is the important one. false means "unknown", which
+// is a different thing from "none granted" and must not be collapsed into it.
+func (j *Jira) globalPermissions(candidates []string) (granted []string, determined bool) {
+	// Probe keys individually. A single bulk call fails wholesale if any one
+	// key is unrecognised, which would discard the answer for the keys that
+	// were valid.
+	for _, key := range candidates {
+		code, body, err := j.do("POST", "/rest/api/3/permissions/check", map[string]any{
+			"globalPermissions": []string{key},
+		})
+		if err != nil {
+			continue
+		}
+		if code == 400 {
+			continue // key not recognised on this instance; try the next
+		}
+		if code >= 400 {
+			continue // endpoint restricted; another key may still answer
+		}
+		determined = true
+		var perms struct {
+			GlobalPermissions []string `json:"globalPermissions"`
+		}
+		if json.Unmarshal(body, &perms) != nil {
+			continue
+		}
+		for _, p := range perms.GlobalPermissions {
+			if p == key {
+				granted = append(granted, key)
+			}
+		}
+	}
+	return granted, determined
 }
 
 func (j *Jira) ProjectExists(key string) (bool, string, error) {

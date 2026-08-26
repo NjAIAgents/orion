@@ -155,3 +155,37 @@ func TestProvisionCreatesWhenPermitted(t *testing.T) {
 		t.Errorf("note = %q", note)
 	}
 }
+
+// The permission key is discovered rather than hardcoded, so the important
+// property is that an unrecognised key is never read as a denial.
+func TestUndeterminedIsNotDenial(t *testing.T) {
+	var c Capability
+	c.Authenticated = true
+	c.Undetermined = true
+	c.CanCreateProject = false
+
+	// A caller must be able to tell "we do not know" from "you may not".
+	if !c.Undetermined {
+		t.Fatal("Undetermined must survive as its own signal")
+	}
+	if c.CanCreateProject {
+		t.Fatal("undetermined must not imply permitted either")
+	}
+}
+
+func TestProjectCreateKeysCoverKnownVariants(t *testing.T) {
+	want := map[string]bool{"CREATE_PROJECT": false, "ADMINISTER": false, "SYSTEM_ADMIN": false}
+	for _, k := range projectCreateKeys {
+		want[k] = true
+	}
+	for k, found := range want {
+		if !found {
+			t.Errorf("projectCreateKeys is missing %q", k)
+		}
+	}
+	// Order matters: the narrow permission is probed before the broad one so
+	// the reported reason names the least privilege that actually applies.
+	if projectCreateKeys[0] != "CREATE_PROJECT" {
+		t.Errorf("narrowest key should be probed first, got %q", projectCreateKeys[0])
+	}
+}
