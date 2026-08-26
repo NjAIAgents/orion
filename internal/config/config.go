@@ -90,6 +90,32 @@ type Slack struct {
 	// reports that checks pass and waits for a human to merge on GitHub --
 	// which is the safe default and needs no extra OAuth scopes.
 	RequireApproval bool `json:"require_approval"`
+	// Mention are Slack user IDs (U...) to @-mention when a message needs
+	// somebody to act. Empty falls back to InviteUsers.
+	//
+	// ONLY on messages that require action: blocked, failed, and approval
+	// requests. Mentioning on every routine event is how a channel gets
+	// muted, and a muted channel delivers nothing at all -- so a mention
+	// attached to good news costs the delivery of the bad.
+	Mention []string `json:"mention"`
+}
+
+// CI is the build gate and what Orion does when it goes red.
+type CI struct {
+	// AutoFix sends a failing build back to an agent on the same branch
+	// rather than stopping for a person.
+	//
+	// Off by default. It spends money without being asked, and on a
+	// repository whose tests are flaky it will spend it on nothing.
+	AutoFix bool `json:"auto_fix"`
+	// MaxFixAttempts bounds that loop. Zero means the built-in 3.
+	//
+	// A ceiling is not the only brake and not the most important one --
+	// an identical repeated failure stops the loop immediately, because an
+	// agent that gets back a byte-identical error has learned nothing and
+	// spending the remaining attempts proves only that it can fail the same
+	// way three times.
+	MaxFixAttempts int `json:"max_fix_attempts"`
 }
 
 // Budget caps what Orion spends over a rolling seven days.
@@ -270,6 +296,7 @@ type Config struct {
 	AutoMerge   AutoMerge         `json:"auto_merge"`
 	Budget      Budget            `json:"budget"`
 	Slack       Slack             `json:"slack"`
+	CI          CI                `json:"ci"`
 	VCS         VCS               `json:"vcs"`
 	Tracker     Tracker           `json:"tracker"`
 	Delegation  Delegation        `json:"delegation"`

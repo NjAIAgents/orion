@@ -73,7 +73,7 @@ RUNNING
   orion work <KEY> [KEY...]   work tickets, in the order given
   orion queue                 what the watcher would pick up, in order (read-only)
   orion collect [KEY...]      finish tickets awaiting CI: close, refresh, prune
-                              (--dry-run to see the verdicts, --no-prune to keep worktrees)
+                              (--dry-run for verdicts only, --no-prune, --no-fix)
   orion repos                 project key -> repository, as adoption recorded it
   orion repos unbind <KEY>    forget one mapping
   orion sandbox               where agents actually worked: clones and worktrees
@@ -82,6 +82,7 @@ RUNNING
   orion sandbox <KEY> --shell start a shell in it
   orion sandbox <KEY> --path  print the path only (use with cd)
   orion sandbox prune         remove worktrees whose branch is merged and clean
+  orion slack test [KEY]      send a real message and report exactly what breaks
 
 GUARDRAILS
   orion doctor [--fix]        preflight: tools, auth, sandbox, config
@@ -180,6 +181,8 @@ func main() {
 		runRepos(os.Args[2:])
 	case "sandbox":
 		runSandbox(os.Args[2:])
+	case "slack":
+		runSlackCmd(os.Args[2:])
 	case "collect":
 		runCollect(os.Args[2:])
 	case "reset":
@@ -545,6 +548,17 @@ slackStep:
 		ui.Ok(os.Stdout, verb, "Slack channel #%s", ch.Name)
 		inviteToChannel(sc, ch, cfg)
 		patchConfig(cfgPath, map[string][2]string{"slack": {"enabled", "true"}}, "")
+
+		// Record the channel ON THE WORKSPACE, which is the only place
+		// anything later looks for it.
+		//
+		// Without this, adoption created the channel, enabled Slack in the
+		// config, printed a success line -- and left the workspace's own
+		// record nil, so notify was handed an empty channel and skipped
+		// Slack entirely, without error, for every run. Nothing failed,
+		// because nothing had been asked. The whole feature looked broken
+		// while every part of it was working.
+		recordChannel(dir, ch)
 	}
 }
 

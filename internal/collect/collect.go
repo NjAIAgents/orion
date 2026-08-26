@@ -82,6 +82,9 @@ type Deps struct {
 	// because it is the only irreversible action in this package, and the
 	// only one a person explicitly authorised.
 	Merge func(dir, branch, reason string) error
+	// Fix sends a CI failure back to an agent on the same branch and reports
+	// whether it pushed anything. Nil disables the fix loop.
+	Fix func(ws *workspace.Workspace, key, branch, failure string) (pushed bool, err error)
 	// Slack reads approvals. Nil disables the approval path entirely, which
 	// is the correct behaviour when the extra OAuth scopes are not granted:
 	// Orion then reports that checks pass and waits for a human to merge.
@@ -118,6 +121,10 @@ type Options struct {
 	// NoPrune keeps merged worktrees. For anyone who wants the checkout
 	// after the merge -- reviewing what actually shipped, most often.
 	NoPrune bool
+	// NoFix disables the CI fix loop for this pass without editing config.
+	// For when you want to see the failure yourself before anything spends
+	// money reacting to it.
+	NoFix bool
 }
 
 // Result is one ticket's reconciliation.
@@ -255,7 +262,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		return res
 
 	case VerdictFailing:
-		return failing(res, key, pr, opts, deps, ws, log, w)
+		return failing(res, key, pr, cfg, branch, opts, deps, ws, log, w)
 
 	case VerdictClosed:
 		// Closed without merging is a decision, not a fault. Take it out of
@@ -289,8 +296,24 @@ func one(key string, opts Options, deps Deps) (res Result) {
 // branch already exists with commits on it, so a re-queue would start a
 // second agent from develop and produce a competing branch for the same
 // ticket. A person decides whether to fix the branch or discard it.
-func failing(res Result, key string, pr PR, opts Options, deps Deps,
-	ws *workspace.Workspace, log *events.Log, w io.Writer) Result {
+func failing(res Result, key string, pr PR, cfg config.Config, branch string,
+	opts Options, deps Deps, ws *workspace.Workspace, log *events.Log, w io.Writer) Result {
+
+	// Try to fix it first, if that is switched on and there is budget left.
+	// A red build is the one failure the agent that caused it is best placed
+	// to resolve: the branch is its own, the failure is specific, and the
+	// alternative is a person reading a CI log to relay it back by hand.
+	if cfg.CI.AutoFix && deps.Fix != nil && !opts.NoFix {
+		handled, r := tryFix(res, key, pr, cfg, branch, opts, deps, ws, log, w)
+		if handled {
+			return r
+		}
+		// Not handled, but the attempt may still have failed in a way worth
+		// reporting. Carrying the error forward matters because the CLI
+		// exits on it -- dropping it here made a fix run that died look
+		// exactly like one that was never tried.
+		res.Err = r.Err
+	}
 
 	if opts.DryRun {
 		ui.Ok(w, "would", "%s: mark failed; %s", key, firstLine(pr.Detail))
@@ -313,7 +336,7 @@ func failing(res Result, key string, pr PR, opts Options, deps Deps,
 	title, body := msgCIFailed(key, pr)
 	tell(w, log, notify.Event{
 		Channel: channelOf(ws), Level: notify.Blocked, Workspace: ws.ID,
-		Title: title, Body: body,
+		Title: title, Body: mention(cfg) + body,
 	})
 	ui.Fail(w, "%s: CI failed. %s", key, firstLine(pr.Detail))
 	return res
@@ -347,6 +370,9 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 		ui.Warn(w, "%s: merged and released, but could not transition to Done: %v", key, err)
 	}
 	_ = deps.Jira.Comment(key, "Merged: "+pr.URL)
+	// Forget the fix history. A ticket reopened later must not start with
+	// its attempts already spent.
+	_ = clearFixes(ws.Dir, key)
 	log.Emit(events.Event{Kind: events.KindMerge, Actor: events.ActorCI, Msg: "merged " + pr.URL})
 	res.Changed = true
 	ui.Ok(w, "ok", "%s merged  %s", key, pr.URL)

@@ -25,12 +25,14 @@ func runCollect(args []string) {
 		Out:     os.Stdout,
 		DryRun:  hasFlag(args, "--dry-run"),
 		NoPrune: hasFlag(args, "--no-prune"),
+		NoFix:   hasFlag(args, "--no-fix"),
 	}, collect.Deps{
 		Jira:    mustJiraSearch(),
 		Status:  prStatus,
 		Refresh: workspace.Refresh,
 		Prune:   pruneBranch,
 		Merge:   mergePR,
+		Fix:     fixRun,
 		Slack:   slackForApproval(),
 	})
 

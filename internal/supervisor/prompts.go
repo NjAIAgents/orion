@@ -174,6 +174,53 @@ func quote(s string) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// FixPrompt asks an agent to make its own branch pass CI.
+//
+// Narrower than the ticket prompt on purpose. The agent already built this
+// change and believed it worked; what it needs now is not latitude but a
+// specific failure and a boundary. The failure mode being guarded against is
+// an agent that "fixes" CI by weakening the test that caught it, which
+// produces a green build and a defect, and is the single most likely wrong
+// move available here.
+func FixPrompt(key, branch, failure string) string {
+	return strings.Join([]string{
+		"CI failed on your branch. Fix it.",
+		"",
+		"Ticket: " + key,
+		"Branch: " + branch + " (you are already on it; do not create another)",
+		"",
+		"THE FAILURE",
+		strings.TrimSpace(failure),
+		"",
+		"WHAT TO DO",
+		"Reproduce it locally first -- run ./scripts/test.sh if it exists, or the",
+		"project's own suite. A fix for a failure you have not seen is a guess.",
+		"Then make the smallest change that makes it pass.",
+		"",
+		"WHAT NOT TO DO",
+		"Do not delete, skip, weaken or rewrite a test to make it pass unless the",
+		"TEST is what is wrong -- and if it is, say so explicitly and explain why",
+		"in the commit message. A green build bought by removing the check that",
+		"failed is worse than a red one: the defect is still there and nothing is",
+		"watching for it any more.",
+		"Do not fix unrelated failures or tidy code you happen to be reading. This",
+		"branch is under review, and a diff that also changes three other things",
+		"is one a reviewer cannot approve without re-reading all of it.",
+		"",
+		"IF YOU CANNOT FIX IT",
+		"Stop and say why, as the last thing you say. Do not commit a partial or",
+		"speculative change hoping CI disagrees. Orion re-runs CI on whatever you",
+		"push, so a guess costs a full build to disprove -- and if you produce no",
+		"commit, Orion stops and asks a person, which is the correct outcome when",
+		"the answer is not available to you.",
+		"",
+		"COMMITS",
+		"Commit on this branch. Say in the message what was broken and why the",
+		"change fixes it; 'fix CI' tells a reviewer nothing they did not know.",
+		"Do not push, merge, or open a pull request: Orion does that.",
+	}, "\n")
+}
+
 // TicketPrompt is the instruction for implementing one tracker issue.
 //
 // Every clause here is load-bearing, because this text is what decides how
