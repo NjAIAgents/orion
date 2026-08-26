@@ -51,13 +51,17 @@ type check struct {
 }
 
 // Run executes every check and returns a process exit code.
-func Run(w io.Writer, path string) int {
+//
+// autoFix permits the checks that CAN repair themselves to do so. It is
+// opt-in because repair here means network access and writing to disk, which
+// is not something a health check should do as a side effect of being run.
+func Run(w io.Writer, path string, autoFix bool) int {
 	checks := []check{
 		checkClaude(),
 		checkGit(),
 		checkGH(),
 		checkGHScopes(),
-		checkNJAgents(),
+		checkNJAgents(config.Load(rootOr(path)).Delegation.NJAgentsDir, autoFix),
 		checkSandbox(),
 		checkHome(),
 		checkDisk(),
@@ -105,6 +109,15 @@ func Run(w io.Writer, path string) int {
 		fmt.Fprintln(w, "Ready.")
 		return 0
 	}
+}
+
+// rootOr resolves the project root, falling back to the given path so a
+// config lookup outside a project does not fail the whole run.
+func rootOr(path string) string {
+	if root, err := config.FindRoot(path); err == nil {
+		return root
+	}
+	return path
 }
 
 // configHash fingerprints the config so a cached capability verdict is

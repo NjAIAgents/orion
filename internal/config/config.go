@@ -31,6 +31,14 @@ type Limits struct {
 // breaker mid-review and the breaker is wrong to do so.
 type Delegation struct {
 	Enabled bool `json:"enabled"`
+	// NJAgentsDir points at the nj-agents clone. Empty means discover it:
+	// by env var, then by resolving an installed skill's symlink back to
+	// its clone root, then by Orion's own managed clone.
+	NJAgentsDir string `json:"nj_agents_dir,omitempty"`
+	// NJAgentsRef pins the clone to a tag or branch. Empty clones the
+	// default branch, which pins nothing and is not reproducible across
+	// machines or across time.
+	NJAgentsRef string `json:"nj_agents_ref,omitempty"`
 	// ExtraToolCallsForReview is added to the tool budget while a delegated
 	// review orchestrator is running. Generous by design: the failure mode
 	// of too small a number is a review that cannot finish.

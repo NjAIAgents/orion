@@ -2,13 +2,13 @@ package doctor
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -88,35 +88,61 @@ func checkGHScopes() check {
 			"gh auth refresh -h github.com -s repo,workflow"}
 }
 
-// checkNJAgents confirms the delegated skill library is installed. Orion
-// delegates review, security, testing and PR authoring to it, so its absence
-// is not cosmetic: those stages have no fallback and should not be faked
-// with a thinner substitute.
-func checkNJAgents() check {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return check{"nj-agents", warn, "cannot resolve home directory", ""}
-	}
-	skills := filepath.Join(home, ".claude", "skills")
-	required := []string{"pre-push-review", "review-secrets", "review-tests-build", "pr-describe"}
+// checkNJAgents confirms the delegated toolkit is present AND intact.
+//
+// This is a hard dependency. Orion delegates review, secret scanning,
+// test/build verification, PR authoring and PM decomposition to nj-agents;
+// those stages have no fallback and must not be faked with a thinner
+// substitute. So a missing toolkit is FAIL, not WARN.
+//
+// The check resolves the symlink rather than trusting the skills directory.
+// Skills install as links back to a clone, and the shared contract they all
+// read (CONVENTIONS.md) lives at that clone's root, two levels up. Looking
+// only in ~/.claude/skills passes while the file the skills depend on is
+// absent.
+func checkNJAgents(configured string, autoFix bool) check {
+	home := workspace.Home()
+	inst := njagents.Discover(configured, home)
 
-	var missing []string
-	for _, s := range required {
-		if _, err := os.Stat(filepath.Join(skills, s)); err != nil {
-			missing = append(missing, s)
+	if inst == nil && autoFix {
+		cloned, err := njagents.Clone(home, "")
+		if err != nil {
+			return check{"nj-agents", fail, "not installed, and the clone failed",
+				err.Error() + "\nManually: " + njagents.CloneCommand(home)}
+		}
+		inst = cloned
+	}
+
+	if inst == nil {
+		return check{"nj-agents", fail, "not installed",
+			"Orion delegates review, security, testing, PR authoring and PM\n" +
+				"decomposition to nj-agents. Those stages have no fallback.\n" +
+				"Fetch it automatically:  orion doctor --fix\n" +
+				"Or do it yourself:       " + njagents.CloneCommand(home)}
+	}
+
+	if len(inst.Missing) > 0 {
+		return check{"nj-agents", fail,
+			"incomplete at " + inst.Root + " (" + inst.Via + ")",
+			"Missing: " + strings.Join(inst.Missing, ", ") + "\n" +
+				"A partial checkout is worse than none: the review skills read the\n" +
+				"shared contracts at the repo root and fail confusingly without them.\n" +
+				"Repair with: git -C " + inst.Root + " pull"}
+	}
+
+	detail := inst.Root + " (" + inst.Via
+	if inst.Commit != "" {
+		detail += " @ " + inst.Commit
+		if inst.Dirty {
+			detail += ", modified"
 		}
 	}
-	switch {
-	case len(missing) == len(required):
-		return check{"nj-agents", fail, "not installed at ~/.claude/skills",
-			"Orion delegates review, security, testing and PR authoring to nj-agents.\n" +
-				"Install it: git clone https://github.com/navjyotnishant/nj-agents && ./install.sh"}
-	case len(missing) > 0:
-		return check{"nj-agents", warn, "partially installed, missing: " + strings.Join(missing, ", "),
-			"Re-run ./install.sh in the nj-agents repo."}
-	default:
-		return check{"nj-agents", ok, "installed (" + fmt.Sprint(len(required)) + " required skills present)", ""}
+	detail += ")"
+
+	if len(inst.Warnings) > 0 {
+		return check{"nj-agents", warn, detail, strings.Join(inst.Warnings, "\n")}
 	}
+	return check{"nj-agents", ok, detail, ""}
 }
 
 // checkJira probes reachability, authentication and the project-creation

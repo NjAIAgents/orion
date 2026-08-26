@@ -20,15 +20,83 @@ jobs:
   build:
     needs: test
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - uses: actions/setup-go@v5
         with: { go-version: '1.22' }
+
+      - id: v
+        name: Resolve version
+        run: |
+          # Tag is vX.Y.Z; brew and scoop want the bare X.Y.Z in the version
+          # field, while the download URLs keep the v. Both forms are needed.
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - run: make dist
+
+      - name: Render brew formula and scoop manifest
+        env:
+          # Both package managers require a licence field. The script refuses
+          # to render without one rather than inventing a legal claim, so this
+          # must match the repository's actual LICENSE file.
+          ORION_LICENSE: ${{ vars.ORION_LICENSE }}
+        run: scripts/render-packaging.sh "${{ steps.v.outputs.version }}"
+
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/orion-*
-            dist/SHA256SUMS
+            dist/orion_*
+            dist/checksums.txt
           generate_release_notes: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packaging
+          path: dist/packaging/
+
+  # Publishing to the tap and the bucket is a separate job on purpose. If it
+  # fails, the release itself still exists and is installable by hand; the
+  # package managers can be caught up with a re-run rather than a re-tag.
+  publish-packages:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: packaging, path: packaging }
+
+      - name: Publish Homebrew formula
+        env:
+          # GITHUB_TOKEN cannot push to another repository. This needs a PAT
+          # with contents:write on navjyotnishant/homebrew-tap.
+          TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          [ -n "$TOKEN" ] || { echo "TAP_GITHUB_TOKEN is not set; skipping tap update" >&2; exit 1; }
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/navjyotnishant/homebrew-tap.git" tap
+          cp packaging/orion.rb tap/Formula/orion.rb
+          cd tap
+          git config user.name  "orion-release"
+          git config user.email "orion-release@users.noreply.github.com"
+          git add Formula/orion.rb
+          git diff --staged --quiet && { echo "formula unchanged"; exit 0; }
+          git commit -m "orion ${VERSION}"
+          git push
+
+      - name: Publish Scoop manifest
+        env:
+          TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          [ -n "$TOKEN" ] || { echo "TAP_GITHUB_TOKEN is not set; skipping bucket update" >&2; exit 1; }
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/navjyotnishant/scoop-bucket.git" bucket
+          cp packaging/orion.json bucket/bucket/orion.json
+          cd bucket
+          git config user.name  "orion-release"
+          git config user.email "orion-release@users.noreply.github.com"
+          git add bucket/orion.json
+          git diff --staged --quiet && { echo "manifest unchanged"; exit 0; }
+          git commit -m "orion ${VERSION}"
+          git push

@@ -3,6 +3,12 @@
 
 BINARY  := orion
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# RELVER is VERSION with any leading v stripped. Archive names always carry
+# exactly one v (orion_v<RELVER>_<os>_<arch>), matching the whodunit tap and
+# bucket. Deriving it rather than reusing VERSION keeps the name identical
+# whether or not a tag exists: git describe yields "v0.1.0" on a tag but a
+# bare sha otherwise, and the templates hardcode the v.
+RELVER := $(patsubst v%,%,$(VERSION))
 LDFLAGS := -s -w -X main.Version=$(VERSION)
 PREFIX  ?= $(HOME)/.local
 
@@ -32,18 +38,46 @@ install: build
 
 # Cross-compile every supported target. CGO is off, so this needs no
 # platform toolchains.
-PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64
+# windows/arm64 included: the scoop manifest declares an arm64 architecture,
+# and a manifest promising an archive the release does not contain is a
+# broken install for anyone on an ARM Windows machine.
+PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 windows/arm64
 
+# dist produces the archives brew and scoop consume, in the same layout the
+# whodunit tap and bucket already use:
+#
+#   orion_v<version>_<os>_<arch>.tar.gz   unix
+#   orion_v<version>_<os>_<arch>.zip      windows
+#   checksums.txt                         name checked by scoop's autoupdate
+#
+# The archive holds a PLAIN `orion`, not a versioned filename. Homebrew's
+# install block does `bin.install "orion"`, so a versioned name inside the
+# archive fails with "no such file" on every upgrade.
 dist:
-	@mkdir -p dist
+	@rm -rf dist && mkdir -p dist/stage
 	@for p in $(PLATFORMS); do \
 	  os=$${p%/*}; arch=$${p#*/}; ext=""; \
 	  [ "$$os" = "windows" ] && ext=".exe"; \
 	  echo "building $$os/$$arch"; \
 	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath \
-	    -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-$$os-$$arch$$ext ./cmd/orion; \
+	    -ldflags "$(LDFLAGS)" -o dist/stage/$(BINARY)$$ext ./cmd/orion || exit 1; \
+	  base=$(BINARY)_v$(RELVER)_$${os}_$${arch}; \
+	  if [ "$$os" = "windows" ]; then \
+	    (cd dist/stage && zip -q ../$$base.zip $(BINARY)$$ext); \
+	  else \
+	    (cd dist/stage && tar czf ../$$base.tar.gz $(BINARY)$$ext); \
+	  fi; \
+	  rm -f dist/stage/$(BINARY)$$ext; \
 	done
-	@cd dist && shasum -a 256 * > SHA256SUMS 2>/dev/null || sha256sum * > SHA256SUMS
+	@rmdir dist/stage
+	@cd dist && (shasum -a 256 * 2>/dev/null || sha256sum *) > checksums.txt
+	@echo "--- dist/" && ls -1 dist
+
+# packaging renders the brew formula and scoop manifest from the checksums
+# this build produced. Kept a separate target so `make dist` stays usable
+# without a licence set.
+packaging: dist
+	@scripts/render-packaging.sh $(RELVER)
 
 clean:
 	rm -rf bin dist

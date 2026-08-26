@@ -30,11 +30,49 @@ So Orion is one static binary, no cgo, empty `go.sum`, builds offline.
 ## Install
 
 ```bash
-git clone https://github.com/orion-sdlc/orion && cd orion
+brew install navjyotnishant/tap/orion     # macOS, Linux
+scoop bucket add navjyotnishant https://github.com/navjyotnishant/scoop-bucket
+scoop install orion                        # Windows
+```
+
+From source:
+
+```bash
+git clone https://github.com/navjyotnishant/orion && cd orion
 make test     # build, vet and the full test suite
 make install  # to ~/.local/bin
-orion doctor
+orion doctor --fix
 ```
+
+## nj-agents is a hard dependency
+
+Orion delegates review, secret scanning, test and build verification, PR
+authoring and PM decomposition to
+[nj-agents](https://github.com/navjyotnishant/nj-agents). Those stages have
+no fallback, so `orion doctor` grades a missing toolkit as FAIL rather than
+a warning.
+
+```bash
+orion doctor --fix        # clone it if absent
+orion njagents status     # where it is, which commit, how stale
+orion njagents update     # nj-agents ships independently; pull its changes
+```
+
+Discovery order is deliberate: an explicit `delegation.nj_agents_dir`, then
+`ORION_NJ_AGENTS_DIR`, then resolving an installed skill's symlink back to
+its clone, then Orion's own managed clone under `$ORION_HOME/vendor`. Your
+copy always wins over Orion's, because two clones drifting apart with Orion
+silently using the stale one is a genuinely nasty failure.
+
+`update` is fast-forward only, and it refuses to touch a clone Orion did not
+create unless you pass `--force`. Pulling someone's working repository can
+destroy uncommitted work.
+
+The check resolves the symlink rather than trusting `~/.claude/skills`.
+Skills install as links back to a clone, and the shared contract they all
+read (`CONVENTIONS.md`) lives at that clone's root, two levels up. Looking
+only in the skills directory passes while the file the skills depend on is
+missing.
 
 `orion doctor` checks the Claude CLI, git identity, `gh` auth, OS sandbox
 availability and your project config, and grades each OK / WARN / FAIL. Only
@@ -175,6 +213,11 @@ including the deliberate carve-out from its propose-never-act contract.
 
 Read these before relying on it.
 
+- **There is no LICENSE file.** Both a Homebrew formula and a Scoop manifest
+  must declare one, so `scripts/render-packaging.sh` refuses to render until
+  `ORION_LICENSE` is set. It will not invent a licence: a wrong SPDX id in a
+  public tap is a legal claim about the code, not a typo. Releases are
+  blocked on adding one.
 - **The Jira REST calls have never touched a live instance.** Shapes and the
   project-creation permission key are inferred. The key is discovered at
   runtime rather than hardcoded, and an unrecognised key is treated as

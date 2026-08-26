@@ -21,6 +21,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/doctor"
 	"github.com/orion-sdlc/orion/internal/hook"
 	"github.com/orion-sdlc/orion/internal/lessons"
+	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/provision"
 	"github.com/orion-sdlc/orion/internal/state"
 	"github.com/orion-sdlc/orion/internal/supervisor"
@@ -45,9 +46,15 @@ RUNNING
   orion status <id>           show stage, breaker state and last run
 
 GUARDRAILS
-  orion doctor                preflight: tools, auth, sandbox, config
+  orion doctor [--fix]        preflight: tools, auth, sandbox, config
+                              --fix fetches nj-agents if it is missing
   orion reset --session <id>  clear a tripped breaker after human review
   orion fix start|end         mark a bug fix, protecting the failing test
+
+DEPENDENCIES
+  orion njagents status       where nj-agents is, which commit, how stale
+  orion njagents update       fast-forward it (nj-agents ships independently)
+  orion njagents install      wire it into a workspace via its own install.sh
 
 MEMORY (shared across every project)
   orion lessons add "<text>"  record a correction so it is not repeated
@@ -73,7 +80,7 @@ func main() {
 	case "hook":
 		runHook(os.Args[2:])
 	case "doctor":
-		os.Exit(doctor.Run(os.Stdout, argFlag(os.Args[2:], "--path", ".")))
+		os.Exit(doctor.Run(os.Stdout, argFlag(os.Args[2:], "--path", "."), hasFlag(os.Args[2:], "--fix")))
 	case "new":
 		mustArg(os.Args, 2, "orion new \"<idea>\"")
 		runNew(os.Args[2], os.Args[3:])
@@ -99,6 +106,8 @@ func main() {
 	case "fix":
 		mustArg(os.Args, 2, "orion fix start|end")
 		runFix(os.Args[2])
+	case "njagents", "nj-agents":
+		runNJAgents(os.Args[2:])
 	case "lessons":
 		runLessons(os.Args[2:])
 	case "version", "--version", "-v":
@@ -378,6 +387,100 @@ func runTrackerProvision(ws *workspace.Workspace, cfg config.Config, confirm fun
 	fmt.Println("\nNext, decompose the plan into issues. The whole tree is previewed")
 	fmt.Println("for one approval before anything is created:")
 	fmt.Printf("  claude -p \"Use /pm-plan to decompose plans/*.plan.md into %s. Preview the full tree and wait for approval.\"\n", b.Key)
+}
+
+// runNJAgents inspects and refreshes the delegated toolkit.
+//
+// nj-agents is developed independently of Orion, so its improvements reach
+// Orion only if something fetches them. This is that something.
+func runNJAgents(args []string) {
+	sub := "status"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub = args[0]
+		args = args[1:]
+	}
+	home := workspace.Home()
+	cfg := config.Load(rootOrCwd())
+	inst := njagents.Discover(cfg.Delegation.NJAgentsDir, home)
+
+	switch sub {
+	case "status":
+		if inst == nil {
+			fmt.Println("nj-agents  NOT FOUND")
+			fmt.Println("fetch it:  orion doctor --fix")
+			fmt.Println("or:        " + njagents.CloneCommand(home))
+			os.Exit(1)
+		}
+		fmt.Printf("root       %s\nfound via  %s\ncommit     %s\n", inst.Root, inst.Via, inst.Commit)
+		if inst.Dirty {
+			fmt.Println("tree       MODIFIED (local changes present)")
+		}
+		fmt.Printf("owner      %s\n", ownerLabel(inst))
+		if behind, known := njagents.Refreshed(inst); known && behind > 0 {
+			fmt.Printf("stale      %d commit(s) behind origin as of the last fetch\n", behind)
+			fmt.Println("           run: orion njagents update")
+		} else if known {
+			fmt.Println("stale      up to date as of the last fetch")
+		}
+		for _, m := range inst.Missing {
+			fmt.Printf("MISSING    %s\n", m)
+		}
+		for _, w := range inst.Warnings {
+			fmt.Printf("WARNING    %s\n", w)
+		}
+
+	case "update":
+		res, err := njagents.Update(inst, cfg.Delegation.NJAgentsRef, hasFlag(args, "--force"))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "orion: %v\n", err)
+			os.Exit(1)
+		}
+		if res.Skipped != "" {
+			fmt.Println("skipped: " + res.Skipped)
+			return
+		}
+		if res.Changed {
+			fmt.Printf("updated    %s -> %s\n", res.From, res.To)
+		} else {
+			fmt.Println("already up to date at " + res.From)
+		}
+
+	case "install":
+		dir := argFlag(args, "--project", "")
+		if dir == "" {
+			fmt.Fprintln(os.Stderr, "orion njagents install --project <dir>")
+			os.Exit(64)
+		}
+		// Running a third-party installer is a different consent level from
+		// reading files, so it is never a side effect of another command.
+		fmt.Println("This runs the toolkit's own installer:")
+		fmt.Println("  " + njagents.InstallCommand(inst, dir))
+		out, err := njagents.InstallInto(inst, dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "orion: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Print(out)
+
+	default:
+		fmt.Fprintf(os.Stderr, "orion: unknown njagents subcommand %q (status|update|install)\n", sub)
+		os.Exit(64)
+	}
+}
+
+func ownerLabel(i *njagents.Install) string {
+	if i.Managed {
+		return "Orion-managed (safe to update automatically)"
+	}
+	return "yours (Orion will not pull it without --force)"
+}
+
+func rootOrCwd() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return wd
 }
 
 // runLessons manages the cross-project memory. Deliberately human-facing:
