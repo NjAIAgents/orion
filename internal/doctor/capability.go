@@ -201,6 +201,83 @@ func checkJira(enabled bool) check {
 	return check{"jira", ok, cap.Detail, ""}
 }
 
+// checkHooks verifies that the hook commands in .claude/settings.json point
+// at something that can actually run.
+//
+// This is the gap that let a broken install look healthy. doctor checked that
+// orion.json parsed and reported the limits as "in force", while the hooks
+// meant to enforce them pointed at a deleted directory. A hook that cannot
+// execute does not announce itself as a missing guardrail, so the breaker,
+// the shield and the push gate all read as enabled and none of them ran.
+func checkHooks(dir string) check {
+	p := filepath.Join(dir, ".claude", "settings.json")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return check{"hooks", warn, "no .claude/settings.json",
+				"Nothing is enforcing the limits in orion.json. Run: orion init"}
+		}
+		return check{"hooks", warn, "cannot read " + p, err.Error()}
+	}
+	var root struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if json.Unmarshal(b, &root) != nil {
+		return check{"hooks", warn, p + " is not valid JSON",
+			"Claude Code cannot read it either, so no hook is running."}
+	}
+
+	var total int
+	var broken []string
+	for _, entries := range root.Hooks {
+		for _, e := range entries {
+			for _, h := range e.Hooks {
+				cmd := strings.Fields(h.Command)
+				if len(cmd) == 0 || !strings.HasSuffix(cmd[0], "orion") {
+					continue // someone else's hook; not ours to judge
+				}
+				total++
+				if strings.ContainsRune(cmd[0], os.PathSeparator) {
+					if _, statErr := os.Stat(cmd[0]); statErr != nil {
+						broken = append(broken, cmd[0])
+					}
+				} else if _, lookErr := exec.LookPath(cmd[0]); lookErr != nil {
+					broken = append(broken, cmd[0]+" (not on PATH)")
+				}
+			}
+		}
+	}
+
+	switch {
+	case total == 0:
+		return check{"hooks", warn, "no Orion hooks wired",
+			"orion.json's limits are advisory until the hooks exist. Run: orion init"}
+	case len(broken) > 0:
+		return check{"hooks", fail,
+			fmt.Sprintf("%d of %d hook command(s) do not resolve", len(broken), total),
+			"Missing: " + strings.Join(uniq(broken), "\n           ") +
+				"\n  Every gate is silently doing nothing. This usually follows an\n" +
+				"  upgrade that moved the binary. Repair with: orion init --force"}
+	}
+	return check{"hooks", ok, fmt.Sprintf("%d hook(s) wired and resolvable", total), ""}
+}
+
+func uniq(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // jiraCredSource reports where the Jira credentials actually came from, and
 // warns when an exported variable is shadowing a stored one.
 //

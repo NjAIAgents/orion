@@ -204,3 +204,134 @@ func TestWarnsWhenNotAGitRepo(t *testing.T) {
 		t.Error("adopting a non-repo should warn: the artifact chain is meant to be committed")
 	}
 }
+
+// A re-run after an upgrade must REPAIR the stale entry, not append beside
+// it. Appending leaves every hook running twice, one against a path that no
+// longer exists, so the command meant to fix the repo damages it further.
+func TestReRunRepointsStaleHooksInsteadOfDuplicating(t *testing.T) {
+	d := repo(t)
+	old := "/opt/homebrew/Cellar/orion/0.3.2/bin/orion"
+	if _, err := Run(Options{Dir: d, Binary: old}); err != nil {
+		t.Fatal(err)
+	}
+
+	newBin := "/opt/homebrew/bin/orion"
+	res, err := Run(Options{Dir: d, Binary: newBin})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stale, current int
+	for _, entries := range readSettings(t, d)["hooks"].(map[string]any) {
+		for _, re := range entries.([]any) {
+			for _, h := range re.(map[string]any)["hooks"].([]any) {
+				cmd := h.(map[string]any)["command"].(string)
+				if strings.HasPrefix(cmd, old+" ") {
+					stale++
+				}
+				if strings.HasPrefix(cmd, newBin+" ") {
+					current++
+				}
+			}
+		}
+	}
+	if stale != 0 {
+		t.Errorf("%d hook(s) still point at the removed path", stale)
+	}
+	if current != len(specs()) {
+		t.Errorf("got %d current hooks, want %d", current, len(specs()))
+	}
+	if len(res.Updated) == 0 || !strings.Contains(res.Updated[0], "repointed") {
+		t.Errorf("the repair must be reported, got %v", res.Updated)
+	}
+}
+
+// Only Orion's own hooks may be rewritten.
+func TestRetargetLeavesForeignHooksAlone(t *testing.T) {
+	hooks := map[string]any{
+		"PreToolUse": []any{
+			map[string]any{"hooks": []any{
+				map[string]any{"command": "/usr/local/bin/orion hook gate"},
+				map[string]any{"command": "/usr/local/bin/prettier --write"},
+				map[string]any{"command": "some-tool hook thing extra"},
+			}},
+		},
+	}
+	if n := retargetOrionHooks(hooks, "/opt/homebrew/bin/orion"); n != 1 {
+		t.Fatalf("repointed %d, want exactly the one orion hook", n)
+	}
+	got := hooks["PreToolUse"].([]any)[0].(map[string]any)["hooks"].([]any)
+	if c := got[1].(map[string]any)["command"].(string); c != "/usr/local/bin/prettier --write" {
+		t.Errorf("a foreign hook was modified: %q", c)
+	}
+	if c := got[2].(map[string]any)["command"].(string); c != "some-tool hook thing extra" {
+		t.Errorf("a non-orion binary was rewritten: %q", c)
+	}
+}
+
+// An unreadable settings.json must abort. Treating a permission error as
+// "no file" would write a fresh one over a team's hooks and MCP servers,
+// which is the exact loss this package exists to prevent.
+func TestUnreadableSettingsAbortsRatherThanOverwriting(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root can read anything, so the failure cannot be provoked")
+	}
+	d := repo(t)
+	cdir := filepath.Join(d, ".claude")
+	if err := os.MkdirAll(cdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(cdir, "settings.json")
+	precious := []byte(`{"hooks":{"PreToolUse":[{"hooks":[{"command":"keep-me"}]}]}}`)
+	if err := os.WriteFile(p, precious, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
+
+	if _, err := Run(Options{Dir: d, Binary: "orion"}); err == nil {
+		t.Fatal("expected a refusal, not a silent overwrite")
+	}
+	_ = os.Chmod(p, 0o600)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != string(precious) {
+		t.Errorf("the unreadable file was overwritten:\n%s", b)
+	}
+}
+
+func TestVersionedPathDetection(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
+		{"/opt/homebrew/Cellar/orion/0.3.2/bin/orion", true},
+		{"/opt/orion/1.2.10/bin/orion", true},
+		{"/opt/orion/v0.3.2/bin/orion", true},
+		{"/opt/homebrew/bin/orion", false},
+		{"/usr/local/bin/orion", false},
+		{"orion", false},
+	} {
+		if got := versionedPath(tc.in); got != tc.want {
+			t.Errorf("versionedPath(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+// A hook command that cannot run is worse than an absent one: the gates read
+// as enabled in orion.json while nothing enforces them. init must say so.
+func TestInitWarnsWhenTheHookBinaryIsMissing(t *testing.T) {
+	d := repo(t)
+	res, err := Run(Options{Dir: d, Binary: filepath.Join(t.TempDir(), "gone", "orion")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(res.Warnings, "\n")
+	if !strings.Contains(joined, "silently") {
+		t.Errorf("expected a warning that the gates will do nothing, got:\n%s", joined)
+	}
+	if !strings.Contains(res.Summary(), "WARNING") {
+		t.Errorf("the warning must reach the printed summary:\n%s", res.Summary())
+	}
+}

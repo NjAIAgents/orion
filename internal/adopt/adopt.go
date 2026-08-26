@@ -15,11 +15,101 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 )
+
+// StableBinaryPath returns the path to write into hook commands, plus any
+// warnings the caller should print.
+//
+// The obvious implementation, EvalSymlinks(os.Executable()), is actively
+// wrong for a package-managed install. Homebrew puts the real binary at
+// Cellar/orion/<version>/bin/orion and exposes it as a stable symlink;
+// resolving the symlink pins the hooks to ONE version's directory, which
+// `brew cleanup` deletes on the next upgrade. The hooks then point at a file
+// that no longer exists.
+//
+// That failure is silent in the worst way: a hook that cannot execute does
+// not announce itself as a missing guardrail, so the breaker, the shield and
+// the push gate all read as enabled in orion.json while none of them run.
+//
+// So prefer a PATH entry that resolves to the SAME file. Package managers
+// keep that name stable across upgrades. Verified by inode rather than by
+// string, because a different `orion` earlier in PATH must not be adopted.
+func StableBinaryPath() (string, []string) {
+	var warns []string
+
+	exe, err := os.Executable()
+	if err != nil {
+		// Fall back to the bare name and say so. It works whenever PATH is
+		// set, and PATH differing between a shell and a GUI launch is the
+		// usual cause of "hooks silently stopped running".
+		return "orion", append(warns,
+			"could not determine Orion's own path, so hooks use the bare name `orion`;\n"+
+				"         they will fail in any session whose PATH lacks it")
+	}
+	real := exe
+	if r, symErr := filepath.EvalSymlinks(exe); symErr == nil {
+		real = r
+	}
+
+	if p, lookErr := exec.LookPath("orion"); lookErr == nil {
+		pr := p
+		if r, symErr := filepath.EvalSymlinks(p); symErr == nil {
+			pr = r
+		}
+		if sameFile(pr, real) {
+			return p, warns
+		}
+		warns = append(warns, fmt.Sprintf(
+			"`orion` on PATH (%s) is a different binary from the one running (%s);\n"+
+				"         hooks pin the running one so this repo is not silently rewired", p, real))
+	}
+
+	if versionedPath(real) {
+		warns = append(warns, fmt.Sprintf(
+			"hooks pin a version-specific path:\n           %s\n"+
+				"         an upgrade that removes this directory will disable every gate\n"+
+				"         WITHOUT reporting it. Re-run `orion init --force` after upgrading,\n"+
+				"         or put a stable `orion` on PATH first.", real))
+	}
+	return real, warns
+}
+
+func sameFile(a, b string) bool {
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
+}
+
+// versionedPath spots an install layout whose directory name changes on every
+// upgrade: Homebrew's Cellar, and the common /opt/<tool>/<version>/ shape.
+func versionedPath(p string) bool {
+	if strings.Contains(p, "/Cellar/") {
+		return true
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(p), "/") {
+		s := strings.TrimPrefix(seg, "v")
+		if s == "" || strings.Count(s, ".") < 2 {
+			continue
+		}
+		if strings.IndexFunc(s, func(r rune) bool {
+			return (r < '0' || r > '9') && r != '.'
+		}) < 0 {
+			return true
+		}
+	}
+	return false
+}
 
 // Result records what changed, so the command can report honestly rather
 // than claiming to have done work it skipped.
@@ -42,8 +132,12 @@ type Options struct {
 	// an existing repo: a team that makes small changes without writing a
 	// plan will otherwise hit a wall on their first edit and disable Orion
 	// entirely rather than adjust one setting.
-	PlanGate bool
-	Force    bool
+	// BinaryWarnings are carried from resolving Binary so they surface in the
+	// same report as everything else, rather than being printed separately
+	// and read as unrelated noise.
+	BinaryWarnings []string
+	PlanGate       bool
+	Force          bool
 }
 
 // hookSpec is one hook Orion installs, keyed so a re-run can recognise its
@@ -71,8 +165,19 @@ func specs() []hookSpec {
 // Run adopts the repository.
 func Run(opts Options) (*Result, error) {
 	res := &Result{}
+	res.Warnings = append(res.Warnings, opts.BinaryWarnings...)
 	if opts.Binary == "" {
 		opts.Binary = "orion"
+	}
+	// A hook command that does not resolve is the worst kind of broken: the
+	// gates read as enabled in orion.json and none of them run, because a
+	// hook that cannot execute does not report itself as a missing guardrail.
+	if strings.ContainsRune(opts.Binary, os.PathSeparator) {
+		if _, err := os.Stat(opts.Binary); err != nil {
+			res.Warnings = append(res.Warnings, fmt.Sprintf(
+				"the hook binary is not readable at %s (%v);\n"+
+					"         every gate will silently do nothing until this resolves", opts.Binary, err))
+		}
 	}
 	if fi, err := os.Stat(opts.Dir); err != nil || !fi.IsDir() {
 		return nil, fmt.Errorf("%s is not a directory", opts.Dir)
@@ -94,8 +199,14 @@ func Run(opts Options) (*Result, error) {
 		if err := os.MkdirAll(p, 0o755); err != nil {
 			return res, fmt.Errorf("creating %s: %w", d, err)
 		}
-		// Keep the shape visible in git from the first commit.
-		_ = os.WriteFile(filepath.Join(p, ".gitkeep"), nil, 0o644)
+		// Keep the shape visible in git from the first commit. Not fatal if it
+		// fails, but say so: a silently absent .gitkeep means the directory
+		// never reaches the remote, and the artifact chain is meant to be
+		// committed.
+		if err := os.WriteFile(filepath.Join(p, ".gitkeep"), nil, 0o644); err != nil {
+			res.Warnings = append(res.Warnings, fmt.Sprintf(
+				"could not write %s/.gitkeep (%v); git will not track the empty directory", d, err))
+		}
 		res.Created = append(res.Created, d+"/")
 	}
 
@@ -142,7 +253,18 @@ func mergeSettings(opts Options, res *Result) error {
 	p := filepath.Join(dir, "settings.json")
 
 	root := map[string]any{}
-	if b, err := os.ReadFile(p); err == nil {
+	b, readErr := os.ReadFile(p)
+	switch {
+	case readErr != nil && !os.IsNotExist(readErr):
+		// Only "the file is not there" may fall through to creating one.
+		// Any other error -- a permission denial, an I/O fault, a directory
+		// where a file should be -- means a file MAY exist that we cannot
+		// read, and continuing would write a fresh settings.json over a
+		// team's hooks, permissions and MCP servers. Refusing to guess is
+		// the entire purpose of this function.
+		return fmt.Errorf("cannot read %s: %w\n"+
+			"  Refusing to continue: a file may exist here that would be overwritten.", p, readErr)
+	case readErr == nil:
 		if json.Unmarshal(b, &root) != nil {
 			// Refuse rather than overwrite. A file we cannot parse may still
 			// be precious, and replacing it would be the exact loss this
@@ -157,14 +279,26 @@ func mergeSettings(opts Options, res *Result) error {
 			return fmt.Errorf("could not back up %s: %w", p, err)
 		}
 		res.Backup = backup
-	} else if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+	default:
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("creating %s: %w", dir, err)
+		}
 	}
 
 	hooks, _ := root["hooks"].(map[string]any)
 	if hooks == nil {
 		hooks = map[string]any{}
 	}
+
+	// Repoint any Orion hook that names a DIFFERENT orion binary before
+	// considering what to add.
+	//
+	// Without this, a re-run after an upgrade does not repair anything: the
+	// command string no longer matches, so the stale entry is left alone and
+	// a second one is appended beside it. You end up with every hook running
+	// twice, one of them against a path that no longer exists, and the
+	// re-run that was supposed to fix the repo has made it worse.
+	repaired := retargetOrionHooks(hooks, opts.Binary)
 
 	added := 0
 	for _, s := range specs() {
@@ -185,7 +319,7 @@ func mergeSettings(opts Options, res *Result) error {
 	}
 	root["hooks"] = hooks
 
-	if added == 0 {
+	if added == 0 && repaired == 0 {
 		res.Skipped = append(res.Skipped, ".claude/settings.json (hooks already wired)")
 		// Nothing changed, so the backup is noise. Remove it rather than
 		// littering a .bak per invocation.
@@ -203,8 +337,56 @@ func mergeSettings(opts Options, res *Result) error {
 	if err := os.WriteFile(p, append(b, '\n'), 0o644); err != nil {
 		return err
 	}
-	res.Updated = append(res.Updated, fmt.Sprintf(".claude/settings.json (+%d hook(s))", added))
+	switch {
+	case added > 0 && repaired > 0:
+		res.Updated = append(res.Updated, fmt.Sprintf(
+			".claude/settings.json (+%d hook(s), %d repointed to the current binary)", added, repaired))
+	case repaired > 0:
+		res.Updated = append(res.Updated, fmt.Sprintf(
+			".claude/settings.json (%d hook(s) repointed to the current binary)", repaired))
+	default:
+		res.Updated = append(res.Updated, fmt.Sprintf(".claude/settings.json (+%d hook(s))", added))
+	}
 	return nil
+}
+
+// retargetOrionHooks rewrites the binary in every Orion hook command that
+// names a different one, and reports how many it changed.
+//
+// Recognising our own entry by SHAPE rather than by exact string is what
+// makes a re-run a repair. The shape is "<path ending in orion> hook <name>",
+// which no plausible third-party hook shares, so nothing else is touched.
+func retargetOrionHooks(hooks map[string]any, binary string) int {
+	n := 0
+	for _, raw := range hooks {
+		entries, _ := raw.([]any)
+		for _, re := range entries {
+			entry, ok := re.(map[string]any)
+			if !ok {
+				continue
+			}
+			inner, _ := entry["hooks"].([]any)
+			for _, h := range inner {
+				hm, ok := h.(map[string]any)
+				if !ok {
+					continue
+				}
+				cmd, _ := hm["command"].(string)
+				f := strings.Fields(cmd)
+				if len(f) < 3 || f[len(f)-2] != "hook" {
+					continue
+				}
+				base := strings.TrimSuffix(filepath.Base(f[0]), ".exe")
+				if base != "orion" || f[0] == binary {
+					continue
+				}
+				f[0] = binary
+				hm["command"] = strings.Join(f, " ")
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // hasCommand reports whether Orion's hook is already installed for an event,
