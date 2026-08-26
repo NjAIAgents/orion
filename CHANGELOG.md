@@ -4,6 +4,58 @@ Notable changes per release. Written for someone deciding whether to upgrade
 and what to watch afterwards, so each entry says what changed **and what it
 now refuses to do**.
 
+## v0.4.4
+
+FCIA-8 and FCIA-10 exposed two more variants of the same failure family:
+evidence going stale without anyone noticing. FCIA-8 and FCIA-10 were cut
+from develop in parallel, both wrote `src/fcia/cli.py` from scratch, and
+only conflicted by luck — had the two subcommands landed in different files,
+both merges would have gone in clean, both CI runs green, and develop would
+have quietly lost one of them. The same run also caught a budget checkpoint
+that offered Slack as a way to answer and then ignored it, and a watcher
+that told operators to run the command they were already running.
+
+### Added
+
+- Orion now refuses to merge a branch whose base has moved since its last
+  green CI run. A passing check is evidence about one commit; once the base
+  moves, that evidence no longer describes what merging would produce. The
+  check is one local `git merge-base --is-ancestor origin/<base> origin/<branch>`
+  — no API call, no admin rights — gated by new config `ci.require_up_to_date`
+  (default true, since merging on a verdict that no longer describes the
+  code is a correctness failure, not a preference). A stale branch is
+  refused and reported the way a conflict is: said once per HEAD, with
+  rebase commands for the branch's actual directory, ticket kept in
+  `ci-wait` so a pushed rebase resumes without re-labelling. Deliberately
+  not worded as a conflict — a conflict is git refusing; this is Orion
+  refusing something git would happily do. An unanswerable check (missing
+  directory, failed fetch, absent branch) counts as unknown, not stale, and
+  does not block the merge. GitHub's own "require up to date" branch
+  protection was considered and rejected: unavailable on private repos on
+  the free plan, and even off, `gh` reports a stale branch as
+  `mergeStateStatus CLEAN` — so detection is missing there too.
+
+### Fixed
+
+- The budget checkpoint offered two ways to answer — a Slack reaction or a
+  terminal prompt — but only listened to one: it posted to Slack, then
+  blocked on a terminal read with nothing watching Slack while stdin held
+  the process. Someone could answer exactly as invited and the run would
+  hang forever. `awaitConsent` now races both routes, polling Slack every
+  3s while a terminal read is outstanding, and takes whichever answers
+  first. No terminal means Slack-only; no Slack means terminal-only;
+  neither means not-consent, immediately, since silence isn't consent to
+  spend. Bounded at 30 minutes so an overnight watcher doesn't hold a
+  checkpoint open indefinitely — the request stays visible in Slack and the
+  next tick asks again. Known limitation: a blocked terminal read can't be
+  cancelled, so it outlives a Slack answer and consumes the next line typed
+  at that terminal.
+- `orion watch` told people to re-run the command they were already
+  running — "run `orion collect FCIA-8` again to act on it (orion watch
+  does this on its next tick)" printed from inside the watcher itself. New
+  `collect.Options.Unattended`, set by watch, swaps that for "react there
+  and the next tick merges it."
+
 ## v0.4.3
 
 Two more failures with the same shape: an unattended watcher hit a stop
