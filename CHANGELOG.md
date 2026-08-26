@@ -4,6 +4,48 @@ Notable changes per release. Written for someone deciding whether to upgrade
 and what to watch afterwards, so each entry says what changed **and what it
 now refuses to do**.
 
+## v0.4.3
+
+Two more failures with the same shape: an unattended watcher hit a stop
+condition and had no way to tell anyone, or told someone who could not
+hear. FCIA-8's budget checkpoint printed an answerable question to a
+terminal nobody was watching and re-asked it every two minutes with no
+route to a yes; the Slack channel wired up at init looked audited and
+was reachable by every message, but its only member was the bot.
+Neither failure showed up as an error — both looked like success until
+someone went looking. This release refuses two things it used to allow:
+spending past a budget checkpoint with no way to answer it, and calling
+a Slack channel a working audience when it's just the bot.
+
+### Added
+
+- Budget checkpoints now ask instead of stopping silently. `budgetGate`
+  replaces `budgetBlocked` and puts the question in front of a human by
+  both routes an approval already uses: a Slack message with a
+  checkmark reaction, read on the next pass, or a terminal prompt when
+  someone is actually there. It asks once per threshold crossed, not
+  once per tick, and drops the stored question once the checkpoint
+  clears so the next threshold is asked fresh rather than answered by a
+  stale tick. Consent covers exactly one checkpoint — acknowledging 50%
+  does not authorize 75%. A non-interactive stdin (the unattended
+  watcher case) answers no rather than hanging or defaulting to yes.
+
+### Fixed
+
+- `orion init` and `orion doctor` previously judged a Slack channel
+  audience-ready by whether Orion had just created it, so a channel
+  found and reused from an earlier broken init — the exact case that
+  stranded fcia — skipped the check entirely and only warned when no
+  invite list was configured, a warning easy to miss in a long init
+  scroll. `ensureAudience` replaces that logic: it runs for a found
+  channel too, verifies membership actually took after inviting instead
+  of assuming the invite worked, and tries to auto-invite the operator
+  by looking up `git config user.email`, persisting the resolved id so
+  later runs don't repeat a lookup that may not be permitted. If no
+  audience can be found it now fails with the exact fix instead of
+  warning. Also added to `orion doctor` as a `slack audience` check,
+  since a channel can lose its only human member long after init ran.
+
 ## v0.4.2
 
 Six fixes from the first real unattended runs of FCIA-6 and FCIA-7. Each one
