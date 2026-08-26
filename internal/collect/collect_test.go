@@ -147,8 +147,17 @@ func TestAMergedPullRequestClosesRefreshesAndPrunes(t *testing.T) {
 	if !res[0].Changed {
 		t.Fatal("a merge must be recorded as a change")
 	}
-	if got := jira.removed["FCIA-6"]; len(got) != 1 || got[0] != tracker.LabelCIWait {
-		t.Errorf("ci-wait label was not cleared: %v", got)
+	// EVERY label Orion owns, not just the one that brought us here. A ticket
+	// that failed earlier, was fixed and then merged kept orion-failed
+	// forever -- so `orion queue` printed "failed" on the same line as its
+	// status, "Done". Orion contradicting itself in one line is worse than
+	// either state alone: the reader cannot tell which half to believe.
+	removed := strings.Join(jira.removed["FCIA-6"], " ")
+	for _, label := range []string{tracker.LabelCIWait, tracker.LabelWorking, tracker.LabelFailed} {
+		if !strings.Contains(removed, label) {
+			t.Errorf("%s survived the merge; the ticket is finished and nothing Orion "+
+				"tracked about it is still true (removed: %v)", label, jira.removed["FCIA-6"])
+		}
 	}
 	if jira.transitions["FCIA-6"] != "Done" {
 		t.Errorf("transition = %q, want Done", jira.transitions["FCIA-6"])

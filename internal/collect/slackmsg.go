@@ -13,13 +13,34 @@ import (
 
 // msgMerged reports the good ending.
 //
-// pruned is passed rather than assumed. The first real merge printed "its
-// worktree removed" in Slack while the terminal, two lines above, said the
-// worktree had been KEPT. A notification that contradicts the thing it is
-// reporting on is worse than none: it is the version most people read, and
-// it teaches them the messages are approximately true.
-func msgMerged(key string, pr PR, checkout string, pruned bool) (string, string) {
+// Nothing here is assumed. Both the prune and the checkout refresh are told
+// to it, because both can legitimately not happen and the message must say
+// which.
+//
+// This was got wrong TWICE, the same way. First the message claimed "its
+// worktree removed" while the terminal two lines above said it had been
+// kept. Fixed -- and the very next real merge printed "your checkout was
+// fast-forwarded" while the terminal said it had refused, because the tree
+// had uncommitted changes.
+//
+// A notification that contradicts what it reports is worse than none: it is
+// the version most people read, and it teaches them that Orion's messages
+// are approximately true. Once a reader believes that, every message is
+// worth less, including the ones that matter.
+func msgMerged(key string, pr PR, checkout string, pruned bool, refreshed string) (string, string) {
 	title := fmt.Sprintf("%s merged", key)
+
+	checkoutLine := "• your checkout `" + checkout + "` was fast-forwarded"
+	if !strings.Contains(refreshed, "fast-forwarded") {
+		// It did not move. Say what stopped it, since the reader's next
+		// action -- pulling by hand -- depends on which reason it was.
+		reason := firstLine(refreshed)
+		if reason == "" {
+			reason = "it was not updated"
+		}
+		checkoutLine = "• your checkout `" + checkout + "` is BEHIND: " + reason
+	}
+
 	tail := "_The ticket is closed and its worktree removed. Nothing is waiting on you._"
 	if !pruned {
 		tail = "_The ticket is closed. The worktree was kept -- see `orion sandbox " + key + "`._"
@@ -28,7 +49,7 @@ func msgMerged(key string, pr PR, checkout string, pruned bool) (string, string)
 		"*The work is on " + "`develop`" + ".*",
 		"",
 		"• pull request  " + link(pr.URL, "what merged"),
-		"• your checkout " + "`" + checkout + "` was fast-forwarded",
+		checkoutLine,
 		"",
 		tail,
 	}, "\n")

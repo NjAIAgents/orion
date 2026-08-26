@@ -368,9 +368,19 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 		return res
 	}
 
-	if err := deps.Jira.SetLabels(key, nil, []string{tracker.LabelCIWait}); err != nil {
+	// Clear EVERY label Orion owns, not just the one that brought us here.
+	//
+	// A ticket that failed earlier, was fixed, and then merged kept its
+	// orion-failed label forever -- so `orion queue` reported it as "failed"
+	// on the same line as its status, "Done". Orion contradicting itself in
+	// one line is worse than either state alone, because the reader cannot
+	// tell which half to believe.
+	//
+	// The ticket is finished. Nothing Orion tracked about it is true any more.
+	if err := deps.Jira.SetLabels(key, nil,
+		tracker.Managed(cfg.Tracker.QueueLabel)); err != nil {
 		res.Err = err
-		ui.Warn(w, "%s: merged, but the ci-wait label could not be cleared: %v", key, err)
+		ui.Warn(w, "%s: merged, but its labels could not be cleared: %v", key, err)
 		return res
 	}
 	// Best effort: a workflow without a Done transition must not turn a
@@ -389,12 +399,15 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	// The user's own checkout. Until now nothing ever did this, so a merged
 	// ticket left develop behind on the machine its owner works on -- and
 	// the next `orion work` preflight refuses on a stale base.
+	refreshed := ""
 	if deps.Refresh != nil {
 		msg, err := deps.Refresh(entry.Source, cfg.VCS.WorkBranch)
 		switch {
 		case err != nil:
 			ui.Warn(w, "could not refresh %s: %v", entry.Source, err)
+			refreshed = err.Error()
 		default:
+			refreshed = msg
 			ui.Ok(w, "refresh", "%s", msg)
 			log.Emit(events.Event{Kind: events.KindRefresh, Actor: events.ActorOrion, Msg: msg})
 		}
@@ -406,14 +419,21 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	pruned := false
 	if !opts.NoPrune && deps.Prune != nil {
 		if err := deps.Prune(ws, branch); err != nil {
-			ui.Warn(w, "kept the worktree for %s: %v", branch, err)
+			// "no worktree" is not a failure to keep one -- there was
+			// nothing there. Warning about keeping something that does not
+			// exist is the kind of untrue warning people learn to ignore.
+			if strings.Contains(err.Error(), "no worktree") {
+				pruned = true
+			} else {
+				ui.Warn(w, "kept the worktree for %s: %v", branch, err)
+			}
 		} else {
 			ui.Ok(w, "removed", "the worktree for %s", branch)
 			pruned = true
 		}
 	}
 
-	title, body := msgMerged(key, pr, entry.Source, pruned)
+	title, body := msgMerged(key, pr, entry.Source, pruned, refreshed)
 	tell(w, log, notify.Event{
 		Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
 		Title: title, Body: body,
