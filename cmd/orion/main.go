@@ -316,18 +316,14 @@ func runInit(args []string) {
 	abs, err := filepath.Abs(dir)
 	exitOn(err)
 
-	bin, lookErr := os.Executable()
-	if lookErr != nil {
-		bin = "orion"
-	} else if resolved, symErr := filepath.EvalSymlinks(bin); symErr == nil {
-		bin = resolved
-	}
+	bin, binWarns := adopt.StableBinaryPath()
 
 	res, err := adopt.Run(adopt.Options{
-		Dir:      abs,
-		Binary:   bin,
-		PlanGate: hasFlag(args, "--plan-gate"),
-		Force:    hasFlag(args, "--force"),
+		Dir:            abs,
+		Binary:         bin,
+		BinaryWarnings: binWarns,
+		PlanGate:       hasFlag(args, "--plan-gate"),
+		Force:          hasFlag(args, "--force"),
 	})
 	if res != nil {
 		fmt.Print(res.Summary())

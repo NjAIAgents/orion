@@ -66,6 +66,7 @@ func Run(w io.Writer, path string, autoFix bool) int {
 		checkHome(),
 		checkDisk(),
 		checkProject(path),
+		checkHooks(rootOr(path)),
 		checkJira(trackerRequired(rootOr(path))),
 		checkSlack(config.Load(rootOr(path)).Slack.Enabled),
 	}
