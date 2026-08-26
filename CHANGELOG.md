@@ -34,6 +34,15 @@ re-ask at full price.
 - `orion logs <KEY> -f` — live event log, per project or per ticket
 - `orion slack test` — prove Slack delivery, or name exactly what is broken
 
+### Pull requests describe themselves
+
+A PR opened by Orion used to just restate the ticket summary and a commit
+count. It now reads the branch's whole diff and commit history and drafts a
+real summary / what-changed / why / test-plan via the `nj-agents` pr-describe
+skill — read-only, it cannot push or commit anything itself. Any failure in
+that pass falls back to the old two-line description rather than blocking
+the PR.
+
 ### Gates and safety
 
 - **CI is scaffolded at adoption.** `orion init` writes `scripts/test.sh` and
@@ -77,10 +86,24 @@ worked by three.
   private channels were invisible and pagination never advanced
 - the sandbox served stale policy, so a committed config change appeared to
   do nothing
-- a merged ticket kept its `orion-failed` label, so `orion queue` reported it
+- a merged ticket now clears every label Orion owns, not just
+  `orion-ci-wait` — previously it could keep a stale `orion-failed` label
+  from an earlier failed attempt, so `orion queue` reported the same ticket
   as failed and Done on the same line
-- `orion watch fcia --max-jobs 1` read the `1` as a second project
-- a mistyped project name looked identical to an empty queue
+- Slack notifications about the worktree/checkout outcome (removed vs kept,
+  fast-forwarded vs refused) are now told directly rather than assumed, so a
+  Slack message can no longer contradict what the terminal reports one line
+  above it
+- `orion watch fcia --max-jobs 1` read the `1` as a second project — a flag
+  value after a value-taking flag could be misread as a positional project
+  key
+- a mistyped project name looked identical to an empty queue; an unknown key
+  is now refused, naming what IS registered
+- `orion watch --dry-run` without `--once` looped forever, re-printing an
+  identical rehearsal every two minutes since a dry run changes nothing
+  between ticks — it now rehearses once
+- a permanent (non-transient) error was retried forever; only transient
+  errors keep the retry loop going now
 
 ### Upgrading
 

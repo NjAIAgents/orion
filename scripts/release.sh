@@ -97,7 +97,8 @@ extract_notes() {
 if extract_notes; then
   echo "    notes from CHANGELOG.md ($(wc -l < "$notes_file" | tr -d " ") lines)"
 else
-  echo "WARNING: no '## $VERSION_TAG' section in CHANGELOG.md; using a generic note" >&2
+  echo "WARNING: no '## $VERSION_TAG' section in CHANGELOG.md; using a generic note." >&2
+  echo "         Generate one with: orion changelog --version $VERSION_TAG" >&2
   printf 'Binaries for orion %s. Each archive includes LICENSE and NOTICE.\n' \
     "$VERSION_TAG" > "$notes_file"
 fi
