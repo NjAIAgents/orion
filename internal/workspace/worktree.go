@@ -153,7 +153,29 @@ func Dirty(path string) (bool, string) {
 	if err != nil {
 		return true, out // unreadable: assume dirty rather than risk deleting
 	}
-	return strings.TrimSpace(out) != "", out
+	// Ignore Orion's OWN runtime directory.
+	//
+	// Every job worktree contains a .orion/ that Orion writes itself --
+	// state, logs, breaker counters -- and git sees it as untracked. Counting
+	// it made every worktree permanently dirty, so the prune after a merge
+	// refused every single time, on the grounds that Orion might destroy
+	// Orion's own scratch files. The refusal is right about agent work and
+	// absurd about this.
+	//
+	// Being conservative is correct for a deletion guard, but only about
+	// things a person or an agent produced.
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+		if l = strings.TrimSpace(l); l == "" {
+			continue
+		}
+		f := strings.Fields(l)
+		if len(f) >= 2 && strings.HasPrefix(f[len(f)-1], ".orion/") {
+			continue
+		}
+		lines = append(lines, l)
+	}
+	return len(lines) > 0, strings.Join(lines, "\n")
 }
 
 // RemoveWorktree deletes a job checkout, refusing while it holds work that
@@ -179,10 +201,28 @@ func RemoveWorktree(ws *Workspace, path string, force bool) error {
 		args = append(args, "--force")
 	}
 	args = append(args, path)
-	if out, err := git(repo, args...); err != nil {
-		return fmt.Errorf("removing worktree: %w\n%s", err, out)
+	out, err := git(repo, args...)
+	if err == nil {
+		return nil
 	}
-	return nil
+
+	// git has its own untracked-files check, and it does not know that
+	// .orion/ belongs to Orion. So a worktree this package has just declared
+	// clean is refused by git for the one directory Orion wrote itself --
+	// which is how a merged ticket ended up keeping its worktree forever.
+	//
+	// Retrying with --force is safe HERE and only here: the guards above have
+	// already established there is no uncommitted work and nothing unpushed,
+	// so the sole thing --force can now discard is Orion's own scratch state.
+	// The judgement is Orion's to make; git simply lacks the context.
+	if !force && strings.Contains(out, "contains modified or untracked files") {
+		if out2, err2 := git(repo, "worktree", "remove", "--force", path); err2 == nil {
+			return nil
+		} else {
+			return fmt.Errorf("removing worktree: %w\n%s", err2, out2)
+		}
+	}
+	return fmt.Errorf("removing worktree: %w\n%s", err, out)
 }
 
 // hasUnpushedCommits reports commits on this branch that exist on no remote.

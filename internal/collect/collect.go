@@ -403,15 +403,17 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	// The worktree. Merged means every commit on the branch is reachable
 	// from the work branch, so the checkout holds nothing the repository
 	// does not.
+	pruned := false
 	if !opts.NoPrune && deps.Prune != nil {
 		if err := deps.Prune(ws, branch); err != nil {
 			ui.Warn(w, "kept the worktree for %s: %v", branch, err)
 		} else {
 			ui.Ok(w, "removed", "the worktree for %s", branch)
+			pruned = true
 		}
 	}
 
-	title, body := msgMerged(key, pr, entry.Source)
+	title, body := msgMerged(key, pr, entry.Source, pruned)
 	tell(w, log, notify.Event{
 		Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
 		Title: title, Body: body,

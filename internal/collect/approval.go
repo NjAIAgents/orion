@@ -68,6 +68,18 @@ func ReadDecision(s SlackReader, channelID, ts, botID string, allow []string) (D
 		return d, rErr
 	}
 
+	// resolved caches the id -> name lookup. Slack reports an approval as a
+	// user ID and nothing else, so every check would otherwise re-ask.
+	resolved := map[string]string{}
+	nameOf := func(user string) string {
+		if n, ok := resolved[user]; ok {
+			return n
+		}
+		n := s.UserName(user)
+		resolved[user] = n
+		return n
+	}
+
 	permitted := func(user string) bool {
 		if user == "" || user == botID {
 			return false
@@ -79,14 +91,38 @@ func ReadDecision(s SlackReader, channelID, ts, botID string, allow []string) (D
 			return false
 		}
 		for _, a := range allow {
-			if strings.EqualFold(strings.TrimPrefix(a, "@"), user) {
+			// Accept @name, <@Uxxxx> and a bare id, because all three are
+			// what a person copies out of Slack.
+			a = strings.TrimSpace(a)
+			a = strings.TrimSuffix(strings.TrimPrefix(a, "<@"), ">")
+			a = strings.TrimPrefix(a, "@")
+			if a == "" {
+				continue
+			}
+			// Match the ID FIRST, and without needing a lookup. Names are
+			// the friendly form but they depend on the users:read scope,
+			// which posting does not require -- so a workspace can send
+			// approval requests perfectly and be unable to check who
+			// answered. Then every approval is refused with a message
+			// naming a raw ID, which is exactly what happened the first
+			// time this ran for real.
+			if strings.EqualFold(a, user) {
 				return true
 			}
-			if strings.EqualFold(a, s.UserName(user)) {
+			if strings.EqualFold(a, nameOf(user)) {
 				return true
 			}
 		}
 		return false
+	}
+
+	// describe renders a person for a refusal message: name when it can be
+	// resolved, always the ID, because the ID is what fixes the config.
+	describe := func(user string) string {
+		if n := nameOf(user); n != "" && n != user {
+			return n + " (" + user + ")"
+		}
+		return user
 	}
 
 	var sawUnpermitted string
@@ -101,7 +137,7 @@ func ReadDecision(s SlackReader, channelID, ts, botID string, allow []string) (D
 		for _, u := range r.Users {
 			if permitted(u) {
 				d.Rejected = true
-				d.By, d.How = s.UserName(u), ":"+r.Name+":"
+				d.By, d.How = nameOf(u), ":"+r.Name+":"
 				return d, nil
 			}
 		}
@@ -112,7 +148,7 @@ func ReadDecision(s SlackReader, channelID, ts, botID string, allow []string) (D
 		}
 		if matchesWord(m.Text, rejectWords) && permitted(m.User) {
 			d.Rejected = true
-			d.By, d.How = s.UserName(m.User), firstLine(m.Text)
+			d.By, d.How = nameOf(m.User), firstLine(m.Text)
 			return d, nil
 		}
 	}
@@ -127,10 +163,10 @@ func ReadDecision(s SlackReader, channelID, ts, botID string, allow []string) (D
 			}
 			if permitted(u) {
 				d.Approved = true
-				d.By, d.How = s.UserName(u), ":"+r.Name+":"
+				d.By, d.How = nameOf(u), ":"+r.Name+":"
 				return d, nil
 			}
-			sawUnpermitted = s.UserName(u)
+			sawUnpermitted = describe(u)
 		}
 	}
 	for _, m := range replies {
@@ -142,15 +178,17 @@ func ReadDecision(s SlackReader, channelID, ts, botID string, allow []string) (D
 		}
 		if permitted(m.User) {
 			d.Approved = true
-			d.By, d.How = s.UserName(m.User), firstLine(m.Text)
+			d.By, d.How = nameOf(m.User), firstLine(m.Text)
 			return d, nil
 		}
-		sawUnpermitted = s.UserName(m.User)
+		sawUnpermitted = describe(m.User)
 	}
 
 	switch {
 	case sawUnpermitted != "":
-		d.Why = fmt.Sprintf("%s approved, but is not on the merge allowlist", sawUnpermitted)
+		d.Why = fmt.Sprintf("%s approved, but is not on slack.merge_approvers. "+
+			"Add their Slack user ID to that list -- an ID always works, whereas a "+
+			"name needs the users:read scope to resolve", sawUnpermitted)
 	default:
 		d.Why = "nobody has approved it yet"
 	}

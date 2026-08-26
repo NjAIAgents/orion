@@ -44,6 +44,29 @@ func read(t *testing.T, f *fakeSlack) Decision {
 	return d
 }
 
+// An allowlist entry may be a Slack user ID. Names need the users:read
+// scope, which posting does not require -- so a workspace can send approval
+// requests perfectly and be unable to resolve a single name, at which point
+// a name-only allowlist refuses every approval it receives.
+func TestAUserIDInTheAllowlistWorksWithoutAnyNameLookup(t *testing.T) {
+	f := &fakeSlack{reactions: []slack.Reaction{
+		{Name: "white_check_mark", Users: []string{"UNAV"}},
+	}}
+	// No names at all: UserName returns the raw id, as it does when
+	// users:read is missing.
+	f.names = map[string]string{}
+
+	for _, entry := range []string{"UNAV", "<@UNAV>", "unav"} {
+		d, err := ReadDecision(f, "C1", "1", bot, []string{entry})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !d.Approved {
+			t.Errorf("allowlist entry %q did not match the approving user id", entry)
+		}
+	}
+}
+
 func TestATickFromAnAllowlistedPersonApproves(t *testing.T) {
 	d := read(t, &fakeSlack{reactions: []slack.Reaction{
 		{Name: "white_check_mark", Users: []string{"UNAV"}},
@@ -75,8 +98,15 @@ func TestSomeoneNotOnTheAllowlistCannotApprove(t *testing.T) {
 	if d.Approved {
 		t.Fatal("a non-allowlisted member approved a merge")
 	}
-	if !strings.Contains(d.Why, "allowlist") {
-		t.Errorf("the reason must name the allowlist so it can be fixed, got %q", d.Why)
+	// The refusal must be actionable: it names the setting to edit AND the
+	// user ID to paste into it. The first time this ran for real the message
+	// said only "U0BNSLYT6M9 approved, but is not on the merge allowlist",
+	// which named neither the file nor what to do with the id.
+	if !strings.Contains(d.Why, "merge_approvers") {
+		t.Errorf("the reason must name the setting to fix, got %q", d.Why)
+	}
+	if !strings.Contains(d.Why, "UOTHER") {
+		t.Errorf("the reason must include the user ID to add, got %q", d.Why)
 	}
 }
 

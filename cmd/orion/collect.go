@@ -177,8 +177,17 @@ func mergePR(dir, branch, reason string) error {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return fmt.Errorf("gh is not installed, so the merge cannot be performed")
 	}
+	// NOT --delete-branch. gh deletes the local branch too, and that branch
+	// is checked out in the job worktree -- git refuses, gh exits 1, and the
+	// merge is reported as FAILED after it has already succeeded on GitHub.
+	// The ticket then stays open over work that has landed, which is the
+	// worst way to be wrong: the repository and the tracker disagree, and the
+	// tracker is the one people believe.
+	//
+	// Orion removes the worktree first and the branch second, in that order,
+	// during the prune that follows a confirmed merge.
 	cmd := exec.Command("gh", "pr", "merge", branch,
-		"--squash", "--delete-branch", "--body", reason)
+		"--squash", "--body", reason)
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%v\n%s", err, strings.TrimSpace(string(out)))

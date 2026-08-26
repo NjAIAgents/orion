@@ -280,13 +280,33 @@ func pruneSandboxes(w io.Writer, home string, dryRun bool) {
 		fmt.Sprintf("%d removed, %d kept. Keeping means the work is unmerged or uncommitted.", removed, kept)))
 }
 
-// mergedInto reports whether a branch is fully contained in the base.
+// mergedInto reports whether a branch's work has landed on the base.
 //
-// Checks the REMOTE base first. The merge happens on GitHub, so the local
-// develop in a sandbox clone can be days behind and would report a merged
-// branch as unmerged -- refusing to clean up exactly the worktrees that
-// should go.
+// Asks GITHUB first, because ancestry cannot answer this. Orion merges with
+// --squash, which replays the branch as one new commit -- so the branch's
+// own commits are never ancestors of develop, and an ancestry test says
+// "not merged" about work that shipped an hour ago. The result is a prune
+// that can never prune anything, which is exactly what the first real merge
+// produced: a worktree kept for a pull request GitHub had already closed.
+//
+// The same is true of rebase merges. Only a plain merge commit preserves
+// ancestry, and it is the one strategy Orion does not use.
+//
+// Ancestry stays as the fallback for when gh is unavailable: it is wrong in
+// the safe direction, keeping a worktree that could have gone.
 func mergedInto(dir, branch, base string) bool {
+	if _, err := exec.LookPath("gh"); err == nil {
+		cmd := exec.Command("gh", "pr", "view", branch, "--json", "state", "--jq", ".state")
+		cmd.Dir = dir
+		if out, err := cmd.Output(); err == nil {
+			if strings.EqualFold(strings.TrimSpace(string(out)), "MERGED") {
+				return true
+			}
+			// An OPEN or CLOSED pull request is a definite answer: the work
+			// has not landed, whatever git ancestry might suggest.
+			return false
+		}
+	}
 	for _, ref := range []string{"origin/" + base, base} {
 		if _, err := gitIn(dir, "merge-base", "--is-ancestor", branch, ref); err == nil {
 			return true

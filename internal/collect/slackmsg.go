@@ -11,15 +11,26 @@ import (
 // would train the reader to ignore the channel, and "still running" is not
 // news. What is news: it landed, or it broke.
 
-func msgMerged(key string, pr PR, checkout string) (string, string) {
+// msgMerged reports the good ending.
+//
+// pruned is passed rather than assumed. The first real merge printed "its
+// worktree removed" in Slack while the terminal, two lines above, said the
+// worktree had been KEPT. A notification that contradicts the thing it is
+// reporting on is worse than none: it is the version most people read, and
+// it teaches them the messages are approximately true.
+func msgMerged(key string, pr PR, checkout string, pruned bool) (string, string) {
 	title := fmt.Sprintf("%s merged", key)
+	tail := "_The ticket is closed and its worktree removed. Nothing is waiting on you._"
+	if !pruned {
+		tail = "_The ticket is closed. The worktree was kept -- see `orion sandbox " + key + "`._"
+	}
 	body := strings.Join([]string{
 		"*The work is on " + "`develop`" + ".*",
 		"",
 		"• pull request  " + link(pr.URL, "what merged"),
 		"• your checkout " + "`" + checkout + "` was fast-forwarded",
 		"",
-		"_The ticket is closed and its worktree removed. Nothing is waiting on you._",
+		tail,
 	}, "\n")
 	return title, body
 }
