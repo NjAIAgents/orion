@@ -27,6 +27,33 @@ jobs:
       # that silently rots against the runner image.
       - uses: actions/setup-go@v5
         with: { go-version: 'stable' }
-      - run: go vet ./...
-      - run: go test ./... -count=1
-      - run: go build ./cmd/orion
+
+      # git identity: several tests create real repositories and commit into
+      # them. A runner has no global identity, so git refuses with "Please
+      # tell me who you are" and the failure looks like a broken test rather
+      # than a missing environment.
+      - name: configure git
+        run: |
+          git config --global user.email ci@example.com
+          git config --global user.name CI
+          git config --global init.defaultBranch main
+
+      # One script, the same one run by hand, so "it passed locally" and "it
+      # passed in CI" mean the same thing. A workflow that inlines its own
+      # commands drifts from what a developer runs, and the drift only shows
+      # up when a green local run fails on the runner.
+      - name: checks
+        if: runner.os != 'Windows'
+        run: ./scripts/test.sh
+
+      # Windows has no bash script runner by default and the shell quoting
+      # differs enough that maintaining a parallel script would reintroduce
+      # exactly the drift the shared script exists to prevent. The Windows
+      # leg proves the code COMPILES and passes there; the coverage floor and
+      # race detector are enforced once, on Linux and macOS.
+      - name: checks (windows)
+        if: runner.os == 'Windows'
+        run: |
+          go vet ./...
+          go test ./... -count=1
+          go build ./cmd/orion
