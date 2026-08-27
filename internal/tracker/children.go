@@ -1,7 +1,6 @@
 package tracker
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -59,7 +58,7 @@ func (j *Jira) Children(key string) ([]Issue, error) {
 	if key == "" {
 		return nil, nil
 	}
-	kids, err := j.Search(fmt.Sprintf("parent = %q ORDER BY Rank ASC", key), maxChildrenFetched)
+	kids, err := j.Search(JQLEq("parent", key)+" ORDER BY Rank ASC", maxChildrenFetched)
 	if err != nil {
 		// A project whose Jira has no parent field, or a permission that
 		// hides children, is not a failure of the run: it means this ticket

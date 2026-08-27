@@ -234,8 +234,10 @@ func waiting(j TrackerAPI, home string) ([]string, error) {
 	if len(projects) == 0 {
 		return nil, nil
 	}
-	jql := fmt.Sprintf("project IN (%s) AND labels = %q ORDER BY updated ASC",
-		strings.Join(quoted(projects), ", "), tracker.LabelCIWait)
+	jql := tracker.JQLAnd(
+		tracker.JQLIn("project", projects...),
+		tracker.JQLEq("labels", tracker.LabelCIWait),
+	) + " ORDER BY updated ASC"
 	issues, err := j.Search(jql, 50)
 	if err != nil {
 		return nil, fmt.Errorf("searching for tickets awaiting CI: %w", err)
@@ -245,14 +247,6 @@ func waiting(j TrackerAPI, home string) ([]string, error) {
 		keys = append(keys, is.Key)
 	}
 	return keys, nil
-}
-
-func quoted(in []string) []string {
-	out := make([]string, len(in))
-	for i, s := range in {
-		out[i] = fmt.Sprintf("%q", s)
-	}
-	return out
 }
 
 func one(key string, opts Options, deps Deps) (res Result) {

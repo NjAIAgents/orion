@@ -1092,24 +1092,20 @@ func runQueue(args []string) {
 // queueJQL builds the query from config, scoped to the bound project so a
 // label someone reused in another project cannot pull work into this repo.
 func queueJQL(cfg config.Config) string {
-	var b strings.Builder
+	var scope string
 	if k := strings.TrimSpace(cfg.Tracker.ProjectKey); k != "" {
-		fmt.Fprintf(&b, "project = %s AND ", k)
+		scope = tracker.JQLEq("project", k)
 	}
 	// Match the in-flight and failed states too, not just the queued one.
 	// Matching only the queue label means a ticket DISAPPEARS from this view
 	// the moment Orion claims it, so the one thing you most want to see --
 	// what is running right now, and what stopped -- is the one thing the
 	// command could not show.
-	quoted := make([]string, 0, 4)
-	for _, l := range tracker.Managed(cfg.Tracker.QueueLabel) {
-		quoted = append(quoted, fmt.Sprintf("%q", l))
-	}
-	fmt.Fprintf(&b, "labels in (%s)", strings.Join(quoted, ", "))
+	jql := tracker.JQLAnd(scope, tracker.JQLIn("labels", tracker.Managed(cfg.Tracker.QueueLabel)...))
 	if o := strings.TrimSpace(cfg.Tracker.QueueOrder); o != "" {
-		fmt.Fprintf(&b, " ORDER BY %s", o)
+		jql += " ORDER BY " + o
 	}
-	return b.String()
+	return jql
 }
 
 // runProjectStatus reports Orion's state for the repository you are in:
