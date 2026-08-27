@@ -2,6 +2,9 @@ package supervisor
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -249,8 +252,8 @@ type Child struct {
 	Description string
 }
 
-func TicketPrompt(key, summary, description, url string, artifacts []string) string {
-	return TicketPromptWithChildren(key, summary, description, url, artifacts, nil)
+func TicketPrompt(key, summary, description, url, repoPath string, artifacts []string) string {
+	return TicketPromptWithChildren(key, summary, description, url, repoPath, artifacts, nil)
 }
 
 // TicketPromptWithChildren is TicketPrompt plus the issue's sub-tasks.
@@ -266,7 +269,7 @@ func TicketPrompt(key, summary, description, url string, artifacts []string) str
 // In order, and said so explicitly: a Story's Tasks are usually sequenced by
 // dependency, and an agent told to "do these" without being told the order
 // will pick its own.
-func TicketPromptWithChildren(key, summary, description, url string,
+func TicketPromptWithChildren(key, summary, description, url, repoPath string,
 	artifacts []string, children []Child) string {
 
 	var b strings.Builder
@@ -322,6 +325,10 @@ func TicketPromptWithChildren(key, summary, description, url string,
 		"tests' and 'these tests prove the change' are different claims and only the",
 		"second is worth committing. Run the full suite before you finish; a green",
 		"suite you did not run is not evidence.",
+	))
+	b.WriteString(testEnv(repoPath))
+	b.WriteString(join(
+		"",
 		"",
 		"COMMITS",
 		"Commit as you go, in small steps, on the branch you are already on. Do not",
@@ -333,6 +340,75 @@ func TicketPromptWithChildren(key, summary, description, url string,
 		"why the change exists, not merely what changed. The diff already says what.",
 	))
 	return b.String()
+}
+
+// testEnv names how THIS repository runs its tests, when it can be told
+// without guessing.
+//
+// The entry point was documented nowhere the implementer could see it: the
+// only mention of scripts/test.sh lived in the CI-fix prompt, so an agent
+// starting a ticket rediscovered it by running cat on a hunch and then found
+// out how to make it work by trial and error -- seventeen shell calls on one
+// ticket, paid again from zero on the next, because nothing carried forward.
+//
+// Both lines are conditional, and that is the point. A prompt that
+// confidently names a command the repository does not have is worse than
+// silence: the agent runs it, it fails, and now it distrusts the instruction
+// and goes exploring anyway -- the cost this was meant to remove, plus a
+// wasted turn. So the lines appear only when the things they name exist.
+//
+// Kept to two lines because this text is a fixed prefix, re-read on every
+// turn of the run. A line here costs its tokens once per turn for the life of
+// the ticket. These two earn it -- they replace turns of rediscovery -- but
+// the next candidate has to clear the same bar, and most advice does not.
+// Notably absent: the contents of scripts/test.sh. The agent can read the
+// file; inlining it would go stale the first time somebody edited the script.
+func testEnv(repoPath string) string {
+	if repoPath == "" {
+		return ""
+	}
+	var lines []string
+	if _, err := os.Stat(filepath.Join(repoPath, "scripts", "test.sh")); err == nil {
+		lines = append(lines,
+			"Run ./scripts/test.sh before you finish. It is the same script CI runs.")
+	}
+	if py := venvPython(repoPath); py != "" {
+		lines = append(lines,
+			"The virtualenv is already built: "+py+" is the interpreter to use.")
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "\n" + strings.Join(lines, "\n")
+}
+
+// venvPython resolves the interpreter the same way scripts/test.sh does: this
+// directory's .venv, else the MAIN worktree's.
+//
+// The fallback is not decoration. Orion runs the agent in a git worktree,
+// which shares history but not ignored files, so the virtualenv built once
+// per sandbox at adoption time lives in the clone the worktree hangs off,
+// never in the worktree itself. Resolving it the script's way is deliberate:
+// two answers to "which python" is how the prompt and the suite end up
+// disagreeing.
+func venvPython(repoPath string) string {
+	here := filepath.Join(repoPath, ".venv", "bin", "python")
+	if _, err := os.Stat(here); err == nil {
+		return here
+	}
+	out, err := exec.Command("git", "-C", repoPath, "rev-parse", "--git-common-dir").Output()
+	if err != nil {
+		return ""
+	}
+	common := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(repoPath, common)
+	}
+	main := filepath.Join(filepath.Dir(common), ".venv", "bin", "python")
+	if _, err := os.Stat(main); err != nil {
+		return ""
+	}
+	return main
 }
 
 // childList renders the sub-tasks as the ordered checklist they are.

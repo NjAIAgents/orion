@@ -14,7 +14,7 @@ import (
 // is what that looks like in practice.
 
 func TestAFlatTicketPromptIsUnchanged(t *testing.T) {
-	p := TicketPrompt("FCIA-9", "do the thing", "details", "https://x/9", nil)
+	p := TicketPrompt("FCIA-9", "do the thing", "details", "https://x/9", "", nil)
 
 	if strings.Contains(p, "SUB-TASKS") {
 		t.Error("a ticket with no children must not grow a sub-task section")
@@ -29,7 +29,7 @@ func TestSubTasksArriveAsAnOrderedChecklist(t *testing.T) {
 		{Key: "OR-51", Summary: "add the endpoint", Description: "serve JSON"},
 		{Key: "OR-52", Summary: "render it", Description: "the card grid"},
 	}
-	p := TicketPromptWithChildren("OR-50", "orion web", "the dashboard", "https://x/50", nil, kids)
+	p := TicketPromptWithChildren("OR-50", "orion web", "the dashboard", "https://x/50", "", nil, kids)
 
 	// Order is load-bearing: these are the steps of one change, and "render
 	// it" before "add the endpoint" writes code against nothing.
@@ -66,7 +66,7 @@ func TestSubTasksArriveAsAnOrderedChecklist(t *testing.T) {
 // The agent must report per sub-task. A run that did four of five and says
 // only "done" leaves a person to diff the branch against the board.
 func TestTheAgentIsAskedToReportPerSubTask(t *testing.T) {
-	p := TicketPromptWithChildren("OR-50", "s", "d", "u", nil,
+	p := TicketPromptWithChildren("OR-50", "s", "d", "u", "", nil,
 		[]Child{{Key: "OR-51", Summary: "x"}})
 
 	for _, want := range []string{"which sub-task keys you completed", "which you did"} {
