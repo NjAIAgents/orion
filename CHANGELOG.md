@@ -37,8 +37,19 @@ now refuses to do**.
   working one. When nothing has been recorded it now says whether anything has
   ever been *observed*, and how many proposals are waiting. An empty answer and
   a broken subsystem used to be the same output.
+
 - A lesson without a project is refused. Provenance — what happened, where, and
   when — is what makes a durable rule worth trusting later.
+
+- A run that correctly changes nothing is no longer reported as a failure. An
+  agent that inspects the tree, finds the issue's work already present and
+  declines to invent a diff now ends in a distinct **no-op** outcome: no
+  `orion-failed` label, a tracker comment saying what it found and why it did
+  nothing, the claim released, and the ticket moved off In Progress. Only an
+  explicit `NOTHING TO DO:` line from the agent counts — an agent that stopped
+  to ask a question is still blocked, and still labelled as one. Conflating the
+  two teaches the reader that `orion-failed` sometimes means "fine, actually",
+  which is how a failure label stops carrying information.
 
 ### Fixed
 
@@ -50,6 +61,7 @@ now refuses to do**.
   proceed anyway, which is a habit worth not teaching. The network allowlist
   is unchanged and still governs egress: a socket on `127.0.0.1` reaches
   nothing but the process that opened it.
+
 - Each sandbox now gets a persistent Go build cache at
   `.orion/cache/go-build`, provisioned once and shared by every job. The
   default cache is outside the sandbox's writable set, so runs had been
@@ -66,24 +78,6 @@ now refuses to do**.
   the forge closes the window whichever way it opened. A check that cannot be
   made (no `gh`, no network) is a warning, not a merged branch, so the work
   still runs.
-
-### Changed
-
-- The generated sandbox settings are regenerated for every job, not only at
-  adoption. A sandbox adopted before a policy fix used to keep the old policy
-  until someone re-ran `orion init` — and the run that would benefit is the
-  one that cannot know it should.
-
-- A run that correctly changes nothing is no longer reported as a failure. An
-  agent that inspects the tree, finds the issue's work already present and
-  declines to invent a diff now ends in a distinct **no-op** outcome: no
-  `orion-failed` label, a tracker comment saying what it found and why it did
-  nothing, the claim released, and the ticket moved off In Progress. Only an
-  explicit `NOTHING TO DO:` line from the agent counts — an agent that stopped
-  to ask a question is still blocked, and still labelled as one. Conflating the
-  two teaches the reader that `orion-failed` sometimes means "fine, actually",
-  which is how a failure label stops carrying information.
-
 
 ## v0.5.1
 
