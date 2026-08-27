@@ -127,6 +127,28 @@ func TestAnUnknownAgentKeyIsIgnored(t *testing.T) {
 	}
 }
 
+// Orion posts to the tracker under its operator's account, so a ticket
+// already carries comments that read as though the operator wrote them --
+// and the architect defaults to the operator's own name. A comment an agent
+// wrote has to say so, or the reader cannot tell which of the two acted.
+func TestATrackerCommentNamesTheAgentThatWroteIt(t *testing.T) {
+	t.Cleanup(Reset)
+	got := Comment(events.ActorArchitect, "by issuer, per spec.md §4")
+	if !strings.HasPrefix(got, Attribution(events.ActorArchitect)) {
+		t.Fatalf("a comment must lead with who wrote it:\n%s", got)
+	}
+	if !strings.Contains(got, "Orion agent") {
+		t.Errorf("an agent's comment must be distinguishable from the human's:\n%s", got)
+	}
+	if !strings.Contains(got, "by issuer, per spec.md §4") {
+		t.Errorf("the comment body was lost:\n%s", got)
+	}
+	// Orion itself is not an agent with a name, and must not claim to be one.
+	if orion := Comment(events.ActorOrion, "opened a pull request"); !strings.HasPrefix(orion, "Orion:") {
+		t.Errorf("Orion's own comment reads oddly:\n%s", orion)
+	}
+}
+
 // The constraint that makes configuration work at all.
 //
 // A name written into a prompt, a Slack template or a fixture survives a

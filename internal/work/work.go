@@ -417,7 +417,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	log.Emitf(events.KindRunStart, events.ActorImplementer, "implementing %s", key)
 	stTitle, stBody := msgStarted(key, issue.Summary, job.Branch, issue.URL)
 	tell(w, log, ws, notify.Event{
-		Level: notify.Info, Workspace: ws.ID,
+		Level: notify.Info, Workspace: ws.ID, Actor: events.ActorImplementer,
 		Title: stTitle, Body: stBody,
 	})
 
@@ -511,7 +511,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 
 		anTitle, anBody := msgAnswered(key, ans, question)
 		tell(w, log, ws, notify.Event{
-			Level: notify.Info, Workspace: ws.ID,
+			Level: notify.Info, Workspace: ws.ID, Actor: actorFor(ans.Role),
 			Title: anTitle, Body: anBody,
 		})
 
@@ -570,10 +570,10 @@ func one(key string, opts Options, deps Deps) (res Result) {
 				res.Advice.Reason +
 				"\n\nDecide it, then amend the artifact so the next ticket does not ask again."
 		}
-		_ = deps.Jira.Comment(key, body)
+		_ = deps.Jira.Comment(key, actors.Comment(events.ActorImplementer, body))
 		blTitle, blBody := msgBlocked(key, issue.Summary, res.Question, issue.URL, res.Advice)
 		tell(w, log, ws, notify.Event{
-			Level: notify.Blocked, Workspace: ws.ID,
+			Level: notify.Blocked, Workspace: ws.ID, Actor: events.ActorImplementer,
 			Title: blTitle, Body: blBody,
 		})
 		return res
@@ -615,7 +615,8 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		[]string{tracker.LabelWorking}); err != nil {
 		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not mark it as awaiting CI: %v", err)
 	}
-	_ = deps.Jira.Comment(key, "Orion opened "+url+" from "+job.Branch+".")
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion,
+		"opened "+url+" from "+job.Branch+"."))
 	_ = deps.Jira.TransitionTo(key, "In Review")
 
 	ciTitle, ciBody := msgCIWait(key, issue.Summary, job.Branch, url, issue.URL, commits)
@@ -711,7 +712,8 @@ func failAndTell(res Result, err error, key string, ws *workspace.Workspace,
 	log *events.Log, w io.Writer, deps Deps) Result {
 	log.Emitf(events.KindFailed, events.ActorOrion, "%v", err)
 	ui.Say(w, key, events.ActorOrion, ui.VerbFail, "%v", err)
-	_ = deps.Jira.Comment(key, "Orion failed on this ticket.\n\n"+err.Error())
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion,
+		"failed on this ticket.\n\n"+err.Error()))
 
 	summary := res.Summary
 	if summary == "" {

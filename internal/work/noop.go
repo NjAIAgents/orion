@@ -23,6 +23,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
@@ -125,10 +126,11 @@ func release(comment, key string, cfg config.Config, deps Deps,
 		ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
 			"nothing to do, but it could not be transitioned to Done: %v", err)
 	}
-	_ = deps.Jira.Comment(key, comment)
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorImplementer, comment))
 	log.Emitf(events.KindNote, events.ActorOrion, "no change: %s", firstLine(res.Note))
 	title, body := msgNoop(key, res.Summary, res.Note, res.IssueURL)
 	tell(w, log, ws, notify.Event{
-		Level: notify.Info, Workspace: ws.ID, Title: title, Body: body,
+		Level: notify.Info, Workspace: ws.ID, Actor: events.ActorImplementer,
+		Title: title, Body: body,
 	})
 }

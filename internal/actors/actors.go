@@ -73,6 +73,37 @@ func (a Actor) Display() string {
 // argued about it is argued about once.
 const Separator = " · "
 
+// Attribution names the acting role on a surface that has no actor column.
+//
+// A Slack message is read with no surrounding context, often on a phone, by
+// somebody who did not watch the run; a tracker comment is read months
+// later. Neither has the columns the terminal uses, so the actor has to
+// travel inside the text.
+//
+// It also settles a collision that the terminal resolves and these surfaces
+// do not. Orion posts to the tracker under its operator's account, so
+// tickets already carry comments reading as though the operator wrote them,
+// and the architect defaults to the operator's own name. Without the role
+// spelled out, a reader cannot tell which of the two acted.
+func Attribution(id string) string {
+	a := Get(id)
+	if a.Name != "" {
+		return a.Name + Separator + a.Designation + ", an Orion agent"
+	}
+	if id == events.ActorOrion {
+		return "Orion"
+	}
+	return a.Display()
+}
+
+// Comment prefixes a tracker comment with who wrote it.
+//
+// Every comment Orion files, not only the interesting ones: a prefix that
+// appears sometimes tells a reader nothing about the comments without it.
+func Comment(id, body string) string {
+	return Attribution(id) + ":\n\n" + strings.TrimSpace(body)
+}
+
 // defaults are the shipped roster.
 //
 // Five Indian names, five Western, deliberately mixed. Every initial is
