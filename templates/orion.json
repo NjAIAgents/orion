@@ -82,6 +82,9 @@
     "private": true
   },
 
+  "_comment_agents": "Who Orion's agents are called in its output, keyed by the STABLE identifier (implementer, architect, pm, router, describer, frontend, devops) and never by display name -- a key on a name would break the moment you renamed one. Any field you leave out keeps the shipped default, so renaming one agent does not mean restating its model. Two agents may not share a name; an empty name renders the job title alone, which is how you turn personas off. ci and the human are not configurable.",
+  "agents": {},
+
   "_comment_vcs": "Two long-lived branches. main is the release branch. develop is the integration branch and the default PR base (named develop, not dev, so it does not collide with the dev ENVIRONMENT in the autonomy block). Every task gets its own branch cut from develop. BOTH are push-protected: protecting only main would make the PR into dev optional, and an optional gate is not a gate.",
   "vcs": {
     "provider": "github",
