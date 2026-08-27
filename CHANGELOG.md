@@ -25,11 +25,24 @@ reinstalled when a manifest is newer than the last install. Re-running
 `orion init` is how you repair or refresh it. It is non-fatal throughout: if
 it cannot be built, runs still work exactly as they did before.
 
+The other half is that the agent was never told any of this. `scripts/test.sh`
+was named only in the CI-fix prompt, which a ticket run never sees, so the
+implementer found the entry point by guessing and then found out how to make
+it work by trial and error — rediscovered from zero on every ticket. The
+implementer prompt now names the command, and names the provisioned
+interpreter when there is one. Both lines appear only when the thing they
+name exists: a prompt that confidently names a missing script is worse than
+silence, because the agent runs it, watches it fail, and goes exploring
+anyway.
+
 ### Changed
 
 - `orion init` creates and refreshes `.venv` in the sandbox clone for
   projects that declare Python dependencies, so per-ticket worktrees find one
   through the fallback `scripts/test.sh` already has
+- the implementer prompt names `./scripts/test.sh` and the sandbox's
+  interpreter when they exist, instead of leaving each ticket to discover
+  both
 
 ## v0.5.0
 
