@@ -321,7 +321,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	jobWS.RepoPath = job.Path
 
 	prompt := supervisor.TicketPromptWithChildren(key, issue.Summary, issue.Description,
-		issue.URL, artifactsFor(job.Path, cfg), promptChildren(children))
+		issue.URL, job.Path, artifactsFor(job.Path, cfg), promptChildren(children))
 
 	if opts.DryRun {
 		// Remove the rehearsal's worktree. Left behind, every dry run
