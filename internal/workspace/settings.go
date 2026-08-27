@@ -26,6 +26,15 @@ import (
 func writeSettings(ws *Workspace) error {
 	bin := orionBinary()
 
+	// The build cache has to exist before the agent runs, and it has to be
+	// named in additionalDirectories, or the sandbox denies the write and
+	// the toolchain rebuilds the standard library into a temp directory
+	// once per ticket. See BuildCacheDir.
+	cache := ws.BuildCacheDir()
+	if err := os.MkdirAll(cache, HomeDirMode); err != nil {
+		return fmt.Errorf("provisioning the build cache %s: %w", cache, err)
+	}
+
 	hookEntry := func(matcher, name string) map[string]any {
 		return map[string]any{
 			"matcher": matcher,
@@ -67,6 +76,21 @@ func writeSettings(ws *Workspace) error {
 				"Edit(**)",
 				"Write(**)",
 			},
+			// Outside the worktree, so it survives the ticket. Listed here
+			// because that is what widens the OS sandbox's writable set: a
+			// path the agent may write but the sandbox denies is not a
+			// cache, it is a per-run error message.
+			"additionalDirectories": []string{cache},
+		},
+
+		// Set here rather than left to a wrapper script the agent writes for
+		// itself. An env-prefixed command (GOCACHE=... go test) is a distinct
+		// Bash invocation that no allow rule matches, so a non-interactive run
+		// cannot get it approved -- which is how one run ended up redirecting
+		// GOCACHE to a fresh temp directory and paying the cold-cache cost
+		// every time.
+		"env": map[string]string{
+			"GOCACHE": cache,
 		},
 
 		"sandbox": map[string]any{
@@ -78,6 +102,19 @@ func writeSettings(ws *Workspace) error {
 			"allowUnsandboxedCommands": false,
 			"network": map[string]any{
 				"allowedDomains": defaultAllowedDomains,
+				// Listening on 127.0.0.1 or [::1] is not egress. The domain
+				// allowlist exists to stop a compromised dependency reaching
+				// the internet, and a loopback socket reaches nothing but the
+				// process that opened it.
+				//
+				// Denying it costs whole packages. Go's httptest binds an
+				// ephemeral loopback port and PANICS when the bind is refused
+				// -- "listen tcp6 [::1]:0: bind: operation not permitted" --
+				// so every package with an HTTP test failed for a reason that
+				// had nothing to do with the change under test, on every run,
+				// and the agent had to recognise it as environmental and
+				// proceed anyway. That is a habit worth not teaching.
+				"allowLocalBinding": true,
 			},
 			"credentials": map[string]any{
 				"files": []map[string]string{

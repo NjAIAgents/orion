@@ -6,6 +6,29 @@ now refuses to do**.
 
 ## Unreleased
 
+### Fixed
+
+- The sandbox no longer denies loopback binds. Any test that stands up a
+  local HTTP server — Go's `httptest`, and its equivalent everywhere else —
+  panicked on `bind: operation not permitted`, so those packages could not be
+  tested inside a sandbox at all. Three of Orion's own failed that way on
+  every run, and an agent had to recognise the failure as environmental and
+  proceed anyway, which is a habit worth not teaching. The network allowlist
+  is unchanged and still governs egress: a socket on `127.0.0.1` reaches
+  nothing but the process that opened it.
+- Each sandbox now gets a persistent Go build cache at
+  `.orion/cache/go-build`, provisioned once and shared by every job. The
+  default cache is outside the sandbox's writable set, so runs had been
+  redirecting `GOCACHE` to a fresh temp directory and recompiling the
+  standard library from cold once per ticket.
+
+### Changed
+
+- The generated sandbox settings are regenerated for every job, not only at
+  adoption. A sandbox adopted before a policy fix used to keep the old policy
+  until someone re-ran `orion init` — and the run that would benefit is the
+  one that cannot know it should.
+
 ## v0.5.1
 
 A cleanup release. Everything here was found by running Orion on Orion, which
