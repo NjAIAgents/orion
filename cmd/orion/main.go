@@ -581,6 +581,7 @@ func ensureSandbox(dir string, cfg config.Config, force bool) {
 	if existing := workspace.FindBySource(dir); existing != nil {
 		ui.Ok(w, "bound", "sandbox %s (%s)", existing.ID, existing.RepoDir())
 		registerRepo(dir, cfg, existing)
+		ensureSandboxEnv(w, existing.RepoDir())
 		return
 	}
 	remote, err := workspace.RemoteOf(dir)
@@ -610,6 +611,9 @@ func ensureSandbox(dir string, cfg config.Config, force bool) {
 	if len(ws.Task.Branches) > 0 {
 		ui.Ok(w, "created", "branches %s in the sandbox", strings.Join(ws.Task.Branches, ", "))
 	}
+	// The environment, once, here -- not once per ticket in a worktree that
+	// cannot keep it.
+	ensureSandboxEnv(w, ws.RepoDir())
 }
 
 // registerRepo records the project-key to repository mapping.
