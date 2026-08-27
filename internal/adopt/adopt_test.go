@@ -3,6 +3,7 @@ package adopt
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -455,5 +456,150 @@ func TestForceRepairsHooksWithoutResettingConfiguration(t *testing.T) {
 	}
 	if !strings.Contains(string(settings), "/usr/bin/true") {
 		t.Error("hooks were not repointed at the current binary")
+	}
+}
+
+// seedForeignSettings writes a settings.json with no Orion hooks, so a run
+// has something to change and the backup it takes survives.
+func seedForeignSettings(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"my-own-hook"}]}]}}`
+	if err := os.WriteFile(filepath.Join(dir, ".claude", "settings.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A backup Orion writes into someone else's repo must not end up in their
+// history. Without the .gitignore line, a `git add -A` commits one .bak per
+// init, forever.
+func TestBackupIsGitignored(t *testing.T) {
+	d := repo(t)
+	seedForeignSettings(t, d)
+
+	res, err := Run(Options{Dir: d, Binary: "orion"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Backup == "" {
+		t.Fatal("no backup was taken; this test proves nothing")
+	}
+
+	b, err := os.ReadFile(filepath.Join(d, ".gitignore"))
+	if err != nil {
+		t.Fatalf(".gitignore was not created: %v", err)
+	}
+	if !strings.Contains(string(b), backupIgnorePattern) {
+		t.Errorf(".gitignore does not cover the backup:\n%s", b)
+	}
+	// Silently editing .gitignore is its own surprise: the run must say so.
+	if !strings.Contains(strings.Join(res.Created, " "), ".gitignore") {
+		t.Errorf("the .gitignore edit was not reported: %v", res.Created)
+	}
+}
+
+// git itself must agree the file is ignored -- matching the pattern by
+// substring proves only that we wrote the line we meant to write.
+func TestBackupIsIgnoredByGit(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	d := t.TempDir()
+	if out, err := exec.Command(git, "-C", d, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	seedForeignSettings(t, d)
+
+	res, err := Run(Options{Dir: d, Binary: "orion"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Backup == "" {
+		t.Fatal("no backup was taken; this test proves nothing")
+	}
+	rel, err := filepath.Rel(d, res.Backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command(git, "-C", d, "check-ignore", "-q", rel).Run(); err != nil {
+		t.Errorf("git does not ignore %s: %v", rel, err)
+	}
+}
+
+// A re-run must not stack another copy of the line, and must not disturb
+// what the repo already ignores.
+func TestGitignoreAppendIsIdempotent(t *testing.T) {
+	d := repo(t)
+	seedForeignSettings(t, d)
+	existing := "bin/\n*.log\n"
+	gi := filepath.Join(d, ".gitignore")
+	if err := os.WriteFile(gi, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Run(Options{Dir: d, Binary: "orion"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(gi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(first), existing) {
+		t.Errorf("existing entries were disturbed:\n%s", first)
+	}
+
+	// Re-seed a foreign settings.json so the second run has work to do, and
+	// the .gitignore path is exercised again rather than short-circuited by
+	// the no-op branch.
+	seedForeignSettings(t, d)
+	res, err := Run(Options{Dir: d, Binary: "orion"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(gi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(second) != string(first) {
+		t.Errorf("a second run rewrote .gitignore:\n got: %q\nwant: %q", second, first)
+	}
+	if strings.Count(string(second), backupIgnorePattern) != 1 {
+		t.Errorf("the pattern was stacked:\n%s", second)
+	}
+	if strings.Contains(strings.Join(append(res.Created, res.Updated...), " "), ".gitignore") {
+		t.Errorf("an unchanged .gitignore was reported as edited: %v %v", res.Created, res.Updated)
+	}
+}
+
+// A .gitignore whose last line has no newline must not have the pattern
+// glued onto it, which would break both entries.
+func TestGitignoreWithoutTrailingNewline(t *testing.T) {
+	d := repo(t)
+	seedForeignSettings(t, d)
+	gi := filepath.Join(d, ".gitignore")
+	if err := os.WriteFile(gi, []byte("bin/"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Run(Options{Dir: d, Binary: "orion"}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(gi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"bin/", backupIgnorePattern} {
+		found := false
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.TrimSpace(line) == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%q is not its own line:\n%s", want, b)
+		}
 	}
 }

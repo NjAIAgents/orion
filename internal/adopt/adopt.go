@@ -392,6 +392,11 @@ func mergeSettings(opts Options, res *Result) error {
 	if err := os.WriteFile(p, append(b, '\n'), 0o644); err != nil {
 		return err
 	}
+	// The backup survives this run, so make git ignore it before the next
+	// `git add -A` sweeps it into a commit.
+	if res.Backup != "" {
+		ignoreBackups(opts.Dir, res)
+	}
 	if deduped > 0 {
 		res.Updated = append(res.Updated, fmt.Sprintf(
 			".claude/settings.json (%d duplicate hook(s) removed)", deduped))
@@ -409,6 +414,64 @@ func mergeSettings(opts Options, res *Result) error {
 		res.Updated = append(res.Updated, fmt.Sprintf(".claude/settings.json (+%d hook(s))", added))
 	}
 	return nil
+}
+
+// backupIgnorePattern covers every settings backup mergeSettings writes.
+const backupIgnorePattern = ".claude/*.orion-*.bak"
+
+// ignoreBackups makes sure .gitignore covers the settings backups.
+//
+// A backup is a LOCAL safety net: it belongs in the working tree so a person
+// can restore from it, and out of version control, because git already is the
+// backup for anything committed. Without this, every init leaves another
+// untracked .bak beside settings.json, a `git add -A` sweeps them into a
+// commit, and they are in history permanently -- in whatever repository
+// adopted Orion, which nobody asked for and nobody thinks to look in .claude
+// to clean up.
+//
+// Never fatal. Failing adoption because a .gitignore could not be written
+// would trade a tidiness problem for a broken repo; a warning says what was
+// not done and leaves the wiring intact.
+func ignoreBackups(dir string, res *Result) {
+	p := filepath.Join(dir, ".gitignore")
+
+	b, err := os.ReadFile(p)
+	if err != nil && !os.IsNotExist(err) {
+		res.Warnings = append(res.Warnings, fmt.Sprintf(
+			"could not read %s (%v); Orion's settings backups are NOT ignored and a\n"+
+				"         `git add -A` will commit them. Add this line yourself:\n           %s",
+			p, err, backupIgnorePattern))
+		return
+	}
+	existed := err == nil
+
+	// Idempotent: a re-run must not stack a second copy of the same line.
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == backupIgnorePattern {
+			return
+		}
+	}
+
+	add := backupIgnorePattern + "\n"
+	if len(b) > 0 && !strings.HasSuffix(string(b), "\n") {
+		// Appending to a file with no final newline would otherwise glue the
+		// pattern onto the last entry and silently break both.
+		add = "\n" + add
+	}
+	if err := os.WriteFile(p, append(b, add...), 0o644); err != nil {
+		res.Warnings = append(res.Warnings, fmt.Sprintf(
+			"could not write %s (%v); Orion's settings backups are NOT ignored. Add:\n           %s",
+			p, err, backupIgnorePattern))
+		return
+	}
+
+	// Say so. Editing a file the user did not name is its own surprise, and
+	// one they should hear about from the run rather than from a later diff.
+	if existed {
+		res.Updated = append(res.Updated, ".gitignore ("+backupIgnorePattern+"; keeps settings backups out of git)")
+	} else {
+		res.Created = append(res.Created, ".gitignore ("+backupIgnorePattern+"; keeps settings backups out of git)")
+	}
 }
 
 // isOrionHookName reports whether a hook subcommand is one of ours. Checked
