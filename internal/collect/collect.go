@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
@@ -411,9 +412,9 @@ func failing(res Result, key string, pr PR, cfg config.Config, branch string,
 		ui.Warn(w, "%s: could not relabel: %v", key, err)
 		return res
 	}
-	_ = deps.Jira.Comment(key, "CI failed on "+pr.URL+".\n\n"+pr.Detail+
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorCI, "CI failed on "+pr.URL+".\n\n"+pr.Detail+
 		"\n\nThe branch is kept. Fix it there and push, or close the pull "+
-		"request and re-queue the ticket to start again.")
+		"request and re-queue the ticket to start again."))
 
 	log.Emit(events.Event{Kind: events.KindFailed, Actor: events.ActorCI,
 		Msg: "CI failed: " + firstLine(pr.Detail)})
@@ -465,7 +466,7 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	if err := deps.Jira.TransitionTo(key, "Done"); err != nil {
 		ui.Warn(w, "%s: merged and released, but could not transition to Done: %v", key, err)
 	}
-	_ = deps.Jira.Comment(key, "Merged: "+pr.URL)
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion, "merged: "+pr.URL))
 	closeChildren(key, pr.URL, deps, w)
 	// A branch that went red and then merged is a mistake with its own
 	// correction attached, which is the one shape a lesson can be built from
@@ -601,7 +602,8 @@ func closeChildren(key, prURL string, deps Deps, w io.Writer) {
 			ui.Warn(w, "%s: merged, but %s could not be closed: %v", key, c.Key, err)
 			continue
 		}
-		_ = deps.Jira.Comment(c.Key, "Delivered in "+key+" and merged: "+prURL)
+		_ = deps.Jira.Comment(c.Key, actors.Comment(events.ActorOrion,
+			"delivered in "+key+" and merged: "+prURL))
 		closed = append(closed, c.Key)
 	}
 	if len(closed) > 0 {

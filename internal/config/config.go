@@ -331,8 +331,31 @@ type Attribution struct {
 	AutoInstall bool `json:"auto_install"`
 }
 
+// Agent overrides how one actor is displayed, and which model it runs on.
+//
+// Keyed in orion.json by the STABLE actor identifier ("implementer"), never
+// by the display name: a config keyed on a name would break the moment
+// somebody renamed one, which is the only thing this block exists to do.
+//
+//	"agents": {
+//	  "implementer": { "name": "Alex", "designation": "backend engineer" }
+//	}
+//
+// Any field left out keeps the shipped default, so renaming one agent does
+// not mean restating its model.
+// Name is a pointer so that an explicit "" is distinguishable from absent.
+// They mean opposite things: absent keeps the shipped name, while "" clears
+// it and the actor renders as its job title alone -- which is how a team
+// that does not want personas turns them off.
+type Agent struct {
+	Name        *string `json:"name"`
+	Designation string  `json:"designation"`
+	Model       string  `json:"model"`
+}
+
 type Config struct {
 	Version     int               `json:"version"`
+	Agents      map[string]Agent  `json:"agents,omitempty"`
 	Limits      Limits            `json:"limits"`
 	Gates       Gates             `json:"gates"`
 	Paths       Paths             `json:"paths"`

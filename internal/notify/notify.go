@@ -14,10 +14,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 
+	"github.com/orion-sdlc/orion/internal/actors"
+	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/slack"
 	"runtime"
 	"strings"
@@ -38,12 +42,40 @@ const (
 // messages land in that project's room rather than one shared firehose.
 
 type Event struct {
-	Channel   string
+	Channel string
+	// Actor is the stable identifier of whoever this message is about.
+	//
+	// A Slack message is read with no surrounding context, often on a phone,
+	// by somebody who did not watch the run -- the column layout that names
+	// the actor in the terminal does not exist there, so the name and job
+	// title have to travel inside the message. Empty attributes it to Orion
+	// itself.
+	Actor     string
 	Level     Level     `json:"level"`
 	Title     string    `json:"title"`
 	Body      string    `json:"body"`
 	Workspace string    `json:"workspace,omitempty"`
 	At        time.Time `json:"at"`
+}
+
+// Out is where the always-on terminal line goes. A variable so a test can
+// read what a person would see.
+var Out io.Writer = os.Stdout
+
+// mrkdwnLink matches Slack's <url|label> syntax, which renders as a link in
+// Slack and as literal angle brackets anywhere else.
+var mrkdwnLink = regexp.MustCompile(`<([^<>|]+)\|([^<>]+)>`)
+
+// Plain renders Slack mrkdwn as text for a terminal.
+//
+// Defensive rather than decorative: the title is plain today, and this is
+// what keeps it plain when somebody composes the next one for Slack and
+// forgets that it is also printed here.
+func Plain(s string) string {
+	s = mrkdwnLink.ReplaceAllString(s, "$2 ($1)")
+	s = strings.ReplaceAll(s, "*", "")
+	s = strings.ReplaceAll(s, "•", "-")
+	return strings.TrimSpace(s)
 }
 
 // Send delivers on every configured channel and returns the errors that
@@ -57,13 +89,29 @@ func Send(e Event) []error {
 
 	// stdout is the one channel that always runs. If everything else is
 	// unconfigured, the terminal and the log still carry the event.
-	fmt.Printf("\n[orion:%s] %s\n%s\n\n", e.Level, e.Title, e.Body)
+	//
+	// ONE LINE, and only the title. The body is composed for Slack -- *bold*
+	// with one asterisk, links as <url|label>, bullets -- and echoing it here
+	// printed markup meant for a different renderer straight into a terminal:
+	//
+	//	• pull request  <https://github.com/x/y/pull/3|open it>
+	//
+	// One body cannot serve both surfaces, which is how that happened. The
+	// terminal gets a summary and Slack carries the formatted version; the
+	// detail the terminal lost is already in the run's own output, line by
+	// line, as it happened.
+	fmt.Fprintf(Out, "[orion:%s] %s\n", e.Level, Plain(e.Title))
 
 	if err := desktop(e); err != nil {
 		errs = append(errs, fmt.Errorf("desktop notify: %w", err))
 	}
 	if e.Channel != "" {
-		if err := slackSend(e.Channel, e.Title+"\n"+e.Body); err != nil {
+		who := e.Actor
+		if who == "" {
+			who = events.ActorOrion
+		}
+		text := "*" + actors.Attribution(who) + "*\n" + e.Title + "\n" + e.Body
+		if err := slackSend(e.Channel, text); err != nil {
 			errs = append(errs, fmt.Errorf("slack: %w", err))
 		}
 	}

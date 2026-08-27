@@ -6,6 +6,50 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.7.0
+
+Agents now have names, output has a face, and the changelog stopped being a
+merge conflict. First release cut through the develop-to-main promotion flow.
+
+### Added
+
+- `orion init` now scaffolds a secret-scanning workflow into every project it
+  adopts: gitleaks at a pinned version, installed through the Go module proxy
+  so the download is checksum-verified, scanning the full history rather than
+  the diff, printing findings with the secret itself redacted, and failing the
+  build on a hit. CI has no implementer to talk to, and a secret already
+  pushed to a public repository is not a finding to negotiate.
+  A project that already runs gitleaks, trufflehog or detect-secrets keeps its
+  own scanner and gets nothing added. Unlike the test workflow, the scan is
+  still added when other workflows exist — otherwise every repository that
+  already had CI, which is most of them, would stay unscanned.
+
+### Changed
+
+- A ticket now writes `.changelog.d/<KEY>.md` instead of editing
+  `CHANGELOG.md`. Every ticket writes a changelog entry and every entry went
+  into the same section of the same file, so any two branches in flight
+  conflicted there whatever code they touched — three tickets once partitioned
+  the code across three packages cleanly and still blocked each other on
+  `CHANGELOG.md` alone. A file per ticket cannot collide.
+
+  `orion changelog --version vX.Y.Z` collates the fragments into
+  `CHANGELOG.md` — grouped by section, always in keepachangelog order (Added,
+  Changed, Deprecated, Removed, Fixed, Security) — and deletes them, so the
+  edit and the deletions land in one commit. Collation is a plain merge in Go
+  rather than an agent run; with no fragments present the command still
+  generates from the commit history as before.
+
+  It refuses rather than guesses: a fragment naming a section outside that
+  list stops the release instead of being dropped, and a version already in
+  `CHANGELOG.md` is not collated over. Tickets that shipped since the last tag
+  with no fragment are listed afterwards, so a missing entry is visible rather
+  than simply absent.
+
+  Nothing changes for a reader of `CHANGELOG.md`. `orion init` scaffolds
+  `.changelog.d/` for an adopted repository; fragments are committed, not
+  ignored.
+
 ## v0.6.0
 
 The first release where Orion's memory does something. Also the release that

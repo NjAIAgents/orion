@@ -24,6 +24,36 @@ import (
 	"strings"
 )
 
+// The scanner the scan workflow installs, pinned.
+//
+// Installed with `go install`, which resolves through the module proxy and
+// checks the module against the public checksum database before building it.
+// That is the verification: a step that curls a release tarball and runs it
+// has proved nothing about what it just executed, and a security control that
+// runs an unverified binary is theatre.
+const (
+	gitleaksModule  = "github.com/zricethezav/gitleaks/v8"
+	gitleaksVersion = "v8.30.1"
+
+	// The scan itself, shared with the test that plants a secret against it,
+	// so the test cannot pass against a command CI does not run.
+	//
+	// Full history rather than the diff, because a diff-only scan misses
+	// everything committed before the scanner existed -- which is most of
+	// what is actually leaked.
+	//
+	// --verbose then --redact, and the pair is the point. Without --verbose,
+	// gitleaks prints "leaks found: 1" and nothing else, which fails the
+	// build without telling anyone where to look. With it, every finding is
+	// printed -- file, line, commit -- and --redact replaces the secret
+	// itself with REDACTED, because CI logs are as readable as the
+	// repository and a scanner that prints its find has published the thing
+	// it was hired to catch.
+	//
+	// --exit-code 1 because CI has no implementer to negotiate with.
+	scanCommand = "gitleaks git . --verbose --redact=100 --no-banner --exit-code 1"
+)
+
 // Stack is the toolchain detected in a repository. Detection is by marker
 // file rather than by asking, because adoption should not stop to
 // interrogate someone about a repository that can describe itself.
@@ -44,6 +74,8 @@ type Result struct {
 	ScriptCreated bool
 	FlowPath      string
 	FlowCreated   bool
+	ScanPath      string
+	ScanCreated   bool
 	Notes         []string
 }
 
@@ -67,10 +99,20 @@ func Detect(dir string) Stack {
 	return StackUnknown
 }
 
-// Ensure writes the test script and the workflow if they are missing.
+// Ensure writes the test script, the workflow and the secret scan if they are
+// missing.
 func Ensure(dir string) (Result, error) {
 	res := Result{Stack: Detect(dir)}
+	if err := ensureScript(dir, &res); err != nil {
+		return res, err
+	}
+	if err := ensureFlow(dir, &res); err != nil {
+		return res, err
+	}
+	return res, ensureScan(dir, &res)
+}
 
+func ensureScript(dir string, res *Result) error {
 	script := filepath.Join(dir, "scripts", "test.sh")
 	res.ScriptPath = "scripts/test.sh"
 	switch _, err := os.Stat(script); {
@@ -78,10 +120,10 @@ func Ensure(dir string) (Result, error) {
 		res.Notes = append(res.Notes, "scripts/test.sh already exists and was left alone")
 	default:
 		if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
-			return res, err
+			return err
 		}
 		if err := os.WriteFile(script, []byte(scriptFor(res.Stack)), 0o755); err != nil {
-			return res, err
+			return err
 		}
 		res.ScriptCreated = true
 		if res.Stack == StackUnknown {
@@ -90,7 +132,10 @@ func Ensure(dir string) (Result, error) {
 					"a script that exits 0 without running anything is worse than none, because CI would then be green by construction")
 		}
 	}
+	return nil
+}
 
+func ensureFlow(dir string, res *Result) error {
 	flow := filepath.Join(dir, ".github", "workflows", "orion-ci.yml")
 	res.FlowPath = ".github/workflows/orion-ci.yml"
 	switch _, err := os.Stat(flow); {
@@ -105,17 +150,96 @@ func Ensure(dir string) (Result, error) {
 				"%d workflow(s) already exist, so none was added; point one of them at scripts/test.sh",
 				len(existing)))
 			res.FlowPath = ""
-			return res, nil
+			return nil
 		}
 		if err := os.MkdirAll(filepath.Dir(flow), 0o755); err != nil {
-			return res, err
+			return err
 		}
 		if err := os.WriteFile(flow, []byte(workflowFor(res.Stack)), 0o644); err != nil {
-			return res, err
+			return err
 		}
 		res.FlowCreated = true
 	}
-	return res, nil
+	return nil
+}
+
+// ensureScan writes the secret-scanning workflow.
+//
+// Deliberately NOT a job inside orion-ci.yml, and deliberately not subject to
+// the "another workflow already exists, so add none" rule above. That rule
+// exists to avoid running the same test suite twice; an existing test
+// workflow does not scan for secrets, so skipping the scan because one is
+// present would leave every already-configured repository -- Orion's own
+// included -- unscanned. What DOES skip it is the project already having a
+// scanner, which is the thing not to duplicate (A5).
+func ensureScan(dir string, res *Result) error {
+	scan := filepath.Join(dir, ".github", "workflows", "orion-secret-scan.yml")
+	res.ScanPath = ".github/workflows/orion-secret-scan.yml"
+
+	if _, err := os.Stat(scan); err == nil {
+		res.Notes = append(res.Notes, "the secret-scan workflow already exists and was left alone")
+		return nil
+	}
+	if found := existingScanner(dir); found != "" {
+		res.Notes = append(res.Notes, fmt.Sprintf(
+			"%s is already wired up here, so no second scanner was added", found))
+		res.ScanPath = ""
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(scan), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(scan, []byte(scanWorkflow()), 0o644); err != nil {
+		return err
+	}
+	res.ScanCreated = true
+	return nil
+}
+
+// existingScanner reports a secret scanner the project already runs, by name,
+// or "" when it runs none.
+//
+// Looks at what the repository says about itself rather than asking: a
+// workflow that mentions a scanner runs one, and a scanner's config file is
+// only there because someone put it there. Detection is deliberately
+// generous -- a false positive costs a repository the scan Orion would have
+// added, which is a note the adoption summary prints, while a false negative
+// costs it a second scanner reporting the same findings under a different
+// check name.
+func existingScanner(dir string) string {
+	scanners := []string{"gitleaks", "trufflehog", "detect-secrets"}
+
+	// Config and baseline files, which name their scanner by existing.
+	for name, scanner := range map[string]string{
+		".gitleaks.toml":    "gitleaks",
+		"gitleaks.toml":     "gitleaks",
+		".secrets.baseline": "detect-secrets",
+		".trufflehog.yaml":  "trufflehog",
+		".trufflehog.yml":   "trufflehog",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return scanner
+		}
+	}
+
+	// Anything that runs one: a workflow, or a pre-commit hook config.
+	files, _ := filepath.Glob(filepath.Join(dir, ".github", "workflows", "*.y*ml"))
+	for _, name := range []string{".pre-commit-config.yaml", ".pre-commit-config.yml"} {
+		files = append(files, filepath.Join(dir, name))
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		body := strings.ToLower(string(b))
+		for _, s := range scanners {
+			if strings.Contains(body, s) {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 const header = `#!/usr/bin/env bash
@@ -304,6 +428,62 @@ jobs:
 `
 }
 
+// scanWorkflow is the secret scan, as its own workflow and its own check.
+//
+// A separate check context on purpose: it composes with `orion protect`,
+// which discovers contexts from real check runs, so once this has reported
+// once the scan can be made required without either feature knowing about
+// the other.
+func scanWorkflow() string {
+	return `# Written by orion init.
+#
+# A hard gate, unlike the agent loop: CI has no implementer to talk to, and a
+# secret already pushed to a public repository is not a finding to negotiate.
+# A hit fails the build.
+name: secret scan
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+
+concurrency:
+  group: secret-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 -- the whole history, not just the diff. A diff-only
+      # scan misses everything committed before the scanner existed, which is
+      # most of what is actually leaked. It is cheap: 89 commits in 373ms.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      # Pinned, and verified: go install resolves through the module proxy
+      # and checks the module against the public checksum database before
+      # building it. A step that pipes an unverified binary off the internet
+      # and runs it is theatre.
+      - name: install gitleaks
+        run: go install ` + gitleaksModule + `@` + gitleaksVersion + `
+
+      # --verbose prints each finding -- file, line, commit -- because a
+      # build that fails saying only "leaks found: 1" tells nobody where to
+      # look. --redact replaces the secret itself with REDACTED: these logs
+      # are readable by whoever can read the repository, and a scanner that
+      # prints its find has published the thing it was hired to catch.
+      - name: scan
+        run: ` + scanCommand + `
+`
+}
+
 // Describe renders what Ensure did, for the adoption summary.
 func Describe(r Result) []string {
 	var out []string
@@ -312,6 +492,9 @@ func Describe(r Result) []string {
 	}
 	if r.FlowCreated {
 		out = append(out, "created "+r.FlowPath)
+	}
+	if r.ScanCreated {
+		out = append(out, "created "+r.ScanPath+" (gitleaks "+gitleaksVersion+", full history, redacted)")
 	}
 	out = append(out, r.Notes...)
 	return out

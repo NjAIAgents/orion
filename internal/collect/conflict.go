@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/ui"
@@ -68,11 +69,11 @@ func conflicted(res Result, key string, pr PR, branch string,
 	log.Emit(events.Event{Kind: events.KindBlocked, Actor: events.ActorOrion,
 		Msg: "branch conflicts with its base; a human must rebase"})
 
-	_ = deps.Jira.Comment(key, fmt.Sprintf(
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion, fmt.Sprintf(
 		"`%s` no longer merges cleanly into its base.\n\n"+
 			"This usually means another ticket merged first and the two changes overlap. "+
 			"Nothing was lost and nothing was overwritten -- the branch is intact.\n\n"+
-			"Rebase it and push; Orion continues from there.\n\n%s", branch, pr.URL))
+			"Rebase it and push; Orion continues from there.\n\n%s", branch, pr.URL)))
 
 	if ch := channelOf(ws); ch != "" {
 		tell(w, log, notify.Event{

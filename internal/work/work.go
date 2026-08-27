@@ -35,6 +35,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/advise"
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
@@ -199,10 +200,10 @@ func one(key string, opts Options, deps Deps) (res Result) {
 
 	entry, err := registry.Lookup(opts.Home, key)
 	if err != nil {
-		ui.Fail(w, "%v", err)
+		ui.Say(w, key, events.ActorOrion, ui.VerbFail, "%v", err)
 		return fail(res, err)
 	}
-	ui.Ok(w, "resolved", "%s -> %s", registry.ProjectOf(key), entry.Source)
+	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "%s -> %s", registry.ProjectOf(key), entry.Source)
 
 	ws, err := workspace.Open(entry.Workspace)
 	if err != nil {
@@ -214,8 +215,16 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// stale clone serves stale policy. Branch bases are already taken from
 	// origin/<base> by AddWorktree, so this is only about the config.
 	if msg, syncErr := workspace.SyncSandbox(ws, cfg.VCS.WorkBranch); syncErr == nil && msg != "" {
-		ui.Ok(w, "refresh", "%s", msg)
+		ui.Say(w, key, events.ActorOrion, ui.VerbOK, "%s", msg)
 		cfg = config.Load(ws.RepoDir())
+	}
+
+	// The roster this project configured. A bad one is reported and then
+	// ignored: display names are not worth failing a run over, and the
+	// shipped roster still tells the reader who acted.
+	if err := actors.Configure(cfg.Agents); err != nil {
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+			"keeping the shipped agent names: %v", err)
 	}
 
 	log, logErr := events.Open(events.Path(ws.Dir), events.Event{
@@ -231,7 +240,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// the failure this whole notification path exists to prevent, and it is
 	// worth one line at the start to rule out.
 	if id, why := resolveChannel(ws); id == "" && why != "" {
-		ui.Warn(w, "no Slack messages for this run: %s", why)
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "no Slack messages for this run: %s", why)
 		log.Emitf(events.KindNote, events.ActorOrion, "no slack channel: %s", why)
 	}
 
@@ -244,7 +253,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// route forward was to kill the process and run another command was a
 	// crash with instructions, and it stopped an unattended watcher without
 	// telling anyone.
-	if proceed, msg := budgetGate(opts, cfg, ws, log, w); !proceed {
+	if proceed, msg := budgetGate(key, opts, cfg, ws, log, w); !proceed {
 		log.Emitf(events.KindBudget, events.ActorOrion,
 			"waiting for the budget checkpoint to be acknowledged")
 		if msg != "" {
@@ -259,7 +268,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		return fail(res, err)
 	}
 	res.Summary, res.IssueURL = issue.Summary, issue.URL
-	ui.Ok(w, "bound", "%s  %s", key, issue.Summary)
+	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "%s", issue.Summary)
 
 	// Has this ticket's work already landed?
 	//
@@ -283,7 +292,8 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		merged, prURL, mErr := deps.Merged(ws.RepoDir(), branch)
 		switch {
 		case mErr != nil:
-			ui.Warn(w, "could not check whether %s has already merged: %v", branch, mErr)
+			ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+				"could not check whether %s has already merged: %v", branch, mErr)
 		case merged:
 			return alreadyMerged(res, key, prURL, branch, cfg, opts, deps, ws, log, w)
 		}
@@ -301,10 +311,11 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// the ticket as itself, and say that is what happened.
 	children, cErr := childrenOf(deps, key)
 	if cErr != nil {
-		ui.Warn(w, "could not read sub-tasks of %s (%v); working it as a single ticket", key, cErr)
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+			"could not read its sub-tasks (%v); working it as a single ticket", cErr)
 	}
 	if len(children) > 0 {
-		ui.Ok(w, "bound", "%d sub-task(s), to be done in one branch", len(children))
+		ui.Say(w, key, events.ActorOrion, ui.VerbOK, "%d sub-task(s), to be done in one branch", len(children))
 		for i, c := range children {
 			fmt.Fprintf(w, "          %s\n", ui.Dim(w,
 				fmt.Sprintf("%d. %s  %s", i+1, c.Key, c.Summary)))
@@ -318,8 +329,9 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		// to give the agent room (see turnsFor) rather than to decline work
 		// somebody legitimately planned.
 		if len(children) >= tracker.ManyChildren {
-			ui.Warn(w, "%s is a large story (%d sub-tasks). One run, one branch, "+
-				"one pull request -- expect it to take a while.", key, len(children))
+			ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+				"a large story (%d sub-tasks). One run, one branch, "+
+					"one pull request -- expect it to take a while.", len(children))
 		}
 	}
 
@@ -337,7 +349,8 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			return fail(res, fmt.Errorf("claiming %s: %w", key, err))
 		}
 		log.Emitf(events.KindClaimed, events.ActorOrion, "claimed %s: %s", key, issue.Summary)
-		ui.Ok(w, "claimed", "%s -> %s", cfg.Tracker.QueueLabel, tracker.LabelWorking)
+		ui.Say(w, key, events.ActorOrion, ui.VerbWorking, "claimed: %s -> %s",
+			cfg.Tracker.QueueLabel, tracker.LabelWorking)
 	}
 
 	// From here a failure must hand the ticket back, or it is stuck in
@@ -355,7 +368,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if err := transitionUnlessDry(deps, opts, key, "In Progress"); err != nil {
 		// Not fatal. A workflow without that status is a configuration
 		// difference, not a reason to abandon work that can still be done.
-		ui.Warn(w, "could not move %s to In Progress: %v", key, err)
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not move it to In Progress: %v", err)
 	}
 
 	branch := branchFor(cfg.VCS.BranchPrefix, key)
@@ -365,7 +378,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}
 	res.Branch = job.Branch
 	log.Emitf(events.KindBranch, events.ActorOrion, "branch %s from %s", job.Branch, cfg.VCS.WorkBranch)
-	ui.Ok(w, "created", "branch %s", job.Branch)
+	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "branch %s", job.Branch)
 	fmt.Fprintf(w, "          %s\n", ui.Dim(w, job.Path))
 
 	// The job runs in its own worktree, not the shared clone.
@@ -384,19 +397,27 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		// Safe to remove without force: nothing ran, so there is nothing to
 		// lose, and RemoveWorktree still refuses if that turns out false.
 		if rmErr := workspace.RemoveWorktree(ws, job.Path, false); rmErr != nil {
-			ui.Warn(w, "left %s behind: %v", job.Path, rmErr)
+			ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "left %s behind: %v", job.Path, rmErr)
 		} else if _, delErr := gitOut(ws, "branch", "-D", job.Branch); delErr != nil {
-			ui.Warn(w, "left the branch %s behind: %v", job.Branch, delErr)
+			ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "left the branch %s behind: %v", job.Branch, delErr)
 		}
-		ui.Ok(w, "skipped", "the agent (--dry-run); everything before this point succeeded")
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+			"skipped the agent (--dry-run); everything before this point succeeded")
 		res.Outcome = OutcomeSkipped
 		return res
 	}
 
+	// The banner, printed on CLAIM only -- not on resume, not per tick, or it
+	// stops meaning "something new started". It carries everything somebody
+	// scrolling back to the top of a ticket needs at once: the key, the
+	// summary, who is working it, on what, and the branch.
+	ui.Banner(w, key, issue.Summary, events.ActorImplementer,
+		actors.Model(events.ActorImplementer), job.Branch)
+
 	log.Emitf(events.KindRunStart, events.ActorImplementer, "implementing %s", key)
 	stTitle, stBody := msgStarted(key, issue.Summary, job.Branch, issue.URL)
 	tell(w, log, ws, notify.Event{
-		Level: notify.Info, Workspace: ws.ID,
+		Level: notify.Info, Workspace: ws.ID, Actor: events.ActorImplementer,
 		Title: stTitle, Body: stBody,
 	})
 
@@ -404,7 +425,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		Stage: "ticket", Prompt: prompt,
 		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
-		OnActivity: activityLogger(log, w, events.ActorImplementer),
+		OnActivity: activityLogger(log, w, key, events.ActorImplementer),
 	})
 	code := -1
 	if runRes != nil {
@@ -423,9 +444,9 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		if !runRes.Limit.OK() {
 			log.Emit(events.Event{Kind: events.KindBudget, Actor: events.ActorOrion,
 				Msg: runRes.Limit.Describe(deps.Now())})
-			ui.Warn(w, "%s", runRes.Limit.Describe(deps.Now()))
+			ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "%s", runRes.Limit.Describe(deps.Now()))
 		} else if runRes.Limit.UsingOverage {
-			ui.Warn(w, "%s", runRes.Limit.Describe(deps.Now()))
+			ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "%s", runRes.Limit.Describe(deps.Now()))
 		}
 	}
 
@@ -467,7 +488,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		round <= maxQuestions && deps.Advise != nil; round++ {
 
 		question := strings.TrimSpace(runRes.Final)
-		ans, asked := consult(deps, job.Path, question, log, w)
+		ans, asked := consult(deps, key, job.Path, question, log, w)
 		if !asked || !ans.Answered() {
 			res.Question = question
 			res.Advice = ans
@@ -486,11 +507,11 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		}
 		rel, _ := filepath.Rel(job.Path, path)
 		log.Emitf(events.KindDecision, events.ActorOrion, "recorded %s", rel)
-		ui.Ok(w, "created", "%s", rel)
+		ui.Say(w, key, events.ActorOrion, ui.VerbOK, "recorded %s", rel)
 
 		anTitle, anBody := msgAnswered(key, ans, question)
 		tell(w, log, ws, notify.Event{
-			Level: notify.Info, Workspace: ws.ID,
+			Level: notify.Info, Workspace: ws.ID, Actor: actorFor(ans.Role),
 			Title: anTitle, Body: anBody,
 		})
 
@@ -500,17 +521,18 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			// make different choices. Better to stop and say so.
 			res.Question = question
 			res.Advice = ans
-			ui.Warn(w, "answered, but the session could not be resumed; stopping so the answer is not lost")
+			ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+				"answered, but the session could not be resumed; stopping so the answer is not lost")
 			break
 		}
 
-		ui.Ok(w, "working", "resuming with the %s's answer", ans.Role)
+		ui.Say(w, key, actorFor(ans.Role), ui.VerbWorking, "resuming with the %s's answer", ans.Role)
 		runRes, runErr = deps.Supervise(&jobWS, supervisor.Options{
 			Stage: "ticket", Resume: runRes.SessionID,
 			Prompt:     AnswerMessage(ans, rel),
 			MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 			MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
-			OnActivity: activityLogger(log, w, events.ActorImplementer),
+			OnActivity: activityLogger(log, w, key, events.ActorImplementer),
 		})
 		if runErr != nil || runRes == nil || runRes.ExitCode != 0 {
 			err := runErr
@@ -534,7 +556,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		res.Outcome = OutcomeBlocked
 		log.Emitf(events.KindBlocked, events.ActorImplementer,
 			"ran cleanly but produced no commits; treating the closing message as a question")
-		ui.Warn(w, "%s produced no commits. It is blocked, not done.", key)
+		ui.Say(w, key, events.ActorImplementer, ui.VerbFail, "produced no commits. It is blocked, not done.")
 		if res.Question != "" {
 			fmt.Fprintf(w, "          %s\n", ui.Dim(w, firstLine(res.Question)))
 		}
@@ -548,22 +570,22 @@ func one(key string, opts Options, deps Deps) (res Result) {
 				res.Advice.Reason +
 				"\n\nDecide it, then amend the artifact so the next ticket does not ask again."
 		}
-		_ = deps.Jira.Comment(key, body)
+		_ = deps.Jira.Comment(key, actors.Comment(events.ActorImplementer, body))
 		blTitle, blBody := msgBlocked(key, issue.Summary, res.Question, issue.URL, res.Advice)
 		tell(w, log, ws, notify.Event{
-			Level: notify.Blocked, Workspace: ws.ID,
+			Level: notify.Blocked, Workspace: ws.ID, Actor: events.ActorImplementer,
 			Title: blTitle, Body: blBody,
 		})
 		return res
 	}
 	log.Emitf(events.KindCommit, events.ActorImplementer, "%d commit(s) on %s", commits, job.Branch)
-	ui.Ok(w, "created", "%d commit(s)", commits)
+	ui.Say(w, key, events.ActorImplementer, ui.VerbOK, "%d commit(s) on %s", commits, job.Branch)
 
 	if err := deps.Push(job.Path, job.Branch); err != nil {
 		return failAndTell(res, fmt.Errorf("pushing %s: %w", job.Branch, err), key, ws, log, w, deps)
 	}
 	log.Emitf(events.KindPush, events.ActorOrion, "pushed %s", job.Branch)
-	ui.Ok(w, "pushed", "%s", job.Branch)
+	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "pushed %s", job.Branch)
 
 	title := key + ": " + issue.Summary
 	body := prBody(key, issue.URL, commits)
@@ -573,9 +595,9 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// failure would strand finished work for no reason.
 	if t, b, ok := describePR(deps.Describe, job.Path, key, title, body); ok {
 		title, body = t, b
-		log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorOrion,
-			Model: "sonnet", Msg: "described the pull request with pr-describe"})
-		ui.Ok(w, "created", "a pull request description")
+		log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorDescriber,
+			Model: actors.Model(events.ActorDescriber),
+			Msg:   "wrote the pull request description"})
 	}
 	url, err := deps.OpenPR(job.Path, job.Branch, title, body, cfg.VCS.WorkBranch)
 	if err != nil {
@@ -583,7 +605,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}
 	res.PR = url
 	log.Emitf(events.KindPR, events.ActorOrion, "opened %s", url)
-	ui.Ok(w, "created", "pull request %s", url)
+	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "opened %s, awaiting CI", url)
 
 	// Hand the ticket to the CI-wait state and release the job slot. The
 	// state lives on the ticket so a crash here does not lose the fact that
@@ -591,9 +613,10 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// and open a second one.
 	if err := deps.Jira.SetLabels(key, []string{tracker.LabelCIWait},
 		[]string{tracker.LabelWorking}); err != nil {
-		ui.Warn(w, "could not mark %s as awaiting CI: %v", key, err)
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not mark it as awaiting CI: %v", err)
 	}
-	_ = deps.Jira.Comment(key, "Orion opened "+url+" from "+job.Branch+".")
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion,
+		"opened "+url+" from "+job.Branch+"."))
 	_ = deps.Jira.TransitionTo(key, "In Review")
 
 	ciTitle, ciBody := msgCIWait(key, issue.Summary, job.Branch, url, issue.URL, commits)
@@ -601,7 +624,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		Level: notify.Info, Workspace: ws.ID,
 		Title: ciTitle, Body: ciBody,
 	})
-	ui.Ok(w, "bound", "%s awaiting CI; the job slot is free", key)
+	ui.Say(w, key, events.ActorOrion, ui.VerbWaiting, "awaiting CI; the job slot is free")
 	res.Outcome = OutcomeCIWait
 	return res
 }
@@ -688,8 +711,9 @@ func prBody(key, url string, commits int) string {
 func failAndTell(res Result, err error, key string, ws *workspace.Workspace,
 	log *events.Log, w io.Writer, deps Deps) Result {
 	log.Emitf(events.KindFailed, events.ActorOrion, "%v", err)
-	ui.Fail(w, "%v", err)
-	_ = deps.Jira.Comment(key, "Orion failed on this ticket.\n\n"+err.Error())
+	ui.Say(w, key, events.ActorOrion, ui.VerbFail, "%v", err)
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion,
+		"failed on this ticket.\n\n"+err.Error()))
 
 	summary := res.Summary
 	if summary == "" {
@@ -886,16 +910,19 @@ const maxQuestions = 5
 // The retry exists because routing is a guess. A product question sent to the
 // architect comes back as "escalate", and forwarding it costs one more cheap
 // call -- far better than declaring the run blocked over a misclassification.
-func consult(deps Deps, dir, question string, log *events.Log, w io.Writer) (advise.Answer, bool) {
+func consult(deps Deps, key, dir, question string, log *events.Log, w io.Writer) (advise.Answer, bool) {
 	log.Emitf(events.KindAsk, events.ActorImplementer, "%s", firstLine(question))
-	ui.Ok(w, "working", "asking: %s", firstLine(question))
+	ui.Say(w, key, events.ActorImplementer, ui.VerbWorking, "asking: %s", firstLine(question))
 
 	role := advise.Route(deps.Advise, dir, question)
-	log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorOrion,
+	// The router, not Orion. Haiku makes this call on every escalation and
+	// the line used to be attributed to the supervisor, which is the one
+	// actor that runs no model at all.
+	log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorRouter,
 		Model: advise.ModelRouter, Msg: "routed to the " + string(role)})
 	ans, err := advise.Ask(deps.Advise, dir, role, question, advise.Artifacts(dir, role))
 	if err != nil {
-		ui.Warn(w, "could not reach the %s: %v", role, err)
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not reach the %s: %v", role, err)
 		return advise.Answer{Role: role, Verdict: advise.VerdictRefused,
 			Reason: "the advisor could not be reached: " + err.Error()}, false
 	}
@@ -908,7 +935,7 @@ func consult(deps Deps, dir, question string, log *events.Log, w io.Writer) (adv
 		log.Emit(events.Event{Kind: events.KindEscalate, Actor: string(role),
 			Model: advise.ModelAdvisor,
 			Msg:   fmt.Sprintf("escalated to the %s: %s", other, firstLine(ans.Reason))})
-		ui.Ok(w, "working", "the %s says this is for the %s", role, other)
+		ui.Say(w, key, actorFor(role), ui.VerbWarn, "this is for the %s", other)
 		ans, err = advise.Ask(deps.Advise, dir, other, question, advise.Artifacts(dir, other))
 		if err != nil {
 			return advise.Answer{Role: other, Verdict: advise.VerdictRefused,
@@ -921,15 +948,34 @@ func consult(deps Deps, dir, question string, log *events.Log, w io.Writer) (adv
 			Model:  ans.Model,
 			Msg:    firstLine(ans.Decision),
 			Detail: map[string]any{"grounding": ans.Grounding}})
-		ui.Ok(w, "ok", "%s: %s", ans.Role, firstLine(ans.Decision))
+		ui.SayModel(w, key, actorFor(ans.Role), ans.Model, ui.VerbOK, "%s", firstLine(ans.Decision))
 		fmt.Fprintf(w, "          %s\n", ui.Dim(w, ans.Grounding))
 		return ans, true
 	}
 
 	log.Emit(events.Event{Kind: events.KindRefuse, Actor: string(ans.Role),
 		Model: ans.Model, Msg: firstLine(ans.Reason)})
-	ui.Warn(w, "the %s could not decide this: %s", ans.Role, firstLine(ans.Reason))
+	ui.SayModel(w, key, actorFor(ans.Role), ans.Model, ui.VerbWarn,
+		"could not decide this: %s", firstLine(ans.Reason))
 	return ans, true
+}
+
+// actorFor maps an advisor's role to its actor identifier.
+//
+// They happen to be the same strings today, and mapping them anyway is the
+// point: the role is advise's vocabulary and the identifier is what gets
+// persisted into the event log, so one may be renamed without silently
+// rewriting the other's history.
+func actorFor(role advise.Role) string {
+	switch role {
+	case advise.RoleArchitect:
+		return events.ActorArchitect
+	case advise.RolePM:
+		return events.ActorPM
+	case advise.RoleHuman:
+		return events.ActorHuman
+	}
+	return events.ActorOrion
 }
 
 // childrenOf reads the sub-tasks worth working.

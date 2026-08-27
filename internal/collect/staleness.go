@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
@@ -159,13 +160,13 @@ func stale(res Result, key string, pr PR, branch string, cfg config.Config,
 	log.Emit(events.Event{Kind: events.KindBlocked, Actor: events.ActorOrion,
 		Msg: "branch is behind " + base + "; its checks describe a base that has moved"})
 
-	_ = deps.Jira.Comment(key, fmt.Sprintf(
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion, fmt.Sprintf(
 		"`%s` is behind `%s`, so the checks on it were produced against a base that "+
 			"has since moved.\n\nThe pull request would still merge cleanly -- git has no "+
 			"objection. The objection is that nothing has tested the combination. Another "+
 			"ticket landed first, and two changes can each pass alone and fail together.\n\n"+
 			"Rebase and push; CI re-runs against what would actually be merged, and Orion "+
-			"continues from there.\n\n%s", branch, base, pr.URL))
+			"continues from there.\n\n%s", branch, base, pr.URL)))
 
 	if ch := channelOf(ws); ch != "" {
 		tell(w, log, notify.Event{

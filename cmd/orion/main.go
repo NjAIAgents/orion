@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/collect"
@@ -101,10 +102,12 @@ DEPENDENCIES
   orion njagents install      wire Orion's clone into a dir (only if no global)
 
 MONITORING
-  orion changelog [--version vX.Y.Z]  generate CHANGELOG.md (nj-agents changelog)
+  orion changelog --version vX.Y.Z  collate .changelog.d/ fragments into CHANGELOG.md
+  orion changelog [--version vX.Y.Z]  no fragments: generate from commits (nj-agents)
   orion report [KEY] [--since 7d]  digest: failures, workspaces, budget, usage
   orion report --notify       also send it to ORION_NOTIFY_WEBHOOK (Slack)
   orion logs <KEY> [-f]       what Orion is doing, live (FCIA or FCIA-6)
+  orion logs <KEY> --actor implementer   only that role's lines
   orion logs <KEY> --transcript   the raw agent output instead
 
 BUDGET (rolling 7 days, your limit, not your plan's)
@@ -1668,12 +1671,35 @@ func runEventLog(target string, args []string) {
 		exitOn(err)
 	}
 
+	// The roster this project configured, so a renamed agent renders with
+	// the name its team chose. A bad roster is fatal here rather than
+	// ignored: two agents sharing one name destroys exactly the thing this
+	// output exists to provide.
+	exitOn(actors.Configure(config.Load(ws.RepoDir()).Agents))
+
 	// Filter to one ticket when an issue key was given, so `orion logs
 	// FCIA-6` is about that ticket rather than everything the project did.
 	if key := registry.NormalizeKey(target); strings.Contains(key, "-") {
 		var kept []events.Event
 		for _, e := range all {
 			if strings.EqualFold(e.Key, key) {
+				kept = append(kept, e)
+			}
+		}
+		all = kept
+	}
+
+	// --actor selects by the STABLE identifier, never by display name.
+	//
+	// The rendered line says "backend developer", which is what a person
+	// wants and what a script must not depend on: a team that renames the
+	// developer would break every script written against the old name. The
+	// identifier is persisted, unchanging, and is what this filter reads --
+	// so `--actor implementer` keeps working across any rename.
+	if id := strings.TrimSpace(argFlag(args, "--actor", "")); id != "" {
+		var kept []events.Event
+		for _, e := range all {
+			if strings.EqualFold(e.Actor, id) {
 				kept = append(kept, e)
 			}
 		}
@@ -1703,53 +1729,22 @@ func runEventLog(target string, args []string) {
 	}))
 }
 
-// printEvent renders one line: time, actor, kind, message. Colour marks the
-// kind, and the word is still there, so a piped log reads the same.
+// printEvent renders one line of history through the SAME renderer the live
+// watch uses (internal/ui). Two formatters over one event stream drift, and
+// the drift shows up as the same run reading differently depending on which
+// command you happened to type.
+//
+// The stored actor identifier is what is rendered FROM, never what is
+// stored: a log written before the roster existed renders with the current
+// names, and renaming an agent later migrates nothing.
 func printEvent(w io.Writer, e events.Event) {
-	verb := e.Kind
-	switch e.Kind {
-	case events.KindFailed, events.KindBlocked:
-		verb = "failed"
-	case events.KindAnswer, events.KindMerge, events.KindPR, events.KindPush:
-		verb = "ok"
-	case events.KindRunStart, events.KindAsk:
-		verb = "working"
-	case events.KindCI:
-		verb = "ci-wait"
-	case events.KindEscalate, events.KindRefuse, events.KindBudget:
-		verb = "warning"
-	}
-	stamp := e.At.Local().Format("15:04:05")
-	// actor(model): which agent, and which model it was. A run involves
-	// three, and "implementer" alone does not say whether the thing that
-	// just decided something was opus or haiku.
-	who := e.Actor
-	if e.Model != "" {
-		who += "(" + shortModel(e.Model) + ")"
-	}
-	if e.Key != "" {
-		who = e.Key + " " + who
-	}
-	fmt.Fprintf(w, "  %s %s %-22s %s\n",
-		ui.Dim(w, stamp), ui.Label(w, verb, ""), who, e.Msg)
+	ui.Print(w, ui.Line{
+		At: e.At, Key: e.Key, Actor: e.Actor, Model: e.Model,
+		Verb: ui.VerbFor(e.Kind), Msg: e.Msg,
+	})
 	for k, v := range e.Detail {
 		fmt.Fprintf(w, "           %s\n", ui.Dim(w, fmt.Sprintf("%s: %v", k, v)))
 	}
-}
-
-// shortModel reduces an API model id to the name people use.
-//
-// The stream reports claude-opus-4-1-20250805; a log column has room for
-// "opus". The full id stays in the JSONL for anyone reconciling a bill, and
-// an unrecognised id is passed through rather than mangled, so a model this
-// build has never heard of still appears.
-func shortModel(m string) string {
-	for _, name := range []string{"opus", "sonnet", "haiku", "fable"} {
-		if strings.Contains(m, name) {
-			return name
-		}
-	}
-	return m
 }
 
 func runTranscript(target string, args []string) {

@@ -23,6 +23,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
@@ -69,7 +70,8 @@ func alreadyMerged(res Result, key, prURL, branch string, cfg config.Config,
 	if prURL != "" {
 		res.Note += " (" + prURL + ")"
 	}
-	ui.Ok(w, "ok", "%s has already merged; nothing to do, and nothing was spent", key)
+	ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+		"already merged; nothing to do, and nothing was spent")
 	if opts.DryRun {
 		return res
 	}
@@ -88,7 +90,8 @@ func noChange(res Result, key, why string, cfg config.Config,
 	if res.Note == "" {
 		res.Note = "the agent reported there was nothing to do"
 	}
-	ui.Ok(w, "ok", "%s needed no change. That is a result, not a failure.", key)
+	ui.Say(w, key, events.ActorImplementer, ui.VerbOK,
+		"needed no change. That is a result, not a failure.")
 	fmt.Fprintf(w, "          %s\n", ui.Dim(w, firstLine(res.Note)))
 	if opts.DryRun {
 		return res
@@ -116,15 +119,18 @@ func release(comment, key string, cfg config.Config, deps Deps,
 	ws *workspace.Workspace, log *events.Log, w io.Writer, res Result) {
 
 	if err := deps.Jira.SetLabels(key, nil, tracker.Managed(cfg.Tracker.QueueLabel)); err != nil {
-		ui.Warn(w, "%s: nothing to do, but its labels could not be cleared: %v", key, err)
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+			"nothing to do, but its labels could not be cleared: %v", err)
 	}
 	if err := deps.Jira.TransitionTo(key, "Done"); err != nil {
-		ui.Warn(w, "%s: nothing to do, but it could not be transitioned to Done: %v", key, err)
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+			"nothing to do, but it could not be transitioned to Done: %v", err)
 	}
-	_ = deps.Jira.Comment(key, comment)
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorImplementer, comment))
 	log.Emitf(events.KindNote, events.ActorOrion, "no change: %s", firstLine(res.Note))
 	title, body := msgNoop(key, res.Summary, res.Note, res.IssueURL)
 	tell(w, log, ws, notify.Event{
-		Level: notify.Info, Workspace: ws.ID, Title: title, Body: body,
+		Level: notify.Info, Workspace: ws.ID, Actor: events.ActorImplementer,
+		Title: title, Body: body,
 	})
 }
