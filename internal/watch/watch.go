@@ -356,10 +356,11 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) ([]st
 	// up twice. A ticket keeps its queue label while it is worked, so
 	// matching on that alone would re-claim something already in flight the
 	// moment the in-flight check raced or a second watcher existed.
-	jql := fmt.Sprintf("project IN (%s) AND labels = %q AND labels NOT IN (%q, %q, %q) "+
-		"ORDER BY priority DESC, Rank ASC",
-		strings.Join(quoted(keys), ", "), label,
-		tracker.LabelWorking, tracker.LabelCIWait, tracker.LabelFailed)
+	jql := tracker.JQLAnd(
+		tracker.JQLIn("project", keys...),
+		tracker.JQLEq("labels", label),
+		tracker.JQLNotIn("labels", tracker.LabelWorking, tracker.LabelCIWait, tracker.LabelFailed),
+	) + " ORDER BY priority DESC, Rank ASC"
 
 	issues, err := j.Search(jql, 25)
 	if err != nil {
@@ -403,8 +404,10 @@ func InFlight(j *tracker.Jira, home string, projects []string) (bool, string, er
 	if err != nil || len(keys) == 0 {
 		return false, "", err
 	}
-	jql := fmt.Sprintf("project IN (%s) AND labels = %q",
-		strings.Join(quoted(keys), ", "), tracker.LabelWorking)
+	jql := tracker.JQLAnd(
+		tracker.JQLIn("project", keys...),
+		tracker.JQLEq("labels", tracker.LabelWorking),
+	)
 	issues, err := j.Search(jql, 5)
 	if err != nil {
 		return false, "", err
@@ -453,14 +456,6 @@ func scope(home string, projects []string) ([]string, error) {
 		return out, nil
 	}
 	return f.Keys(), nil
-}
-
-func quoted(in []string) []string {
-	out := make([]string, len(in))
-	for i, s := range in {
-		out[i] = fmt.Sprintf("%q", s)
-	}
-	return out
 }
 
 // stopping is set by the signal handler and read between steps.

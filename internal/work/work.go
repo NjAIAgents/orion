@@ -333,6 +333,11 @@ func one(key string, opts Options, deps Deps) (res Result) {
 				"a large story (%d sub-tasks). One run, one branch, "+
 					"one pull request -- expect it to take a while.", len(children))
 		}
+		// The budget, stated before it costs anything. A wrong number read
+		// here is a config problem; the same wrong number discovered at turn
+		// 121 of an opus run is $17 (OR-117).
+		ui.Say(w, key, events.ActorOrion, ui.VerbOK, "budget: %d turns, %d minutes for %d sub-task(s)",
+			turnsFor(opts.MaxTurns, len(children)), minutesFor(opts.MaxMinutes, len(children)), len(children))
 	}
 
 	// Claim it. This is the lock: two runs must not pick up one ticket, and
@@ -1023,8 +1028,11 @@ func promptChildren(kids []tracker.Issue) []supervisor.Child {
 // bound is bounding this run deliberately, and silently raising it would
 // make the flag advisory -- which is worse than not having it.
 func turnsFor(explicit, children int) int {
-	if explicit > 0 || children == 0 {
+	if explicit > 0 {
 		return explicit
+	}
+	if children == 0 {
+		return 120
 	}
 	// Roughly a task's worth of work per task, on top of the base allowance
 	// for reading the repo and getting oriented. Bounded: past a point the
@@ -1033,11 +1041,20 @@ func turnsFor(explicit, children int) int {
 	return clamp(120+25*children, 120, 600)
 }
 
+// minutesFor mirrors turnsFor. The base is 90 -- the wall-clock default a
+// childless ticket has always had -- NOT the 30 an earlier draft used. That
+// 30 was written when the watch path always passed an explicit 90, so it
+// never actually applied; resurrecting it once the sentinel fix made it
+// reachable would have silently cut every single-ticket run to a third of
+// its time. Decision recorded on OR-117.
 func minutesFor(explicit, children int) int {
-	if explicit > 0 || children == 0 {
+	if explicit > 0 {
 		return explicit
 	}
-	return clamp(30+5*children, 30, 180)
+	if children == 0 {
+		return 90
+	}
+	return clamp(90+10*children, 90, 180)
 }
 
 func clamp(v, lo, hi int) int {

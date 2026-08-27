@@ -121,7 +121,7 @@ func prStatus(dir, branch string) (collect.PR, error) {
 	// failure, and the retry-on-failure path re-attempted an impossible merge
 	// every tick forever.
 	cmd := exec.Command("gh", "pr", "view", branch,
-		"--json", "url,state,mergedAt,statusCheckRollup,mergeable,headRefOid")
+		"--json", "url,state,mergedAt,statusCheckRollup,mergeable,headRefOid,baseRefName")
 	// The repository comes from the working directory. Getting this wrong is
 	// what broke openPR on the first real run.
 	cmd.Dir = dir
@@ -144,6 +144,7 @@ func prStatus(dir, branch string) (collect.PR, error) {
 		MergedAt  string `json:"mergedAt"`
 		Mergeable string `json:"mergeable"`  // MERGEABLE, CONFLICTING, UNKNOWN
 		HeadOid   string `json:"headRefOid"` // the branch tip, to notice a rebase
+		BaseRef   string `json:"baseRefName"`
 		Rollup    []struct {
 			Name       string `json:"name"`
 			Status     string `json:"status"`     // checks: QUEUED, IN_PROGRESS, COMPLETED
@@ -157,7 +158,7 @@ func prStatus(dir, branch string) (collect.PR, error) {
 		return collect.PR{}, fmt.Errorf("could not read gh output: %w", err)
 	}
 
-	pr := collect.PR{URL: v.URL, Head: v.HeadOid}
+	pr := collect.PR{URL: v.URL, Head: v.HeadOid, BaseRef: v.BaseRef}
 	// CONFLICTING only. UNKNOWN means GitHub has not finished computing
 	// mergeability yet -- common for seconds after a push -- and treating
 	// that as a conflict would announce a rebase nobody needs.

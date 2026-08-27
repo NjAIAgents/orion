@@ -61,9 +61,16 @@ func runWatch(args []string) {
 	err = watch.Run(watch.Options{
 		Out: w, Home: workspace.Home(),
 		Interval: interval, MaxJobs: maxJobs, Once: once, DryRun: dry,
-		Projects:   projects,
-		MaxMinutes: intFlag(args, "--max-minutes", 90),
-		MaxTurns:   intFlag(args, "--max-turns", 120),
+		Projects: projects,
+		// Zero is the sentinel for "not set", NOT a default. Filling the
+		// human-readable defaults in here made them EXPLICIT values, and
+		// turnsFor/minutesFor let explicit win -- so the sub-task scaling
+		// (120+25N turns) could never apply on the watch path, and a
+		// four-sub-task story died at turn 121 having cost $17 (OR-117).
+		// The real defaults live in turnsFor/minutesFor, next to the
+		// scaling they belong with.
+		MaxMinutes: intFlag(args, "--max-minutes", 0),
+		MaxTurns:   intFlag(args, "--max-turns", 0),
 	}, watch.Deps{
 		Collect: func(o collect.Options) []collect.Result {
 			return collect.Run(o, collect.Deps{

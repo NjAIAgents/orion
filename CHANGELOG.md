@@ -6,6 +6,34 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.7.1
+
+### Fixed
+
+- The sub-task budget scaling now actually applies on the watch path. `orion
+  watch` filled its flag defaults (120 turns, 90 minutes) in as EXPLICIT
+  values, and an explicit bound always wins — so a story's `120+25N` turn
+  allowance could never trigger, and a four-sub-task story died at turn 121
+  after $17 of opus. The flag default is now the zero sentinel and the real
+  defaults live in `turnsFor`/`minutesFor` beside the scaling; a childless
+  ticket keeps exactly 120 turns and 90 minutes, a typed flag still wins as
+  typed, and the chosen budget is printed at claim time so a wrong number is
+  visible before it costs anything.
+
+- `orion collect` no longer reads config from the sandbox clone, which went stale the moment the config it needed (like `work_branch`) changed in the user's checkout, and then kept itself stale. Config now always loads from the registered source checkout, and the sandbox is refreshed against it (OR-118).
+- The merged message and post-merge refresh now name the branch the pull request actually merged into, taken from the forge's own base ref, instead of assuming the configured work branch (OR-118).
+
+- A tripped breaker no longer seals its own exits. An unverified-edits trip
+  blocked every tool — including the `go build` that is the designed reset
+  for that counter, and the `plans/BLOCKED.md` stop-note the trip message
+  itself demands. Both recovery paths now stay open: verification commands
+  are allowed through and a PASSING verify clears the trip, and the
+  stop-note is writable whatever the trip kind. Everything else stays
+  blocked, and trips with no self-service recovery (loops, budgets, wall
+  clock) still require a human's `orion reset`.
+
+- `orion queue` now works on a project whose key is a JQL reserved word (`OR`, `AND`, `ORDER`, ...). The project key was interpolated into the query unquoted, so Jira rejected it as a syntax error. Every value Orion puts into JQL — project keys, labels, ticket keys — is now quoted by one shared builder.
+
 ## v0.7.0
 
 Agents now have names, output has a face, and the changelog stopped being a
