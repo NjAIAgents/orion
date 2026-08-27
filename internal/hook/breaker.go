@@ -38,10 +38,33 @@ func breakerPre(in Input, cfg config.Config, store *state.Store) Decision {
 	// A breaker that has already tripped stays tripped for the rest of the
 	// session. Re-deriving the verdict here would let a counter reset or a
 	// changed signature quietly re-arm a session no human has looked at.
+	//
+	// Except for the two RECOVERY actions, which must stay open or the trip
+	// is a deadlock rather than a breaker. This was found the expensive way:
+	// an unverified-edits trip blocked the very `go build` that would have
+	// been the verify, and blocked writing plans/BLOCKED.md -- the file the
+	// message below instructs the agent to write. Both exits sealed, so every
+	// tripped session could only die, with its work uncommitted (OR-119).
+	//
+	//   1. The stop-note. Writing BLOCKED.md is the breaker's own protocol.
+	//   2. For an unverified-edits trip ONLY: a verification command. A
+	//      passing verify is the designed reset for that counter, so it is
+	//      allowed through, and breakerPost clears the trip when it passes.
+	//      Other trip kinds (session-time, tool budget, loops) have no
+	//      self-service recovery and stay fully sealed.
 	if sess.Tripped != "" {
+		if isBlockedNoteWrite(in, cfg) {
+			return Allow("")
+		}
+		if sess.Tripped == "breaker/unverified-edits" &&
+			in.ToolName == "Bash" && looksLikeVerification(in.Command()) {
+			return Allow("")
+		}
 		return Block("%s already tripped this session (%s).\n"+
 			"  Stop and hand back to the human. Do not retry, do not work around it.\n"+
 			"  Write what you learned to %s/BLOCKED.md, then summarize and stop.\n"+
+			"  If the trip is unverified-edits, running the tests or build is still\n"+
+			"  allowed: a PASSING verify clears it and you may continue.\n"+
 			"  To resume after review: orion reset --session %s",
 			sess.Tripped, sess.TrippedDetail, cfg.Paths.Plans, sess.ID)
 	}
@@ -93,6 +116,14 @@ func breakerPost(in Input, cfg config.Config, store *state.Store) Decision {
 		// tests is the point; running anything at all is not.
 		if isVerify && !failed {
 			s.EditsSinceCheck = 0
+			// And it clears an unverified-edits trip: the verify that the
+			// trip was demanding has now happened and passed. breakerPre let
+			// this command through for exactly this moment. Other trip kinds
+			// are not cleared by anything but a human's `orion reset`.
+			if s.Tripped == "breaker/unverified-edits" {
+				s.Tripped = ""
+				s.TrippedDetail = ""
+			}
 		}
 	})
 
@@ -224,6 +255,19 @@ func isEditTool(name string) bool {
 // looksLikeVerification recognizes the commands that constitute checking
 // your work. Deliberately narrow: treating any command as verification
 // would let `ls` reset the edit budget.
+// isBlockedNoteWrite recognizes the stop-note the breaker's own protocol
+// demands. The Block message says "write BLOCKED.md"; refusing that write is
+// the deadlock this exists to prevent. Scoped to exactly that file under the
+// configured plans directory -- an agent cannot use it to keep editing code.
+func isBlockedNoteWrite(in Input, cfg config.Config) bool {
+	if !isEditTool(in.ToolName) {
+		return false
+	}
+	p := in.FilePath()
+	return p != "" && strings.HasSuffix(p, "BLOCKED.md") &&
+		strings.Contains(p, cfg.Paths.Plans)
+}
+
 func looksLikeVerification(cmd string) bool {
 	c := strings.ToLower(cmd)
 	if c == "" {
