@@ -102,6 +102,13 @@ func (s *Store) Append(l Lesson) error {
 	if strings.TrimSpace(l.Text) == "" {
 		return errors.New("a lesson needs text")
 	}
+	// Every record names where it came from. A lesson without a project
+	// cannot be scoped, cannot be promoted on recurrence in a DIFFERENT
+	// project, and cannot be judged later by a reader asking where this rule
+	// came from -- which is the whole basis for trusting it.
+	if strings.TrimSpace(l.Project) == "" {
+		return errors.New("a lesson needs the project it happened in")
+	}
 	if l.At.IsZero() {
 		l.At = time.Now().UTC()
 	}
