@@ -121,6 +121,9 @@ type SlackAPI interface {
 // TrackerAPI is the slice of the tracker this package needs.
 type TrackerAPI interface {
 	Search(jql string, maxResults int) ([]tracker.Issue, error)
+	// Children returns an issue's sub-tasks. A tracker that cannot answer
+	// returns an error, and the issue is treated as having none.
+	Children(key string) ([]tracker.Issue, error)
 	SetLabels(key string, add, remove []string) error
 	TransitionTo(key, status string) error
 	Comment(key, text string) error
@@ -463,6 +466,7 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 		ui.Warn(w, "%s: merged and released, but could not transition to Done: %v", key, err)
 	}
 	_ = deps.Jira.Comment(key, "Merged: "+pr.URL)
+	closeChildren(key, pr.URL, deps, w)
 	// Forget the fix history. A ticket reopened later must not start with
 	// its attempts already spent.
 	_ = clearFixes(ws.Dir, key)
@@ -554,4 +558,44 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// closeChildren moves a merged story's sub-tasks to Done.
+//
+// The work of a sub-task landed in the story's pull request -- one branch,
+// one PR, one merge -- so leaving the children open would report work as
+// outstanding that is already on the trunk. A board that says a story is
+// done while its tasks are open is a board people stop trusting.
+//
+// Entirely best-effort, and deliberately so. The merge has HAPPENED by the
+// time this runs; the code is on develop. Turning a tracker hiccup into a
+// failed collect would report a successful merge as a failure, which is the
+// worse error by a distance. Every problem here is a warning.
+//
+// Only sub-tasks Orion can see, and only ones not already Done -- a task
+// somebody closed by hand is left alone rather than re-transitioned.
+func closeChildren(key, prURL string, deps Deps, w io.Writer) {
+	kids, err := deps.Jira.Children(key)
+	if err != nil {
+		// Usually a tracker without a parent field, which is the ordinary
+		// case for a project that does not decompose. Not worth a warning.
+		return
+	}
+	kids = tracker.Workable(kids)
+	if len(kids) == 0 {
+		return
+	}
+	var closed []string
+	for _, c := range kids {
+		if err := deps.Jira.TransitionTo(c.Key, "Done"); err != nil {
+			ui.Warn(w, "%s: merged, but %s could not be closed: %v", key, c.Key, err)
+			continue
+		}
+		_ = deps.Jira.Comment(c.Key, "Delivered in "+key+" and merged: "+prURL)
+		closed = append(closed, c.Key)
+	}
+	if len(closed) > 0 {
+		ui.Ok(w, "closed", "%d sub-task(s) delivered by %s: %s",
+			len(closed), key, strings.Join(closed, ", "))
+	}
 }

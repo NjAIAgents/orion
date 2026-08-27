@@ -241,11 +241,42 @@ func FixPrompt(key, branch, failure string) string {
 // Tests are named as the acceptance evidence rather than "please test",
 // because "I added tests" and "the tests I added would fail if the behaviour
 // regressed" are different claims and only the second is worth anything.
+// Child is one sub-task of the issue being worked, in the order a person
+// ranked it.
+type Child struct {
+	Key         string
+	Summary     string
+	Description string
+}
+
 func TicketPrompt(key, summary, description, url string, artifacts []string) string {
+	return TicketPromptWithChildren(key, summary, description, url, artifacts, nil)
+}
+
+// TicketPromptWithChildren is TicketPrompt plus the issue's sub-tasks.
+//
+// The children are a CHECKLIST inside one piece of work, not separate jobs.
+// Orion is otherwise flat -- the queue is a label search and the unit of work
+// is whatever carries the label -- so a Story decomposed into Tasks used to
+// be either invisible (label the Story, the agent never learns the Tasks
+// exist) or a hazard (label each Task, and two Tasks touching one file
+// collide on separate branches, which is exactly how two tickets both came
+// to create src/fcia/cli.py from scratch).
+//
+// In order, and said so explicitly: a Story's Tasks are usually sequenced by
+// dependency, and an agent told to "do these" without being told the order
+// will pick its own.
+func TicketPromptWithChildren(key, summary, description, url string,
+	artifacts []string, children []Child) string {
+
 	var b strings.Builder
 
+	opening := "Implement this tracker issue, and only this issue."
+	if len(children) > 0 {
+		opening = "Implement this tracker issue and all of its sub-tasks, and nothing else."
+	}
 	b.WriteString(join(
-		"Implement this tracker issue, and only this issue.",
+		opening,
 		"",
 		key+": "+summary,
 		url,
@@ -255,6 +286,9 @@ func TicketPrompt(key, summary, description, url string, artifacts []string) str
 	if strings.TrimSpace(description) != "" {
 		b.WriteString(join("The issue says:", quote(description), ""))
 		b.WriteString("\n")
+	}
+	if len(children) > 0 {
+		b.WriteString(childList(children))
 	}
 	if len(artifacts) > 0 {
 		b.WriteString(join(
@@ -298,5 +332,48 @@ func TicketPrompt(key, summary, description, url string, artifacts []string) str
 		"Write the commit message so someone who has not read this ticket understands",
 		"why the change exists, not merely what changed. The diff already says what.",
 	))
+	return b.String()
+}
+
+// childList renders the sub-tasks as the ordered checklist they are.
+//
+// Numbered rather than bulleted, and the order stated in words as well as in
+// the numbering, because the order is load-bearing: these are the steps of
+// one change, not a set of independent asks. An agent that does step 3 first
+// writes code against something that does not exist yet.
+//
+// Each child keeps its KEY. When the run reports what it did, the keys are
+// what let a person match the report back to the tracker without guessing
+// from summaries -- and they are what the closing pass needs.
+func childList(children []Child) string {
+	var b strings.Builder
+	b.WriteString(join(
+		"SUB-TASKS",
+		"This issue is decomposed into the sub-tasks below.",
+		"Do ALL of them, in this order -- they are the steps of one change, and a",
+		"later one usually depends on an earlier one already being in place.",
+		"",
+		"They are one piece of work: one branch, one commit series, one pull",
+		"request. Do not treat them as separate deliverables.",
+		"",
+	))
+	b.WriteString("\n")
+	for i, c := range children {
+		b.WriteString(fmt.Sprintf("  %d. %s  %s\n", i+1, c.Key, c.Summary))
+		if d := strings.TrimSpace(c.Description); d != "" {
+			for _, line := range strings.Split(d, "\n") {
+				b.WriteString("       " + line + "\n")
+			}
+		}
+	}
+	b.WriteString(join(
+		"",
+		"When you finish, say which sub-task keys you completed and which you did",
+		"not, by key. A sub-task you could not do is not a failure of the run --",
+		"it is a thing a person needs to know about, and saying nothing about it",
+		"is the only wrong answer.",
+		"",
+	))
+	b.WriteString("\n")
 	return b.String()
 }

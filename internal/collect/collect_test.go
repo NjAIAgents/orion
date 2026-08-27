@@ -15,7 +15,11 @@ import (
 // fakeTracker records what was done rather than asserting inside itself, so
 // each test states its own expectation in its own terms.
 type fakeTracker struct {
-	issues      []tracker.Issue
+	issues []tracker.Issue
+	// children maps a parent key to its sub-tasks. Empty by default, so
+	// every existing test describes a flat ticket exactly as before.
+	children    map[string][]tracker.Issue
+	childErr    error
 	added       map[string][]string
 	removed     map[string][]string
 	transitions map[string]string
@@ -33,6 +37,9 @@ func newTracker() *fakeTracker {
 
 func (f *fakeTracker) Search(string, int) ([]tracker.Issue, error) {
 	return f.issues, f.searchErr
+}
+func (f *fakeTracker) Children(key string) ([]tracker.Issue, error) {
+	return f.children[key], f.childErr
 }
 func (f *fakeTracker) SetLabels(key string, add, remove []string) error {
 	if f.labelErr != nil {

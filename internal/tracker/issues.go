@@ -28,6 +28,11 @@ type Issue struct {
 	// in this order" expressible by dragging tickets, with no syntax.
 	Rank string
 	URL  string
+	// Parent is the key of this issue's parent, or empty. Set for Jira
+	// sub-tasks and for the child issues of a team-managed project, which
+	// both use the same field -- so one query and one field cover both
+	// hierarchies without Orion knowing which shape a project uses.
+	Parent string
 }
 
 // Search runs JQL and returns issues in the order Jira gave them, which is
@@ -44,7 +49,7 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 	q := url.Values{}
 	q.Set("jql", jql)
 	q.Set("maxResults", fmt.Sprint(maxResults))
-	q.Set("fields", "summary,description,status,labels,priority")
+	q.Set("fields", "summary,description,status,labels,priority,parent")
 
 	code, body, err := j.do("GET", "/rest/api/3/search/jql?"+q.Encode(), nil)
 	if err != nil {
@@ -72,6 +77,9 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 				Priority struct {
 					Name string `json:"name"`
 				} `json:"priority"`
+				Parent struct {
+					Key string `json:"key"`
+				} `json:"parent"`
 			} `json:"fields"`
 		} `json:"issues"`
 	}
@@ -88,6 +96,7 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 			Status:      i.Fields.Status.Name,
 			Labels:      i.Fields.Labels,
 			Priority:    i.Fields.Priority.Name,
+			Parent:      i.Fields.Parent.Key,
 			URL:         j.BaseURL + "/browse/" + i.Key,
 		})
 	}

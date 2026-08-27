@@ -106,6 +106,10 @@ type Deps struct {
 // code under test.
 type TrackerAPI interface {
 	GetIssue(key string) (*tracker.Issue, error)
+	// Children returns the issue's sub-tasks, ranked. Optional in practice:
+	// a tracker that cannot answer returns an error and the ticket is worked
+	// as itself, which is what Orion did before hierarchy existed.
+	Children(key string) ([]tracker.Issue, error)
 	SetLabels(key string, add, remove []string) error
 	TransitionTo(key, status string) error
 	Comment(key, text string) error
@@ -233,6 +237,36 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	res.Summary, res.IssueURL = issue.Summary, issue.URL
 	ui.Ok(w, "bound", "%s  %s", key, issue.Summary)
 
+	// A ticket with sub-tasks is worked WITH them: one branch, one pull
+	// request, one approval. See internal/tracker/children.go -- the short
+	// version is that a Story's Tasks overlap in the files they touch far
+	// more often than unrelated tickets do, so working them as separate jobs
+	// manufactures the conflict that parallelism is otherwise only at risk of.
+	//
+	// A failure to read children is NOT a failure of the run. It means Jira
+	// would not answer -- an unusual project shape, a permission, an older
+	// deployment -- and the honest fallback is the previous behaviour: work
+	// the ticket as itself, and say that is what happened.
+	children, cErr := childrenOf(deps, key)
+	if cErr != nil {
+		ui.Warn(w, "could not read sub-tasks of %s (%v); working it as a single ticket", key, cErr)
+	}
+	if n := len(children); n > tracker.MaxChildren {
+		return fail(res, fmt.Errorf(
+			"%s has %d sub-tasks, more than the %d one run will take on.\n"+
+				"  That is a decomposition to split, not a big run: the agent would reach\n"+
+				"  its turn ceiling partway through and leave a branch half-finished.\n"+
+				"  Split the story, or work a sub-task directly: orion work %s",
+			key, n, tracker.MaxChildren, children[0].Key))
+	}
+	if len(children) > 0 {
+		ui.Ok(w, "bound", "%d sub-task(s), to be done in one branch", len(children))
+		for i, c := range children {
+			fmt.Fprintf(w, "          %s\n", ui.Dim(w,
+				fmt.Sprintf("%d. %s  %s", i+1, c.Key, c.Summary)))
+		}
+	}
+
 	// Claim it. This is the lock: two runs must not pick up one ticket, and
 	// the label is what makes that visible to anyone looking at the board.
 	//
@@ -282,8 +316,8 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	jobWS := *ws
 	jobWS.RepoPath = job.Path
 
-	prompt := supervisor.TicketPrompt(key, issue.Summary, issue.Description, issue.URL,
-		artifactsFor(job.Path, cfg))
+	prompt := supervisor.TicketPromptWithChildren(key, issue.Summary, issue.Description,
+		issue.URL, artifactsFor(job.Path, cfg), promptChildren(children))
 
 	if opts.DryRun {
 		// Remove the rehearsal's worktree. Left behind, every dry run
@@ -821,4 +855,32 @@ func consult(deps Deps, dir, question string, log *events.Log, w io.Writer) (adv
 		Model: ans.Model, Msg: firstLine(ans.Reason)})
 	ui.Warn(w, "the %s could not decide this: %s", ans.Role, firstLine(ans.Reason))
 	return ans, true
+}
+
+// childrenOf reads the sub-tasks worth working.
+//
+// Done children are dropped rather than passed along: a finished sub-task is
+// context, not work, and listing it invites the agent to redo something a
+// person completed by hand -- which it cannot reliably tell from the text.
+func childrenOf(deps Deps, key string) ([]tracker.Issue, error) {
+	if deps.Jira == nil {
+		return nil, nil
+	}
+	kids, err := deps.Jira.Children(key)
+	if err != nil {
+		return nil, err
+	}
+	return tracker.Workable(kids), nil
+}
+
+// promptChildren converts tracker issues into the prompt's own shape, so the
+// supervisor package does not import the tracker for one struct.
+func promptChildren(kids []tracker.Issue) []supervisor.Child {
+	var out []supervisor.Child
+	for _, k := range kids {
+		out = append(out, supervisor.Child{
+			Key: k.Key, Summary: k.Summary, Description: k.Description,
+		})
+	}
+	return out
 }

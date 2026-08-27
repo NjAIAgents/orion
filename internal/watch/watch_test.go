@@ -9,6 +9,7 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/registry"
+	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/work"
 )
 
@@ -352,5 +353,57 @@ func TestADryRunPrintsTheWholeQueueInOrder(t *testing.T) {
 	}
 	if !strings.Contains(out, "first 2") {
 		t.Errorf("it must say how far --max-jobs would get: %s", out)
+	}
+}
+
+// A story and its sub-tasks must not both be started.
+//
+// A parent is worked together with its children -- one branch, one pull
+// request, one approval (OR-48). If a labelled sub-task were ALSO claimed as
+// a job of its own, two agents would work the same change on separate
+// branches and conflict for certain: they were decomposed from one story
+// precisely BECAUSE they touch the same code. That is the FCIA-8/FCIA-10
+// collision, manufactured deliberately.
+func TestASubTaskIsNotStartedWhenItsParentIs(t *testing.T) {
+	issues := []tracker.Issue{
+		{Key: "OR-50"},                  // the story
+		{Key: "OR-51", Parent: "OR-50"}, // its tasks, also labelled
+		{Key: "OR-52", Parent: "OR-50"},
+		{Key: "OR-60"}, // an unrelated ticket
+	}
+	got := dropClaimedChildren(issues)
+
+	want := []string{"OR-50", "OR-60"}
+	if len(got) != len(want) {
+		t.Fatalf("queued %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("queued %v, want %v", got, want)
+		}
+	}
+}
+
+// An orphan keeps its place. A sub-task whose parent is NOT queued is
+// ordinary work somebody asked for directly -- dropping it would silently
+// refuse a ticket that was labelled on purpose.
+func TestASubTaskWhoseParentIsNotQueuedIsStillWorked(t *testing.T) {
+	got := dropClaimedChildren([]tracker.Issue{
+		{Key: "OR-51", Parent: "OR-50"}, // OR-50 is not in the list
+	})
+	if len(got) != 1 || got[0] != "OR-51" {
+		t.Errorf("queued %v; a sub-task worked on its own must be allowed", got)
+	}
+}
+
+// Jira keys are upper-case by convention and not by guarantee. A case
+// mismatch that silently failed to match would let both run.
+func TestParentMatchingIgnoresCase(t *testing.T) {
+	got := dropClaimedChildren([]tracker.Issue{
+		{Key: "OR-50"},
+		{Key: "OR-51", Parent: "or-50"},
+	})
+	if len(got) != 1 {
+		t.Errorf("queued %v; the parent link was missed on case alone", got)
 	}
 }

@@ -337,11 +337,36 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) ([]st
 	if err != nil {
 		return nil, err
 	}
+	return dropClaimedChildren(issues), nil
+}
+
+// dropClaimedChildren removes any issue whose PARENT is also in the list.
+//
+// A parent is worked together with its sub-tasks -- one branch, one pull
+// request, one approval -- so a sub-task that is ALSO labelled would be
+// claimed a second time as a job of its own. Two agents on the same work, on
+// separate branches, guaranteed to conflict: they were decomposed from one
+// story precisely BECAUSE they touch the same code.
+//
+// Dropped rather than refused. Labelling both a story and its tasks is a
+// reasonable thing for a person to do, not a mistake to scold them for --
+// they are saying "do this work", and the parent already says it.
+//
+// Split out from Queued so the judgement is reachable from a test: Queued
+// itself needs a live Jira, and this is the part that can be wrong.
+func dropClaimedChildren(issues []tracker.Issue) []string {
+	queued := make(map[string]bool, len(issues))
+	for _, i := range issues {
+		queued[strings.ToUpper(strings.TrimSpace(i.Key))] = true
+	}
 	var out []string
 	for _, i := range issues {
+		if p := strings.ToUpper(strings.TrimSpace(i.Parent)); p != "" && queued[p] {
+			continue
+		}
 		out = append(out, i.Key)
 	}
-	return out, nil
+	return out
 }
 
 // InFlight reports whether any ticket is currently claimed.
