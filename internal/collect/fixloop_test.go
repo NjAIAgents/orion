@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/orion-sdlc/orion/internal/lessons"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -259,4 +260,103 @@ func TestMergingClearsTheAttemptHistory(t *testing.T) {
 	if got := loadFixes(wsDir).States["FCIA-6"].Count(); got != 0 {
 		t.Fatalf("history survived the merge: %d attempts still recorded", got)
 	}
+}
+
+// The whole point of OR-99: a run that produced a lesson-worthy event must
+// record it WITHOUT anyone typing a command. Before this, every writer of the
+// lessons store was a hand-typed command, so the store had never held anything
+// and the two-strike rule had nothing to count.
+//
+// A build that went red and then merged is that event: a mistake with its own
+// correction attached, both observed rather than inferred.
+func TestAFixedAndMergedBuildProposesALesson(t *testing.T) {
+	home, _ := ciRepo(t, 3)
+	failure := "test_impact.py::test_delta FAILED\nassert 100 == 99"
+	store := lessons.New(home)
+
+	redThenMerged(t, home, failure)
+
+	// Once is circumstance. Nobody should be asked about it yet.
+	pending, err := store.Pending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("a single occurrence was offered for approval: %+v", pending)
+	}
+	health, err := store.Health()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !health.Observed() {
+		t.Fatal("nothing was observed, so no automatic path wrote to the store")
+	}
+
+	// Twice is a pattern.
+	redThenMerged(t, home, failure)
+
+	pending, err = store.Pending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("got %d proposals awaiting approval, want 1", len(pending))
+	}
+	c := pending[0]
+	if !strings.Contains(c.Text, "test_delta FAILED") {
+		t.Errorf("the proposal does not say what actually happened: %q", c.Text)
+	}
+	if len(c.Evidence) != 2 {
+		t.Errorf("each sighting must carry its own evidence, got %v", c.Evidence)
+	}
+	for _, e := range c.Evidence {
+		if !strings.Contains(e, "FCIA-6") || !strings.Contains(e, "fcia") {
+			t.Errorf("evidence must name the ticket and the project: %q", e)
+		}
+	}
+
+	// And nothing has been recorded. A proposal is not a lesson.
+	records, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("a lesson was written without anyone approving it: %+v", records)
+	}
+}
+
+// A ticket that merged green taught nobody anything. Proposing on every merge
+// would fill the reviewer's queue with non-events, and a queue of non-events
+// gets dismissed without reading -- taking the real lessons with it.
+func TestAGreenMergeProposesNothing(t *testing.T) {
+	home, _ := ciRepo(t, 3)
+
+	mergeIt(t, home)
+
+	health, err := lessons.New(home).Health()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Sightings != 0 {
+		t.Fatalf("a merge with no CI failure filed %d proposal(s)", health.Sightings)
+	}
+}
+
+// redThenMerged drives one full episode: CI fails, an agent pushes a fix, the
+// pull request merges.
+func redThenMerged(t *testing.T, home, failure string) {
+	t.Helper()
+	runFix(t, home, &fixSpy{pushed: true}, failure, Options{})
+	mergeIt(t, home)
+}
+
+func mergeIt(t *testing.T, home string) {
+	t.Helper()
+	var buf bytes.Buffer
+	Run(Options{Home: home, Out: &buf, Keys: []string{"FCIA-6"}}, Deps{
+		Jira:    newTracker(),
+		Status:  func(string, string) (PR, error) { return PR{Verdict: VerdictMerged, URL: "u"}, nil },
+		Refresh: func(string, string) (string, error) { return "", nil },
+		Prune:   func(*workspace.Workspace, string) error { return nil },
+	})
 }

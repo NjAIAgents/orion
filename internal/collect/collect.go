@@ -467,6 +467,11 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	}
 	_ = deps.Jira.Comment(key, "Merged: "+pr.URL)
 	closeChildren(key, pr.URL, deps, w)
+	// A branch that went red and then merged is a mistake with its own
+	// correction attached, which is the one shape a lesson can be built from
+	// without an agent inferring anything. Read the history BEFORE it is
+	// cleared below -- this is the only moment both halves exist.
+	proposeLesson(key, pr, loadFixes(ws.Dir).States[key], entry.Source, ws, log, w)
 	// Forget the fix history. A ticket reopened later must not start with
 	// its attempts already spent.
 	_ = clearFixes(ws.Dir, key)
