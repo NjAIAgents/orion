@@ -114,6 +114,9 @@ BUDGET (rolling 7 days, your limit, not your plan's)
 MEMORY (shared across every project)
   orion lessons add "<text>"  record a correction so it is not repeated
   orion lessons list          show what Orion has learned, and its scope
+  orion lessons pending       lessons Orion proposed, awaiting your yes or no
+  orion lessons approve <sig> record a proposed lesson
+  orion lessons reject <sig>  discard one, and never propose it again
   orion lessons retire "<t>"  stop injecting a lesson
 
 HOOKS (invoked by Claude Code, not by hand)
@@ -1429,18 +1432,7 @@ func refreshLessons(root string) string {
 
 // detectStack identifies the project's ecosystem from its manifest, which
 // is what decides whether a stack-scoped lesson applies here.
-func detectStack(root string) string {
-	for file, stack := range map[string]string{
-		"go.mod": "go", "package.json": "node", "Cargo.toml": "rust",
-		"pyproject.toml": "python", "requirements.txt": "python",
-		"pom.xml": "java", "build.gradle": "java", "Gemfile": "ruby",
-	} {
-		if _, err := os.Stat(filepath.Join(root, file)); err == nil {
-			return stack
-		}
-	}
-	return ""
-}
+func detectStack(root string) string { return lessons.DetectStack(root) }
 
 func runReset(args []string) {
 	sessionID := argFlag(args, "--session", "")
@@ -2049,19 +2041,43 @@ func runLessons(args []string) {
 	case "list":
 		records, err := store.Load()
 		exitOn(err)
-		if len(records) == 0 {
-			fmt.Println("no lessons recorded yet")
+		health, herr := store.Health()
+		printLessons(os.Stdout, records, health, herr)
+
+	case "pending":
+		cs, err := store.Pending()
+		exitOn(err)
+		if len(cs) == 0 {
+			fmt.Printf("nothing is waiting for a decision (a lesson is only offered after %d sightings)\n",
+				lessons.Strikes)
 			return
 		}
-		fmt.Printf("%-8s %-5s %-28s %s\n", "SCOPE", "HITS", "PROJECTS", "LESSON")
-		for _, r := range records {
-			mark := ""
-			if r.Retired {
-				mark = " (retired)"
+		for _, c := range cs {
+			fmt.Printf("%s  seen %dx in %s\n  %s\n", c.Signature, c.Strikes,
+				strings.Join(c.Projects, ", "), c.Text)
+			for _, e := range c.Evidence {
+				fmt.Printf("    - %s\n", e)
 			}
-			fmt.Printf("%-8s %-5d %-28s %s%s\n", r.Scope, r.Hits,
-				truncateStr(strings.Join(r.Projects, ","), 27), truncateStr(r.Text, 70), mark)
+			fmt.Printf("  orion lessons approve %s   |   orion lessons reject %s\n\n", c.Signature, c.Signature)
 		}
+
+	case "approve", "reject":
+		if len(args) == 0 {
+			fmt.Fprintf(os.Stderr, "orion: usage: orion lessons %s <signature>   (see: orion lessons pending)\n", action)
+			os.Exit(64)
+		}
+		d := lessons.DecisionApproved
+		if action == "reject" {
+			d = lessons.DecisionRejected
+		}
+		c, err := store.Decide(args[0], d, argFlag(args, "--by", "you"))
+		exitOn(err)
+		if d == lessons.DecisionRejected {
+			fmt.Printf("orion: rejected. It will not be proposed again.\n  %s\n", c.Text)
+			return
+		}
+		fmt.Printf("orion: recorded, scoped to %s.\n  %s\n", strings.Join(c.Projects, ", "), c.Text)
+		fmt.Println("       It reaches other projects only if it recurs in one.")
 
 	case "retire":
 		if len(args) == 0 {
@@ -2074,8 +2090,50 @@ func runLessons(args []string) {
 		fmt.Println("orion: retired. It will stop being injected into CLAUDE.md.")
 
 	default:
-		fmt.Fprintf(os.Stderr, "orion: unknown lessons action %q (want: add, list, retire)\n", action)
+		fmt.Fprintf(os.Stderr,
+			"orion: unknown lessons action %q (want: add, list, pending, approve, reject, retire)\n", action)
 		os.Exit(64)
+	}
+}
+
+// printLessons renders `orion lessons list`.
+//
+// The trailing health line is the point of this function. An empty store has
+// two very different causes that look identical from the outside -- nothing
+// worth recording has happened, or nothing is writing to it -- and for this
+// store's entire life it was the second, reporting cleanly the whole time. A
+// subsystem that answers "nothing" the same way whether it is idle or broken
+// is one nobody ever goes to look at.
+func printLessons(w io.Writer, records []lessons.Record, health lessons.Health, herr error) {
+	if len(records) > 0 {
+		fmt.Fprintf(w, "%-8s %-5s %-12s %-24s %s\n", "SCOPE", "HITS", "LAST", "PROJECTS", "LESSON")
+		for _, r := range records {
+			mark := ""
+			if r.Retired {
+				mark = " (retired)"
+			}
+			fmt.Fprintf(w, "%-8s %-5d %-12s %-24s %s%s\n", r.Scope, r.Hits,
+				r.LastSeen.Local().Format("2006-01-02"),
+				truncateStr(strings.Join(r.Projects, ","), 23), truncateStr(r.Text, 70), mark)
+		}
+		fmt.Fprintln(w)
+	} else {
+		fmt.Fprintln(w, "no lessons recorded yet")
+	}
+	switch {
+	case herr != nil:
+		fmt.Fprintf(w, "could not read the proposal log: %v\n", herr)
+	case !health.Observed():
+		fmt.Fprintln(w, "nothing has ever been OBSERVED either, so no automatic path has")
+		fmt.Fprintln(w, "written to this store. If runs have completed since then, lesson")
+		fmt.Fprintln(w, "proposal is not reaching it -- an empty store is not the same as a")
+		fmt.Fprintln(w, "quiet one.")
+	default:
+		fmt.Fprintf(w, "%d event(s) observed, most recently %s.\n",
+			health.Sightings, health.LastObserved.Local().Format("2006-01-02"))
+		if health.Pending > 0 {
+			fmt.Fprintf(w, "%d proposal(s) waiting for your decision: orion lessons pending\n", health.Pending)
+		}
 	}
 }
 

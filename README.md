@@ -234,10 +234,24 @@ A lesson learned in one project should not be relearned in the next.
 
 ```bash
 orion lessons add "Money is BigDecimal, never double"
-orion lessons list
+orion lessons list          # also says whether anything is observing at all
+orion lessons pending       # what Orion proposed, awaiting your yes or no
+orion lessons approve <sig>
 ```
 
-Two constraints keep this from rotting:
+Orion fills this itself. A branch whose CI went red and then merged is a
+mistake with its own correction attached, so `orion collect` records that as an
+observation. Nothing is written on Orion's authority: the block is injected
+into every session, so a wrong lesson is durable and re-read forever.
+
+Three constraints keep this from rotting:
+
+**Nothing is recorded without a yes.** Observations become a *proposal*; only
+you turn a proposal into a lesson.
+
+**Twice, or not at all.** One occurrence may be circumstance, so a lesson is
+only offered after the same thing has been seen twice — and a single sighting
+cannot be approved even deliberately.
 
 **Scope is earned.** A lesson starts scoped to its own project. It reaches
 other projects only after it actually recurs in a different one. Recurring
