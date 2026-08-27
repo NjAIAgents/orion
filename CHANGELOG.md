@@ -6,6 +6,40 @@ now refuses to do**.
 
 ## Unreleased
 
+### Added
+
+- Orion now proposes lessons by itself. When a branch whose CI went red is
+  fixed and merged, `orion collect` files that as an observation — a mistake
+  with its own correction attached, both seen by the system rather than
+  inferred by an agent. The same observation twice becomes a proposal you are
+  asked about; approve it with `orion lessons approve <sig>` and it enters the
+  store, reject it and it is never raised again. `orion lessons pending` lists
+  what is waiting.
+
+  The cross-project memory has been shipping since v0.1 and had never held
+  anything: every writer was a command a human had to remember to type, so
+  nothing ever counted to two and nothing was ever lifted. The ranking,
+  expiry and promotion downstream were all correct, and all operating on an
+  empty list.
+
+  Nothing is written without a yes. The store is append-only and injected into
+  every session's `CLAUDE.md`, so a wrong lesson is durable and re-read
+  forever — which is why an agent is allowed to observe, never to record.
+
+### Changed
+
+- The generated sandbox settings are regenerated for every job, not only at
+  adoption. A sandbox adopted before a policy fix used to keep the old policy
+  until someone re-ran `orion init` — and the run that would benefit is the
+  one that cannot know it should.
+
+- `orion lessons list` can no longer report an empty store as if it were a
+  working one. When nothing has been recorded it now says whether anything has
+  ever been *observed*, and how many proposals are waiting. An empty answer and
+  a broken subsystem used to be the same output.
+- A lesson without a project is refused. Provenance — what happened, where, and
+  when — is what makes a durable rule worth trusting later.
+
 ### Fixed
 
 - The sandbox no longer denies loopback binds. Any test that stands up a

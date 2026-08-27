@@ -441,8 +441,21 @@ A correction learned in one project should not be relearned in the next.
 
 ```bash
 orion lessons add "Money is BigDecimal, never double"
-orion lessons list
+orion lessons list           # what is recorded -- and whether anything is observing
+orion lessons pending        # proposals waiting for your yes or no
+orion lessons approve <sig>  # record one   |   orion lessons reject <sig>
 ```
+
+Most entries should arrive without you typing anything. When a branch whose CI
+went red is fixed and merged, `orion collect` files an observation: a mistake
+with its own correction attached, both seen by the system rather than inferred.
+The same observation twice becomes a proposal, and a proposal becomes a lesson
+only when you approve it — the block is read at the start of every session, so
+a wrong lesson is durable and misdirects every future run.
+
+`orion lessons list` deliberately distinguishes "nothing has been recorded" from
+"nothing is writing here". Those look identical from the outside, and for the
+whole life of this store it was the second.
 
 Scope is earned rather than assumed. A lesson starts local to its project and
 reaches others only after it actually recurs somewhere else: recurring five
