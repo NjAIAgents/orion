@@ -41,7 +41,7 @@ func ciRepo(t *testing.T, maxAttempts int) (home, wsDir string) {
 	}
 	cfg := `{"ci":{"auto_fix":true,"max_fix_attempts":` + itoa(maxAttempts) + `},
 	         "vcs":{"work_branch":"develop","branch_prefix":"orion/"}}`
-	if err := os.WriteFile(filepath.Join(ws.RepoDir(), "orion.json"), []byte(cfg), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(src, "orion.json"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := bindTo(home, ws.ID, src); err != nil {

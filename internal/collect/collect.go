@@ -80,6 +80,11 @@ type PR struct {
 	// Head is the branch's current commit, used to notice when somebody has
 	// pushed a rebase and the situation has changed.
 	Head string
+	// BaseRef is the branch the pull request targets, from the forge. For
+	// anything about WHERE a merge went this outranks config: the PR's base
+	// is what actually decided it, and a message built from config once
+	// announced "on main" for a merge GitHub had put on develop (OR-118).
+	BaseRef string
 	// Detail is the human-readable why: which check failed, or why nothing
 	// could be determined. Carried into the tracker comment, since a bare
 	// "CI failed" sends the reader to GitHub to find out anything.
@@ -266,15 +271,23 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		ui.Fail(w, "%s: %v", key, err)
 		return res
 	}
-	// Freshen the sandbox BEFORE reading policy from it. Its orion.json is
-	// the committed config, and a clone made days ago serves a days-old one
-	// -- which looks exactly like a setting that does not work.
-	cfg := config.Load(ws.RepoDir())
+	// Config comes from the USER'S checkout -- entry.Source, the path the
+	// registry maps this project to -- never from the sandbox clone.
+	//
+	// The sandbox looks like the right source (its orion.json is committed
+	// config) and is exactly the wrong one, because its position depends on
+	// the value being loaded: read work_branch from a stale sandbox, sync
+	// the sandbox to that stale branch, and the checkout that holds the old
+	// config is now pinned to the branch the old config names. A work_branch
+	// change in the user's repo was deferred indefinitely that way, and one
+	// merge was announced as "on main" when the PR had merged into develop
+	// (OR-118). The user's checkout is where a person edits orion.json, and
+	// where they expect the edit to take effect on the next tick.
+	cfg := config.Load(entry.Source)
 	if msg, syncErr := workspace.SyncSandbox(ws, cfg.VCS.WorkBranch); syncErr != nil {
 		ui.Warn(w, "could not refresh the sandbox: %v", syncErr)
 	} else if msg != "" {
 		ui.Ok(w, "refresh", "%s", msg)
-		cfg = config.Load(ws.RepoDir()) // re-read: the config may have moved
 	}
 	branch := branchFor(cfg.VCS.BranchPrefix, key)
 
@@ -484,8 +497,16 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	// ticket left develop behind on the machine its owner works on -- and
 	// the next `orion work` preflight refuses on a stale base.
 	refreshed := ""
+	// The branch the PR actually merged into, per its BaseRef; config is only
+	// the fallback when the forge did not say. Everything below that talks
+	// about WHERE the merge went uses this, because a message built from
+	// config once announced "on main" for a merge GitHub put on develop.
+	mergedInto := pr.BaseRef
+	if mergedInto == "" {
+		mergedInto = cfg.VCS.WorkBranch
+	}
 	if deps.Refresh != nil {
-		msg, err := deps.Refresh(entry.Source, cfg.VCS.WorkBranch)
+		msg, err := deps.Refresh(entry.Source, mergedInto)
 		switch {
 		case err != nil:
 			ui.Warn(w, "could not refresh %s: %v", entry.Source, err)
@@ -523,7 +544,7 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	}
 
 	title, body := msgMerged(key, pr, entry.Source, pruned, refreshed,
-		cfg.VCS.WorkBranch, cfg.VCS.DefaultBranch)
+		mergedInto, cfg.VCS.DefaultBranch)
 	tell(w, log, notify.Event{
 		Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
 		Title: title, Body: body,
