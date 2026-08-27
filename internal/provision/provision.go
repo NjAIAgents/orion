@@ -174,16 +174,28 @@ func Remote(opts Options) (*Result, error) {
 // agent, not a human with a terminal. Server-side protection is what
 // constrains everyone.
 func applyProtection(target string, opts Options, res *Result) {
+	reviews, why := RequiredReviews("", target)
+	res.Warnings = append(res.Warnings, fmt.Sprintf(
+		"requiring %d approving review(s) on protected branches: %s", reviews, why))
+
 	rules := map[string]any{
-		"required_pull_request_reviews": map[string]any{
-			"required_approving_review_count": 1,
-			"dismiss_stale_reviews":           true,
-		},
 		"required_status_checks": nil,
 		"enforce_admins":         false,
 		"restrictions":           nil,
 		"allow_force_pushes":     false,
 		"allow_deletions":        false,
+	}
+	// Zero is expressed by omitting the block. Sending a count of 0 asks for
+	// pull requests that need no approvals, which still forces every change
+	// through a PR -- a different and stricter rule than not requiring
+	// review, and not the one meant here.
+	if reviews > 0 {
+		rules["required_pull_request_reviews"] = map[string]any{
+			"required_approving_review_count": reviews,
+			"dismiss_stale_reviews":           true,
+		}
+	} else {
+		rules["required_pull_request_reviews"] = nil
 	}
 	body, _ := json.Marshal(rules)
 
@@ -206,6 +218,44 @@ func applyProtection(target string, opts Options, res *Result) {
 		}
 		res.Protection[b] = "applied"
 	}
+}
+
+// RequiredReviews decides how many approving reviews to demand, and says why.
+//
+// A hardcoded 1 is wrong for a solo repository: GitHub will not let anyone
+// approve their own pull request, so a lone maintainer can never satisfy the
+// rule and finds out only at the moment they try to merge their first change
+// -- by which point the branch is protected and the fix is buried in the
+// repository settings UI. A hardcoded 0 is wrong for a team, where the review
+// gate is the entire point. So it is derived from who can actually push.
+//
+// The reason travels with the number and is always reported. A value that
+// silently differs between two repositories, with nothing on screen saying
+// why, is worse than picking either default and stating it. It also changes
+// on its own when a collaborator is added, and the next person to notice
+// should not have to read this comment to find out what happened.
+//
+// dir may be empty, in which case gh resolves the repository from the slug
+// alone rather than the working directory.
+func RequiredReviews(dir, slug string) (int, string) {
+	cmd := exec.Command("gh", "api", "repos/"+slug+"/collaborators", "--paginate")
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		// Not fatal, and deliberately biased towards the permissive answer:
+		// guessing high here bricks merging for a solo user, while guessing
+		// low costs a team one setting they can raise.
+		return 0, "could not read collaborators, so assuming solo (no review required)"
+	}
+	var people []struct {
+		Login string `json:"login"`
+	}
+	if err := json.Unmarshal(out, &people); err != nil || len(people) <= 1 {
+		return 0, "solo repository, and GitHub does not let you approve your own pull request"
+	}
+	return 1, fmt.Sprintf("%d collaborators can push", len(people))
 }
 
 func branchExists(dir, name string) bool {

@@ -6,6 +6,63 @@ now refuses to do**.
 
 ## Unreleased
 
+Merged branches are now actually deleted, locally and on the remote. Until
+now, none of them were.
+
+`orion collect` removed the worktree and then ran `git branch -d`, whose
+safety check is an ancestry test: is the branch tip reachable from the base.
+Orion merges by **rebase**, which replays the commits as new objects, so the
+originals are never reachable and `-d` refused — every time, for every
+ticket, however cleanly it landed. The refusal was caught and downgraded to a
+warning on the reasoning that git disagreeing about merged-ness was worth
+surfacing. That is right for a merge-commit workflow and wrong for ours,
+where the disagreement is the guaranteed consequence of the merge strategy we
+chose. So the happy path printed a warning that meant nothing, and every
+branch survived. Two tickets left two orphans; a week of `orion watch` would
+have left dozens.
+
+The pull request is now the authority on merged-ness, which it always should
+have been: `Prune` is only ever reached from the merged path, so the forge
+has already answered the question before git is asked. The remote branch is
+deleted too, which nothing did before. Finding the remote already gone is
+treated as success rather than failure, because it is now the *expected*
+case — see the next paragraph.
+
+`orion init` sets `delete_branch_on_merge` on the repository, so GitHub
+deletes the head branch at merge time. This is deliberate belt-and-braces:
+the situations where `collect` never runs are exactly the messy ones — a
+watcher killed mid-run, a merge done by hand in the web UI, a network failure
+between merging and pruning — and server-side deletion is the only cleanup
+that survives all of them.
+
+**New: `orion protect`.** Applies branch protection using the checks the
+repository is *observed* to run, read from real check runs rather than
+guessed. The rule that carries the weight is "require branches to be up to
+date before merging", which is the server-side form of the staleness gate
+added in v0.4.4. Both are worth having and they are not redundant: the gate
+needs no admin rights and works anywhere, but it can only warn a human, who
+can skim the warning and merge anyway. This refuses the merge.
+
+It is a separate command rather than part of `init` for a reason worth
+knowing before you run it: a required status check that never reports blocks
+every pull request **forever**, with no timeout and no recourse short of an
+admin editing the settings by hand. At adoption time no CI has ever run, so
+any check name chosen then would be a guess. Run `orion protect` once CI has
+run at least once. `--dry-run` shows what it would require.
+
+Provisioning no longer hardcodes one required approving review. On a solo
+repository that rule can never be satisfied — GitHub does not let anyone
+approve their own pull request — and you discovered it at the moment you
+tried to merge your first change, with the branch already protected. The
+count is now derived from who can actually push, and both the number and the
+reason for it are printed, because a value that silently differs between two
+repositories is worse than either default.
+
+**Note for private repositories on the free plan:** branch protection is a
+paid feature there, and GitHub's error says only "upgrade". Making the
+repository public also enables it, at no cost, and Orion's message now says
+so.
+
 `orion init` now prepares the sandbox's Python environment once, rather than
 leaving every ticket to work it out again.
 
