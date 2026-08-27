@@ -32,7 +32,7 @@
   "vcs": {
     "provider": "github",
     "default_branch": "main",
-    "work_branch": "develop",
+    "work_branch": "main",
     "protected_branches": ["main", "develop"],
     "branch_prefix": "orion/",
 
