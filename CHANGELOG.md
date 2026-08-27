@@ -44,6 +44,19 @@ anyway.
   interpreter when they exist, instead of leaving each ticket to discover
   both
 
+### Fixed
+
+- `collect`, `work` and `watch` now refuse a key that cannot exist, before
+  any Jira or GitHub call. `orion collect or or-39` used to take `or` as a
+  ticket key and report that no pull request was found for branch
+  `orion/or` — an accurate sentence about a key no branch or PR could ever
+  carry — then process `or-39` and exit 0, so a typo in a cron line warned
+  once per tick forever. A bad token now fails the whole invocation with a
+  usage error naming it and the shape expected; a mix of valid and invalid
+  keys does no partial work. `watch`'s positionals are project keys, so it
+  rejects the inverse mistake (`orion watch or-39`) and its usage line now
+  reads `[PROJECT...]`.
+
 ## v0.5.0
 
 Orion was flat: no concept of parent, sub-task, or children in tracker, work,
