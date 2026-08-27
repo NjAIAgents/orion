@@ -22,7 +22,7 @@ import (
 // NDJSON is already in the run log for postmortems. What belongs in the event
 // stream is the trace a person scans to answer "is it doing something sane":
 // which files it touched, which commands it ran, what it said it was doing.
-func activityLogger(log *events.Log, w io.Writer, actor string) func(supervisor.Activity) {
+func activityLogger(log *events.Log, w io.Writer, key, actor string) func(supervisor.Activity) {
 	return func(a supervisor.Activity) {
 		switch a.Kind {
 		case "start":
@@ -35,7 +35,10 @@ func activityLogger(log *events.Log, w io.Writer, actor string) func(supervisor.
 			}
 			log.Emit(events.Event{Kind: events.KindTool, Actor: actor,
 				Model: a.Model, Msg: msg})
-			ui.Ok(w, verbFor(a.Tool), "%s", a.Detail)
+			// The agent's own line, carrying its ticket, its name and the
+			// model that produced it -- and its prose unedited. The
+			// metadata columns are Orion's to style; the text is not.
+			ui.SayModel(w, key, actor, a.Model, ui.VerbWorking, "%s %s", verbFor(a.Tool), a.Detail)
 		case "text":
 			log.Emit(events.Event{Kind: events.KindSay, Actor: actor,
 				Model: a.Model, Msg: a.Detail})

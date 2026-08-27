@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 )
 
 const (
@@ -28,7 +29,20 @@ const (
 	blue   = "\x1b[34m"
 	dim    = "\x1b[2m"
 	bold   = "\x1b[1m"
+	// The non-semantic set, for colouring things that are IDENTITIES rather
+	// than outcomes -- a ticket, an actor. Green, red and yellow are spoken
+	// for: a ticket rendered in red reads as broken on every line it emits.
+	magenta       = "\x1b[35m"
+	brightCyan    = "\x1b[96m"
+	brightMagenta = "\x1b[95m"
+	brightBlue    = "\x1b[94m"
 )
+
+// colorMu guards the ticket-colour assignment in event.go. A watcher renders
+// from more than one goroutine, and a data race in the renderer would
+// corrupt the output at exactly the moment somebody is reading it to find
+// out what went wrong.
+var colorMu sync.Mutex
 
 // enabled reports whether to emit escape codes.
 //

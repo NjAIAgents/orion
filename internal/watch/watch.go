@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/collect"
+	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
@@ -128,10 +129,10 @@ func Run(opts Options, deps Deps) error {
 			// token is fixable while this keeps running, and stopping would
 			// mean the fix also requires noticing the watcher died.
 			if permanent(err) {
-				ui.Fail(w, "%v", err)
+				ui.Say(w, "", events.ActorOrion, ui.VerbFail, "%v", err)
 				return err
 			}
-			ui.Warn(w, "tick %d: %v", tick, err)
+			ui.Say(w, "", events.ActorOrion, ui.VerbWarn, "tick %d: %v", tick, err)
 		}
 		started += n
 
@@ -157,13 +158,15 @@ func Run(opts Options, deps Deps) error {
 		// closed. Ctrl-c still exits at the end of the current step.
 		if opts.MaxJobs > 0 && started >= opts.MaxJobs {
 			if !unfinished {
-				ui.Ok(w, "ok", "started %d job(s) and finished them; the limit for this run", started)
+				ui.Say(w, "", events.ActorOrion, ui.VerbOK,
+					"started %d job(s) and finished them; the limit for this run", started)
 				break
 			}
 			if !draining {
 				draining = true
-				ui.Ok(w, "draining", "started %d job(s), the limit for this run; "+
-					"starting nothing more, but staying up until they finish", started)
+				ui.Say(w, "", events.ActorOrion, ui.VerbWaiting,
+					"draining: started %d job(s), the limit for this run; "+
+						"starting nothing more, but staying up until they finish", started)
 			}
 		}
 		if !deps.Sleep(opts.Interval) {
@@ -223,7 +226,8 @@ func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (started int, 
 			return 0, unfinished, err
 		}
 		if busy {
-			ui.Ok(w, "working", "%s is still running; not starting anything else", key)
+			ui.Say(w, key, events.ActorOrion, ui.VerbWorking,
+				"still running; not starting anything else")
 			return 0, unfinished, nil
 		}
 	}
@@ -247,7 +251,7 @@ func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (started int, 
 		// head. "would start FCIA-7 (3 queued)" says a number; the point of
 		// rehearsing is to see whether the ORDER is the one you meant, and
 		// that cannot be checked against a count.
-		ui.Ok(w, "would", "start %s, then work down this queue:", next)
+		ui.Say(w, next, events.ActorOrion, ui.VerbWaiting, "would start it, then work down this queue:")
 		for i, k := range keys {
 			marker := "  "
 			if i == 0 {
@@ -271,7 +275,7 @@ func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (started int, 
 		return 0, unfinished, nil
 	}
 
-	ui.Ok(w, "claimed", "%s (%d queued)", next, len(keys))
+	ui.Say(w, next, events.ActorOrion, ui.VerbWorking, "claimed (%d queued)", len(keys))
 	res := deps.Work(work.Options{
 		Keys: []string{next}, Out: w, Home: opts.Home,
 		MaxMinutes: opts.MaxMinutes, MaxTurns: opts.MaxTurns,
@@ -283,13 +287,14 @@ func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (started int, 
 	for _, r := range res {
 		if !r.Limit.OK() {
 			until := r.Limit.ResetsAt
-			ui.Warn(w, "%s", r.Limit.Describe(deps.Now()))
+			ui.Say(w, r.Key, events.ActorOrion, ui.VerbWarn, "%s", r.Limit.Describe(deps.Now()))
 			if d := r.Limit.Wait(deps.Now()); d > 0 {
 				// Sleep until the reset rather than polling through it. Every
 				// tick in between would start an agent only to be refused,
 				// and a refusal still costs an API round trip and a log line
 				// -- hundreds of them, for hours, saying the same thing.
-				ui.Ok(w, "ci-wait", "sleeping until %s", until.Local().Format("15:04 Mon"))
+				ui.Say(w, r.Key, events.ActorOrion, ui.VerbWaiting,
+					"sleeping until %s", until.Local().Format("15:04 Mon"))
 				if !deps.Sleep(d + time.Minute) {
 					return 0, unfinished, nil
 				}
@@ -304,7 +309,8 @@ func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (started int, 
 	// a tight loop would hammer the tracker to no purpose.
 	for _, r := range res {
 		if r.Outcome == work.OutcomeSkipped {
-			ui.Warn(w, "%s was not started; waiting rather than retrying immediately", r.Key)
+			ui.Say(w, r.Key, events.ActorOrion, ui.VerbWarn,
+				"not started; waiting rather than retrying immediately")
 			return 0, unfinished, nil
 		}
 	}
