@@ -56,11 +56,23 @@ const (
 
 // Actor is who did it. "orion" is the supervisor itself; the rest are the
 // roles it spawns or defers to.
+//
+// These strings are PERSISTED. They are written into the append-only event
+// log, and `orion logs` and `orion report` read that history back, so a
+// rename would leave old entries saying one thing and new ones another and
+// every reader would have to know both spellings forever. The display form
+// -- the name and job title a person reads -- lives in internal/actors and
+// is applied at render time, which is what lets a name change without
+// migrating a single line of history.
 const (
 	ActorOrion       = "orion"
-	ActorImplementer = "implementer"
+	ActorRouter      = "router"      // decides which advisor a question belongs to
+	ActorImplementer = "implementer" // works a backend ticket
+	ActorFrontend    = "frontend"    // works a UI ticket
 	ActorArchitect   = "architect"
 	ActorPM          = "pm"
+	ActorDevOps      = "devops"    // repairs a red build
+	ActorDescriber   = "describer" // writes the pull request description
 	ActorHuman       = "human"
 	ActorCI          = "ci"
 )
