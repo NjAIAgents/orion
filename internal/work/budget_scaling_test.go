@@ -10,9 +10,16 @@ import "testing"
 // tasks are ordinary, and a tool that will not work them does not fit how
 // people decompose. Give the agent room instead.
 func TestABigStoryGetsRoomToFinish(t *testing.T) {
-	flat := turnsFor(0, 0)
-	if flat != 0 {
-		t.Errorf("a childless ticket must keep the supervisor's own default (got %d)", flat)
+	// A childless ticket with no flag gets the stated defaults: 120 turns,
+	// 90 minutes. These used to arrive as EXPLICIT flag defaults from watch,
+	// which is exactly how the scaling below was dead on the watch path
+	// (OR-117) -- the numbers now live here, where the scaling is.
+	if got := turnsFor(0, 0); got != 120 {
+		t.Errorf("a childless ticket should default to 120 turns, got %d", got)
+	}
+	if got := minutesFor(0, 0); got != 90 {
+		t.Errorf("a childless ticket should default to 90 minutes, got %d -- the 30 an "+
+			"earlier draft used was never reachable and would cut every run to a third", got)
 	}
 
 	// The number that motivated this: 25 tasks on 120 turns is ~5 turns per
