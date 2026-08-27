@@ -18,9 +18,11 @@ import (
 func runWatch(args []string) {
 	w := os.Stdout
 
-	var projects []string
-	for _, a := range positional(args, "--interval", "--max-jobs", "--max-minutes", "--max-turns") {
-		projects = append(projects, strings.ToUpper(a))
+	projects, err := projectKeys(
+		positional(args, "--interval", "--max-jobs", "--max-minutes", "--max-turns"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(64)
 	}
 
 	interval := time.Duration(intFlag(args, "--interval", 120)) * time.Second

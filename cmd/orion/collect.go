@@ -15,7 +15,11 @@ import (
 )
 
 func runCollect(args []string) {
-	keys := positional(args, "--wait")
+	keys, err := ticketKeys("collect", "[KEY...]", positional(args, "--wait"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(64)
+	}
 	res := collect.Run(collect.Options{
 		Keys:          keys,
 		Out:           os.Stdout,
