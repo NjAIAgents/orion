@@ -40,7 +40,7 @@ func ensureCI(dir string) {
 			"Until then CI fails, which is the correct direction: a script that "+
 				"exits 0 having run nothing makes every check green by construction."))
 	}
-	if res.ScriptCreated || res.FlowCreated {
+	if res.ScriptCreated || res.FlowCreated || res.ScanCreated {
 		fmt.Fprintf(w, "          %s\n", ui.Dim(w,
 			"Commit these; a workflow only runs once it is on the default branch."))
 	}
