@@ -7,6 +7,18 @@ on:
   push: { branches: [main, develop] }
   pull_request:
 
+# One run per ref. Without this, a force-push leaves the superseded run
+# burning through all three OS legs while its replacement queues behind it --
+# and a rebase is a force-push, so every branch that goes stale under
+# ci.require_up_to_date pays twice.
+#
+# Orion SCAFFOLDS this into the workflow it writes for adopted projects and
+# did not have it itself, which is how it went unnoticed: the repository that
+# generates the good default was the one missing it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   go:
     runs-on: ${{ matrix.os }}

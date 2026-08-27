@@ -285,7 +285,30 @@ func pruneSandboxes(w io.Writer, home string, dryRun bool) {
 				removed++
 				continue
 			}
-			if err := workspace.RemoveWorktree(ws, j.Path, false); err != nil {
+			// Both guards have already run, with BETTER evidence.
+			//
+			// RemoveWorktree refuses on two conditions: uncommitted work, and
+			// commits reachable from HEAD but from no remote. This loop has
+			// checked the first itself (agentDirt, above) and answered the
+			// second more strongly than that heuristic can -- mergedInto asks
+			// GitHub whether the branch merged, rather than inferring from
+			// local refs.
+			//
+			// Letting the weaker check override the stronger one is not
+			// caution, it is a contradiction, and it produced exactly that:
+			//
+			//	removed   orion/or-29 (merged into main)
+			//	WARNING   could not remove orion/or-38: ... has 1 commit(s)
+			//	          that are not on the remote
+			//
+			// for a branch prune had just confirmed as merged. The cause was
+			// a rebase before merge: the worktree keeps the pre-rebase commit,
+			// whose SHA is on no remote and never will be, so the guard
+			// refuses forever on work that is demonstrably landed.
+			//
+			// So pass what we know. The guard remains correct and load-bearing
+			// for every caller that has NOT established these facts.
+			if err := workspace.RemoveWorktree(ws, j.Path, true); err != nil {
 				ui.Warn(w, "could not remove %s: %v", j.Branch, err)
 				kept++
 				continue
