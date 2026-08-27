@@ -72,7 +72,7 @@ RUNNING
   orion status <id>           show stage, breaker state and last run
   orion work <KEY> [KEY...]   work tickets, in the order given
   orion queue                 what the watcher would pick up, in order (read-only)
-  orion watch [KEY...]        run the queue by itself: work, collect, repeat
+  orion watch [PROJECT...]    run the queue by itself: work, collect, repeat
                               (--once, --interval S, --max-jobs N, --dry-run)
   orion collect [KEY...]      finish tickets awaiting CI: close, refresh, prune
                               (--dry-run for verdicts only, --no-prune, --no-fix)
@@ -839,11 +839,11 @@ func confirm(prompt string) bool {
 
 // runWork implements one or more tickets.
 func runWork(args []string) {
-	var keys []string
-	for _, a := range args {
-		if !strings.HasPrefix(a, "-") {
-			keys = append(keys, a)
-		}
+	keys, err := ticketKeys("work", "<KEY> [KEY...]",
+		positional(args, "--max-minutes", "--max-turns"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(64)
 	}
 	if len(keys) == 0 {
 		fmt.Fprintln(os.Stderr, "orion work needs at least one ticket: orion work FCIA-6")
