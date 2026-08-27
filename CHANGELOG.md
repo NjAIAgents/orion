@@ -6,6 +6,19 @@ now refuses to do**.
 
 ## Unreleased
 
+### Added
+
+- `orion init` now scaffolds a secret-scanning workflow into every project it
+  adopts: gitleaks at a pinned version, installed through the Go module proxy
+  so the download is checksum-verified, scanning the full history rather than
+  the diff, printing findings with the secret itself redacted, and failing the
+  build on a hit. CI has no implementer to talk to, and a secret already
+  pushed to a public repository is not a finding to negotiate.
+  A project that already runs gitleaks, trufflehog or detect-secrets keeps its
+  own scanner and gets nothing added. Unlike the test workflow, the scan is
+  still added when other workflows exist — otherwise every repository that
+  already had CI, which is most of them, would stay unscanned.
+
 ## v0.6.0
 
 The first release where Orion's memory does something. Also the release that
