@@ -4,6 +4,41 @@ Notable changes per release. Written for someone deciding whether to upgrade
 and what to watch afterwards, so each entry says what changed **and what it
 now refuses to do**.
 
+## v0.5.0
+
+Orion was flat: no concept of parent, sub-task, or children in tracker, work,
+or watch — the queue was just a label search, and the unit of work was
+whatever carried the label. A story broken into sub-tasks had two bad
+options: label the story and the agent never learns the sub-tasks exist, or
+label each sub-task and get separate branches/PRs/CI runs that can collide —
+FCIA-8 and FCIA-10 both created `src/fcia/cli.py` from scratch as sibling
+tasks under the same story, and only avoided conflict by luck.
+
+### Added
+
+- A claimed story now works its sub-tasks itself, in one branch, one commit
+  series, one pull request. Orion reads the children with one JQL query
+  (`parent = KEY ORDER BY Rank ASC`, covering both classic sub-tasks and a
+  team-managed project's child-issue shape), drops any already `Done`, and
+  hands the agent the rest as a numbered checklist to report against by key.
+  A sub-task whose parent is also queued is silently dropped from `watch` —
+  the parent already covers it — rather than refused as a mistake. On merge,
+  the story's sub-tasks are transitioned to Done and commented with the PR
+  link, best-effort so a tracker hiccup never turns a successful merge into
+  a reported failure. A tracker that can't answer the parent query (unusual
+  project shape, missing permission) isn't a failure either — Orion falls
+  back to working the ticket as itself and says so.
+- The turn/time budget for a claimed story now scales with how many
+  sub-tasks it carries, instead of applying one fixed allowance regardless
+  of size: 120 turns / 30 minutes with no sub-tasks, up to 600 turns / 180
+  minutes at 40. A story above 20 sub-tasks gets a warning, not a refusal —
+  it used to hard-refuse above 15, which broke on the twenty-five-task
+  stories people actually write. An explicit `--max-turns` or
+  `--max-minutes` always wins over the computed budget and is never raised
+  automatically, since naming a bound is a deliberate choice to cap spend. A
+  story queried for children is still capped at one page (100) — more than
+  that is a data problem, not a plan.
+
 ## v0.4.4
 
 FCIA-8 and FCIA-10 exposed two more variants of the same failure family:
