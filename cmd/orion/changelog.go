@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/orion-sdlc/orion/internal/changelog"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/ui"
 )
@@ -39,6 +40,21 @@ func runChangelog(args []string) {
 	}
 	version := argFlag(args, "--version", "")
 
+	// Fragments first. When tickets wrote `.changelog.d/<KEY>.md`, collation is
+	// a deterministic merge -- group by section, emit in keepachangelog order --
+	// and a deterministic merge does not need an agent to perform it, or to be
+	// trusted afterwards. The skill path below is for a repository that has no
+	// fragments, where the commits are the only signal there is.
+	frags, err := changelog.Load(root)
+	if err != nil {
+		ui.Fail(w, "%v", err)
+		os.Exit(1)
+	}
+	if len(frags) > 0 {
+		collateFragments(w, root, version)
+		return
+	}
+
 	if _, err := exec.LookPath("claude"); err != nil {
 		ui.Fail(w, "claude CLI not found on PATH; the changelog skill runs inside it")
 		os.Exit(1)
@@ -60,6 +76,40 @@ func runChangelog(args []string) {
 	fmt.Fprintf(w, "\n%s\n", ui.Dim(w,
 		"Nothing was committed. Read it, then commit it yourself -- a changelog\n"+
 			"  is the one artifact whose purpose is to be read before it is believed."))
+}
+
+// collateFragments merges `.changelog.d/*.md` into CHANGELOG.md and deletes
+// them.
+//
+// The tickets that shipped without a fragment are reported afterwards, because
+// the failure this whole mechanism can still have is quiet: a ticket writes no
+// fragment, the release simply does not mention its change, and nothing says
+// an entry was expected. A key listed here is a prompt to look, not an
+// accusation -- a commit that merely mentions another ticket reads the same as
+// one that implements it.
+func collateFragments(w *os.File, root, version string) {
+	seen := changelog.TicketKeys(root)
+
+	res, err := changelog.Collate(root, version)
+	if err != nil {
+		ui.Fail(w, "%v", err)
+		os.Exit(1)
+	}
+
+	ui.Ok(w, "collated", "%d fragment(s) into CHANGELOG.md under %s: %s",
+		len(res.Keys), res.Version, strings.Join(res.Keys, ", "))
+	ui.Ok(w, "removed", "%s/ is empty again", changelog.Dir)
+
+	if missing := changelog.Unrecorded(seen, res.Keys); len(missing) > 0 {
+		ui.Warn(w, "no changelog fragment for %s.\n"+
+			"         Either the change is invisible to a reader of the changelog, or\n"+
+			"         its entry is missing from this release. Check before you tag.",
+			strings.Join(missing, ", "))
+	}
+
+	fmt.Fprintf(w, "\n%s\n", ui.Dim(w,
+		"Nothing was committed. Commit the CHANGELOG.md edit and the fragment\n"+
+			"  deletions together -- a fragment that survives collation ships twice."))
 }
 
 // changelogRunner runs the skill with write access to ONE file.

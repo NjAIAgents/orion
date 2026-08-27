@@ -101,7 +101,8 @@ DEPENDENCIES
   orion njagents install      wire Orion's clone into a dir (only if no global)
 
 MONITORING
-  orion changelog [--version vX.Y.Z]  generate CHANGELOG.md (nj-agents changelog)
+  orion changelog --version vX.Y.Z  collate .changelog.d/ fragments into CHANGELOG.md
+  orion changelog [--version vX.Y.Z]  no fragments: generate from commits (nj-agents)
   orion report [KEY] [--since 7d]  digest: failures, workspaces, budget, usage
   orion report --notify       also send it to ORION_NOTIFY_WEBHOOK (Slack)
   orion logs <KEY> [-f]       what Orion is doing, live (FCIA or FCIA-6)
