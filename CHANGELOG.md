@@ -4,6 +4,33 @@ Notable changes per release. Written for someone deciding whether to upgrade
 and what to watch afterwards, so each entry says what changed **and what it
 now refuses to do**.
 
+## Unreleased
+
+`orion init` now prepares the sandbox's Python environment once, rather than
+leaving every ticket to work it out again.
+
+A sandbox is a fresh clone, and a fresh clone has no `.venv`. `scripts/test.sh`
+already looks for one in the main worktree — a git worktree does not carry
+ignored files — but there was never anything there to find, so every ticket
+fell through to bootstrapping a virtualenv inside its own worktree and threw
+it away afterwards. On one measured run that discovery was 17 of 31 shell
+calls. Worse, when the bootstrap failed the script exited 1, which is
+indistinguishable from a failing test: the branch went red for a reason
+unrelated to the change, and with `ci.auto_fix` on, Orion paid an agent to
+react to an environment problem it could not fix from inside a worktree.
+
+The virtualenv is now built in the sandbox clone at adoption, only when the
+project declares dependencies (`pyproject.toml` or `requirements.txt`), and
+reinstalled when a manifest is newer than the last install. Re-running
+`orion init` is how you repair or refresh it. It is non-fatal throughout: if
+it cannot be built, runs still work exactly as they did before.
+
+### Changed
+
+- `orion init` creates and refreshes `.venv` in the sandbox clone for
+  projects that declare Python dependencies, so per-ticket worktrees find one
+  through the fallback `scripts/test.sh` already has
+
 ## v0.5.0
 
 Orion was flat: no concept of parent, sub-task, or children in tracker, work,

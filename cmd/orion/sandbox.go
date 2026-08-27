@@ -46,6 +46,33 @@ func ensureCI(dir string) {
 	}
 }
 
+// ensureSandboxEnv builds the sandbox clone's virtualenv, once.
+//
+// Runs on every adoption, including one that only re-binds an existing
+// sandbox: that is what makes `orion init` the way to repair an environment,
+// and what picks up a dependency change made since the sandbox was created.
+//
+// Non-fatal throughout, for the same reason ensureCI is. A sandbox without a
+// prepared environment is the state every sandbox was in before this existed;
+// scripts/test.sh still bootstraps per worktree, expensively, so the run
+// works and only the saving is lost.
+func ensureSandboxEnv(w io.Writer, repoDir string) {
+	res, err := ciscaffold.EnsureVenv(repoDir)
+	if err != nil {
+		ui.Warn(w, "could not prepare the sandbox environment: %v", err)
+		fmt.Fprintf(w, "          %s\n", ui.Dim(w,
+			"Runs still work: scripts/test.sh builds a virtualenv per worktree instead, which is what this avoids."))
+		return
+	}
+	for _, line := range ciscaffold.DescribeVenv(res) {
+		if strings.HasPrefix(line, "created ") {
+			ui.Ok(w, "created", "%s", strings.TrimPrefix(line, "created "))
+		} else {
+			fmt.Fprintf(w, "          %s\n", ui.Dim(w, line))
+		}
+	}
+}
+
 // orion sandbox -- see and enter where the agent actually worked.
 //
 // Orion never runs an agent in your checkout, so the code it wrote exists
