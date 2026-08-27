@@ -3,6 +3,9 @@ package work
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/orion-sdlc/orion/internal/actors"
+	"github.com/orion-sdlc/orion/internal/events"
 )
 
 // Writing the pull request description with nj-agents' pr-describe.
@@ -44,7 +47,10 @@ func describePR(run Describer, dir, key, fallbackTitle, fallbackBody string) (st
 	if run == nil {
 		return fallbackTitle, fallbackBody, false
 	}
-	out, err := run(dir, "sonnet", describePrompt(key))
+	// The describer's own model, from the registry rather than a literal, so
+	// the line that reports what wrote the description cannot disagree with
+	// what actually did.
+	out, err := run(dir, actors.Model(events.ActorDescriber), describePrompt(key))
 	if err != nil {
 		return fallbackTitle, fallbackBody, false
 	}
