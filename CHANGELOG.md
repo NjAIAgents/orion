@@ -56,6 +56,17 @@ anyway.
   keys does no partial work. `watch`'s positionals are project keys, so it
   rejects the inverse mistake (`orion watch or-39`) and its usage line now
   reads `[PROJECT...]`.
+- `orion init` no longer leaves its `.claude/settings.json` backups for git to
+  pick up. It writes a timestamped `.bak` before rewriting the file, and init
+  is not a once-ever command — it re-runs on adoption, on `--force`, and after
+  any change to the hook wiring — so those files accumulated in the working
+  tree, were swept up by a `git add -A`, and landed in history permanently, in
+  whatever repository adopted Orion. A run that keeps a backup now ensures
+  `.gitignore` covers `.claude/*.orion-*.bak`, appending only when the line is
+  absent and creating the file when there is none, and says so in its output
+  rather than editing a file you did not name in silence. If `.gitignore`
+  cannot be written it warns and finishes: working hooks are worth more than a
+  tidy tree.
 
 ## v0.5.0
 
