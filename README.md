@@ -197,6 +197,7 @@ $ORION_HOME/projects/<slug>-<id>/
 └── .orion/
     ├── task.json      idea, stage, status, run history
     ├── settings.json  generated: permission denies + OS sandbox
+    ├── cache/         compiler cache, shared by every job in this sandbox
     ├── state/         breaker counters
     └── logs/          full transcript per run
 ```
@@ -205,6 +206,11 @@ Three layers: a dedicated directory, tool-level permission denies, and the
 OS sandbox with a network allowlist and credential denies. The supervisor
 also strips cloud credentials from the child environment, so a misconfigured
 sandbox is not the only thing between an agent and your AWS keys.
+
+Binding a loopback port is allowed. The allowlist governs egress, and a
+socket on `127.0.0.1` reaches nothing but the process that opened it —
+whereas denying it breaks every test that stands up a local HTTP server,
+on every run, for a reason unrelated to the change under test.
 
 **The OS sandbox is not a VM.** It stops credential reads and network egress.
 It does not defend against a determined exploit. For untrusted code use

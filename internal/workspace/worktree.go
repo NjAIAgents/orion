@@ -65,6 +65,18 @@ func AddWorktree(ws *Workspace, base, desired string) (*Job, error) {
 	if out, err := git(repo, "worktree", "add", "-b", branch, path, baseRef); err != nil {
 		return nil, fmt.Errorf("creating worktree %s: %w\n%s", path, err, out)
 	}
+
+	// Regenerate the sandbox policy for every job, not only at adoption.
+	//
+	// The settings are Orion's, not the user's, and a sandbox adopted last
+	// month otherwise keeps whatever policy that release generated -- so a
+	// fix to the policy reaches nobody until they think to re-run
+	// `orion init`, and the run that would benefit is the one that cannot
+	// know it should. This is the point every job passes through, and it is
+	// a file write.
+	if err := writeSettings(ws); err != nil {
+		return nil, fmt.Errorf("refreshing the sandbox settings: %w", err)
+	}
 	return &Job{Branch: branch, Path: path}, nil
 }
 

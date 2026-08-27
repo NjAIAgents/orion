@@ -112,6 +112,22 @@ func (w Workspace) StateDir() string     { return filepath.Join(w.MetaDir(), "st
 func (w Workspace) SettingsPath() string { return filepath.Join(w.MetaDir(), "settings.json") }
 func (w Workspace) TaskPath() string     { return filepath.Join(w.MetaDir(), "task.json") }
 
+// BuildCacheDir is the compiler cache shared by every job in this sandbox.
+//
+// Deliberately NOT under RepoDir: that resolves to a per-ticket worktree
+// while a job is running, so a cache placed there would be built from cold
+// once per ticket and thrown away with the worktree -- which is exactly the
+// cost this exists to remove. Under Dir it is written once and warm for
+// every ticket after the first.
+//
+// Not under RepoDir for a second reason: the sandbox clone is fast-forwarded
+// between runs, and git refuses that on a dirty tree, so a multi-gigabyte
+// cache in the clone would need its own ignore rule to avoid freezing the
+// sandbox at the commit it was created from.
+func (w Workspace) BuildCacheDir() string {
+	return filepath.Join(w.MetaDir(), "cache", "go-build")
+}
+
 func (w Workspace) SandboxMode() string {
 	if w.Task.Container {
 		return "container (docker)"
