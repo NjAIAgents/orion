@@ -85,7 +85,7 @@ func clearBudgetRequest(home string) { _ = os.Remove(budgetAckPath(home)) }
 // acknowledged. When it returns false the caller must not start the job --
 // but by then a person has been asked, in Slack and at the terminal, so the
 // refusal is a question awaiting an answer rather than a dead end.
-func budgetGate(opts Options, cfg config.Config, ws *workspace.Workspace,
+func budgetGate(key string, opts Options, cfg config.Config, ws *workspace.Workspace,
 	log *events.Log, w io.Writer) (bool, string) {
 
 	st, ok := budgetStatus(opts.Home, cfg)
@@ -106,13 +106,15 @@ func budgetGate(opts Options, cfg config.Config, ws *workspace.Workspace,
 	if req.Threshold == st.Crossed && req.TS != "" && channel != "" {
 		if by, decided := readBudgetAck(req, cfg); decided {
 			if err := ackBudget(opts.Home, st.Crossed); err != nil {
-				ui.Warn(w, "could not record the acknowledgement: %v", err)
+				ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+					"could not record the acknowledgement: %v", err)
 				return false, st.Message()
 			}
 			clearBudgetRequest(opts.Home)
 			log.Emitf(events.KindBudget, events.ActorHuman,
 				"%s acknowledged the %d%% checkpoint in Slack", by, st.Crossed)
-			ui.Ok(w, "ok", "%s acknowledged the %d%% budget checkpoint; continuing", by, st.Crossed)
+			ui.Say(w, key, events.ActorHuman, ui.VerbOK,
+				"%s acknowledged the %d%% budget checkpoint; continuing", by, st.Crossed)
 			return true, ""
 		}
 	}
@@ -121,14 +123,16 @@ func budgetGate(opts Options, cfg config.Config, ws *workspace.Workspace,
 	if req.Threshold != st.Crossed && channel != "" {
 		title, body := msgBudgetCheckpoint(st)
 		if ts, err := postWithAffordances(channel, title+"\n"+body); err != nil {
-			ui.Warn(w, "could not ask about the budget in Slack: %v", err)
+			ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+				"could not ask about the budget in Slack: %v", err)
 		} else {
 			_ = saveBudgetRequest(opts.Home, budgetRequest{
 				Threshold: st.Crossed, Channel: channel, TS: ts, AskedAt: time.Now(),
 			})
 			log.Emitf(events.KindBudget, events.ActorOrion,
 				"asked Slack to acknowledge the %d%% checkpoint", st.Crossed)
-			ui.Ok(w, "asked", "Slack to acknowledge the %d%% budget checkpoint", st.Crossed)
+			ui.Say(w, key, events.ActorOrion, ui.VerbWaiting,
+				"asked Slack to acknowledge the %d%% budget checkpoint", st.Crossed)
 		}
 	}
 
@@ -137,13 +141,15 @@ func budgetGate(opts Options, cfg config.Config, ws *workspace.Workspace,
 	who, consented := awaitConsent(w, st.Crossed, req, cfg, channel != "")
 	if consented {
 		if err := ackBudget(opts.Home, st.Crossed); err != nil {
-			ui.Warn(w, "could not record the acknowledgement: %v", err)
+			ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+				"could not record the acknowledgement: %v", err)
 			return false, ""
 		}
 		clearBudgetRequest(opts.Home)
 		log.Emitf(events.KindBudget, events.ActorHuman,
 			"%s acknowledged the %d%% checkpoint", who, st.Crossed)
-		ui.Ok(w, "ok", "acknowledged the %d%% checkpoint (%s); continuing", st.Crossed, who)
+		ui.Say(w, key, events.ActorHuman, ui.VerbOK,
+			"acknowledged the %d%% checkpoint (%s); continuing", st.Crossed, who)
 		return true, ""
 	}
 
