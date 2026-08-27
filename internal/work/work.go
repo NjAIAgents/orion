@@ -7,6 +7,7 @@
 //
 //	resolve   which repository owns this key            (registry, free)
 //	preflight budget, sandbox, clean base               (local, free)
+//	merged?   has this ticket's PR already landed       (forge, free)
 //	claim     ORION -> orion-working, To Do -> Progress (tracker, reversible)
 //	worktree  a branch nothing else can touch           (local, reversible)
 //	run       the supervised agent                      (COSTS MONEY)
@@ -20,6 +21,9 @@
 // commits exist is the other half -- an agent that stopped to ask a question
 // exits 0 having produced nothing, and pushing an empty branch would open a
 // pull request describing no change.
+//
+// The merged check sits above the claim because the lock is only as good as
+// the label, and a label survives its ticket: see noop.go.
 package work
 
 import (
@@ -54,6 +58,16 @@ const (
 	OutcomeBlocked Outcome = "blocked" // ran cleanly, produced nothing, asked something
 	OutcomeFailed  Outcome = "failed"  // the run or a step after it failed
 	OutcomeSkipped Outcome = "skipped" // preflight refused before spending
+	// OutcomeNoop: there was nothing to do, and that is correct. Either the
+	// ticket's work had already merged, or the agent looked, found the change
+	// already present, and declined to invent a diff to justify the run.
+	//
+	// Distinct from blocked because they are opposite results that look
+	// identical from the outside -- both end with no commits. An agent that
+	// stopped because there is nothing to do and one that stopped because it
+	// could not do the thing must not carry the same label, or orion-failed
+	// starts to mean "fine, actually" and stops carrying information.
+	OutcomeNoop Outcome = "no-op"
 )
 
 // Result is one job's ending.
@@ -63,6 +77,9 @@ type Result struct {
 	Branch   string
 	PR       string
 	Question string // the agent's closing message, when it stopped to ask
+	// Note is why nothing was done, on a no-op outcome. Separate from
+	// Question because it is not a question: nobody has to answer it.
+	Note string
 	// Advice is the last verdict, when an advisor was consulted. A refusal
 	// here is the useful part of a blocked outcome: it says the DESIGN is
 	// incomplete, not that the agent failed.
@@ -98,7 +115,14 @@ type Deps struct {
 	// nothing a reviewer did not already know from the ticket.
 	Describe Describer
 	OpenPR   func(dir, branch, title, body, base string) (string, error)
-	Now      func() time.Time
+	// Merged reports whether this ticket's branch already has a MERGED pull
+	// request, and its URL. Asked before the ticket is claimed, so a ticket
+	// whose work has already landed is never worked a second time.
+	//
+	// Injectable and optional for the same reason as everything else here: it
+	// shells out to gh, which needs auth and a network. Nil skips the check.
+	Merged func(dir, branch string) (bool, string, error)
+	Now    func() time.Time
 }
 
 // TrackerAPI is the slice of the tracker this package needs. Narrow on
@@ -236,6 +260,34 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}
 	res.Summary, res.IssueURL = issue.Summary, issue.URL
 	ui.Ok(w, "bound", "%s  %s", key, issue.Summary)
+
+	// Has this ticket's work already landed?
+	//
+	// A merged pull request is the end of a ticket, whatever the labels say.
+	// OR-86 merged and was picked up again six minutes later: the claim is the
+	// lock, but the lock is a label, and a label that was never cleared -- or
+	// was cleared after the next tick had already read the queue -- leaves a
+	// window in which a finished ticket is still workable. An agent then reads
+	// the repository, finds its own change already there, and stops, having
+	// spent a whole run at full token price to produce nothing.
+	//
+	// Asked BEFORE the claim and before anything is spent, and asked of the
+	// forge rather than of Orion's own bookkeeping -- which is what makes it
+	// close the window whichever of the two ways it opened.
+	//
+	// A check that could not be made is not a merged branch. gh may be absent
+	// or the network down, and refusing every run over that would be a worse
+	// fault than the one this prevents.
+	if deps.Merged != nil {
+		branch := branchFor(cfg.VCS.BranchPrefix, key)
+		merged, prURL, mErr := deps.Merged(ws.RepoDir(), branch)
+		switch {
+		case mErr != nil:
+			ui.Warn(w, "could not check whether %s has already merged: %v", branch, mErr)
+		case merged:
+			return alreadyMerged(res, key, prURL, branch, cfg, opts, deps, ws, log, w)
+		}
+	}
 
 	// A ticket with sub-tasks is worked WITH them: one branch, one pull
 	// request, one approval. See internal/tracker/children.go -- the short
@@ -393,6 +445,18 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		return failAndTell(res, err, key, ws, log, w, deps)
 	}
 
+	// Nothing to do is not the same as nothing done.
+	//
+	// Checked before the advisor loop, because a run that says "the work is
+	// already here" is not asking anything: routing that to an architect pays
+	// for an answer to a question nobody asked, and then blocks the ticket on
+	// the reply.
+	if commits == 0 {
+		if why, ok := noopDeclared(tailOf(runRes)); ok {
+			return noChange(res, key, why, cfg, opts, deps, ws, log, w)
+		}
+	}
+
 	// The advisor loop. This is the automation of carrying a question to the
 	// model that designed the project and carrying the answer back.
 	//
@@ -461,6 +525,11 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}
 
 	if commits == 0 {
+		// Again, because the advisor loop may have resumed the run and the
+		// resumed run may be the one that found there was nothing to do.
+		if why, ok := noopDeclared(tailOf(runRes)); ok {
+			return noChange(res, key, why, cfg, opts, deps, ws, log, w)
+		}
 		res.Question = tailOf(runRes)
 		res.Outcome = OutcomeBlocked
 		log.Emitf(events.KindBlocked, events.ActorImplementer,

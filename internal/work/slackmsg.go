@@ -92,6 +92,29 @@ func msgBlocked(key, summary, question, issueURL string, a advise.Answer) (strin
 	return title, strings.Join(lines, "\n")
 }
 
+// msgNoop reports a run that correctly did nothing.
+//
+// Worded to be unmistakable at a glance, because the whole point of the
+// outcome is that it not be read as a failure: someone scrolling a channel
+// full of "FCIA-6 failed" needs to see in the title alone that this one is
+// fine. What they need to act on is the single line explaining why nothing
+// was needed -- if that line is wrong, the work really is missing.
+func msgNoop(key, summary, note, issueURL string) (string, string) {
+	title := fmt.Sprintf("%s needed no change", key)
+	body := strings.Join([]string{
+		"*" + summary + "*",
+		"",
+		"Nothing was done, and nothing failed:",
+		quote(note),
+		"",
+		"• ticket  " + link(issueURL, key),
+		"",
+		"_The ticket is closed and unlabelled. Nothing is waiting on you. If the work_",
+		"_is in fact missing, reopen it and add `ORION` to run it again._",
+	}, "\n")
+	return title, body
+}
+
 // msgFailed is for something broken, as distinct from something undecided.
 func msgFailed(key, summary, reason, branch, issueURL, logPath string) (string, string) {
 	title := fmt.Sprintf("%s failed", key)

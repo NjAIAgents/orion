@@ -76,7 +76,7 @@ func runWatch(args []string) {
 			return work.Run(o, work.Deps{
 				Jira: mustJira(), Supervise: supervisor.Run, Advise: adviseRunner,
 				Describe: describeRunner,
-				Push:     pushBranch, OpenPR: openPR,
+				Push:     pushBranch, OpenPR: openPR, Merged: mergedBranch,
 			})
 		},
 		Queued: func(home string, ps []string, label string) ([]string, error) {

@@ -22,12 +22,34 @@ now refuses to do**.
   redirecting `GOCACHE` to a fresh temp directory and recompiling the
   standard library from cold once per ticket.
 
+- A merged ticket is no longer worked a second time. `orion work` asks the
+  forge whether the ticket's branch has already merged **before** it claims
+  anything, and ends the run there if it has: labels cleared, ticket moved to
+  Done, nothing spent. The claim label is meant to be the lock, but a label
+  that was never cleared — or was cleared after the next tick had already read
+  the queue — left a window in which a finished ticket was still workable, and
+  a re-run costs a full agent at full token price to produce nothing. Asking
+  the forge closes the window whichever way it opened. A check that cannot be
+  made (no `gh`, no network) is a warning, not a merged branch, so the work
+  still runs.
+
 ### Changed
 
 - The generated sandbox settings are regenerated for every job, not only at
   adoption. A sandbox adopted before a policy fix used to keep the old policy
   until someone re-ran `orion init` — and the run that would benefit is the
   one that cannot know it should.
+
+- A run that correctly changes nothing is no longer reported as a failure. An
+  agent that inspects the tree, finds the issue's work already present and
+  declines to invent a diff now ends in a distinct **no-op** outcome: no
+  `orion-failed` label, a tracker comment saying what it found and why it did
+  nothing, the claim released, and the ticket moved off In Progress. Only an
+  explicit `NOTHING TO DO:` line from the agent counts — an agent that stopped
+  to ask a question is still blocked, and still labelled as one. Conflating the
+  two teaches the reader that `orion-failed` sometimes means "fine, actually",
+  which is how a failure label stops carrying information.
+
 
 ## v0.5.1
 

@@ -871,6 +871,7 @@ func runWork(args []string) {
 		Describe:  describeRunner,
 		Push:      pushBranch,
 		OpenPR:    openPR,
+		Merged:    mergedBranch,
 	})
 
 	// Exit non-zero when anything needs a person, so a wrapper script or a

@@ -167,6 +167,16 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 	}
 }
 
+// NoopMarker is the sentence an agent writes when it finds this issue's work
+// already done. It lives here, next to the prompt that asks for it, so the
+// instruction and the thing that reads it cannot drift apart.
+//
+// A sentinel rather than a reading of the prose: "no change was needed" and
+// "I could not work out what to change" are a few words apart in English and
+// opposite in meaning, and a run that reports one as the other is the whole
+// defect this exists to fix.
+const NoopMarker = "NOTHING TO DO"
+
 func join(lines ...string) string { return strings.Join(lines, "\n") }
 
 func quote(s string) string {
@@ -319,6 +329,16 @@ func TicketPromptWithChildren(key, summary, description, url, repoPath string,
 		"run and is the correct outcome, not a failure.",
 		"Ask only when the answer changes what you build. Anything you can derive",
 		"from the artifacts is not a question.",
+		"",
+		"WHEN THE WORK IS ALREADY THERE",
+		"If you find this issue's change already present in the repository, stop and",
+		"say so. Do not manufacture a diff to justify the run, and do not widen the",
+		"issue until it has something left to do.",
+		"Make the LAST line of your closing message exactly:",
+		"  "+NoopMarker+": <one line naming your evidence -- the commit, the file, the test>",
+		"That line is how Orion tells 'there was nothing to do' from 'I could not do",
+		"it'. Without it an idempotent run is recorded as a failure. Write it only",
+		"when you are confident, and ask instead when you are not.",
 		"",
 		"EVIDENCE",
 		"Add or extend tests that would FAIL if this behaviour regressed. 'I added",

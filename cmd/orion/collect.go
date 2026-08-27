@@ -87,6 +87,25 @@ func waitFor(args []string) time.Duration {
 	return d
 }
 
+// mergedBranch answers the one question `orion work` asks before it claims a
+// ticket: has this branch's pull request already merged?
+//
+// The same gh call as prStatus, reduced to a yes or no. Reusing it rather
+// than asking a narrower question keeps ONE definition of merged-ness; two
+// would eventually disagree, and the disagreement would surface as a ticket
+// worked twice.
+//
+// "No pull request found" is an answer of no, not an error -- prStatus
+// already treats it that way -- which is the overwhelmingly common case here:
+// a ticket nobody has worked yet.
+func mergedBranch(dir, branch string) (bool, string, error) {
+	pr, err := prStatus(dir, branch)
+	if err != nil {
+		return false, "", err
+	}
+	return pr.Verdict == collect.VerdictMerged, pr.URL, nil
+}
+
 // prStatus asks gh for the pull request on a branch.
 //
 // One call, with the fields a decision needs. `gh pr checks` would give a
