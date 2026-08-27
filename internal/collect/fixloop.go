@@ -76,6 +76,7 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 
 	tell(w, log, notify.Event{
 		Channel: channelOf(ws), Level: notify.Warning, Workspace: ws.ID,
+		Actor: events.ActorDevOps,
 		Title: fmt.Sprintf("%s: fixing a CI failure (attempt %d of %d)", key, attempt, max),
 		Body: fmt.Sprintf("*The build went red and Orion is trying to fix it.*\n\n"+
 			"*What failed*\n%s\n\n• pull request  %s\n\n"+

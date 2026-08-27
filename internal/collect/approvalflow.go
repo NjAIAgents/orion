@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/tracker"
@@ -190,9 +191,9 @@ func approvalFlow(res Result, key string, pr PR, cfg config.Config, branch strin
 		// the build was fine and the agent did nothing wrong. A person said
 		// no, which is a decision about the change, not a fault to retry.
 		_ = deps.Jira.SetLabels(key, nil, []string{tracker.LabelCIWait})
-		_ = deps.Jira.Comment(key, fmt.Sprintf(
+		_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion, fmt.Sprintf(
 			"%s declined the merge in Slack (%s).\n\nThe branch and pull request are kept.",
-			d.By, d.How))
+			d.By, d.How)))
 		_ = clearRequest(ws.Dir, key)
 		// Forget any conflict too. This ticket is finished either way, and a
 		// stale entry would silence the announcement for a FUTURE conflict on a
@@ -218,7 +219,11 @@ func approvalFlow(res Result, key string, pr PR, cfg config.Config, branch strin
 	// Approved. Merge, and record WHO approved it on the pull request before
 	// merging -- the Slack message is not part of the repository's history,
 	// and six months from now the PR is the only place anyone will look.
-	_ = deps.Jira.Comment(key, fmt.Sprintf("%s approved the merge in Slack (%s).", d.By, d.How))
+	// Prefixed, because Orion posts under its operator's account: without
+	// the role, a comment about who approved reads as though the operator
+	// wrote it, and the reader cannot tell the two apart.
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion,
+		fmt.Sprintf("%s approved the merge in Slack (%s).", d.By, d.How)))
 	if err := deps.Merge(ws.RepoDir(), branch, fmt.Sprintf(
 		"Approved by %s in Slack (%s).", d.By, d.How), cfg.VCS.MergeStrategy); err != nil {
 		res.Err = err
