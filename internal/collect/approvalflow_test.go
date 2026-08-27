@@ -66,7 +66,7 @@ func approvalRepo(t *testing.T, approvers string) (home string, wsDir string) {
 	}
 	cfg := `{"slack":{"enabled":true,"require_approval":true,"merge_approvers":[` + approvers + `]},
 	         "vcs":{"work_branch":"develop","branch_prefix":"orion/"}}`
-	if err := os.WriteFile(filepath.Join(ws.RepoDir(), "orion.json"), []byte(cfg), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(src, "orion.json"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// A channel on the workspace, or the approval path has nowhere to ask.
