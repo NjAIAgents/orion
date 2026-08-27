@@ -6,6 +6,12 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.6.0
+
+The first release where Orion's memory does something. Also the release that
+restores the branch model: agents merge into `develop`, and `main` moves only
+when a person promotes it.
+
 ### Added
 
 - Orion now proposes lessons by itself. When a branch whose CI went red is
