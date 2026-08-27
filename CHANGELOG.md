@@ -6,6 +6,20 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.5.1
+
+A cleanup release. Everything here was found by running Orion on Orion, which
+is why so much of it is about the pipeline's own housekeeping rather than
+about what agents produce.
+
+The one entry that affects you even if you ignore the rest: `orion watch
+--max-jobs N` now waits for the work it started. Before, a run that started a
+job and put it into CI reported `started 1 job(s) and finished them` and
+exited, abandoning it — the drain learned "something is in flight" only from
+a reconciliation pass that ran *before* the job existed. Nothing was lost,
+but nothing was finished either, and a later `orion collect` had to pick up
+the pieces.
+
 Merged branches are now actually deleted, locally and on the remote. Until
 now, none of them were.
 
@@ -103,6 +117,23 @@ anyway.
 
 ### Fixed
 
+- `orion watch --max-jobs N` waits for the jobs it started instead of
+  abandoning them. `oneTick` learned whether anything was in flight from a
+  reconciliation pass that runs *before* a job is started, so the one job it
+  had just launched was invisible to it and the run exited announcing
+  `started 1 job(s) and finished them`. The job was fine; nobody was watching
+  it.
+- `orion sandbox prune --force` does something. The flag was parsed and then
+  ignored — the call site passed a hardcoded `false` — so the escape hatch
+  for a worktree prune refused to remove silently did nothing, twice as
+  confusingly because the command reported success.
+- CI no longer runs twice per push. Without a concurrency group a force-push
+  left the superseded run burning through all three OS legs while its
+  replacement queued behind it, and a rebase is a force-push, so every branch
+  that went stale under `ci.require_up_to_date` paid for itself twice. Orion
+  scaffolds this into the workflows it writes for adopted projects and did
+  not have it itself: the repository that generates the good default was the
+  one missing it.
 - `collect`, `work` and `watch` now refuse a key that cannot exist, before
   any Jira or GitHub call. `orion collect or or-39` used to take `or` as a
   ticket key and report that no pull request was found for branch
