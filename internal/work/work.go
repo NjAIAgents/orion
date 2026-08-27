@@ -251,19 +251,23 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if cErr != nil {
 		ui.Warn(w, "could not read sub-tasks of %s (%v); working it as a single ticket", key, cErr)
 	}
-	if n := len(children); n > tracker.MaxChildren {
-		return fail(res, fmt.Errorf(
-			"%s has %d sub-tasks, more than the %d one run will take on.\n"+
-				"  That is a decomposition to split, not a big run: the agent would reach\n"+
-				"  its turn ceiling partway through and leave a branch half-finished.\n"+
-				"  Split the story, or work a sub-task directly: orion work %s",
-			key, n, tracker.MaxChildren, children[0].Key))
-	}
 	if len(children) > 0 {
 		ui.Ok(w, "bound", "%d sub-task(s), to be done in one branch", len(children))
 		for i, c := range children {
 			fmt.Fprintf(w, "          %s\n", ui.Dim(w,
 				fmt.Sprintf("%d. %s  %s", i+1, c.Key, c.Summary)))
+		}
+		// Say it is a long one rather than refusing it.
+		//
+		// A cap used to live here, on the reasoning that a large story would
+		// exhaust the turn ceiling and leave a branch half-finished. The
+		// reasoning was right about the constraint and wrong about the
+		// remedy: stories with twenty-five tasks are ordinary, and the fix is
+		// to give the agent room (see turnsFor) rather than to decline work
+		// somebody legitimately planned.
+		if len(children) >= tracker.ManyChildren {
+			ui.Warn(w, "%s is a large story (%d sub-tasks). One run, one branch, "+
+				"one pull request -- expect it to take a while.", key, len(children))
 		}
 	}
 
@@ -346,7 +350,8 @@ func one(key string, opts Options, deps Deps) (res Result) {
 
 	runRes, runErr := deps.Supervise(&jobWS, supervisor.Options{
 		Stage: "ticket", Prompt: prompt,
-		MaxMinutes: opts.MaxMinutes, MaxTurns: opts.MaxTurns,
+		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
+		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
 		OnActivity: activityLogger(log, w, events.ActorImplementer),
 	})
 	code := -1
@@ -439,7 +444,8 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		runRes, runErr = deps.Supervise(&jobWS, supervisor.Options{
 			Stage: "ticket", Resume: runRes.SessionID,
 			Prompt:     AnswerMessage(ans, rel),
-			MaxMinutes: opts.MaxMinutes, MaxTurns: opts.MaxTurns,
+			MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
+			MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
 			OnActivity: activityLogger(log, w, events.ActorImplementer),
 		})
 		if runErr != nil || runRes == nil || runRes.ExitCode != 0 {
@@ -883,4 +889,48 @@ func promptChildren(kids []tracker.Issue) []supervisor.Child {
 		})
 	}
 	return out
+}
+
+// A story's budget grows with the number of sub-tasks it carries.
+//
+// The supervisor's defaults -- 120 turns, 30 minutes -- were sized for one
+// ticket. A story with twenty-five tasks given the same allowance gets about
+// five turns per task, which is not enough to read a file, change it and run
+// the suite. It would stop at the ceiling somewhere in the middle and leave
+// a branch half-finished, having spent the whole run.
+//
+// That failure is what an earlier version tried to prevent by REFUSING large
+// stories. Refusing was the wrong remedy: stories with twenty-five tasks are
+// ordinary, and a tool that will not work them does not fit how people
+// decompose. Giving the agent room is the right one.
+//
+// An EXPLICIT --max-turns or --max-minutes always wins. Somebody who names a
+// bound is bounding this run deliberately, and silently raising it would
+// make the flag advisory -- which is worse than not having it.
+func turnsFor(explicit, children int) int {
+	if explicit > 0 || children == 0 {
+		return explicit
+	}
+	// Roughly a task's worth of work per task, on top of the base allowance
+	// for reading the repo and getting oriented. Bounded: past a point the
+	// wall clock, the budget checkpoint and the plan limit are the real
+	// brakes, and a turn ceiling in the thousands is not a ceiling.
+	return clamp(120+25*children, 120, 600)
+}
+
+func minutesFor(explicit, children int) int {
+	if explicit > 0 || children == 0 {
+		return explicit
+	}
+	return clamp(30+5*children, 30, 180)
+}
+
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }

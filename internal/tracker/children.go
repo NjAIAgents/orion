@@ -23,13 +23,24 @@ import (
 //
 // So a claimed parent works its children itself, in order, in one branch.
 
-// MaxChildren bounds what one run will take on.
+// ManyChildren is where a story is worth a word of warning -- not a refusal.
 //
-// A Story with thirty Tasks is a decomposition error, not a big run: the
-// agent would hit its turn ceiling somewhere in the middle and leave a
-// branch half-done, which costs the whole run and produces something nobody
-// wants to review. Refusing with the count is a better answer than starting.
-const MaxChildren = 15
+// An earlier version REFUSED above a cap, on the reasoning that a large
+// story would exhaust the agent's turn ceiling and leave a branch
+// half-finished. That reasoning was sound and the remedy was wrong: stories
+// with twenty-five tasks are ordinary, and a tool that will not work them is
+// a tool that does not fit how people actually decompose.
+//
+// The turn ceiling is the real constraint, so the fix is to RAISE IT for a
+// big story (see work.turnsFor) rather than to decline the work. This
+// threshold now only decides whether to say "this is a big one" out loud,
+// which is worth knowing before forty minutes pass.
+const ManyChildren = 20
+
+// maxChildrenFetched bounds the QUERY, not the work. Jira's search caps at
+// 100 per page and a story with more children than that is a data problem
+// rather than a plan, so one page is the honest limit to read.
+const maxChildrenFetched = 100
 
 // Children returns the issues whose parent is key, in Jira's own rank order.
 //
@@ -48,10 +59,7 @@ func (j *Jira) Children(key string) ([]Issue, error) {
 	if key == "" {
 		return nil, nil
 	}
-	// MaxChildren+1 so an over-large tree is DETECTED rather than silently
-	// truncated to the cap. Reporting "15 children" for a Story with forty
-	// would be a lie told by an off-by-one.
-	kids, err := j.Search(fmt.Sprintf("parent = %q ORDER BY Rank ASC", key), MaxChildren+1)
+	kids, err := j.Search(fmt.Sprintf("parent = %q ORDER BY Rank ASC", key), maxChildrenFetched)
 	if err != nil {
 		// A project whose Jira has no parent field, or a permission that
 		// hides children, is not a failure of the run: it means this ticket
