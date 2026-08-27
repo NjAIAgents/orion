@@ -253,3 +253,97 @@ func TestBreakerPreBlocksAfterTrip(t *testing.T) {
 		t.Error("block message must tell the human how to resume")
 	}
 }
+
+// The deadlock found on OR-117's runs: an unverified-edits trip blocked the
+// go build that would clear it AND the BLOCKED.md write the trip message
+// demands. Both recovery paths must stay open; everything else stays sealed.
+func TestTrippedSessionStillPermitsItsOwnRecovery(t *testing.T) {
+	dir := t.TempDir()
+	store := state.New(dir)
+	cfg := testCfg()
+
+	tripAs := func(kind string) {
+		_, err := store.Update("s1", func(s *state.Session) {
+			s.Tripped = kind
+			s.TrippedDetail = "test"
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	pre := func(tool, jsonInput string) Decision {
+		return Breaker(Input{
+			HookEventName: "PreToolUse", SessionID: "s1",
+			ToolName: tool, ToolInput: json.RawMessage(jsonInput),
+		}, cfg, store)
+	}
+
+	tripAs("breaker/unverified-edits")
+
+	if d := pre("Bash", `{"command":"go build ./..."}`); d.Blocked() {
+		t.Error("the verify that clears an unverified-edits trip must be allowed through")
+	}
+	if d := pre("Write", `{"file_path":"plans/BLOCKED.md","content":"x"}`); d.Blocked() {
+		t.Error("the stop-note the trip message demands must be writable")
+	}
+	if d := pre("Edit", `{"file_path":"internal/work/work.go"}`); !d.Blocked() {
+		t.Error("a code edit must stay blocked while tripped")
+	}
+	if d := pre("Bash", `{"command":"git push origin main"}`); !d.Blocked() {
+		t.Error("a non-verify command must stay blocked while tripped")
+	}
+
+	// Other trip kinds have no self-service recovery: verify stays blocked.
+	tripAs("breaker/loop")
+	if d := pre("Bash", `{"command":"go test ./..."}`); !d.Blocked() {
+		t.Error("a loop trip is not cleared by verifying; only the stop-note is allowed")
+	}
+	if d := pre("Write", `{"file_path":"plans/BLOCKED.md","content":"x"}`); d.Blocked() {
+		t.Error("the stop-note must be writable whatever the trip kind")
+	}
+}
+
+// A passing verify does not merely reset the counter; it clears the trip the
+// counter caused, so the session that was let through to verify can go on.
+func TestPassingVerifyClearsUnverifiedEditsTrip(t *testing.T) {
+	dir := t.TempDir()
+	store := state.New(dir)
+	cfg := testCfg()
+
+	if _, err := store.Update("s1", func(s *state.Session) {
+		s.Tripped = "breaker/unverified-edits"
+		s.EditsSinceCheck = 9
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	Breaker(Input{
+		HookEventName: "PostToolUse", SessionID: "s1",
+		ToolName:  "Bash",
+		ToolInput: json.RawMessage(`{"command":"go build ./..."}`),
+	}, cfg, store)
+
+	s := store.Read("s1")
+	if s.Tripped != "" {
+		t.Fatalf("passing verify should clear the trip, still tripped as %q", s.Tripped)
+	}
+	if s.EditsSinceCheck != 0 {
+		t.Fatalf("edit counter should reset, got %d", s.EditsSinceCheck)
+	}
+
+	// A FAILING verify clears nothing: the point was a passing check.
+	if _, err := store.Update("s2", func(s *state.Session) {
+		s.Tripped = "breaker/unverified-edits"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	Breaker(Input{
+		HookEventName: "PostToolUse", SessionID: "s2",
+		ToolName:     "Bash",
+		ToolInput:    json.RawMessage(`{"command":"go build ./..."}`),
+		ToolResponse: json.RawMessage(`{"stdout":"","stderr":"compile error","interrupted":false,"isImage":false,"is_error":true}`),
+	}, cfg, store)
+	if store.Read("s2").Tripped == "" {
+		t.Fatal("a FAILING verify must not clear the trip")
+	}
+}
