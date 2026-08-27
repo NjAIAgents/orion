@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/changelog"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/ui"
 )
@@ -237,6 +238,16 @@ func artifactDirs(dir string) []string {
 		cfg := config.Load(dir)
 		want = []string{cfg.Paths.Intent, cfg.Paths.Specs, cfg.Paths.Plans, cfg.Paths.Evals}
 	}
+	// The changelog fragment directory. Not configurable and not derived from
+	// orion.json: `orion changelog` and the implementer prompt both name it,
+	// and a path two things agree on by convention is one they can disagree
+	// about later.
+	//
+	// It is a committed directory, not an ignored one -- a fragment IS the
+	// changelog entry, so an ignored fragment is an entry that never reaches
+	// the release. The .gitkeep every artifact directory gets is what keeps it
+	// in git while it is empty, which is most of the time.
+	want = append(want, changelog.Dir)
 	seen := map[string]bool{}
 	var out []string
 	for _, d := range want {

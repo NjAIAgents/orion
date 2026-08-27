@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/orion-sdlc/orion/internal/changelog"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -347,6 +348,7 @@ func TicketPromptWithChildren(key, summary, description, url, repoPath string,
 		"suite you did not run is not evidence.",
 	))
 	b.WriteString(testEnv(repoPath))
+	b.WriteString(changelogFragment(repoPath, key))
 	b.WriteString(join(
 		"",
 		"",
@@ -360,6 +362,44 @@ func TicketPromptWithChildren(key, summary, description, url, repoPath string,
 		"why the change exists, not merely what changed. The diff already says what.",
 	))
 	return b.String()
+}
+
+// changelogFragment tells the implementer to write a fragment rather than to
+// edit CHANGELOG.md.
+//
+// Every ticket writes a changelog entry and every entry went into the same
+// section of the same file, so any two branches in flight conflicted there
+// whatever code they touched. Three tickets once partitioned the code across
+// three packages cleanly and still blocked each other on CHANGELOG.md alone.
+// A file per ticket cannot collide; `orion changelog --version vX.Y.Z`
+// collates them at release.
+//
+// Conditional on the directory existing, for the same reason testEnv's lines
+// are: naming a mechanism a repository does not have teaches the agent to
+// distrust the instruction and go exploring, which costs more than saying
+// nothing. `orion init` creates it, so an adopted repository has one.
+func changelogFragment(repoPath, key string) string {
+	if repoPath == "" || key == "" {
+		return ""
+	}
+	if fi, err := os.Stat(filepath.Join(repoPath, changelog.Dir)); err != nil || !fi.IsDir() {
+		return ""
+	}
+	return join(
+		"",
+		"",
+		"CHANGELOG",
+		"Do not edit CHANGELOG.md. Write "+changelog.Dir+"/"+key+".md instead:",
+		"",
+		"  ### Added",
+		"  - What a reader deciding whether to upgrade needs to know.",
+		"",
+		"Sections: "+strings.Join(changelog.Sections, ", ")+". Any other name fails at",
+		"collation. Skip the fragment entirely when the change is invisible to a user",
+		"of this repository -- a refactor, a test, internal tooling.",
+		"One file per ticket is the point: two tickets editing CHANGELOG.md conflict",
+		"every time regardless of what else they change.",
+	)
 }
 
 // testEnv names how THIS repository runs its tests, when it can be told
