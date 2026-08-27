@@ -66,7 +66,19 @@
     "private": true,
 
     "_comment_invite": "A private channel is invisible to everyone who is not in it, and the bot is the only member of one it just created. Without these, Orion makes a channel no human can see or find. Slack user IDs (U...) or emails; emails need the users:read.email scope, which is not in the default manifest.",
-    "invite_users": ["U0BNSLYT6M9"]
+    "invite_users": ["U0BNSLYT6M9"],
+
+    "_comment_approval": "A passing branch asks this channel before merging; an allowlisted reaction merges it. OFF by default, which is why the first OR-38 collect said 'waiting for you to merge' rather than asking. An EMPTY merge_approvers means nobody can approve, so require_approval without it is a gate that can never open -- they go together or not at all. A rejection beats an approval however late it arrives.",
+    "require_approval": true,
+    "merge_approvers": ["U0BNSLYT6M9"],
+    "mention": ["U0BNSLYT6M9"]
+  },
+
+  "_comment_ci": "auto_fix sends a red build back to an agent on the same branch, bounded by max_fix_attempts AND by an identical-failure check that stops sooner. require_up_to_date refuses to merge a branch whose base moved after its checks ran -- a green check is evidence about one commit, and two tickets worked in parallel can each pass alone and break the trunk together. It defaults on; stated here so it is visible rather than inherited.",
+  "ci": {
+    "auto_fix": true,
+    "max_fix_attempts": 3,
+    "require_up_to_date": true
   },
 
   "_comment_attribution": "Stamps each commit with an AI-Attribution trailer via whodunit (dun), recording which agent and model produced the change and how much of the diff was theirs. Distinct from vcs.agent_author_name, which only marks that a commit came from an Orion run. auto_install fetches dun through brew or scoop; a package-managed install puts it on PATH under the name dun, which matters because the git hook resolves it by name at commit time and a missing dun silently stamps every commit undetermined.",
