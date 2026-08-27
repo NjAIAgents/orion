@@ -76,6 +76,9 @@ RUNNING
                               (--once, --interval S, --max-jobs N, --dry-run)
   orion collect [KEY...]      finish tickets awaiting CI: close, refresh, prune
                               (--dry-run for verdicts only, --no-prune, --no-fix)
+  orion protect               require the checks CI actually runs, and that
+                              branches be up to date before merging
+                              (--branch B, --dry-run; run once CI has run once)
   orion repos                 project key -> repository, as adoption recorded it
   orion repos unbind <KEY>    forget one mapping
   orion sandbox               where agents actually worked: clones and worktrees
@@ -188,6 +191,8 @@ func main() {
 		runSlackCmd(os.Args[2:])
 	case "collect":
 		runCollect(os.Args[2:])
+	case "protect":
+		runProtect(os.Args[2:])
 	case "watch":
 		runWatch(os.Args[2:])
 	case "changelog":
@@ -428,6 +433,10 @@ func runInit(args []string) {
 	if !hasFlag(args, "--no-provision") {
 		provisionRemote(abs, cfg, hasFlag(args, "--yes"))
 	}
+
+	// Server-side cleanup of merged head branches. After provisionRemote,
+	// because a repository that does not exist yet has no settings to set.
+	ensureRepoSettings(abs)
 
 	// The sandbox. Built at adoption rather than lazily at the first run, so
 	// a bad remote, missing auth or a dirty working copy surfaces now --

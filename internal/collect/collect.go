@@ -491,9 +491,14 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 		}
 	}
 
-	// The worktree. Merged means every commit on the branch is reachable
-	// from the work branch, so the checkout holds nothing the repository
-	// does not.
+	// The worktree, the local branch, and the remote branch.
+	//
+	// Merged means the forge accepted the work, so the checkout holds
+	// nothing the repository does not. Note that it does NOT mean the
+	// branch's commits are reachable from the work branch: a rebase merge
+	// replays them as new objects, leaving the originals unreachable. Prune
+	// has to trust this verdict rather than re-derive it from ancestry,
+	// which is exactly the bug that stranded every merged branch (OR-88).
 	pruned := false
 	if !opts.NoPrune && deps.Prune != nil {
 		if err := deps.Prune(ws, branch); err != nil {

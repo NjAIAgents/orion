@@ -266,13 +266,33 @@ func mergePR(dir, branch, reason, strategy string) error {
 	return nil
 }
 
-// pruneBranch removes one merged job worktree and its local branch.
+// pruneBranch removes one merged job worktree, its local branch, and the
+// remote branch.
 //
-// Shares the safety rule with `orion sandbox prune`: RemoveWorktree refuses
-// while the checkout holds uncommitted work, and `git branch -d` refuses a
-// branch that is not merged. Both refusals are load-bearing -- this runs
-// unattended, where the cost of deleting something wanted is much higher
-// than the cost of leaving a directory behind.
+// CONTRACT: only called once the pull request reports MERGED. collect.go
+// reaches Prune from the VerdictMerged path and nowhere else, so merged-ness
+// is already established, by the forge, before this runs.
+//
+// That contract is why the local delete is `-D` and not `-d`. `-d` decides
+// merged-ness by ancestry: is the branch tip reachable from HEAD. Orion
+// merges by REBASE, which replays the commits onto the base as new objects
+// with new SHAs, so the originals are never reachable and `-d` refuses --
+// every time, for every ticket, no matter how cleanly it landed:
+//
+//	$ git merge-base --is-ancestor origin/orion/or-38 origin/main
+//	(exit 1, despite PR #10 being MERGED)
+//
+// The old code caught that refusal and downgraded it to a warning, reasoning
+// that git disagreeing about merged-ness was worth surfacing. Sound for a
+// merge-commit workflow; wrong for ours, where the disagreement is the
+// guaranteed and meaningless consequence of the merge strategy we chose. It
+// fired on every success, meant nothing, and left the branch behind forever.
+// A warning guaranteed on the happy path is one people stop reading.
+//
+// RemoveWorktree's own refusal is a different matter and stays: it declines
+// while the checkout holds uncommitted work, which the pull request cannot
+// know about. That one is load-bearing -- this runs unattended, where
+// deleting something wanted costs far more than leaving a directory behind.
 func pruneBranch(ws *workspace.Workspace, branch string) error {
 	jobs, err := workspace.ListWorktrees(ws)
 	if err != nil {
@@ -285,15 +305,67 @@ func pruneBranch(ws *workspace.Workspace, branch string) error {
 		if err := workspace.RemoveWorktree(ws, j.Path, false); err != nil {
 			return err
 		}
-		if out, err := gitIn(ws.RepoDir(), "branch", "-d", branch); err != nil {
-			// Not fatal: the worktree is gone, which was the point. A branch
-			// git will not delete is one git thinks is unmerged, and that
-			// disagreement is worth surfacing rather than forcing past.
-			ui.Warn(os.Stdout, "worktree removed; branch %s kept: %s", branch, firstLineOf(out))
+		if out, err := deleteLocalBranch(ws.RepoDir(), branch); err != nil {
+			// Still not fatal -- the worktree is gone, which was the point.
+			// With -D the remaining causes are real ones worth reporting:
+			// the branch is checked out somewhere else, or does not exist.
+			ui.Warn(os.Stdout, "worktree removed; local branch %s kept: %s", branch, firstLineOf(out))
 		}
+		deleteRemoteBranch(ws.RepoDir(), branch)
 		return nil
 	}
 	return fmt.Errorf("no worktree for %s", branch)
+}
+
+// deleteLocalBranch removes a branch the pull request has confirmed merged.
+//
+// Its own function so a test can hold it to that contract. The distinction
+// between -d and -D is invisible in a diff and consequential in effect, and
+// the property worth pinning is behavioural: given a branch merged the way
+// Orion merges, this must delete it. Asserting git's ancestry rules instead
+// would pass whichever flag were here, which is how the bug lasted.
+func deleteLocalBranch(dir, branch string) (string, error) {
+	return gitIn(dir, "branch", "-D", branch)
+}
+
+// deleteRemoteBranch removes the pushed branch, best effort.
+//
+// Already-gone is the EXPECTED case, not an error: `orion init` sets
+// delete_branch_on_merge on the repository, so GitHub usually deletes the
+// head branch at merge time and this arrives to find nothing left. Treating
+// that as a failure would put a warning on the path we deliberately made
+// most common.
+//
+// Never fatal. The branch is merged; a leftover remote ref is untidy, not
+// dangerous, and is not worth failing a collect that otherwise succeeded.
+func deleteRemoteBranch(dir, branch string) {
+	out, err := gitIn(dir, "push", "origin", "--delete", branch)
+	if err == nil {
+		ui.Ok(os.Stdout, "removed", "the remote branch %s", branch)
+		return
+	}
+	if isAlreadyGone(out) {
+		return
+	}
+	ui.Warn(os.Stdout, "remote branch %s kept: %s", branch, firstLineOf(out))
+}
+
+// isAlreadyGone recognises git's several ways of saying "no such branch".
+//
+// Matched on text because git offers no distinguishing exit code here: a
+// missing ref and a rejected push both exit 1.
+func isAlreadyGone(out string) bool {
+	s := strings.ToLower(out)
+	for _, phrase := range []string{
+		"remote ref does not exist",
+		"unable to delete",
+		"does not appear to be a git repository", // no remote configured
+	} {
+		if strings.Contains(s, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func firstLineOf(s string) string {
