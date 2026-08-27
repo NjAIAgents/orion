@@ -24,9 +24,15 @@ type spy struct {
 	outcome   work.Outcome
 	sleeps    int
 	maxSleeps int
-	// pendingTicks makes Collect report a ticket still awaiting CI for that
-	// many ticks, then report nothing -- the shape of a real run, where CI
-	// takes several minutes to go green after the branch is pushed.
+	// pendingTicks makes Collect report a ticket awaiting CI for that many
+	// ticks AFTER a job has started -- the shape of a real run.
+	//
+	// "after" is load-bearing and was got wrong. The first version reported
+	// pending on the very first Collect, which happens BEFORE any job has
+	// been started, and no real collect can do that: the tick reconciles
+	// first, so on tick one there is nothing in flight to report. That
+	// fiction made TestTheJobLimitDrains... pass against code that exits
+	// immediately, and the bug reached a real run.
 	pendingTicks int
 }
 
@@ -34,6 +40,12 @@ func (s *spy) deps() Deps {
 	return Deps{
 		Collect: func(collect.Options) []collect.Result {
 			s.collects++
+			// Nothing is in flight until a job has been started. A collect
+			// that reported otherwise would be describing a ticket that does
+			// not exist yet.
+			if len(s.worked) == 0 {
+				return nil
+			}
 			if s.pendingTicks > 0 {
 				s.pendingTicks--
 				return []collect.Result{{Key: "FCIA-7", Verdict: collect.VerdictPending}}
@@ -170,8 +182,13 @@ func TestTheJobLimitDrainsInFlightWorkInsteadOfAbandoningIt(t *testing.T) {
 // The counterpart: with nothing in flight, the cap exits immediately. A
 // watcher that lingered after finishing everything would be a daemon the
 // person did not ask for.
+//
+// BLOCKED, not the default ci-wait: a ticket awaiting CI is by definition in
+// flight, so the old version of this test could only pass while the drain was
+// broken. A blocked ticket is the real "nothing to drain toward" case -- it
+// needs a person, and no amount of waiting produces one.
 func TestTheJobLimitExitsAtOnceWhenNothingIsInFlight(t *testing.T) {
-	s := &spy{queued: []string{"FCIA-7"}, maxSleeps: 20}
+	s := &spy{queued: []string{"FCIA-7"}, outcome: work.OutcomeBlocked, maxSleeps: 20}
 	out := runWatch(t, s, Options{MaxJobs: 1})
 
 	if s.sleeps > 1 {

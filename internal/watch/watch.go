@@ -308,6 +308,28 @@ func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (started int, 
 			return 0, unfinished, nil
 		}
 	}
+
+	// The job JUST started is in flight, and only this line knows it.
+	//
+	// `unfinished` is otherwise learned from the collect at the top of the
+	// tick -- which ran BEFORE this job existed and therefore reported
+	// nothing about it. So a run that pushed, opened a pull request and
+	// moved the ticket to ci-wait was followed by:
+	//
+	//	bound     OR-39 awaiting CI; the job slot is free
+	//	ok        started 1 job(s) and finished them; the limit for this run
+	//
+	// which is the exact abandonment the drain was written to prevent,
+	// surviving the fix because the fix asked the wrong source.
+	//
+	// The work result says it directly: ci-wait means pushed and waiting.
+	// Anything else is terminal for this watcher -- blocked and failed both
+	// need a person, and there is nothing to drain toward.
+	for _, r := range res {
+		if r.Outcome == work.OutcomeCIWait {
+			unfinished = true
+		}
+	}
 	return 1, unfinished, nil
 }
 
