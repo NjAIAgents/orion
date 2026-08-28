@@ -26,6 +26,7 @@ type fakeTracker struct {
 	comments    map[string][]string
 	searchErr   error
 	labelErr    error
+	commentErr  error
 }
 
 func newTracker() *fakeTracker {
@@ -54,6 +55,9 @@ func (f *fakeTracker) TransitionTo(key, status string) error {
 	return nil
 }
 func (f *fakeTracker) Comment(key, text string) error {
+	if f.commentErr != nil {
+		return f.commentErr
+	}
 	f.comments[key] = append(f.comments[key], text)
 	return nil
 }

@@ -31,8 +31,9 @@ func FromResultJSON(out string) (Run, bool) {
 		return Run{}, false
 	}
 	var d struct {
-		CostUSD float64 `json:"total_cost_usd"`
-		Usage   struct {
+		CostUSD  float64 `json:"total_cost_usd"`
+		NumTurns int     `json:"num_turns"`
+		Usage    struct {
 			InputTokens  int `json:"input_tokens"`
 			OutputTokens int `json:"output_tokens"`
 			CacheRead    int `json:"cache_read_input_tokens"`
@@ -48,8 +49,12 @@ func FromResultJSON(out string) (Run, bool) {
 		return Run{}, false
 	}
 	r := Run{
-		CostUSD:      d.CostUSD,
-		OutputTokens: d.Usage.OutputTokens,
+		CostUSD:           d.CostUSD,
+		OutputTokens:      d.Usage.OutputTokens,
+		PromptTokens:      d.Usage.InputTokens,
+		CacheCreateTokens: d.Usage.CacheCreate,
+		CacheReadTokens:   d.Usage.CacheRead,
+		Turns:             d.NumTurns,
 	}
 	// Sum all three: they do not overlap.
 	r.InputTokens = d.Usage.InputTokens + d.Usage.CacheCreate + d.Usage.CacheRead

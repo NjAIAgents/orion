@@ -487,6 +487,13 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	res.Changed = true
 	ui.Ok(w, "ok", "%s merged  %s", key, pr.URL)
 
+	// What the ticket cost, on the ticket and on the terminal, immediately
+	// after the merge is announced. Here rather than at the end of this
+	// function because the steps below -- refreshing the checkout, pruning
+	// the worktree -- are conveniences that can fail, and the price of the
+	// work is not contingent on whether a worktree was removed.
+	reportCost(key, ws, deps, w)
+
 	// The user's own checkout. Until now nothing ever did this, so a merged
 	// ticket left develop behind on the machine its owner works on -- and
 	// the next `orion work` preflight refuses on a stale base.

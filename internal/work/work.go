@@ -443,6 +443,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
 		OnActivity: activityLogger(log, w, key, events.ActorImplementer),
+		Actor:      events.ActorImplementer, Key: key,
 	})
 	code := -1
 	if runRes != nil {
@@ -550,6 +551,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 			MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
 			OnActivity: activityLogger(log, w, key, events.ActorImplementer),
+			Actor:      events.ActorImplementer, Key: key,
 		})
 		if runErr != nil || runRes == nil || runRes.ExitCode != 0 {
 			err := runErr
