@@ -268,3 +268,80 @@ func TestWorktreeWithARealCommitIsStillProtected(t *testing.T) {
 		t.Errorf("the refusal should say why: %v", err)
 	}
 }
+
+// A squash-merged branch whose remote ref GitHub then deleted is the shape
+// that made every merged ticket leave its worktree behind.
+//
+// After a squash the branch's own commit objects are unreachable from any
+// remote by construction -- the forge replayed them as one NEW object -- and
+// delete_branch_on_merge removes the ref that would otherwise have covered
+// them. hasUnpushedCommits therefore answers "yes, unpushed" about work the
+// forge has fully accepted, which is why the merged path must not consult it.
+func TestSquashMergedWorktreeIsPrunedDespiteUnreachableCommits(t *testing.T) {
+	ws := sandbox(t)
+
+	j, err := AddWorktree(ws, "develop", "orion/squashed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(j.Path, "feature.go"), []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, j.Path, "add", ".")
+	gitT(t, j.Path, "commit", "-q", "-m", "the work")
+	gitT(t, j.Path, "push", "-q", "origin", "HEAD:refs/heads/orion/squashed")
+
+	// The forge's side of a squash merge: replay the branch onto develop as
+	// one new commit, then delete the head branch.
+	origin, _ := git(filepath.Join(ws.Dir, "repo"), "remote", "get-url", "origin")
+	forge := filepath.Join(t.TempDir(), "forge")
+	if out, err := exec.Command("git", "clone", "-q", "-b", "develop", origin, forge).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	gitT(t, forge, "fetch", "-q", "origin", "orion/squashed")
+	gitT(t, forge, "merge", "--squash", "FETCH_HEAD")
+	gitT(t, forge, "commit", "-q", "-m", "the work (#1)")
+	gitT(t, forge, "push", "-q", "origin", "develop")
+	gitT(t, forge, "push", "-q", "origin", "--delete", "orion/squashed")
+
+	// The job's checkout learns the branch is gone, as any later fetch would.
+	gitT(t, j.Path, "fetch", "-q", "--prune", "origin")
+
+	if unpushed, _ := hasUnpushedCommits(j.Path); !unpushed {
+		t.Fatal("the setup no longer reproduces the bug: ancestry now finds the commit on a remote")
+	}
+	if err := RemoveWorktree(ws, j.Path, false); err == nil {
+		t.Fatal("without a merged verdict the guard must still hold")
+	}
+	if err := RemoveMergedWorktree(ws, j.Path); err != nil {
+		t.Fatalf("kept the worktree for a branch the forge has merged: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(j.Path, "feature.go")); statErr == nil {
+		t.Error("the worktree is still on disk after a merged prune")
+	}
+}
+
+// A merged prune still refuses to discard uncommitted work: the pull request
+// says nothing about what is sitting unstaged in the checkout.
+func TestMergedRemoveStillRefusesUncommittedWork(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/merged-but-dirty")
+	if err := os.WriteFile(filepath.Join(j.Path, "wip.txt"), []byte("half done"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := RemoveMergedWorktree(ws, j.Path)
+	if err == nil || !strings.Contains(err.Error(), "uncommitted") {
+		t.Fatalf("a merged PR does not vouch for uncommitted work, got: %v", err)
+	}
+}
+
+// gitT runs git in dir with a deterministic identity, failing the test on error.
+func gitT(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}

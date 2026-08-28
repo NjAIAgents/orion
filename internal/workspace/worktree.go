@@ -197,12 +197,38 @@ func Dirty(path string) (bool, string) {
 // only copy of whatever the agent had produced, and an agent stopped mid-run
 // is the common case, not the rare one.
 func RemoveWorktree(ws *Workspace, path string, force bool) error {
+	return removeWorktree(ws, path, force, false)
+}
+
+// RemoveMergedWorktree deletes a job checkout the forge has already merged.
+//
+// Same as RemoveWorktree except the unpushed-commits guard does not apply.
+// That guard asks "are these commits reachable from a remote ref", and a
+// squash merge makes the answer no by construction: GitHub replays the branch
+// as ONE new commit with a new SHA, then -- with delete_branch_on_merge set,
+// which `orion init` sets -- deletes the remote branch, so the ref that would
+// have covered them is gone too. Both signals read as "unpushed" for work the
+// forge has fully accepted, and every squash-merged ticket left its worktree
+// and branch behind with a warning about commits that were never at risk.
+//
+// This is the same class as the -d/-D distinction in collect.go's pruneBranch:
+// ancestry cannot answer a question about a rebase or a squash. The caller
+// already has the forge's MERGED verdict; re-deriving doubt from local
+// ancestry only overrules a better source of truth.
+//
+// The dirty check stays. A pull request knows nothing about uncommitted work
+// sitting in the checkout, so nothing has answered that question yet.
+func RemoveMergedWorktree(ws *Workspace, path string) error {
+	return removeWorktree(ws, path, false, true)
+}
+
+func removeWorktree(ws *Workspace, path string, force, merged bool) error {
 	if !force {
 		if dirty, detail := Dirty(path); dirty {
 			return fmt.Errorf("%s has uncommitted work:\n%s\n"+
 				"  Commit it on its branch, or re-run with --force to discard it", path, detail)
 		}
-		if unmerged, n := hasUnpushedCommits(path); unmerged {
+		if unmerged, n := hasUnpushedCommits(path); unmerged && !merged {
 			return fmt.Errorf("%s has %d commit(s) that are not on the remote.\n"+
 				"  Push the branch, or re-run with --force to discard them", path, n)
 		}
@@ -224,8 +250,9 @@ func RemoveWorktree(ws *Workspace, path string, force bool) error {
 	// which is how a merged ticket ended up keeping its worktree forever.
 	//
 	// Retrying with --force is safe HERE and only here: the guards above have
-	// already established there is no uncommitted work and nothing unpushed,
-	// so the sole thing --force can now discard is Orion's own scratch state.
+	// already established there is no uncommitted work, and either nothing
+	// unpushed or a forge that has the commits anyway, so the sole thing
+	// --force can now discard is Orion's own scratch state.
 	// The judgement is Orion's to make; git simply lacks the context.
 	if !force && strings.Contains(out, "contains modified or untracked files") {
 		if out2, err2 := git(repo, "worktree", "remove", "--force", path); err2 == nil {

@@ -312,10 +312,15 @@ func mergePR(dir, branch, reason, strategy string) error {
 // fired on every success, meant nothing, and left the branch behind forever.
 // A warning guaranteed on the happy path is one people stop reading.
 //
-// RemoveWorktree's own refusal is a different matter and stays: it declines
-// while the checkout holds uncommitted work, which the pull request cannot
-// know about. That one is load-bearing -- this runs unattended, where
-// deleting something wanted costs far more than leaving a directory behind.
+// The same reasoning is why this calls RemoveMergedWorktree rather than
+// RemoveWorktree: that function's unpushed-commits guard is ancestry too, and
+// a squash merge plus delete_branch_on_merge makes every merged branch look
+// like it carries commits no remote has (OR-122).
+//
+// The uncommitted-work refusal is a different matter and stays: it declines
+// while the checkout holds work the pull request cannot know about. That one
+// is load-bearing -- this runs unattended, where deleting something wanted
+// costs far more than leaving a directory behind.
 func pruneBranch(ws *workspace.Workspace, branch string) error {
 	jobs, err := workspace.ListWorktrees(ws)
 	if err != nil {
@@ -325,7 +330,7 @@ func pruneBranch(ws *workspace.Workspace, branch string) error {
 		if j.Branch != branch {
 			continue
 		}
-		if err := workspace.RemoveWorktree(ws, j.Path, false); err != nil {
+		if err := workspace.RemoveMergedWorktree(ws, j.Path); err != nil {
 			return err
 		}
 		if out, err := deleteLocalBranch(ws.RepoDir(), branch); err != nil {
