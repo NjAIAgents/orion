@@ -349,14 +349,18 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// merge because a fetch failed would be a worse fault than the one this
 	// prevents.
 	//
-	// Measured against the SAME base the conflict path names -- the pull
+// Measured against the SAME base the conflict path names -- the pull
 	// request's, config only as the fallback. Asking git whether the branch
 	// is behind a branch it does not merge into answers a question nobody
-	// asked, and then prints a rebase onto it (OR-112).
+	// asked (OR-112). Reached only when the branch merges cleanly -- the
+	// conflict gate above has already returned otherwise -- so behind() has
+	// both facts it needs: behind and clean is a mechanical rebase Orion
+	// performs itself, behind and conflicting was handed to a person three
+	// lines up.
 	if cfg.CI.RequireUpToDate {
 		if base, named := baseOf(pr, cfg); named {
 			if ok, known := upToDate(worktreeOrRepo(ws, branch), base, branch); known && !ok {
-				return stale(res, key, pr, branch, cfg, opts, deps, ws, log, w)
+				return behind(res, key, pr, branch, cfg, opts, deps, ws, log, w)
 			}
 		}
 	}
@@ -505,9 +509,10 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	// without an agent inferring anything. Read the history BEFORE it is
 	// cleared below -- this is the only moment both halves exist.
 	proposeLesson(key, pr, loadFixes(ws.Dir).States[key], entry.Source, ws, log, w)
-	// Forget the fix history. A ticket reopened later must not start with
-	// its attempts already spent.
+	// Forget the fix history, and the rebase count with it. A ticket reopened
+	// later must not start with either allowance already spent.
 	_ = clearFixes(ws.Dir, key)
+	_ = clearRebases(ws.Dir, key)
 	// The branch the PR actually merged into, per its BaseRef; config is only
 	// the fallback when the forge did not say. Everything below that talks
 	// about WHERE the merge went uses this, because a message built from

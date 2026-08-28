@@ -133,6 +133,27 @@ type CI struct {
 	RequireUpToDate bool `json:"require_up_to_date"`
 }
 
+// Collect configures the pass that reconciles a pull request after CI.
+type Collect struct {
+	// AutoRebase replays a branch that is BEHIND its base and merges
+	// CLEANLY onto that base, force-pushes it with a lease, and lets the
+	// checks re-run against what would actually be merged.
+	//
+	// ON by default, and the only automatic rewrite of a branch in Orion.
+	// It is safe to default on because it does not choose anything: git has
+	// already said the merge is clean, so the rebase has one possible
+	// result. Contrast automatic conflict resolution, which decides.
+	//
+	// The alternative is not "a human reviews it" -- require_up_to_date
+	// makes every merge invalidate every other open pull request, so the
+	// alternative is a person typing the same three commands once per merge
+	// per open branch, which grows with the square of the queue.
+	//
+	// Turn it OFF for a repository you do not own: however safe the rewrite,
+	// a force-push to somebody else's branch is theirs to authorise.
+	AutoRebase bool `json:"auto_rebase"`
+}
+
 // Budget caps what Orion spends over a rolling seven days.
 //
 // NOT the plan limit. That one is now read from the runs themselves: the CLI
@@ -418,6 +439,7 @@ type Config struct {
 	Slack       Slack             `json:"slack"`
 	CI          CI                `json:"ci"`
 	QA          QA                `json:"qa"`
+	Collect     Collect           `json:"collect"`
 	VCS         VCS               `json:"vcs"`
 	Tracker     Tracker           `json:"tracker"`
 	Delegation  Delegation        `json:"delegation"`
@@ -488,7 +510,12 @@ func Defaults() Config {
 		Budget: Budget{PauseAtPercent: []int{50, 75, 90, 95}},
 		// On by default: Orion performs the merge, so merging on a verdict
 		// that no longer describes the code is a correctness failure.
-		CI:          CI{RequireUpToDate: true},
+		CI: CI{RequireUpToDate: true},
+		// On by default too, and for the same reason turned inside out: the
+		// gate above is what makes every merge invalidate every other open
+		// branch, so shipping it without the mechanical half leaves a person
+		// typing three commands per merge per branch.
+		Collect:     Collect{AutoRebase: true},
 		Attribution: Attribution{Enabled: true, AutoInstall: true},
 		Slack: Slack{
 			Enabled:                 false,

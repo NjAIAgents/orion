@@ -39,6 +39,12 @@ type requestFile struct {
 	// rebase that still conflicts is reported again -- something genuinely
 	// changed -- while an unchanged branch stays quiet.
 	Conflicts map[string]string `json:"conflicts"`
+	// Rebases counts how many times Orion has rebased a ticket's branch by
+	// itself. A count rather than a flag because the bound is what makes the
+	// automation safe to leave on: a ticket rebased twice and behind again
+	// is in a queue moving faster than it can land, which is worth a person
+	// knowing rather than being absorbed silently forever.
+	Rebases map[string]int `json:"rebases"`
 }
 
 func requestPath(wsDir string) string {
@@ -46,7 +52,8 @@ func requestPath(wsDir string) string {
 }
 
 func loadRequests(wsDir string) requestFile {
-	f := requestFile{Version: 1, Requests: map[string]Request{}, Conflicts: map[string]string{}}
+	f := requestFile{Version: 1, Requests: map[string]Request{},
+		Conflicts: map[string]string{}, Rebases: map[string]int{}}
 	b, err := os.ReadFile(requestPath(wsDir))
 	if err != nil {
 		return f
@@ -55,14 +62,36 @@ func loadRequests(wsDir string) requestFile {
 	// duplicate merge request in Slack; the alternative is a collector that
 	// refuses to run at all because of a file it can rewrite.
 	if json.Unmarshal(b, &f) != nil || f.Requests == nil {
-		return requestFile{Version: 1, Requests: map[string]Request{}, Conflicts: map[string]string{}}
+		return requestFile{Version: 1, Requests: map[string]Request{},
+			Conflicts: map[string]string{}, Rebases: map[string]int{}}
 	}
 	// A file written before conflicts were tracked has no map at all, and
 	// writing to a nil map panics.
 	if f.Conflicts == nil {
 		f.Conflicts = map[string]string{}
 	}
+	if f.Rebases == nil {
+		f.Rebases = map[string]int{}
+	}
 	return f
+}
+
+// countRebase records one automatic rebase and returns the new total.
+func countRebase(wsDir, key string) (int, error) {
+	f := loadRequests(wsDir)
+	f.Rebases[key]++
+	return f.Rebases[key], writeRequests(wsDir, f)
+}
+
+// clearRebases forgets a ticket's rebase count. Called when it merges: a
+// ticket reopened later must not start with its allowance already spent.
+func clearRebases(wsDir, key string) error {
+	f := loadRequests(wsDir)
+	if _, ok := f.Rebases[key]; !ok {
+		return nil
+	}
+	delete(f.Rebases, key)
+	return writeRequests(wsDir, f)
 }
 
 // markConflict records that this ticket's conflict has been announced at
