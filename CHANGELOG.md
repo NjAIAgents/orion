@@ -6,6 +6,28 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.7.2
+
+### Added
+
+- A cost report is now posted to the ticket when Orion transitions it to Done,
+  and printed to the `watch`/`collect` console the moment the merge is
+  announced — both rendered by the same code path, so the two cannot disagree.
+  It totals every agent run the ticket caused (the implementation run, each
+  fix-loop re-entry, and runs that died on a timeout, breaker or quota), broken
+  down per actor: runs, turns, input, output, cache creation and cache reads
+  reported separately, wall time, and the estimated USD the runner itself
+  reported per session. Runs that failed are marked, and a run whose usage
+  never arrived is stated rather than dropped — the report then says its totals
+  are a floor. Re-running `collect` on a closed ticket never posts it twice.
+
+### Fixed
+
+- A passing verification command (`go test`, `make test`, etc.) no longer counts toward the identical-repeat loop breaker. Re-running the tests is the normal edit-test cycle and exactly what the unverified-edits breaker demands after every edit; counting it as a loop made the two breakers trip each other. A failing verify still counts (OR-124).
+- A `claude -p` subprocess that exits cleanly without ever emitting its own stream `result` line (killed externally mid-run, a crash after a partial flush) is now reported as a failed run with a clear reason, instead of reading as a silent success with no cost recorded and an empty session id (OR-127).
+- Every `gh` call on the `orion watch`/`orion collect` hot path (PR status, merge, prune, and the fix loop's CI-log fetch) is now bounded by a 45s timeout, so a hung `gh` process can no longer block the watcher indefinitely with nothing on the console to explain why (OR-128).
+- `orion collect` prints a line before searching Jira for tickets awaiting CI, so the first network call of every watch tick has visible feedback rather than possible silence (OR-128).
+
 ## v0.7.1
 
 ### Fixed
