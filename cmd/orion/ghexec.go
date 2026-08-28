@@ -33,3 +33,25 @@ func ghCommand(dir string, args ...string) (*exec.Cmd, context.CancelFunc) {
 	cmd.Dir = dir
 	return cmd, cancel
 }
+
+// pushTimeout bounds `git push`, the other network call `orion watch` makes
+// on its own hot path.
+//
+// Separate from, and far longer than, ghTimeout because a push is not a REST
+// read: it transfers objects, and a first push of a large branch over a slow
+// link legitimately takes minutes. The bound exists for the case that is not
+// slowness at all -- a credential helper waiting on a prompt nobody will
+// answer, or a connection that has silently gone away -- where without it the
+// watcher waits forever with nothing on the console (OR-128).
+//
+// A var, not a const, so a test can shrink it.
+var pushTimeout = 10 * time.Minute
+
+// gitCommand builds a `git` invocation bounded by pushTimeout, for the
+// network-touching git calls inside `orion watch`'s loop. Local git commands
+// do not need this: they cannot hang on a remote.
+func gitCommand(dir string, args ...string) (*exec.Cmd, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), pushTimeout)
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	return cmd, cancel
+}

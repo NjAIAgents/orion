@@ -22,7 +22,8 @@ import (
 
 func TestThePullRequestIsOpenedInTheWorktreeNotTheUsersCwd(t *testing.T) {
 	const dir = "/tmp/orion-worktree"
-	cmd := prCommand(dir, "orion/fcia-6", "title", "body", "develop")
+	cmd, cancel := prCommand(dir, "orion/fcia-6", "title", "body", "develop")
+	defer cancel()
 
 	if cmd.Dir != dir {
 		t.Fatalf("gh would run in %q, not the worktree %q.\n"+
