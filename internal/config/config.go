@@ -405,18 +405,17 @@ func (q QA) Rounds() int {
 	return 2
 }
 
-// Agent overrides how one actor is displayed, and which model it runs on.
+// Agent overrides how one actor is displayed, and which model and effort it
+// runs on. Global, not per-project: see LoadAgents. Keyed by the STABLE
+// actor identifier ("implementer"), never by the display name, which is the
+// only thing this file exists to let someone change.
 //
-// Keyed in orion.json by the STABLE actor identifier ("implementer"), never
-// by the display name: a config keyed on a name would break the moment
-// somebody renamed one, which is the only thing this block exists to do.
-//
-//	"agents": {
+//	{
 //	  "implementer": { "name": "Alex", "designation": "backend engineer", "effort": "high" }
 //	}
 //
 // Any field left out keeps the shipped default, so renaming one agent does
-// not mean restating its model. `orion config agents` writes this block
+// not mean restating its model. `orion config agents` writes this file
 // interactively -- a numbered menu for model and effort, free text only for
 // the name -- and `orion config agents --reset [id...]` clears it by hand.
 // Name is a pointer so that an explicit "" is distinguishable from absent.
@@ -425,14 +424,14 @@ func (q QA) Rounds() int {
 // that does not want personas turns them off.
 type Agent struct {
 	Name        *string `json:"name"`
-	Designation string  `json:"designation"`
-	Model       string  `json:"model"`
+	Designation string  `json:"designation,omitempty"`
+	Model       string  `json:"model,omitempty"`
 	// Effort is the `claude --effort` value this actor runs at: one of
 	// low, medium, high, xhigh, max. Empty leaves the CLI's own default in
 	// force. Not validated here -- `orion config agents` only ever writes
 	// one of the five values because it is a select menu, never free text,
 	// so a typo cannot reach this field via that path. A hand-edited
-	// orion.json with an unrecognized value is instead rejected by the
+	// agents.json with an unrecognized value is instead rejected by the
 	// `claude` binary at run time, with `claude`'s own error naming the
 	// valid set.
 	Effort string `json:"effort,omitempty"`
@@ -440,7 +439,6 @@ type Agent struct {
 
 type Config struct {
 	Version     int               `json:"version"`
-	Agents      map[string]Agent  `json:"agents,omitempty"`
 	Limits      Limits            `json:"limits"`
 	Gates       Gates             `json:"gates"`
 	Paths       Paths             `json:"paths"`
@@ -554,6 +552,52 @@ func Defaults() Config {
 			},
 		},
 	}
+}
+
+// AgentsPath is where the global agent roster lives. One file, shared by
+// every project on this machine, because who the implementer is and what
+// it runs on is an operator preference, not something that should differ
+// by checkout -- the reason this moved out of orion.json (OR-132). home is
+// workspace.Home() (ORION_HOME, defaulting to ~/.orion); not imported here
+// to avoid a cycle, so callers pass it in.
+func AgentsPath(home string) string { return filepath.Join(home, "agents.json") }
+
+// LoadAgents reads the global roster. A missing file is not an error --
+// every actor just keeps its shipped default, the same as a project that
+// has never run `orion config agents`.
+func LoadAgents(home string) (map[string]Agent, error) {
+	b, err := os.ReadFile(AgentsPath(home))
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]Agent{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	agents := map[string]Agent{}
+	if err := json.Unmarshal(b, &agents); err != nil {
+		return nil, fmt.Errorf("%s is not valid JSON: %w", AgentsPath(home), err)
+	}
+	return agents, nil
+}
+
+// SaveAgents writes the global roster, pretty-printed and sorted by key so
+// a re-run of the wizard produces a stable diff. Unlike orion.json this
+// file carries no human-authored comments to preserve, so a full
+// marshal/write is the right tool here -- no adopt.SetBlock text surgery
+// needed, because there is nothing else in the file to disturb.
+func SaveAgents(home string, agents map[string]Agent) error {
+	// 0o700/0o600 rather than importing workspace.HomeDirMode/PrivateFileMode
+	// for two constants: workspace does not import config today, and this
+	// package staying leaf-level is worth more than not repeating two
+	// numbers workspace already uses for the same home directory.
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(agents, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(AgentsPath(home), b, 0o600)
 }
 
 // FindRoot walks up from start looking for orion.json, then for .git.
