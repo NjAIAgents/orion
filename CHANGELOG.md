@@ -6,6 +6,20 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.7.4
+
+### Added
+
+- `orion config agents` -- an interactive wizard for the agent roster.
+  Per actor: a free-text name (Enter keeps it, `-` clears it) and two
+  numbered menus, model and effort, so neither can be set to a typo. An
+  actor can now also run at a chosen `claude --effort` level (`low`,
+  `medium`, `high`, `xhigh`, `max`) via `agents.<id>.effort` in `orion.json`,
+  the same way it can already be renamed or moved to a different model.
+  `orion config agents --reset [id...]` restores the shipped defaults for
+  one agent, several, or the whole roster, without going through the wizard
+  (OR-131).
+
 ## v0.7.3
 
 ### Added
