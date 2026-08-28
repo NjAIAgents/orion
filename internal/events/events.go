@@ -44,6 +44,7 @@ const (
 	KindPush     = "push"      // a branch reached the remote
 	KindPR       = "pr"        // a pull request was opened
 	KindCI       = "ci"        // a CI verdict arrived
+	KindQA       = "qa"        // QA reported on the change: findings, or clean
 	KindMerge    = "merge"     // a pull request was merged
 	KindRefresh  = "refresh"   // the user's checkout was fast-forwarded
 	KindBlocked  = "blocked"   // stopped, needs a person
@@ -73,6 +74,7 @@ const (
 	ActorArchitect   = "architect"
 	ActorPM          = "pm"
 	ActorDevOps      = "devops"    // repairs a red build
+	ActorQA          = "qa"        // derives test cases, writes the tests, runs them
 	ActorDescriber   = "describer" // writes the pull request description
 	ActorHuman       = "human"
 	ActorCI          = "ci"

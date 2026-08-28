@@ -731,6 +731,13 @@ const defaultConfig = `{
     "auto_install": true
   },
 
+  "_comment_qa": "The QA stage: after the change is committed and before the pull request opens, an agent derives test cases from the ticket's acceptance criteria, writes the tests the implementer did not, runs them, and reports findings back through the developer. It reports; it never blocks. max_rounds bounds the findings-fix-reverify exchange before a person is told what is still open. Set enabled to false for a repository that does not need it -- a docs repo -- because the stage spends on every ticket. e2e_base_url is the explicit non-production target an end-to-end run may point at; empty means unit and integration tests only.",
+  "qa": {
+    "enabled": true,
+    "max_rounds": 2,
+    "e2e_base_url": ""
+  },
+
   "delegation": {
     "enabled": true,
     "extra_tool_calls_for_review": 200,

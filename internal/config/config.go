@@ -347,6 +347,43 @@ type Attribution struct {
 	AutoInstall bool `json:"auto_install"`
 }
 
+// QA is the independent verification stage: an agent that derives test
+// cases from the ticket's acceptance criteria, writes the tests the
+// implementer did not, runs them, and reports what failed.
+//
+// Enabled is a POINTER because absent and false mean different things here.
+// Absent is "run it" -- verification a project never asked to switch off
+// should not be silently missing -- while an explicit false is a project
+// saying it does not want the spend, which a docs repository is right to
+// say.
+type QA struct {
+	Enabled *bool `json:"enabled"`
+	// MaxRounds bounds the findings-fix-reverify exchange. Zero means the
+	// built-in default. Past it Orion escalates to a person rather than
+	// paying two agents to argue: QA never blocks on its own authority, so
+	// an unbounded loop is the only way this stage could stop a run, and
+	// it would do it by spending.
+	MaxRounds int `json:"max_rounds"`
+	// E2EBaseURL is the explicit non-production target an end-to-end run may
+	// point at. EMPTY MEANS NO E2E, never "guess one": nj-agents
+	// CONVENTIONS-testing §T3 blocks an e2e execution without an explicit
+	// non-prod URL, and a suite that quietly found production is the failure
+	// that rule exists to prevent. Without it the stage still authors and
+	// runs unit and integration tests, and says that is what it did.
+	E2EBaseURL string `json:"e2e_base_url,omitempty"`
+}
+
+// On reports whether the stage runs. See the Enabled comment: absent is on.
+func (q QA) On() bool { return q.Enabled == nil || *q.Enabled }
+
+// Rounds is MaxRounds with the default applied.
+func (q QA) Rounds() int {
+	if q.MaxRounds > 0 {
+		return q.MaxRounds
+	}
+	return 2
+}
+
 // Agent overrides how one actor is displayed, and which model it runs on.
 //
 // Keyed in orion.json by the STABLE actor identifier ("implementer"), never
@@ -380,6 +417,7 @@ type Config struct {
 	Budget      Budget            `json:"budget"`
 	Slack       Slack             `json:"slack"`
 	CI          CI                `json:"ci"`
+	QA          QA                `json:"qa"`
 	VCS         VCS               `json:"vcs"`
 	Tracker     Tracker           `json:"tracker"`
 	Delegation  Delegation        `json:"delegation"`
