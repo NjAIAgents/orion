@@ -136,7 +136,10 @@ func worktreeOrRepo(ws *workspace.Workspace, branch string) string {
 func stale(res Result, key string, pr PR, branch string, cfg config.Config,
 	opts Options, deps Deps, ws *workspace.Workspace, log *events.Log, w io.Writer) Result {
 
-	base := cfg.VCS.WorkBranch
+	// baseOf, not cfg.VCS.WorkBranch directly: the conflict path prints a
+	// rebase command too, and the two must never name different branches for
+	// the same pull request (OR-112).
+	base, _ := baseOf(pr, cfg)
 	res.Verdict = VerdictStale
 
 	if opts.DryRun {
