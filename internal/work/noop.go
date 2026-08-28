@@ -81,6 +81,41 @@ func alreadyMerged(res Result, key, prURL, branch string, cfg config.Config,
 	return res
 }
 
+// alreadyResolved ends a run whose ticket was finished before it began --
+// fixed by hand, closed as a duplicate, won't-fixed -- while still wearing
+// the label that asks for work.
+//
+// Skipped rather than no-op: nothing was claimed, nothing was spent, and the
+// job limit must not be charged for a ticket that was never worked. A watcher
+// with --max-jobs 1 would otherwise end its run on a ticket it correctly
+// declined to touch.
+//
+// Every managed label is removed, not just the queue one. Whichever label
+// survived is the one that made a finished ticket claimable, so clearing only
+// the expected one leaves the same door open -- the same argument as release()
+// makes above.
+func alreadyResolved(res Result, key, status string, cfg config.Config,
+	opts Options, deps Deps, log *events.Log, w io.Writer) Result {
+
+	res.Outcome = OutcomeSkipped
+	res.Note = "already resolved (" + status + ")"
+	ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+		"already resolved (%s); nothing was started or spent", status)
+	if opts.DryRun {
+		return res
+	}
+	if err := deps.Jira.SetLabels(key, nil, tracker.Managed(cfg.Tracker.QueueLabel)); err != nil {
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+			"its queue label could not be removed, so it will be offered again: %v", err)
+		return res
+	}
+	ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+		"removing its %s label so the queue stops offering it", cfg.Tracker.QueueLabel)
+	log.Emitf(events.KindNote, events.ActorOrion,
+		"skipped %s: already resolved (%s); queue label removed", key, status)
+	return res
+}
+
 // noChange ends a run that DID start, and correctly produced no diff.
 func noChange(res Result, key, why string, cfg config.Config,
 	opts Options, deps Deps, ws *workspace.Workspace, log *events.Log, w io.Writer) Result {

@@ -349,6 +349,17 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) ([]st
 	if err != nil || len(keys) == 0 {
 		return nil, err
 	}
+	issues, err := j.Search(queuedJQL(keys, label), 25)
+	if err != nil {
+		return nil, err
+	}
+	return dropClaimedChildren(issues), nil
+}
+
+// queuedJQL is the claim criterion: what a watcher will turn an agent loose
+// on. Split from Queued so it can be read in a test -- Queued itself needs a
+// live Jira, and this is the part that decides what gets worked.
+func queuedJQL(keys []string, label string) string {
 	if label == "" {
 		label = tracker.QueueLabelDefault
 	}
@@ -356,17 +367,19 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) ([]st
 	// up twice. A ticket keeps its queue label while it is worked, so
 	// matching on that alone would re-claim something already in flight the
 	// moment the in-flight check raced or a second watcher existed.
-	jql := tracker.JQLAnd(
+	//
+	// And excluding resolved tickets, because a label outlives the work it
+	// asked for. OR-119 was fixed by hand, merged and moved to Done with its
+	// ORION label still on it; the next tick claimed it as the head of the
+	// queue and spent an agent re-investigating a bug that was already fixed
+	// on the trunk. Nothing here filtered on status, and the merged-branch
+	// guard could not help: a hand fix lands on a branch Orion never named.
+	return tracker.JQLAnd(
 		tracker.JQLIn("project", keys...),
 		tracker.JQLEq("labels", label),
 		tracker.JQLNotIn("labels", tracker.LabelWorking, tracker.LabelCIWait, tracker.LabelFailed),
+		tracker.JQLNotDone(),
 	) + " ORDER BY priority DESC, Rank ASC"
-
-	issues, err := j.Search(jql, 25)
-	if err != nil {
-		return nil, err
-	}
-	return dropClaimedChildren(issues), nil
 }
 
 // dropClaimedChildren removes any issue whose PARENT is also in the list.
