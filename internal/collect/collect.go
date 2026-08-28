@@ -201,6 +201,13 @@ func Run(opts Options, deps Deps) []Result {
 
 	keys := opts.Keys
 	if len(keys) == 0 {
+		// A line before the search, not after it. The Jira client itself
+		// times out at 20s, but a person watching a freshly started
+		// `orion watch` has no way to tell "about to check" from "hung"
+		// until SOMETHING appears -- and this is the first network call
+		// every tick makes, before anything else has had a chance to print
+		// (OR-128).
+		fmt.Fprintln(w, "checking for tickets awaiting CI...")
 		found, err := waiting(deps.Jira, opts.Home)
 		if err != nil {
 			ui.Fail(w, "%v", err)
@@ -486,6 +493,13 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	log.Emit(events.Event{Kind: events.KindMerge, Actor: events.ActorCI, Msg: "merged " + pr.URL})
 	res.Changed = true
 	ui.Ok(w, "ok", "%s merged  %s", key, pr.URL)
+
+	// What the ticket cost, on the ticket and on the terminal, immediately
+	// after the merge is announced. Here rather than at the end of this
+	// function because the steps below -- refreshing the checkout, pruning
+	// the worktree -- are conveniences that can fail, and the price of the
+	// work is not contingent on whether a worktree was removed.
+	reportCost(key, ws, deps, w)
 
 	// The user's own checkout. Until now nothing ever did this, so a merged
 	// ticket left develop behind on the machine its owner works on -- and

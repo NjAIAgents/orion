@@ -47,6 +47,21 @@ func jqlSet(field, op string, values []string) string {
 	return field + " " + op + " (" + strings.Join(quoted, ", ") + ")"
 }
 
+// JQLNotDone builds `statusCategory != "Done"`.
+//
+// The clause that keeps a resolved ticket out of the queue. A label is the
+// claim criterion, and a label outlives the work: OR-119 was fixed by hand,
+// merged and transitioned to Done with its ORION label still attached, so the
+// next watch tick claimed it and paid an agent to re-investigate a fixed bug.
+// The merged-branch guard does not cover that -- a hand fix lands on a branch
+// Orion never named.
+//
+// statusCategory rather than status, because it is the one axis every Jira
+// workflow shares: Done and Cancelled and any other custom terminal status a
+// project invented all sit in the Done category, and enumerating status NAMES
+// would need editing for each new one.
+func JQLNotDone() string { return "statusCategory != " + JQLQuote(StatusCategoryDone) }
+
 // JQLAnd joins clauses, dropping empty ones so an optional clause needs no
 // bookkeeping at the call site.
 func JQLAnd(clauses ...string) string {

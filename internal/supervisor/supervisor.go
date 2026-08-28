@@ -31,7 +31,9 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/cost"
 	"github.com/orion-sdlc/orion/internal/discovery"
+	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/quota"
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -63,6 +65,22 @@ type Options struct {
 	// Called from the process's output goroutine, so an implementation that
 	// blocks holds up the agent it is reporting on.
 	OnActivity func(Activity)
+	// Actor and Key attribute what this run spends. Both set means the
+	// supervisor writes a usage line to the workspace's event log for every
+	// attempt it finishes, keyed by the ticket and the persisted actor id, so
+	// the ticket's total cost can be aggregated when it closes.
+	//
+	// Recorded HERE rather than by each caller because this is the only layer
+	// that sees every run: the implementation run, the resumed one, each
+	// fix-loop re-entry, and the attempts that died on a wall clock or a quota
+	// wall before their caller ever got a result back. A run that died still
+	// spent tokens, and a caller that returns early on failure would not
+	// record them.
+	//
+	// Empty Actor disables it, which is right for a stage run driven by hand:
+	// it belongs to no ticket, so there is nothing to attribute it to.
+	Actor string
+	Key   string
 }
 
 type Result struct {
@@ -174,6 +192,7 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	for attempt := 1; attempt <= quota.MaxAttempts; attempt++ {
 		res, output := runOnce(ws, bin, prompt, opts, attempt)
 		recordUsage(ws, opts.Stage, output)
+		recordTicketCost(ws, opts, res, output)
 		// Numerator from the stream (a peak over turns), denominator from
 		// wherever it was actually reported. Splitting the two sources is
 		// deliberate: the window is a static property of the model and is
@@ -371,6 +390,38 @@ func recordUsage(ws *workspace.Workspace, stage, out string) {
 	// get" -- see reportContextPressure, which reads the peak off the stream.
 }
 
+// recordTicketCost books this attempt against the TICKET, in the workspace's
+// event log, so what a ticket cost can be reported when it closes.
+//
+// Separate from recordUsage above, which books the same run against the
+// WEEKLY BUDGET in a ledger keyed by workspace and stage. Two questions, two
+// records: one gates spending across all work, the other attributes spending
+// to one ticket and one actor. Deriving either from the other would mean
+// keeping a ledger of every run forever, or a per-ticket report that cannot
+// name who spent what.
+//
+// An attempt that reported no usage is recorded ANYWAY, marked, rather than
+// dropped: a run that died before its result JSON still spent everything it
+// sent, and a report that silently omits it presents a lowball total as
+// complete.
+//
+// Every failure here is silent by design. Losing an accounting line must not
+// lose the work, and the log is opened per run rather than held open because
+// the supervisor has no lifecycle to hang it on.
+func recordTicketCost(ws *workspace.Workspace, opts Options, res *Result, out string) {
+	if res == nil || opts.DryRun || opts.Actor == "" || opts.Key == "" {
+		return
+	}
+	log, err := events.Open(events.Path(ws.Dir), events.Event{})
+	if err != nil {
+		return
+	}
+	defer func() { _ = log.Close() }()
+	run, ok := budget.FromResultJSON(out)
+	cost.Record(log, opts.Actor, opts.Key,
+		cost.FromBudgetRun(run, ok, res.ExitCode != 0, res.Reason, res.Duration))
+}
+
 func humanTokens(n int) string {
 	if n >= 1_000_000 {
 		return fmt.Sprintf("%.0fM", float64(n)/1e6)
@@ -476,6 +527,19 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 		// because the WINDOW it must be divided by is not always on the
 		// stream -- the caller has the result JSON, which is.
 		res.PeakContext, res.ContextWindow = activity.Context()
+		// A process that exits 0 without ever emitting the stream's own
+		// "result" line did not finish -- it was cut off mid-run (a sandbox
+		// rejection killing the CLI, an OOM, a crash after a partial flush).
+		// Left alone this reads as a clean success with an empty SessionID
+		// and no cost recorded, and the caller (orion watch) never learns
+		// anything went wrong (OR-127). Re-report it as the failure it is,
+		// through the same Reason/ExitCode the caller already checks.
+		if res.ExitCode == 0 && !activity.SawResult() {
+			res.ExitCode = 1
+			res.Reason = "claude exited without ever emitting a stream result: " +
+				"the process was cut off mid-run rather than finishing"
+			fmt.Fprintf(logFile, "\n[orion] %s\n", res.Reason)
+		}
 	case <-ctx.Done():
 		res.Killed = true
 		res.Duration = time.Since(started)

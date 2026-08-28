@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -65,6 +66,11 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, error) 
 		Prompt:     supervisor.FixPrompt(key, branch, detail),
 		MaxMinutes: cfg.Limits.MaxSessionMinutes,
 		MaxTurns:   cfg.Limits.MaxToolCalls,
+		// Attributed to the devops engineer and to the ticket, so the fix
+		// loop's spend lands in the ticket's cost report rather than
+		// disappearing: a re-entry is another run for the same ticket, and
+		// three of them is where a cheap ticket becomes an expensive one.
+		Actor: events.ActorDevOps, Key: key,
 		OnActivity: func(a supervisor.Activity) {
 			if a.Kind == "tool" {
 				ui.Ok(w, "working", "%s %s", a.Tool, a.Detail)
@@ -109,17 +115,20 @@ func failingLog(dir, branch string) string {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return ""
 	}
-	list := exec.Command("gh", "run", "list", "--branch", branch,
+	// Bounded by ghTimeout (OR-128): a hung gh here used to stall the fix
+	// loop, and with it the whole watcher, with nothing visible to explain
+	// why.
+	list, listCancel := ghCommand(dir, "run", "list", "--branch", branch,
 		"--limit", "1", "--json", "databaseId,conclusion", "--jq", ".[0].databaseId")
-	list.Dir = dir
+	defer listCancel()
 	idOut, err := list.Output()
 	id := strings.TrimSpace(string(idOut))
 	if err != nil || id == "" || id == "null" {
 		return ""
 	}
 
-	view := exec.Command("gh", "run", "view", id, "--log-failed")
-	view.Dir = dir
+	view, viewCancel := ghCommand(dir, "run", "view", id, "--log-failed")
+	defer viewCancel()
 	out, err := view.CombinedOutput()
 	if err != nil {
 		return ""

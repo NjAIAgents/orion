@@ -182,6 +182,91 @@ func TestAQuestionIsStillBlockedNotANoop(t *testing.T) {
 	}
 }
 
+// OR-121, the claim-time half: a ticket resolved between the queue search
+// and the claim must be skipped, and must lose the label that offered it.
+//
+// The queue query is the first line of defence and cannot be the only one --
+// it races a person closing a ticket, and `orion work KEY` never consults it.
+func TestAResolvedTicketIsSkippedAtClaimTime(t *testing.T) {
+	home := project(t, cfg)
+	j := &fakeJira{issue: &tracker.Issue{
+		Key: "FCIA-6", Summary: "fixed by hand", Status: "Done",
+		StatusCategory: "Done", URL: "https://x/browse/FCIA-6",
+	}}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(*workspace.Workspace, supervisor.Options) (*supervisor.Result, error) {
+				t.Fatal("an agent was started on a ticket that was already Done")
+				return nil, nil
+			},
+			Push:   func(string, string) error { t.Fatal("pushed"); return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	if res[0].Outcome != OutcomeSkipped {
+		t.Fatalf("outcome = %q, want skipped", res[0].Outcome)
+	}
+	if strings.Contains(j.labelLog(), "add:"+tracker.LabelWorking) {
+		t.Errorf("a resolved ticket was claimed: %s", j.labelLog())
+	}
+	// The label has to go, or the next tick offers the same ticket again and
+	// this run repeats for as long as the watcher lives.
+	for _, l := range tracker.Managed("ORION") {
+		if !strings.Contains(j.labelLog(), "remove:") ||
+			!strings.Contains(j.labelLog(), l) {
+			t.Errorf("%s was not removed: %s", l, j.labelLog())
+		}
+	}
+	if len(j.transitions) != 0 {
+		t.Errorf("a resolved ticket was transitioned: %v", j.transitions)
+	}
+	// Visible, or an unattended run silently drops a ticket somebody queued.
+	if !strings.Contains(out.String(), "already resolved") {
+		t.Errorf("the skip was not reported:\n%s", out.String())
+	}
+}
+
+// An unresolved ticket must still be worked. The category is "indeterminate"
+// for In Progress, and empty for a tracker that did not report one -- neither
+// is a reason to refuse.
+func TestAnUnresolvedStatusDoesNotStopTheRun(t *testing.T) {
+	for _, category := range []string{"", "new", "indeterminate"} {
+		t.Run("category="+category, func(t *testing.T) {
+			home := project(t, cfg)
+			j := &fakeJira{issue: &tracker.Issue{
+				Key: "FCIA-6", Summary: "do the thing", StatusCategory: category,
+			}}
+			var out strings.Builder
+			ran := false
+
+			res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+				Deps{
+					Jira: j,
+					Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+						ran = true
+						if err := os.WriteFile(filepath.Join(ws.RepoDir(), "impl.go"),
+							[]byte("package x\n"), 0o644); err != nil {
+							return nil, err
+						}
+						git(t, ws.RepoDir(), "add", ".")
+						git(t, ws.RepoDir(), "commit", "-q", "-m", "feat: implement")
+						return &supervisor.Result{ExitCode: 0, Reason: "completed"}, nil
+					},
+					Push:   func(string, string) error { return nil },
+					OpenPR: func(string, string, string, string, string) (string, error) { return "https://gh/pr/1", nil },
+				})
+
+			if !ran || res[0].Outcome != OutcomeCIWait {
+				t.Fatalf("outcome = %q, ran = %v; a live ticket was refused",
+					res[0].Outcome, ran)
+			}
+		})
+	}
+}
+
 func TestNoopDeclared(t *testing.T) {
 	cases := []struct {
 		name  string

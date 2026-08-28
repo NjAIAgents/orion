@@ -92,7 +92,15 @@ func breakerPost(in Input, cfg config.Config, store *state.Store) Decision {
 
 	sess, err := store.Update(in.SessionID, func(s *state.Session) {
 		s.ToolCalls++
-		s.Repeats[sig]++
+		// A PASSING verification command is exempt from the identical-repeat
+		// loop counter. Re-running the tests is the normal edit-test cycle,
+		// and it is exactly what the unverified-edits breaker demands after
+		// every edit -- counting it as a loop makes the two breakers fight
+		// each other (OR-124). A FAILING verify still counts: retrying a red
+		// test with nothing changed is a real loop signal.
+		if !isVerify || failed {
+			s.Repeats[sig]++
+		}
 
 		if failed {
 			s.ConsecFailures++

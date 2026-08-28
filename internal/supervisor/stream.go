@@ -72,6 +72,21 @@ type activityWriter struct {
 	// on newer CLIs. Zero means it was never reported, and no percentage can
 	// honestly be computed.
 	window int
+	// sawResult marks whether a "type":"result" line ever arrived. --output-
+	// format stream-json ends every well-formed run with exactly one; a
+	// process that exits 0 without ever emitting it did not finish, it was
+	// cut off mid-stream (OR-127), and that must not read as success.
+	sawResult bool
+}
+
+// SawResult reports whether this stream ever carried a "type":"result" line
+// -- the CLI's own signal that the run reached its own end, as opposed to
+// the process simply exiting (which happens on a clean success, a crash, or
+// an external kill alike).
+func (w *activityWriter) SawResult() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.sawResult
 }
 
 // Limit returns the plan limit last reported by this run.
@@ -138,7 +153,13 @@ func indexByte(b []byte, c byte) int {
 // more; treating an unknown type as an error would make Orion break on an
 // upgrade that changed nothing it depends on.
 func (w *activityWriter) emit(line []byte) {
-	if w.on == nil || len(strings.TrimSpace(string(line))) == 0 {
+	// A nil callback must not skip PARSING -- only the notification. sawResult
+	// and the peak-context/limit bookkeeping below are facts about the stream
+	// itself, observed whether or not anyone asked to be told about them; an
+	// early return here once cost OR-127's fix its only signal in a run with
+	// no OnActivity wired up (every real caller sets one, but a bug that only
+	// works because of that is a bug).
+	if len(strings.TrimSpace(string(line))) == 0 {
 		return
 	}
 	var m struct {
@@ -189,17 +210,25 @@ func (w *activityWriter) emit(line []byte) {
 	// is the one field that decides whether more work may be started at all.
 	if rl, ok := parseRateLimit(line); ok {
 		w.limit = rl
-		if !rl.OK() {
+		if !rl.OK() && w.on != nil {
 			w.on(Activity{Kind: "limit", Detail: rl.Describe(timeNow())})
 		}
 		return
 	}
 
 	switch m.Type {
+	case "result":
+		// The CLI's own end-of-run marker. Its absence, not its content, is
+		// what matters here -- sessionAndFinal/budget.FromResultJSON already
+		// parse the payload from the tail buffer; this only records that one
+		// arrived at all, so runOnce can tell "finished" from "cut off".
+		w.sawResult = true
 	case "system":
 		if m.Subtype == "init" {
 			w.model = m.Model
-			w.on(Activity{Kind: "start", Detail: "session open", Model: w.model})
+			if w.on != nil {
+				w.on(Activity{Kind: "start", Detail: "session open", Model: w.model})
+			}
 		}
 	case "assistant":
 		// Remember it: tool_result frames and the closing summary carry no
@@ -219,10 +248,12 @@ func (w *activityWriter) emit(line []byte) {
 					}
 					w.seen[c.ID] = true
 				}
-				w.on(Activity{Kind: "tool", Tool: c.Name, Model: w.model,
-					Detail: toolDetail(w.base, c.Name, c.Input)})
+				if w.on != nil {
+					w.on(Activity{Kind: "tool", Tool: c.Name, Model: w.model,
+						Detail: toolDetail(w.base, c.Name, c.Input)})
+				}
 			case "text":
-				if t := firstSentence(c.Text); t != "" {
+				if t := firstSentence(c.Text); t != "" && w.on != nil {
 					w.on(Activity{Kind: "text", Detail: t, Model: w.model})
 				}
 			}

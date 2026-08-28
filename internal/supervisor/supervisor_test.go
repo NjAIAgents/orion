@@ -374,3 +374,60 @@ func TestSessionAndFinalOnGarbage(t *testing.T) {
 		}
 	}
 }
+
+// OR-127: a `claude` that exits 0 without ever printing a "result" line
+// (killed externally after a partial flush, a crash mid-stream) must be
+// reported as a failed run, not read as a quiet success with nothing to
+// show for it.
+func TestRunFailsWhenClaudeExitsWithoutEmittingAResult(t *testing.T) {
+	w := ws(t, "")
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "claude")
+	// A well-formed init line, an assistant line, then exit 0 -- no result.
+	script := "#!/bin/sh\n" +
+		`echo '{"type":"system","subtype":"init","model":"claude-opus-5"}'` + "\n" +
+		`echo '{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"text","text":"working on it"}]}}'` + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	res, err := Run(w, Options{Stage: "intent", Prompt: "do a thing",
+		MaxMinutes: 1, MaxTurns: 1})
+	if err == nil {
+		t.Fatal("a process that never emitted a result must be reported as a failure")
+	}
+	if res == nil || res.ExitCode == 0 {
+		t.Fatalf("result must carry a non-zero exit code, got %+v", res)
+	}
+	if !strings.Contains(res.Reason, "without ever emitting a stream result") {
+		t.Errorf("reason should explain the missing result, got: %q", res.Reason)
+	}
+}
+
+// The ordinary case must still read as success: a result line present.
+func TestRunSucceedsWhenClaudeEmitsAResult(t *testing.T) {
+	w := ws(t, "")
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\n" +
+		`echo '{"type":"system","subtype":"init","model":"claude-opus-5"}'` + "\n" +
+		`echo '{"type":"result","session_id":"abc","result":"done","total_cost_usd":0.1,"is_error":false}'` + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	res, err := Run(w, Options{Stage: "intent", Prompt: "do a thing",
+		MaxMinutes: 1, MaxTurns: 1})
+	if err != nil {
+		t.Fatalf("a run that emitted a result must succeed, got: %v (res=%+v)", err, res)
+	}
+	if res.ExitCode != 0 {
+		t.Errorf("exit code = %d, want 0", res.ExitCode)
+	}
+}

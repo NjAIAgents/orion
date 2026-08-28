@@ -347,3 +347,45 @@ func TestPassingVerifyClearsUnverifiedEditsTrip(t *testing.T) {
 		t.Fatal("a FAILING verify must not clear the trip")
 	}
 }
+
+// OR-124: the loop breaker and the unverified-edits breaker used to fight.
+// Re-running a PASSING verify command is the normal edit-test cycle -- and
+// exactly what unverified-edits demands after every edit -- so it must never
+// trip the identical-repeat loop counter. A FAILING verify still counts, and
+// a non-verify identical call counts exactly as before.
+func TestPassingVerifyIsExemptFromLoopCounter(t *testing.T) {
+	cfg := testCfg()               // MaxRepeatIdentical = 3
+	cfg.Limits.MaxToolCalls = 1000 // isolate the loop check from the tool budget
+
+	run := func(cmdJSON, response string, times int) Decision {
+		store := state.New(t.TempDir())
+		var d Decision
+		for i := 0; i < times; i++ {
+			d = Breaker(Input{
+				HookEventName: "PostToolUse", SessionID: "s",
+				ToolName:     "Bash",
+				ToolInput:    json.RawMessage(cmdJSON),
+				ToolResponse: json.RawMessage(response),
+			}, cfg, store)
+		}
+		return d
+	}
+
+	pass := `{"stdout":"ok","is_error":false}`
+	fail := `{"stdout":"","stderr":"FAIL","is_error":true}`
+	verify := `{"command":"go test ./internal/work/"}`
+	other := `{"command":"ls -la"}`
+
+	if d := run(verify, pass, 10); d.Blocked() {
+		t.Errorf("a passing verify must never trip the loop breaker, got: %s", d.Msg)
+	}
+	if d := run(verify, fail, 3); !d.Blocked() {
+		t.Error("repeating a FAILING verify with nothing changed is a real loop and must trip")
+	}
+	if d := run(other, pass, 3); !d.Blocked() {
+		t.Error("a non-verify identical call must trip exactly as before")
+	}
+	if d := run(other, pass, 2); d.Blocked() {
+		t.Errorf("a non-verify call under the threshold must not trip, got: %s", d.Msg)
+	}
+}
