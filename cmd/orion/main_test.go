@@ -20,6 +20,39 @@ import (
 // of it was wrong, which is the expensive kind of bug because it sends you
 // looking at the agent.
 
+// "orion config --help" used to fall through to the interactive credentials
+// wizard, which blocks on stdin reading a Jira URL nobody meant to type --
+// the only way out was Ctrl-C. A help flag must never be able to start an
+// interactive prompt, whatever else is on the command line (OR-132).
+func TestConfigHelpPrintsUsageInsteadOfPromptingForAnything(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"-h"}, {"help"}, {"agents", "--help"}} {
+		got := captureStdout(t, func() { runConfig(args) })
+		if !strings.Contains(got, "orion config agents") {
+			t.Errorf("args %v: usage not printed, got: %q", args, got)
+		}
+	}
+}
+
+// captureStdout runs fn with os.Stdout redirected to a pipe and returns
+// what it wrote. Only safe for code that does not also need real stdin --
+// runConfig's --help path returns before touching it.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	fn()
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 64*1024)
+	n, _ := r.Read(buf)
+	return string(buf[:n])
+}
+
 func TestThePullRequestIsOpenedInTheWorktreeNotTheUsersCwd(t *testing.T) {
 	const dir = "/tmp/orion-worktree"
 	cmd, cancel := prCommand(dir, "orion/fcia-6", "title", "body", "develop")

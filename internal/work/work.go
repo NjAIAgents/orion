@@ -231,10 +231,16 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "%s", waiver)
 	}
 
-	// The roster this project configured. A bad one is reported and then
-	// ignored: display names are not worth failing a run over, and the
-	// shipped roster still tells the reader who acted.
-	if err := actors.Configure(cfg.Agents); err != nil {
+	// The globally configured roster (OR-132): who the implementer is and
+	// what it runs on is an operator preference, the same across every
+	// project, not something orion.json repeats per checkout. A bad file is
+	// reported and then ignored: display names are not worth failing a run
+	// over, and the shipped roster still tells the reader who acted.
+	agents, agentsErr := config.LoadAgents(workspace.Home())
+	if agentsErr != nil {
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+			"keeping the shipped agent names: %v", agentsErr)
+	} else if err := actors.Configure(agents); err != nil {
 		ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
 			"keeping the shipped agent names: %v", err)
 	}

@@ -56,6 +56,7 @@ CONFIGURATION
   orion config show           what is set, where it came from, secrets masked
   orion config path           print the config file location
   orion config agents         interactive: name, model and effort per agent, by menu
+                              (global -- one roster, shared by every project)
   orion config agents --reset [id...]   reset one, some, or every agent to shipped defaults
 
 ADOPT AN EXISTING REPO
@@ -341,12 +342,39 @@ func runNew(idea string, rest []string) {
 // credentials exported in a terminal are invisible to cron and launchd. Orion
 // reading its own file removes that whole class of "works for me, not for the
 // scheduled run".
+const configUsage = `orion config                interactive setup for Jira, Slack and webhooks
+orion config show           what is set, where it came from, secrets masked
+orion config path           print the config file location
+orion config agents         interactive: name, model and effort per agent, by menu
+                             (global -- one roster, shared by every project)
+orion config agents --reset [id...]   reset one, some, or every agent to shipped defaults
+`
+
+// runConfig dispatches "orion config" and its subcommands.
+//
+// --help and -h are checked before anything else, and independently of
+// which subcommand (if any) precedes them: "orion config --help" is a
+// request for the text above, never for the interactive credentials
+// wizard. Without this check "--help" falls through as an unrecognized sub
+// (it starts with "-", so the positional-subcommand parse below skips it)
+// and lands on the wizard's own default case, which blocks on stdin
+// waiting for a Jira URL nobody meant to type -- the only way out is
+// Ctrl-C. A help flag must never be able to start an interactive prompt.
 func runConfig(args []string) {
+	if hasFlag(args, "--help") || hasFlag(args, "-h") {
+		fmt.Print(configUsage)
+		return
+	}
+
 	home := workspace.Home()
 	sub := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		sub = args[0]
 		args = args[1:]
+	}
+	if sub == "help" {
+		fmt.Print(configUsage)
+		return
 	}
 
 	switch sub {
@@ -1701,11 +1729,14 @@ func runEventLog(target string, args []string) {
 		exitOn(err)
 	}
 
-	// The roster this project configured, so a renamed agent renders with
-	// the name its team chose. A bad roster is fatal here rather than
-	// ignored: two agents sharing one name destroys exactly the thing this
-	// output exists to provide.
-	exitOn(actors.Configure(config.Load(ws.RepoDir()).Agents))
+	// The globally configured roster (OR-132), so a renamed agent renders
+	// with the name the operator chose -- the same roster on every project,
+	// not one orion.json repeats per checkout. A bad roster is fatal here
+	// rather than ignored: two agents sharing one name destroys exactly the
+	// thing this output exists to provide.
+	agents, err := config.LoadAgents(workspace.Home())
+	exitOn(err)
+	exitOn(actors.Configure(agents))
 
 	// Filter to one ticket when an issue key was given, so `orion logs
 	// FCIA-6` is about that ticket rather than everything the project did.

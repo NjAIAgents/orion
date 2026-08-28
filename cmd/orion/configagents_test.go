@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/orion-sdlc/orion/internal/config"
@@ -10,7 +9,7 @@ import (
 func strp(s string) *string { return &s }
 
 // A wizard pass where the operator touched nothing at all must not add
-// "id": {} noise to orion.json -- that would be indistinguishable from a
+// "id": {} noise to agents.json -- that would be indistinguishable from a
 // real (empty) override to a human reading the file later.
 func TestAgentIsZeroOnAnUntouchedAgent(t *testing.T) {
 	if !agentIsZero(config.Agent{}) {
@@ -24,38 +23,30 @@ func TestAgentIsZeroOnAnUntouchedAgent(t *testing.T) {
 	}
 }
 
-// Only the fields actually set are ever written -- an empty designation
-// would otherwise silently mean "clear the designation", which is not a
-// concept this field has (unlike Name, whose empty string is documented as
-// exactly that).
-func TestMarshalAgentOmitsUnsetFields(t *testing.T) {
-	got := marshalAgent(config.Agent{Effort: "high"})
-	if !strings.Contains(got, `"effort": "high"`) {
-		t.Errorf("effort missing: %s", got)
+// The wizard's save path (SaveAgents then LoadAgents) must round-trip an
+// entry with only some fields set without inventing the rest -- config.Agent
+// now relies on json "omitempty" doing this correctly rather than the
+// hand-rolled marshalling OR-131 shipped with (OR-132).
+func TestAgentRoundTripsOnlyTheFieldsThatWereSet(t *testing.T) {
+	home := t.TempDir()
+	want := map[string]config.Agent{
+		"implementer": {Effort: "high"},
+		"qa":          {Name: strp(""), Model: "haiku"},
 	}
-	if strings.Contains(got, `"model"`) || strings.Contains(got, `"designation"`) || strings.Contains(got, `"name"`) {
-		t.Errorf("unset fields must not be written: %s", got)
+	if err := config.SaveAgents(home, want); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestMarshalAgentOnAZeroValueIsAnEmptyObject(t *testing.T) {
-	if got := marshalAgent(config.Agent{}); got != "{}" {
-		t.Errorf("marshalAgent(zero) = %q, want {}", got)
+	got, err := config.LoadAgents(home)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-// A cleared name (the "-" convention) must be written as an explicit empty
-// string, not omitted -- omitting it would mean "no override" instead of
-// "render as job title alone".
-func TestMarshalAgentWritesAnExplicitlyClearedName(t *testing.T) {
-	got := marshalAgent(config.Agent{Name: strp("")})
-	if !strings.Contains(got, `"name": ""`) {
-		t.Errorf("a cleared name must be written explicitly: %s", got)
+	if got["implementer"].Effort != "high" || got["implementer"].Model != "" {
+		t.Errorf("implementer = %+v", got["implementer"])
 	}
-}
-
-func TestJSONStrEscapesQuotes(t *testing.T) {
-	if got := jsonStr(`say "hi"`); got != `"say \"hi\""` {
-		t.Errorf("jsonStr = %q", got)
+	if got["qa"].Name == nil || *got["qa"].Name != "" {
+		t.Errorf("qa.Name = %v, want an explicit empty string, not absent", got["qa"].Name)
+	}
+	if got["qa"].Model != "haiku" {
+		t.Errorf("qa.Model = %q", got["qa"].Model)
 	}
 }

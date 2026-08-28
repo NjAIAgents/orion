@@ -2,27 +2,24 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/actors"
-	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/creds"
+	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
 // modelChoices and effortChoices are the only values this wizard will ever
 // write for the two fields. Both are numbered menus, never free text: the
 // model list mirrors what `claude --model` accepts as an alias, and the
 // effort list is `claude --effort`'s own enum (grounded against `claude
-// --help` rather than guessed -- OR-131). A hand-edited orion.json can still
-// hold something else; `claude` itself is what validates that. Nothing this
-// wizard writes can be a typo.
+// --help` rather than guessed -- OR-131). A hand-edited agents.json can
+// still hold something else; `claude` itself is what validates that.
+// Nothing this wizard writes can be a typo.
 var (
 	modelChoices  = []string{"sonnet", "opus", "haiku", "fable"}
 	effortChoices = []string{"low", "medium", "high", "xhigh", "max"}
@@ -30,39 +27,41 @@ var (
 
 // runConfigAgents is `orion config agents`: walks the configurable roster
 // and asks, for each actor, a name (free text -- the one field a select
-// menu cannot cover) and a model and an effort (both numbered menus). It
-// reads and writes the `agents` block of orion.json, the same block
-// actors.Configure() already knows how to merge onto the shipped roster.
+// menu cannot cover) and a model and an effort (both numbered menus).
+//
+// Global, not per-project (OR-132): who the implementer is and what it
+// runs on is an operator preference, the same on every checkout, so this
+// reads and writes ~/.orion/agents.json (config.LoadAgents/SaveAgents)
+// rather than anything under the current repository. That is also why,
+// unlike `orion config` for credentials, this subcommand needs no project
+// root at all -- it works from any directory.
 func runConfigAgents(args []string) {
-	root, err := config.FindRoot(rootOrCwd())
-	exitOn(err)
-	path := filepath.Join(root, "orion.json")
+	home := workspace.Home()
 
 	if hasFlag(args, "--reset") {
-		resetAgents(path, positional(args))
+		resetAgents(home, positional(args))
 		return
 	}
 
 	if !creds.Interactive() {
 		fmt.Fprintln(os.Stderr, "orion config agents needs a terminal.\n"+
-			"  Run it from a shell, edit the \"agents\" block in orion.json by hand,\n"+
+			"  Run it from a shell, edit "+config.AgentsPath(home)+" by hand,\n"+
 			"  or reset it non-interactively: orion config agents --reset [id...]")
 		os.Exit(1)
 	}
 
-	cfg := config.Load(root)
-	if err := actors.Configure(cfg.Agents); err != nil {
-		fmt.Fprintf(os.Stderr, "orion: existing orion.json agents block: %v\n", err)
+	next, err := config.LoadAgents(home)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orion: %v\n", err)
+		os.Exit(1)
+	}
+	if err := actors.Configure(next); err != nil {
+		fmt.Fprintf(os.Stderr, "orion: existing %s: %v\n", config.AgentsPath(home), err)
 		os.Exit(1)
 	}
 
-	next := map[string]config.Agent{}
-	for id, a := range cfg.Agents {
-		next[id] = a
-	}
-
 	in := bufio.NewReader(os.Stdin)
-	fmt.Println("Orion agent roster")
+	fmt.Println("Orion agent roster (global: " + config.AgentsPath(home) + ")")
 	fmt.Println("  Enter keeps a value as it is. Model and effort are numbered menus --")
 	fmt.Println("  there is nothing to type for them, so there is nothing to mistype.")
 	fmt.Println()
@@ -73,15 +72,12 @@ func runConfigAgents(args []string) {
 
 		cur := next[id]
 
-		name := promptName(in, cur.Name, a.Name)
-		if name != nil {
+		if name := promptName(in, cur.Name, a.Name); name != nil {
 			cur.Name = name
 		}
-
 		if model := promptSelect(in, "model", modelChoices, a.Model); model != nil {
 			cur.Model = *model
 		}
-
 		if effort := promptSelect(in, "effort", effortChoices, a.Effort); effort != nil {
 			cur.Effort = *effort
 		}
@@ -98,13 +94,13 @@ func runConfigAgents(args []string) {
 		fmt.Fprintf(os.Stderr, "orion: %v\n  nothing was written.\n", err)
 		os.Exit(1)
 	}
-
-	writeAgentsBlock(path, next)
+	exitOn(config.SaveAgents(home, next))
+	fmt.Printf("saved the agent roster to %s\n", config.AgentsPath(home))
 }
 
 // agentIsZero reports whether an override says nothing at all -- every
-// field absent or cleared -- so the wizard does not litter orion.json with
-// "id": {} for an actor the operator only looked at and left alone.
+// field absent or cleared -- so the wizard does not litter agents.json
+// with "id": {} for an actor the operator only looked at and left alone.
 func agentIsZero(a config.Agent) bool {
 	return a.Name == nil && a.Designation == "" && a.Model == "" && a.Effort == ""
 }
@@ -113,8 +109,8 @@ func agentIsZero(a config.Agent) bool {
 // is not a menu, because names are open-ended and a fixed list would just
 // be wrong for most teams.
 //
-// Enter keeps whatever is already in orion.json (returns nil: no change).
-// A bare "-" clears it explicitly, which is how a team turns a persona off
+// Enter keeps whatever is already configured (returns nil: no change). A
+// bare "-" clears it explicitly, which is how a team turns a persona off
 // and the actor renders as its job title alone -- the same explicit-empty
 // convention config.Agent.Name documents. Anything else becomes the name.
 func promptName(in *bufio.Reader, current *string, shipped string) *string {
@@ -178,106 +174,29 @@ func promptSelect(in *bufio.Reader, label string, choices []string, current stri
 	}
 }
 
-// writeAgentsBlock renders `agents` as JSON keyed by actor id, in id order
-// so a re-run produces a stable diff, and patches it into orion.json with
-// adopt.SetBlock -- everything else in the file is left exactly as it was.
-func writeAgentsBlock(path string, agents map[string]config.Agent) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "orion: could not read %s: %v\n", path, err)
-		os.Exit(1)
-	}
-
-	ids := make([]string, 0, len(agents))
-	for id := range agents {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-
-	entries := make([]string, 0, len(ids))
-	for _, id := range ids {
-		entries = append(entries, "    "+jsonStr(id)+": "+marshalAgent(agents[id]))
-	}
-	body := strings.Join(entries, ",\n")
-
-	out, changed := adopt.SetBlock(string(b), "agents", body)
-	if !changed {
-		fmt.Println("nothing changed.")
-		return
-	}
-	if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "orion: could not write %s: %v\n", path, err)
-		os.Exit(1)
-	}
-	fmt.Printf("saved the agent roster to %s\n", path)
-}
-
-// marshalAgent renders one actor's override, only the fields actually set --
-// an omitted field keeps the shipped default, and writing it out anyway
-// (e.g. `"designation": ""`) would silently mean something different: an
-// explicitly empty designation, which for every actor but the name field
-// has no such "clear it" meaning.
-func marshalAgent(a config.Agent) string {
-	var fields []string
-	if a.Name != nil {
-		fields = append(fields, `"name": `+jsonStr(*a.Name))
-	}
-	if a.Designation != "" {
-		fields = append(fields, `"designation": `+jsonStr(a.Designation))
-	}
-	if a.Model != "" {
-		fields = append(fields, `"model": `+jsonStr(a.Model))
-	}
-	if a.Effort != "" {
-		fields = append(fields, `"effort": `+jsonStr(a.Effort))
-	}
-	if len(fields) == 0 {
-		return "{}"
-	}
-	indented := make([]string, len(fields))
-	for i, f := range fields {
-		indented[i] = "      " + f
-	}
-	return "{\n" + strings.Join(indented, ",\n") + "\n    }"
-}
-
-func jsonStr(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
-}
-
 // resetAgents restores the shipped defaults, either for the whole roster
 // (ids empty) or for just the named ones -- the non-interactive equivalent
 // of walking the wizard and choosing "shipped default" for every field of
 // every actor, for a script or a person in a hurry.
-func resetAgents(path string, ids []string) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "orion: could not read %s: %v\n", path, err)
-		os.Exit(1)
-	}
-
+func resetAgents(home string, ids []string) {
 	if len(ids) == 0 {
-		out, changed := adopt.SetBlock(string(b), "agents", "")
-		if !changed {
-			fmt.Println("nothing changed.")
-			return
+		if err := config.SaveAgents(home, map[string]config.Agent{}); err != nil {
+			fmt.Fprintf(os.Stderr, "orion: %v\n", err)
+			os.Exit(1)
 		}
-		exitOn(os.WriteFile(path, []byte(out), 0o644))
 		fmt.Println("reset the whole agent roster to its shipped defaults.")
 		return
 	}
 
-	root := filepath.Dir(path)
-	cfg := config.Load(root)
-	next := map[string]config.Agent{}
-	for id, a := range cfg.Agents {
-		next[id] = a
+	next, err := config.LoadAgents(home)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orion: %v\n", err)
+		os.Exit(1)
 	}
 	for _, id := range ids {
 		delete(next, id)
 	}
-	writeAgentsBlock(path, next)
+	exitOn(config.SaveAgents(home, next))
 	fmt.Printf("reset %s to its shipped default%s.\n", strings.Join(ids, ", "), plural(len(ids)))
 }
 
