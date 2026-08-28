@@ -22,8 +22,14 @@ type Issue struct {
 	Summary     string
 	Description string
 	Status      string
-	Labels      []string
-	Priority    string
+	// StatusCategory is Jira's coarse grouping of Status: "new",
+	// "indeterminate" or "done". Read as well as the name because the name is
+	// per-project -- Done, Closed, Cancelled, Won't Do are all different
+	// words for the same category -- and Orion needs "is this finished?"
+	// answered for a workflow it has never seen.
+	StatusCategory string
+	Labels         []string
+	Priority       string
 	// Rank is Jira's backlog ordering field. It is what makes "work these
 	// in this order" expressible by dragging tickets, with no syntax.
 	Rank string
@@ -72,7 +78,10 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 				Description json.RawMessage `json:"description"`
 				Labels      []string        `json:"labels"`
 				Status      struct {
-					Name string `json:"name"`
+					Name     string `json:"name"`
+					Category struct {
+						Key string `json:"key"`
+					} `json:"statusCategory"`
 				} `json:"status"`
 				Priority struct {
 					Name string `json:"name"`
@@ -90,14 +99,15 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 	out := make([]Issue, 0, len(res.Issues))
 	for _, i := range res.Issues {
 		out = append(out, Issue{
-			Key:         i.Key,
-			Summary:     i.Fields.Summary,
-			Description: flattenADF(i.Fields.Description),
-			Status:      i.Fields.Status.Name,
-			Labels:      i.Fields.Labels,
-			Priority:    i.Fields.Priority.Name,
-			Parent:      i.Fields.Parent.Key,
-			URL:         j.BaseURL + "/browse/" + i.Key,
+			Key:            i.Key,
+			Summary:        i.Fields.Summary,
+			Description:    flattenADF(i.Fields.Description),
+			Status:         i.Fields.Status.Name,
+			StatusCategory: i.Fields.Status.Category.Key,
+			Labels:         i.Fields.Labels,
+			Priority:       i.Fields.Priority.Name,
+			Parent:         i.Fields.Parent.Key,
+			URL:            j.BaseURL + "/browse/" + i.Key,
 		})
 	}
 	return out, nil
@@ -123,7 +133,10 @@ func (j *Jira) GetIssue(key string) (*Issue, error) {
 			Description json.RawMessage `json:"description"`
 			Labels      []string        `json:"labels"`
 			Status      struct {
-				Name string `json:"name"`
+				Name     string `json:"name"`
+				Category struct {
+					Key string `json:"key"`
+				} `json:"statusCategory"`
 			} `json:"status"`
 		} `json:"fields"`
 	}
@@ -131,12 +144,13 @@ func (j *Jira) GetIssue(key string) (*Issue, error) {
 		return nil, err
 	}
 	return &Issue{
-		Key:         i.Key,
-		Summary:     i.Fields.Summary,
-		Description: flattenADF(i.Fields.Description),
-		Status:      i.Fields.Status.Name,
-		Labels:      i.Fields.Labels,
-		URL:         j.BaseURL + "/browse/" + i.Key,
+		Key:            i.Key,
+		Summary:        i.Fields.Summary,
+		Description:    flattenADF(i.Fields.Description),
+		Status:         i.Fields.Status.Name,
+		StatusCategory: i.Fields.Status.Category.Key,
+		Labels:         i.Fields.Labels,
+		URL:            j.BaseURL + "/browse/" + i.Key,
 	}, nil
 }
 
@@ -347,6 +361,21 @@ const (
 	LabelCIWait  = "orion-ci-wait"
 	LabelFailed  = "orion-failed"
 )
+
+// StatusCategoryDone is Jira's terminal category. Every workflow has one,
+// whatever it calls the statuses inside it.
+const StatusCategoryDone = "Done"
+
+// Resolved reports whether the issue is finished, whatever its workflow calls
+// that -- Done, Closed, Cancelled, Won't Do.
+//
+// Unknown means NOT resolved. A tracker that did not return the category, or
+// a fake in a test that does not set it, must not silently make every ticket
+// look finished: that would stop the queue entirely, a far worse failure than
+// the one this guards.
+func (i Issue) Resolved() bool {
+	return strings.EqualFold(strings.TrimSpace(i.StatusCategory), StatusCategoryDone)
+}
 
 // Managed are every label Orion owns, for the queue query and for clearing
 // state when a ticket is finished or requeued.

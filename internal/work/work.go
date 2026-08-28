@@ -270,6 +270,18 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	res.Summary, res.IssueURL = issue.Summary, issue.URL
 	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "%s", issue.Summary)
 
+	// Is it already finished? The queue query excludes resolved tickets, but
+	// between that search and this claim a person can close one -- and `orion
+	// work KEY` typed by hand never went through the queue at all. So ask
+	// about THIS ticket, now, before anything is spent.
+	//
+	// The stale label goes with it. Left on, the ticket returns to the head
+	// of the queue on the next tick and this run repeats forever; removing it
+	// is what makes the skip stick.
+	if issue.Resolved() {
+		return alreadyResolved(res, key, issue.Status, cfg, opts, deps, log, w)
+	}
+
 	// Has this ticket's work already landed?
 	//
 	// A merged pull request is the end of a ticket, whatever the labels say.

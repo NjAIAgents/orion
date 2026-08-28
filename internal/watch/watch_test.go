@@ -424,3 +424,42 @@ func TestParentMatchingIgnoresCase(t *testing.T) {
 		t.Errorf("queued %v; the parent link was missed on case alone", got)
 	}
 }
+
+// A resolved ticket must not be claimable, however it got resolved.
+//
+// OR-121: the queue selected on labels alone. OR-119 was fixed by hand,
+// merged and moved to Done with its ORION label still attached, so the next
+// tick claimed it and spent an opus agent re-investigating a fixed bug. The
+// merged-branch guard did not catch it -- a hand fix lands on a branch Orion
+// never named -- so the status has to be in the query.
+func TestTheQueueExcludesResolvedTickets(t *testing.T) {
+	jql := queuedJQL([]string{"OR"}, "ORION")
+
+	if !strings.Contains(jql, `statusCategory != "Done"`) {
+		t.Errorf("a Done ticket is still claimable: %s", jql)
+	}
+	// The rest of the criterion must survive alongside it.
+	for _, want := range []string{
+		`project IN ("OR")`,
+		`labels = "ORION"`,
+		`labels NOT IN ("orion-working", "orion-ci-wait", "orion-failed")`,
+		" ORDER BY priority DESC, Rank ASC",
+	} {
+		if !strings.Contains(jql, want) {
+			t.Errorf("lost %s from the queue query: %s", want, jql)
+		}
+	}
+	// The category rather than a status NAME: Cancelled and Won't Do are
+	// terminal too, and enumerating names needs an edit per workflow.
+	if strings.Contains(jql, "status =") || strings.Contains(jql, "status !=") {
+		t.Errorf("filtered on a status name rather than its category: %s", jql)
+	}
+}
+
+// An empty label falls back to the default rather than matching everything.
+func TestTheQueueDefaultsItsLabel(t *testing.T) {
+	if jql := queuedJQL([]string{"OR"}, ""); !strings.Contains(jql,
+		`labels = "`+tracker.QueueLabelDefault+`"`) {
+		t.Errorf("got %s", jql)
+	}
+}
