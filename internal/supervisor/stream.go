@@ -209,9 +209,13 @@ func (w *activityWriter) emit(line []byte) {
 	// property of the ACCOUNT rather than of anything the agent did, and it
 	// is the one field that decides whether more work may be started at all.
 	if rl, ok := parseRateLimit(line); ok {
-		w.limit = rl
-		if !rl.OK() && w.on != nil {
-			w.on(Activity{Kind: "limit", Detail: rl.Describe(timeNow())})
+		// MERGE, not assign. The CLI emits one event per window, so
+		// overwriting kept only whichever arrived last and threw the rest
+		// away -- which is how a five-hour pause became a sleep until Monday
+		// (OR-162).
+		w.limit = w.limit.Merge(rl)
+		if !w.limit.OK() && w.on != nil {
+			w.on(Activity{Kind: "limit", Detail: w.limit.Describe(timeNow())})
 		}
 		return
 	}
