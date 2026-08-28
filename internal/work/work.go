@@ -612,6 +612,24 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	log.Emitf(events.KindCommit, events.ActorImplementer, "%d commit(s) on %s", commits, job.Branch)
 	ui.Say(w, key, events.ActorImplementer, ui.VerbOK, "%d commit(s) on %s", commits, job.Branch)
 
+	// QA, before the branch is pushed. The tests QA writes and any fix its
+	// findings force belong in the same pull request as the change they are
+	// about; verifying after the pull request opened would leave the reviewer
+	// reading the code without its evidence. See qa.go.
+	runQA(qaJob{
+		Key: key, Summary: issue.Summary, Description: issue.Description,
+		ImplSession: runRes.SessionID, WS: &jobWS,
+		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
+		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
+	}, cfg, opts, deps, log, w)
+
+	// Re-counted: QA commits its tests, and a fix round commits too, so the
+	// number in the pull request body would otherwise describe the branch as
+	// it was before it was verified.
+	if n, cErr := commitsOn(job.Path, cfg.VCS.WorkBranch); cErr == nil {
+		commits = n
+	}
+
 	if err := deps.Push(job.Path, job.Branch); err != nil {
 		return failAndTell(res, fmt.Errorf("pushing %s: %w", job.Branch, err), key, ws, log, w, deps)
 	}

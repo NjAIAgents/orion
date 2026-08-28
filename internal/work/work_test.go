@@ -114,8 +114,15 @@ func project(t *testing.T, cfgJSON string) string {
 	return home
 }
 
+// QA is switched off here so that these tests describe the claim, advise,
+// push and pull-request flow and nothing else. On, it adds a supervised run
+// to every one of them, and a test asserting "the implementer was resumed
+// exactly once" would be counting QA's runs as well. The stage's own
+// behaviour -- including that it is ON when a project says nothing -- is in
+// qa_test.go.
 const cfg = `{"vcs":{"default_branch":"main","work_branch":"develop","branch_prefix":"orion/"},
-              "tracker":{"enabled":true,"project_key":"FCIA","queue_label":"ORION"}}`
+              "tracker":{"enabled":true,"project_key":"FCIA","queue_label":"ORION"},
+              "qa":{"enabled":false}}`
 
 // The happy path, and the order that makes it safe.
 func TestSuccessfulRunClaimsRunsPushesAndHandsOffToCI(t *testing.T) {
