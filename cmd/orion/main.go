@@ -10,6 +10,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -959,8 +960,13 @@ func mustJiraSearch() collect.TrackerAPI {
 
 // pushBranch sets upstream on first push so a later `git push` in that
 // worktree does the obvious thing.
+// Bounded by pushTimeout (OR-128): a push that stalls -- a credential
+// helper waiting on a prompt nobody will answer, a dead connection -- would
+// otherwise block orion watch's whole loop with nothing on the console.
 func pushBranch(dir, branch string) error {
-	out, err := exec.Command("git", "-C", dir, "push", "-u", "origin", branch).CombinedOutput()
+	cmd, cancel := gitCommand(dir, "push", "-u", "origin", branch)
+	defer cancel()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%v\n%s", err, strings.TrimSpace(string(out)))
 	}
@@ -975,13 +981,15 @@ func pushBranch(dir, branch string) error {
 // the user was standing, and on the first real end-to-end run was ~/.claude.
 // The branch pushed, then the PR failed with "not a git repository", leaving
 // a ticket marked failed over work that had entirely succeeded.
-func prCommand(dir, branch, title, body, base string) *exec.Cmd {
-	cmd := exec.Command("gh", "pr", "create", "--head", branch, "--base", base,
+//
+// gh resolves the repository from the working directory, and the branch
+// lives in a worktree, never in the cwd -- which ghCommand sets. Bounded by
+// ghTimeout (OR-128) like every other gh call on the watch path: opening the
+// pull request is the last step of a job that has already been paid for, so
+// hanging here strands work that is otherwise complete.
+func prCommand(dir, branch, title, body, base string) (*exec.Cmd, context.CancelFunc) {
+	return ghCommand(dir, "pr", "create", "--head", branch, "--base", base,
 		"--title", title, "--body", body)
-	// gh resolves the repository from the working directory, and the branch
-	// lives in a worktree, never in the cwd.
-	cmd.Dir = dir
-	return cmd
 }
 
 // openPR shells out to gh. Orion does not embed a GitHub client: gh already
@@ -991,7 +999,9 @@ func openPR(dir, branch, title, body, base string) (string, error) {
 		return "", fmt.Errorf("gh is not installed, so the branch is pushed but no pull request was opened.\n" +
 			"  Open it yourself, or install gh and re-run")
 	}
-	out, err := prCommand(dir, branch, title, body, base).CombinedOutput()
+	cmd, cancel := prCommand(dir, branch, title, body, base)
+	defer cancel()
+	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil {
 		return "", fmt.Errorf("%v\n%s", err, text)

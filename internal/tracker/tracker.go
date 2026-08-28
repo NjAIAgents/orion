@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 
 	"github.com/orion-sdlc/orion/internal/creds"
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -102,8 +103,32 @@ func NewJiraFromEnv() (*Jira, error) {
 	}
 	return &Jira{
 		BaseURL: base, Email: email, Token: token,
-		client: &http.Client{Timeout: 20 * time.Second},
+		client: &http.Client{Timeout: JiraTimeout},
 	}, nil
+}
+
+// JiraTimeout bounds every Jira request, end to end: connect, TLS handshake,
+// headers and body.
+//
+// It exists as a named var rather than an inline literal for two reasons.
+// A test can shrink it to prove an unresponsive Jira surfaces as an error
+// instead of silence, and a Jira constructed any other way (a test double, a
+// future provider) picks up the same bound through httpClient below rather
+// than accidentally getting Go's default, which is no timeout at all.
+var JiraTimeout = 20 * time.Second
+
+// httpClient is the only place j.client is read.
+//
+// A zero-value Jira has a nil client, and http.DefaultClient -- the obvious
+// fallback -- has NO timeout: a Jira that never answers would park the
+// caller forever. On `orion watch` that is indistinguishable from a healthy
+// idle watcher, which is exactly the failure OR-128 is about. So the
+// fallback is a bounded client, never an unbounded one.
+func (j *Jira) httpClient() *http.Client {
+	if j.client == nil {
+		j.client = &http.Client{Timeout: JiraTimeout}
+	}
+	return j.client
 }
 
 func (j *Jira) Name() string { return "jira" }
@@ -126,8 +151,21 @@ func (j *Jira) do(method, path string, body any) (int, []byte, error) {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := j.client.Do(req)
+	client := j.httpClient()
+	resp, err := client.Do(req)
 	if err != nil {
+		// A timeout must READ as a timeout. Go's own message for one is
+		// "context deadline exceeded (Client.Timeout exceeded while
+		// awaiting headers)", which tells a person nothing about which
+		// server stalled or how long Orion actually waited -- and this
+		// error is the only thing that will appear on the console when a
+		// watch tick stops on an unresponsive Jira (OR-128).
+		if os.IsTimeout(err) {
+			return 0, nil, fmt.Errorf("Jira did not respond within %s: %s %s\n"+
+				"  The request was abandoned rather than waited on. Check that %s is\n"+
+				"  reachable from here; the next tick will try again.",
+				client.Timeout, method, path, j.BaseURL)
+		}
 		return 0, nil, err
 	}
 	defer resp.Body.Close()
