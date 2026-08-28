@@ -92,6 +92,16 @@ type Deps struct {
 	Now      func() time.Time
 }
 
+// maxLimitSleep caps how long one rate-limit reading may park the watcher.
+//
+// A reported reset is a claim, and OR-162 showed a claim can be wrong: a
+// graded status near the weekly ceiling was read as exhaustion and the
+// watcher slept until Monday with a fifth of the allowance unspent. Even
+// with the classification fixed, trusting a single reading for days is a
+// bet with a bad payoff -- waking early costs one refused tick, waking late
+// costs every ticket the queue would have finished.
+const maxLimitSleep = 30 * time.Minute
+
 // Run watches until interrupted, or until MaxJobs tickets have been started.
 func Run(opts Options, deps Deps) error {
 	w := opts.Out
@@ -286,15 +296,29 @@ func oneTick(opts Options, deps Deps, w io.Writer, remaining int) (started int, 
 	// says no, wait for the exact second it says yes again.
 	for _, r := range res {
 		if !r.Limit.OK() {
-			until := r.Limit.ResetsAt
 			ui.Say(w, r.Key, events.ActorOrion, ui.VerbWarn, "%s", r.Limit.Describe(deps.Now()))
+			// Wait answers with the SOONEST blocking window, not whichever
+			// event arrived last, so a two-hour five-hour pause no longer
+			// sleeps until the weekly reset (OR-162).
 			if d := r.Limit.Wait(deps.Now()); d > 0 {
 				// Sleep until the reset rather than polling through it. Every
 				// tick in between would start an agent only to be refused,
 				// and a refusal still costs an API round trip and a log line
 				// -- hundreds of them, for hours, saying the same thing.
-				ui.Say(w, r.Key, events.ActorOrion, ui.VerbWaiting,
-					"sleeping until %s", until.Local().Format("15:04 Mon"))
+				//
+				// Capped, because sleeping for days on one reading is how a
+				// misreported limit becomes a lost weekend. Waking early
+				// costs one refused tick; waking late costs everything the
+				// queue would have done.
+				if d > maxLimitSleep {
+					ui.Say(w, r.Key, events.ActorOrion, ui.VerbWaiting,
+						"the reported reset is %s away; re-checking in %s instead",
+						d.Round(time.Minute), maxLimitSleep)
+					d = maxLimitSleep
+				} else {
+					ui.Say(w, r.Key, events.ActorOrion, ui.VerbWaiting,
+						"sleeping until %s", deps.Now().Add(d).Local().Format("15:04 Mon"))
+				}
 				if !deps.Sleep(d + time.Minute) {
 					return 0, unfinished, nil
 				}

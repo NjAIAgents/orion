@@ -6,6 +6,40 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.7.7
+
+### Fixed
+
+- `orion watch` no longer parks itself for days on a rate limit that is not
+  exhausted. At 80% of the weekly allowance the CLI reports a graded status,
+  every value other than the literal `allowed` was read as a refusal, and the
+  watcher printed "the seven_day limit is exhausted" and slept until Monday.
+  Statuses are now classified in three: allowed (including graded
+  `allowed_*` values near a ceiling), a genuine refusal, and one this build
+  does not recognise. An unrecognised status still stops, because the CLI's
+  vocabulary is undocumented and guessing wrong in the other direction is
+  worse, but it is now reported *as* unrecognised and quotes the raw value
+  instead of asserting something false about the account (OR-162).
+- Every rate-limit window is kept, not just the last one reported. The CLI
+  emits one event per window and Orion overwrote on each, so a five-hour
+  pause and a weekly one were indistinguishable and whichever arrived last
+  decided both the message and the wait. `Wait` now counts down to the
+  **soonest** blocking window, so a two-hour pause no longer sleeps until the
+  weekly reset, and the message names the window actually blocking (OR-162).
+- A single rate-limit reading can no longer park the watcher indefinitely:
+  sleeps are capped at 30 minutes and then re-checked. Waking early costs one
+  refused tick; waking late costs every ticket the queue would have finished
+  (OR-162).
+- `agents.<id>.model` and `agents.<id>.effort` now reach the `claude`
+  invocation for every actor, not only QA. The implementer's runs (the first
+  one and the one resumed with an advisor's answer, including the fix run
+  inside the QA loop), the ci-fix run attributed to the devops engineer, and
+  the PR describer previously inherited whatever the operator's CLI was
+  configured with, so configuring a model changed the banner, the event log
+  and the cost attribution but not what actually ran. An actor with no model
+  or effort configured still passes neither flag, which continues to mean
+  "whatever the CLI is set to" (OR-133).
+
 ## v0.7.6
 
 ### Fixed

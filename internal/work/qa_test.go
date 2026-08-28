@@ -13,6 +13,48 @@ import (
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
+// OR-133 is about every actor's run, not only the implementer's: QA's own
+// two runs (the initial verification and the re-verify after a fix) must
+// carry the QA actor's configured model and effort too, or the roster's
+// agents.qa.model setting is the same reports-one-thing-does-another gap the
+// ticket names for the implementer.
+func TestQAsOwnRunsCarryTheQAModelAndEffort(t *testing.T) {
+	home := project(t, qaCfg)
+	roster(t, home, map[string]config.Agent{
+		"qa": {Model: "opus", Effort: "xhigh"},
+	})
+	f := &qaFake{t: t, qaReplies: []string{
+		"The rounding case is wrong: expected 2 decimal places, got 4.",
+		"QA CLEAN",
+	}}
+
+	var qaRuns []supervisor.Options
+	var out strings.Builder
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: &fakeJira{},
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				if o.Stage == "qa" {
+					qaRuns = append(qaRuns, o)
+				}
+				return f.run(ws, o)
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	if len(qaRuns) != 2 {
+		t.Fatalf("%d QA runs; expected the initial verification and the re-verify: %s",
+			len(qaRuns), f.sequence())
+	}
+	for i, o := range qaRuns {
+		if o.Model != "opus" || o.Effort != "xhigh" {
+			t.Errorf("QA run %d ran with model=%q effort=%q, want the configured opus/xhigh",
+				i+1, o.Model, o.Effort)
+		}
+	}
+}
+
 // The same project as work_test.go's cfg, saying nothing about QA -- which is
 // how a repository that has never heard of the stage is configured, and the
 // case where it must run.
