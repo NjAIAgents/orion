@@ -10,7 +10,7 @@ const fbTitle = "FCIA-7: Add the thing"
 const fbBody = "Implements FCIA-7.\n\nhttps://jira/FCIA-7\n\n3 commit(s)."
 
 func TestAGoodDescriptionReplacesTheTitleAndKeepsTheTrailer(t *testing.T) {
-	run := func(string, string, string) (string, error) {
+	run := func(string, string, string, string) (string, error) {
 		return `{"title":"Recompute segment impact rather than apportioning it",
 		         "body":"## Summary\nThe old split apportioned totals."}`, nil
 	}
@@ -38,19 +38,19 @@ func TestAGoodDescriptionReplacesTheTitleAndKeepsTheTrailer(t *testing.T) {
 func TestEveryFailureFallsBackToOrionsOwnDescription(t *testing.T) {
 	for name, run := range map[string]Describer{
 		"nil runner": nil,
-		"run failed": func(string, string, string) (string, error) {
+		"run failed": func(string, string, string, string) (string, error) {
 			return "", errors.New("breaker tripped")
 		},
-		"not json": func(string, string, string) (string, error) {
+		"not json": func(string, string, string, string) (string, error) {
 			return "I could not run the pr-describe skill.", nil
 		},
-		"empty title": func(string, string, string) (string, error) {
+		"empty title": func(string, string, string, string) (string, error) {
 			return `{"title":"","body":"something"}`, nil
 		},
-		"empty body": func(string, string, string) (string, error) {
+		"empty body": func(string, string, string, string) (string, error) {
 			return `{"title":"something","body":""}`, nil
 		},
-		"garbage": func(string, string, string) (string, error) {
+		"garbage": func(string, string, string, string) (string, error) {
 			return `{{{`, nil
 		},
 	} {

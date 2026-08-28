@@ -124,7 +124,12 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 			"fixing what QA found (round %d of %d)", out.Rounds, max)
 		fix, fixErr := deps.Supervise(job.WS, supervisor.Options{
 			Stage: "ticket", Resume: job.ImplSession,
-			Prompt:     supervisor.QAFindingsMessage(findings),
+			Prompt: supervisor.QAFindingsMessage(findings),
+			// The implementer's own model and effort. Fixing what QA found is
+			// implementation work, so it must not silently run on whatever the
+			// operator's CLI defaults to (OR-133).
+			Model:      actors.Model(events.ActorImplementer),
+			Effort:     actors.Effort(events.ActorImplementer),
 			MaxMinutes: job.MaxMinutes, MaxTurns: job.MaxTurns,
 			OnActivity: activityLogger(log, w, key, events.ActorImplementer),
 			Actor:      events.ActorImplementer, Key: key,

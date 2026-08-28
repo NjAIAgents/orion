@@ -28,7 +28,7 @@ import (
 // Bare `Bash` is deliberately absent. Allowing it would let a description
 // step write to the branch it is describing -- and a commit made after the
 // pull request was declared finished is one nobody planned to review.
-func describeRunner(dir, model, prompt string) (string, error) {
+func describeRunner(dir, model, effort, prompt string) (string, error) {
 	bin, err := exec.LookPath("claude")
 	if err != nil {
 		return "", fmt.Errorf("claude CLI not found on PATH")
@@ -36,7 +36,6 @@ func describeRunner(dir, model, prompt string) (string, error) {
 	args := []string{
 		"-p", prompt,
 		"--output-format", "json",
-		"--model", model,
 		// Bounded tighter than an implementer. Describing a finished branch
 		// is a reading task with a known end; a run that has taken thirty
 		// turns is not being thorough, it is lost.
@@ -47,6 +46,14 @@ func describeRunner(dir, model, prompt string) (string, error) {
 			"Bash(git log:*)", "Bash(git diff:*)",
 			"Bash(git show:*)", "Bash(git status:*)",
 		}, ","),
+	}
+	// Empty means "whatever the CLI is set to", so an unset field passes no
+	// flag rather than an empty one -- same convention as the supervisor.
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if effort != "" {
+		args = append(args, "--effort", effort)
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
