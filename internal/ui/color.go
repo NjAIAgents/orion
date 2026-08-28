@@ -76,6 +76,42 @@ func enabled(w io.Writer) bool {
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
+// glyphs reports whether to emit the non-ASCII status icons.
+//
+// The same opt-outs as colour, for the same reason -- NO_COLOR is set by
+// people who need the plain form, and TERM=dumb is a terminal saying it
+// cannot render anything clever -- plus the locale, because a glyph on a
+// non-UTF-8 terminal is mojibake rather than a status.
+//
+// Not gated on whether the writer is a terminal, unlike colour: a glyph in a
+// piped log or a nohup capture reads correctly, and an escape code does not.
+func glyphs() bool {
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+		return false
+	}
+	if os.Getenv("TERM") == "dumb" {
+		return false
+	}
+	return utf8Locale()
+}
+
+// utf8Locale reads the locale the way every other terminal tool does.
+//
+// An UNSET locale counts as UTF-8. On a modern desktop these variables are
+// frequently empty, and treating empty as "not UTF-8" would hand almost
+// everybody the degraded output for the sake of the rare C-locale terminal.
+// An explicitly set locale is the signal worth acting on.
+func utf8Locale() bool {
+	for _, v := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {
+		s := strings.ToUpper(os.Getenv(v))
+		if s == "" {
+			continue
+		}
+		return strings.Contains(s, "UTF-8") || strings.Contains(s, "UTF8")
+	}
+	return true
+}
+
 func paint(w io.Writer, code, s string) string {
 	if !enabled(w) {
 		return s
