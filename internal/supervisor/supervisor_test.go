@@ -431,3 +431,58 @@ func TestRunSucceedsWhenClaudeEmitsAResult(t *testing.T) {
 		t.Errorf("exit code = %d, want 0", res.ExitCode)
 	}
 }
+
+// fakeClaudeRecordingArgs writes a `claude` stub onto PATH that dumps its
+// own argv to argsFile before emitting a normal result line, so a test can
+// assert on exactly what Orion invoked it with (OR-131).
+func fakeClaudeRecordingArgs(t *testing.T) (argsFile string) {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "claude")
+	argsFile = filepath.Join(dir, "args.txt")
+	script := "#!/bin/sh\n" +
+		`echo "$@" > ` + argsFile + "\n" +
+		`echo '{"type":"result","session_id":"abc","result":"done","total_cost_usd":0.1,"is_error":false}'` + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return argsFile
+}
+
+func TestEffortIsPassedToClaudeWhenSet(t *testing.T) {
+	w := ws(t, "")
+	argsFile := fakeClaudeRecordingArgs(t)
+
+	if _, err := Run(w, Options{Stage: "intent", Prompt: "do a thing",
+		MaxMinutes: 1, MaxTurns: 1, Effort: "high"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "--effort high") {
+		t.Errorf("claude invocation missing --effort high, got: %q", got)
+	}
+}
+
+func TestNoEffortFlagWhenOptionsLeavesItEmpty(t *testing.T) {
+	w := ws(t, "")
+	argsFile := fakeClaudeRecordingArgs(t)
+
+	if _, err := Run(w, Options{Stage: "intent", Prompt: "do a thing",
+		MaxMinutes: 1, MaxTurns: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "--effort") {
+		t.Errorf("an unset Effort must not add --effort at all, got: %q", got)
+	}
+}

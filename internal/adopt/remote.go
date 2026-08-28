@@ -231,3 +231,60 @@ func SetBlockField(src, block, field, newValue string) (string, bool) {
 	patched := body[:loc[4]] + newValue + body[loc[5]:]
 	return src[:start[1]] + patched + src[end:], true
 }
+
+// SetBlock replaces a whole top-level block's body (everything between its
+// braces), or inserts "block": { newBody } just before the file's own
+// closing brace when the block does not exist yet.
+//
+// Same "not a JSON round trip" reasoning as SetBlockField: the caller owns
+// the formatting of the one block it names, and nothing outside it moves.
+// This is what `orion config agents` uses for the `agents` block, whose
+// entries are keyed by actor id and so cannot be reached by SetBlockField's
+// single field-name match -- two actors can each have a "model" key, and
+// SetBlockField would patch whichever the regex found first.
+func SetBlock(src, block, newBody string) (string, bool) {
+	newBody = strings.TrimRight(newBody, "\n")
+	start := regexp.MustCompile(`(?m)^\s*"` + regexp.QuoteMeta(block) + `"\s*:\s*\{`).FindStringIndex(src)
+	if start == nil {
+		return insertBlock(src, block, newBody)
+	}
+	depth := 0
+	end := -1
+	for i := start[1] - 1; i < len(src); i++ {
+		switch src[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				end = i
+			}
+		}
+		if end >= 0 {
+			break
+		}
+	}
+	if end < 0 {
+		return src, false
+	}
+	if strings.TrimSpace(src[start[1]:end]) == strings.TrimSpace(newBody) {
+		return src, false // already set; not a change
+	}
+	return src[:start[1]] + "\n" + newBody + "\n" + src[end:], true
+}
+
+// insertBlock adds a new top-level block just before the file's final
+// closing brace, comma-joined with whatever key came before it.
+func insertBlock(src, block, body string) (string, bool) {
+	end := strings.LastIndex(src, "}")
+	if end < 0 {
+		return src, false
+	}
+	head := strings.TrimRight(src[:end], " \t\n")
+	sep := ",\n"
+	if strings.TrimSpace(head) == "{" {
+		sep = "\n" // first and only key in an otherwise-empty object
+	}
+	insert := fmt.Sprintf(`%s  "%s": {%s}%s`, sep, block, "\n"+body+"\n", "\n")
+	return head + insert + src[end:], true
+}
