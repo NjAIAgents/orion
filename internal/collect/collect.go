@@ -499,7 +499,7 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 		ui.Warn(w, "%s: merged and released, but could not transition to Done: %v", key, err)
 	}
 	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion, "merged: "+pr.URL))
-	closeChildren(key, pr.URL, deps, w)
+	closeChildren(key, pr.URL, cfg.Tracker.QueueLabel, deps, w)
 	// A branch that went red and then merged is a mistake with its own
 	// correction attached, which is the one shape a lesson can be built from
 	// without an agent inferring anything. Read the history BEFORE it is
@@ -640,7 +640,7 @@ func firstLine(s string) string {
 //
 // Only sub-tasks Orion can see, and only ones not already Done -- a task
 // somebody closed by hand is left alone rather than re-transitioned.
-func closeChildren(key, prURL string, deps Deps, w io.Writer) {
+func closeChildren(key, prURL, queueLabel string, deps Deps, w io.Writer) {
 	kids, err := deps.Jira.Children(key)
 	if err != nil {
 		// Usually a tracker without a parent field, which is the ordinary
@@ -656,6 +656,13 @@ func closeChildren(key, prURL string, deps Deps, w io.Writer) {
 		if err := deps.Jira.TransitionTo(c.Key, "Done"); err != nil {
 			ui.Warn(w, "%s: merged, but %s could not be closed: %v", key, c.Key, err)
 			continue
+		}
+		// Closing without clearing would leave a Done sub-task holding the
+		// claim lock, which is the state that wedges the watcher (OR-125).
+		// A ticket transitioned to Done gives up every label Orion owns, on
+		// every path that does the transitioning.
+		if err := deps.Jira.SetLabels(c.Key, nil, tracker.Managed(queueLabel)); err != nil {
+			ui.Warn(w, "%s: closed, but its labels could not be cleared: %v", c.Key, err)
 		}
 		_ = deps.Jira.Comment(c.Key, actors.Comment(events.ActorOrion,
 			"delivered in "+key+" and merged: "+prURL))

@@ -240,3 +240,29 @@ func TestManagedCoversEveryOrionLabel(t *testing.T) {
 		t.Errorf("Managed() = %v; an extra entry would widen the queue query", m)
 	}
 }
+
+// A finished ticket still holding the claim lock stops the whole queue and
+// looks exactly like a job that is genuinely running. `orion queue` has to
+// name that rather than print a "working" line whose status reads Done and
+// leave the reader to reconcile the two (OR-125).
+func TestStaleLocksNamesFinishedTicketsThatStillHoldTheClaim(t *testing.T) {
+	got := StaleLocks([]Issue{
+		{Key: "OR-124", StatusCategory: "Done", Labels: []string{LabelWorking}},
+		{Key: "OR-130", StatusCategory: "indeterminate", Labels: []string{LabelWorking}},
+		{Key: "OR-131", StatusCategory: "Done", Labels: []string{LabelCIWait}},
+		{Key: "OR-132", StatusCategory: "Done"},
+	})
+	if len(got) != 1 || got[0] != "OR-124" {
+		t.Errorf("StaleLocks = %v, want only the Done ticket holding %s", got, LabelWorking)
+	}
+}
+
+// Labels are free text and their case is not guaranteed. A mismatch on case
+// alone would report a wedged queue as healthy.
+func TestStaleLocksIgnoresLabelCase(t *testing.T) {
+	if got := StaleLocks([]Issue{
+		{Key: "OR-124", StatusCategory: "done", Labels: []string{"Orion-Working"}},
+	}); len(got) != 1 {
+		t.Errorf("StaleLocks = %v; the lock was missed on case alone", got)
+	}
+}

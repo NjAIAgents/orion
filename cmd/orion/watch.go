@@ -105,7 +105,7 @@ func runWatch(args []string) {
 			return watch.Queued(j, home, ps, label)
 		},
 		InFlight: func(home string, ps []string) (bool, string, error) {
-			return watch.InFlight(j, home, ps)
+			return watch.InFlight(j, home, ps, os.Stdout)
 		},
 	})
 	exitOn(err)
