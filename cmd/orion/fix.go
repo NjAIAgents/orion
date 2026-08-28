@@ -24,12 +24,12 @@ import (
 // means the agent could not see what to change, and that is a stop condition
 // rather than an attempt to repeat -- a second identical run produces the
 // same nothing at the same price.
-func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, error) {
+func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, string, error) {
 	w := os.Stdout
 
 	jobs, err := workspace.ListWorktrees(ws)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	var dir string
 	for _, j := range jobs {
@@ -39,7 +39,7 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, error) 
 		}
 	}
 	if dir == "" {
-		return false, fmt.Errorf("no worktree for %s.\n"+
+		return false, "", fmt.Errorf("no worktree for %s.\n"+
 			"  It was pruned, so there is nowhere to apply a fix. "+
 			"Re-queue the ticket to start again", branch)
 	}
@@ -54,7 +54,7 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, error) 
 
 	before, err := headOf(dir)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 
 	cfg := config.Load(ws.RepoDir())
@@ -78,24 +78,50 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, error) 
 		},
 	})
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if res.ExitCode != 0 {
-		return false, fmt.Errorf("the fix run exited %d: %s", res.ExitCode, res.Reason)
+		return false, "", fmt.Errorf("the fix run exited %d: %s", res.ExitCode, res.Reason)
 	}
+
+	// The agent's own closing message, not re-derived: it already said what
+	// it changed and why, in its last turn. Reduced to one line so the
+	// watch/work console gains a summary instead of a wall of prose --
+	// oneLine keeps whatever the agent front-loaded, which is normally the
+	// answer, not the reasoning that led to it (OR-129).
+	summary := oneLine(res.Final)
 
 	after, err := headOf(dir)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if after == before {
-		return false, nil
+		return false, summary, nil
 	}
 
 	if err := pushBranch(dir, branch); err != nil {
-		return false, fmt.Errorf("the fix was committed but not pushed: %w", err)
+		return false, "", fmt.Errorf("the fix was committed but not pushed: %w", err)
 	}
-	return true, nil
+	return true, summary, nil
+}
+
+// oneLine reduces a closing message to something that fits a console line.
+//
+// Takes the first non-blank line rather than truncating the whole message
+// mid-sentence -- an agent's summary is normally front-loaded ("Fixed the
+// off-by-one in X"), so the first line is usually the whole answer and the
+// rest is the reasoning that got there.
+func oneLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			const max = 160
+			if len(t) > max {
+				return t[:max] + "…"
+			}
+			return t
+		}
+	}
+	return ""
 }
 
 func headOf(dir string) (string, error) {

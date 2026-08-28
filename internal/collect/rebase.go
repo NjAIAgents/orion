@@ -57,6 +57,17 @@ func behind(res Result, key string, pr PR, branch string, cfg config.Config,
 	// downstream chooses a branch by what it is called.
 	base, named := baseOf(pr, cfg)
 
+	// A person working this branch by hand always wins. Checked first and
+	// outside the switch below so it short-circuits before the rebase count
+	// or anything else is even read (OR-130).
+	if dir := worktreeOrRepo(ws, branch); manuallyLocked(dir) {
+		ui.Say(w, key, events.ActorOrion, ui.VerbWaiting,
+			"%s is locked for manual work (%s); leaving it alone", branch, manualLockName)
+		log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorOrion,
+			Msg: "skipped auto-rebase: " + manualLockName + " present"})
+		return stale(res, key, pr, branch, cfg, opts, deps, ws, log, w)
+	}
+
 	// Everything below rewrites a branch, so every reason not to is checked
 	// before anything is touched.
 	switch {

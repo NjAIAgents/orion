@@ -30,6 +30,18 @@ import (
 func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 	opts Options, deps Deps, ws *workspace.Workspace, log *events.Log, w io.Writer) (bool, Result) {
 
+	// A person working this branch by hand always wins, and is checked
+	// before anything else -- including before an attempt is recorded, so
+	// a held ticket never spends part of its fix-attempt budget while
+	// waiting for a human to finish (OR-130).
+	if dir := worktreeOrRepo(ws, branch); manuallyLocked(dir) {
+		ui.Say(w, key, events.ActorOrion, ui.VerbWaiting,
+			"%s is locked for manual work (%s); the fix loop is leaving it alone", branch, manualLockName)
+		log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorOrion,
+			Msg: "skipped fix attempt: " + manualLockName + " present"})
+		return false, res
+	}
+
 	fp := Fingerprint(pr.Detail)
 	state := loadFixes(ws.Dir).States[key]
 	max := cfg.CI.MaxFixAttempts
@@ -84,7 +96,7 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 			"it stops and says so._", quote(pr.Detail), link(pr.URL, "open it"), max),
 	})
 
-	pushed, err := deps.Fix(ws, key, branch, pr.Detail)
+	pushed, summary, err := deps.Fix(ws, key, branch, pr.Detail)
 	if err != nil {
 		giveUp(key, ws, log, w, "the fix run failed: "+err.Error())
 		res.Err = err
@@ -93,14 +105,32 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 	if !pushed {
 		// Exit 0 with nothing pushed means the agent could not see what to
 		// change. Another identical attempt would produce the same nothing.
-		giveUp(key, ws, log, w,
-			"the agent produced no change, so it does not know how to fix this")
+		// The agent's own closing message says why, when it said anything --
+		// carried into the give-up reason instead of being dropped, so a
+		// person reading the log learns what the agent actually saw rather
+		// than only that it gave up (OR-129).
+		reason := "the agent produced no change, so it does not know how to fix this"
+		if summary != "" {
+			reason += ": " + summary
+		}
+		giveUp(key, ws, log, w, reason)
 		return false, res
 	}
 
-	log.Emit(events.Event{Kind: events.KindPush, Actor: events.ActorImplementer,
-		Msg: fmt.Sprintf("pushed a fix for CI (attempt %d)", attempt)})
-	ui.Ok(w, "ok", "%s: pushed a fix; CI will run again", key)
+	// The one-line summary is the point of OR-129: without it this event and
+	// the "run complete" line above it are both pure bookkeeping -- turns,
+	// tokens, cost -- and say nothing about what was actually wrong or what
+	// changed to fix it.
+	msg := fmt.Sprintf("pushed a fix for CI (attempt %d)", attempt)
+	if summary != "" {
+		msg += ": " + summary
+	}
+	log.Emit(events.Event{Kind: events.KindPush, Actor: events.ActorImplementer, Msg: msg})
+	if summary != "" {
+		ui.Ok(w, "ok", "%s: pushed a fix; CI will run again -- %s", key, summary)
+	} else {
+		ui.Ok(w, "ok", "%s: pushed a fix; CI will run again", key)
+	}
 	res.Changed = true
 	res.Verdict = VerdictPending // it is building again, not failing
 	return true, res
