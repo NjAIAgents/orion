@@ -55,6 +55,8 @@ CONFIGURATION
   orion config                interactive setup for Jira, Slack and webhooks
   orion config show           what is set, where it came from, secrets masked
   orion config path           print the config file location
+  orion config agents         interactive: name, model and effort per agent, by menu
+  orion config agents --reset [id...]   reset one, some, or every agent to shipped defaults
 
 ADOPT AN EXISTING REPO
   orion init [--plan-gate]    config, artifact dirs and hooks, idempotent
@@ -363,8 +365,11 @@ func runConfig(args []string) {
 	case "path":
 		fmt.Println(creds.Path(home))
 
+	case "agents":
+		runConfigAgents(args)
+
 	default:
-		fmt.Fprintf(os.Stderr, "orion: unknown config subcommand %q (set|show|path)\n", sub)
+		fmt.Fprintf(os.Stderr, "orion: unknown config subcommand %q (set|show|path|agents)\n", sub)
 		os.Exit(64)
 	}
 }

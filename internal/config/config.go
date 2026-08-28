@@ -412,11 +412,13 @@ func (q QA) Rounds() int {
 // somebody renamed one, which is the only thing this block exists to do.
 //
 //	"agents": {
-//	  "implementer": { "name": "Alex", "designation": "backend engineer" }
+//	  "implementer": { "name": "Alex", "designation": "backend engineer", "effort": "high" }
 //	}
 //
 // Any field left out keeps the shipped default, so renaming one agent does
-// not mean restating its model.
+// not mean restating its model. `orion config agents` writes this block
+// interactively -- a numbered menu for model and effort, free text only for
+// the name -- and `orion config agents --reset [id...]` clears it by hand.
 // Name is a pointer so that an explicit "" is distinguishable from absent.
 // They mean opposite things: absent keeps the shipped name, while "" clears
 // it and the actor renders as its job title alone -- which is how a team
@@ -425,6 +427,15 @@ type Agent struct {
 	Name        *string `json:"name"`
 	Designation string  `json:"designation"`
 	Model       string  `json:"model"`
+	// Effort is the `claude --effort` value this actor runs at: one of
+	// low, medium, high, xhigh, max. Empty leaves the CLI's own default in
+	// force. Not validated here -- `orion config agents` only ever writes
+	// one of the five values because it is a select menu, never free text,
+	// so a typo cannot reach this field via that path. A hand-edited
+	// orion.json with an unrecognized value is instead rejected by the
+	// `claude` binary at run time, with `claude`'s own error naming the
+	// valid set.
+	Effort string `json:"effort,omitempty"`
 }
 
 type Config struct {

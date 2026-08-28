@@ -70,6 +70,78 @@ func TestSetBlockFieldPreservesTheRestOfTheFile(t *testing.T) {
 	}
 }
 
+// SetBlock exists because SetBlockField cannot reach a field keyed by actor
+// id one level down -- two actors can each have a "model" key, and
+// SetBlockField's single-field regex would patch whichever it found first
+// regardless of which actor it belonged to (OR-131).
+func TestSetBlockReplacesAnExistingBlockAndLeavesTheRestAlone(t *testing.T) {
+	src := `{
+  "_comment_gates": "why the gates exist",
+  "gates": {
+    "require_plan_before_edit": false
+  },
+
+  "agents": {
+    "qa": { "model": "haiku" }
+  },
+
+  "slack": {
+    "enabled": false
+  }
+}
+`
+	out, ok := SetBlock(src, "agents", "    \"implementer\": {\n      \"effort\": \"high\"\n    }")
+	if !ok {
+		t.Fatal("expected a change")
+	}
+	if !strings.Contains(out, `"_comment_gates": "why the gates exist"`) {
+		t.Error("a comment key was lost or moved")
+	}
+	if !strings.Contains(out, "\"slack\": {\n    \"enabled\": false") {
+		t.Error("slack must not be touched when patching agents")
+	}
+	if strings.Contains(out, `"qa": { "model": "haiku" }`) {
+		t.Error("the old agents body should have been replaced, not merged with")
+	}
+	if !strings.Contains(out, `"implementer"`) {
+		t.Errorf("the new body was not written:\n%s", out)
+	}
+}
+
+func TestSetBlockInsertsTheBlockWhenAbsent(t *testing.T) {
+	src := `{
+  "gates": {
+    "require_plan_before_edit": false
+  }
+}
+`
+	out, ok := SetBlock(src, "agents", `    "qa": { "effort": "low" }`)
+	if !ok {
+		t.Fatal("expected a change")
+	}
+	if !strings.Contains(out, `"agents": {`) {
+		t.Errorf("agents block was not inserted:\n%s", out)
+	}
+	if !strings.Contains(out, `"qa": { "effort": "low" }`) {
+		t.Errorf("the body was not written:\n%s", out)
+	}
+	if !strings.Contains(out, `"gates": {`) {
+		t.Error("the existing block must survive an insertion")
+	}
+}
+
+func TestSetBlockIsIdempotent(t *testing.T) {
+	src := `{
+  "agents": {
+    "qa": { "effort": "low" }
+  }
+}
+`
+	if _, ok := SetBlock(src, "agents", `    "qa": { "effort": "low" }`); ok {
+		t.Error("writing an identical body should report no change")
+	}
+}
+
 func gitRepo(t *testing.T, withCommit bool) string {
 	t.Helper()
 	d := t.TempDir()
