@@ -344,3 +344,32 @@ func TestDryRunSaysWhatItWouldRebaseAndPushesNothing(t *testing.T) {
 		t.Errorf("a dry run commented: %v", jira.comments["FCIA-6"])
 	}
 }
+
+// A person's own lock always wins, even when the rebase would otherwise be
+// clean and safe (OR-130). Racing a manual rebase in the same worktree is
+// exactly the situation the lock exists to prevent, so this must not touch
+// the branch at all -- not rebase it, not push it.
+func TestManualLockStopsTheAutoRebase(t *testing.T) {
+	home, _, origin, wtDir, sha := staleTicket(t)
+	if err := os.WriteFile(filepath.Join(wtDir, manualLockName), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jira := newTracker()
+
+	res, out, _ := run(t, home, jira, PR{
+		Verdict: VerdictPassing, Head: sha, URL: "https://example/pr/1", Detail: "3 passed",
+	}, Options{})
+
+	if res[0].Verdict != VerdictStale {
+		t.Errorf("verdict = %q, want stale (handed to the person already holding it)", res[0].Verdict)
+	}
+	if strings.Contains(out, "rebased and pushed") {
+		t.Errorf("the locked branch must not be rebased:\n%s", out)
+	}
+	if !strings.Contains(out, manualLockName) {
+		t.Errorf("the lock must be named in the output so it is discoverable:\n%s", out)
+	}
+	if got := head(t, origin, "refs/heads/orion/fcia-6"); got != sha {
+		t.Error("the remote branch moved even though it is locked for manual work")
+	}
+}
