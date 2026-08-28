@@ -6,6 +6,26 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.7.5
+
+### Changed
+
+- The agent roster (name, model, effort) is now global -- `~/.orion/agents.json`,
+  shared by every project -- instead of a block in each repository's
+  `orion.json`. Who the implementer is and what it runs on is an operator
+  preference, not something that should differ by checkout, or need
+  restating in every project it's adopted into. `orion config agents` writes
+  this file directly; existing per-project `agents` blocks in orion.json are
+  no longer read and can be deleted (OR-132).
+
+### Fixed
+
+- `orion config --help` (and `orion config agents --help`) fell through to
+  the interactive credentials wizard instead of printing help, and blocked
+  on stdin waiting for a Jira URL nobody meant to type -- the only way out
+  was Ctrl-C. A help flag is now checked before any subcommand dispatch
+  (OR-132).
+
 ## v0.7.4
 
 ### Added
