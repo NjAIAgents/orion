@@ -411,8 +411,30 @@ func dropClaimedChildren(issues []tracker.Issue) []string {
 	return out
 }
 
+// LockAPI is the slice of the tracker the claim lock needs. An interface
+// rather than *tracker.Jira so the stale-lock path can be tested without a
+// server -- it is the path that decides whether the queue moves at all.
+type LockAPI interface {
+	Search(jql string, maxResults int) ([]tracker.Issue, error)
+	SetLabels(key string, add, remove []string) error
+}
+
 // InFlight reports whether any ticket is currently claimed.
-func InFlight(j *tracker.Jira, home string, projects []string) (bool, string, error) {
+//
+// The claim label deliberately outlives the process that set it: that is
+// what makes a restarted watcher resume rather than double-start. It also
+// outlives the WORK, though, and nothing but the watch-driven close path
+// ever cleared it. A ticket fixed and transitioned to Done by hand kept
+// orion-working forever, and every later tick reported a ticket that
+// finished hours ago as "still running; not starting anything else" --
+// indistinguishable from a genuinely stuck job without opening Jira
+// (OR-125).
+//
+// So a resolved ticket is not in flight, whatever its labels say. The lock
+// is stripped here rather than merely ignored, because ignoring it would
+// re-diagnose the same ticket on every tick forever, and because the label
+// is read by `orion queue` too.
+func InFlight(j LockAPI, home string, projects []string, w io.Writer) (bool, string, error) {
 	keys, err := scope(home, projects)
 	if err != nil || len(keys) == 0 {
 		return false, "", err
@@ -425,10 +447,24 @@ func InFlight(j *tracker.Jira, home string, projects []string) (bool, string, er
 	if err != nil {
 		return false, "", err
 	}
-	if len(issues) == 0 {
-		return false, "", nil
+	for _, i := range issues {
+		if !i.Resolved() {
+			return true, i.Key, nil
+		}
+		// Best effort. A tracker that refuses the write leaves the queue
+		// exactly as wedged as before, which is worth a line but not worth
+		// failing the tick over.
+		if err := j.SetLabels(i.Key, nil, []string{tracker.LabelWorking}); err != nil {
+			ui.Say(w, i.Key, events.ActorOrion, ui.VerbWarn,
+				"is %s but still holds the %s lock, and it could not be cleared: %v",
+				i.Status, tracker.LabelWorking, err)
+			continue
+		}
+		ui.Say(w, i.Key, events.ActorOrion, ui.VerbWarn,
+			"was closed outside Orion while still holding the %s lock; cleared it",
+			tracker.LabelWorking)
 	}
-	return true, issues[0].Key, nil
+	return false, "", nil
 }
 
 func scope(home string, projects []string) ([]string, error) {

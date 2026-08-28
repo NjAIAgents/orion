@@ -3,6 +3,7 @@ package watch
 import (
 	"bytes"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -461,5 +462,133 @@ func TestTheQueueDefaultsItsLabel(t *testing.T) {
 	if jql := queuedJQL([]string{"OR"}, ""); !strings.Contains(jql,
 		`labels = "`+tracker.QueueLabelDefault+`"`) {
 		t.Errorf("got %s", jql)
+	}
+}
+
+// fakeLock is a tracker that answers one claim-label search and records the
+// label writes made against it.
+type fakeLock struct {
+	issues  []tracker.Issue
+	removed map[string][]string
+	err     error
+}
+
+func (f *fakeLock) Search(string, int) ([]tracker.Issue, error) { return f.issues, nil }
+
+func (f *fakeLock) SetLabels(key string, _, remove []string) error {
+	if f.err != nil {
+		return f.err
+	}
+	if f.removed == nil {
+		f.removed = map[string][]string{}
+	}
+	f.removed[key] = append(f.removed[key], remove...)
+	return nil
+}
+
+func lockHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("ORION_HOME", home)
+	if err := registry.Bind(home, registry.Entry{
+		Key: "OR", Source: t.TempDir(), Workspace: "ws-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+// The claim label outlives the ticket. OR-124 was fixed by hand and moved to
+// Done with orion-working still attached, and every tick after that reported
+// a ticket that finished hours ago as "still running; not starting anything
+// else" -- indistinguishable from a genuinely stuck job, and the queue never
+// moved again (OR-125).
+func TestAHandClosedTicketDoesNotHoldTheQueue(t *testing.T) {
+	home := lockHome(t)
+	j := &fakeLock{issues: []tracker.Issue{
+		{Key: "OR-124", Status: "Done", StatusCategory: "Done",
+			Labels: []string{tracker.LabelWorking}},
+	}}
+
+	var b bytes.Buffer
+	busy, key, err := InFlight(j, home, nil, &b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if busy {
+		t.Errorf("a ticket that is already Done was reported in flight as %q", key)
+	}
+	// Cleared, not merely ignored: ignoring it would re-diagnose the same
+	// ticket every tick forever, and `orion queue` reads the label too.
+	if got := j.removed["OR-124"]; len(got) != 1 || got[0] != tracker.LabelWorking {
+		t.Errorf("the stale lock was not cleared, removed = %v", j.removed)
+	}
+	if out := b.String(); !strings.Contains(out, "OR-124") ||
+		!strings.Contains(out, tracker.LabelWorking) {
+		t.Errorf("clearing a lock must be reported, got %q", out)
+	}
+}
+
+// The lock still has to work. A ticket that is genuinely being worked holds
+// the queue, which is the entire reason the label exists.
+func TestAnUnresolvedClaimStillHoldsTheQueue(t *testing.T) {
+	home := lockHome(t)
+	j := &fakeLock{issues: []tracker.Issue{
+		{Key: "OR-130", Status: "In Progress", StatusCategory: "indeterminate",
+			Labels: []string{tracker.LabelWorking}},
+	}}
+
+	busy, key, err := InFlight(j, home, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !busy || key != "OR-130" {
+		t.Errorf("InFlight = %v, %q; a running job must hold the lock", busy, key)
+	}
+	if len(j.removed) != 0 {
+		t.Errorf("a live claim was cleared: %v", j.removed)
+	}
+}
+
+// A stale lock ahead of a live one must not hide it. Clearing the first and
+// returning "nothing is running" would start a second agent on a repository
+// that already has one.
+func TestALiveClaimBehindAStaleOneIsStillFound(t *testing.T) {
+	home := lockHome(t)
+	j := &fakeLock{issues: []tracker.Issue{
+		{Key: "OR-124", StatusCategory: "Done", Labels: []string{tracker.LabelWorking}},
+		{Key: "OR-130", StatusCategory: "indeterminate", Labels: []string{tracker.LabelWorking}},
+	}}
+
+	busy, key, err := InFlight(j, home, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !busy || key != "OR-130" {
+		t.Errorf("InFlight = %v, %q; the live claim was lost behind a stale one", busy, key)
+	}
+}
+
+// A tracker that refuses the write leaves the queue exactly as wedged as
+// before. Worth a line, not worth failing the tick over -- and the ticket is
+// still finished, so it still must not hold the lock.
+func TestALockThatCannotBeClearedIsReportedAndNotTreatedAsRunning(t *testing.T) {
+	home := lockHome(t)
+	j := &fakeLock{
+		issues: []tracker.Issue{{Key: "OR-124", Status: "Done", StatusCategory: "Done",
+			Labels: []string{tracker.LabelWorking}}},
+		err: errors.New("403 forbidden"),
+	}
+
+	var b bytes.Buffer
+	busy, _, err := InFlight(j, home, nil, &b)
+	if err != nil {
+		t.Fatalf("a label write that failed must not fail the tick: %v", err)
+	}
+	if busy {
+		t.Error("a finished ticket held the queue because its label could not be cleared")
+	}
+	if !strings.Contains(b.String(), "403 forbidden") {
+		t.Errorf("the reason must be reported: %q", b.String())
 	}
 }

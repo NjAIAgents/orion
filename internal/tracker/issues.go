@@ -383,6 +383,31 @@ func Managed(queueLabel string) []string {
 	return []string{queueLabel, LabelWorking, LabelCIWait, LabelFailed}
 }
 
+// StaleLocks returns the keys of issues that are FINISHED but still carry
+// the claim label.
+//
+// The label is the queue's lock, and nothing outside Orion's own close path
+// clears it -- so a ticket somebody fixed and moved to Done by hand keeps it
+// and every watch tick reports that ticket as still running (OR-125). The
+// watcher now clears one when it trips over it; this is so `orion queue`
+// names the condition instead of showing a "working" ticket whose status
+// says Done and leaving the reader to reconcile the two.
+func StaleLocks(issues []Issue) []string {
+	var out []string
+	for _, i := range issues {
+		if !i.Resolved() {
+			continue
+		}
+		for _, l := range i.Labels {
+			if strings.EqualFold(l, LabelWorking) {
+				out = append(out, i.Key)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // State reports where an issue sits in Orion's queue, given the label that
 // marks work as requested.
 func State(labels []string, queueLabel string) string {

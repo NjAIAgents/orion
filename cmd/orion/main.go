@@ -1107,6 +1107,14 @@ func runQueue(args []string) {
 		fmt.Fprintf(w, "  A failed ticket is not retried: remove %s and add %s to requeue it.\n",
 			tracker.LabelFailed, cfg.Tracker.QueueLabel)
 	}
+	// A finished ticket holding the claim lock stops the whole queue, and it
+	// looks identical to a job that is genuinely running. Say so here rather
+	// than let the reader spot that a "working" line's status reads Done.
+	if stale := tracker.StaleLocks(issues); len(stale) > 0 {
+		ui.Warn(w, "%s is finished but still holds the %s lock, which stops the queue.\n"+
+			"  Remove the label, or let `orion watch` clear it on its next tick.",
+			strings.Join(stale, ", "), tracker.LabelWorking)
+	}
 	fmt.Fprintln(w, "  Nothing has been started: this command only reads.")
 }
 
