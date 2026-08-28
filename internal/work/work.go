@@ -219,6 +219,18 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		cfg = config.Load(ws.RepoDir())
 	}
 
+	// A branch model with no integration branch is refused before any agent
+	// runs, rather than discovered when the merge lands on the release
+	// branch. Nothing about this run is salvageable: every branch it cuts
+	// bases on, and merges back into, the branch a release is cut from.
+	if err := cfg.Validate(); err != nil {
+		ui.Say(w, key, events.ActorOrion, ui.VerbFail, "%v", err)
+		return fail(res, err)
+	}
+	if waiver := cfg.ReleaseBranchWaiver(); waiver != "" {
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "%s", waiver)
+	}
+
 	// The roster this project configured. A bad one is reported and then
 	// ignored: display names are not worth failing a run over, and the
 	// shipped roster still tells the reader who acted.

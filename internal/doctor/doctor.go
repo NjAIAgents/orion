@@ -66,6 +66,7 @@ func Run(w io.Writer, path string, autoFix bool) int {
 		checkHome(),
 		checkDisk(),
 		checkProject(path),
+		checkBranchModel(rootOr(path)),
 		checkHooks(rootOr(path)),
 		checkJira(trackerRequired(rootOr(path))),
 		checkSlack(config.Load(rootOr(path)).Slack.Enabled),
@@ -227,6 +228,28 @@ func checkHome() check {
 			"Set ORION_HOME to a writable location."}
 	}
 	return check{"orion home", ok, h, ""}
+}
+
+// checkBranchModel asks the question the branch model was never asked:
+// is there an integration branch at all, or does agent work merge straight
+// into the release branch?
+//
+// FAIL rather than WARN. Every merge Orion performs under a collapsed model
+// is a release nobody authorised, and it is reported as an ordinary merge,
+// so nothing downstream will raise it either.
+func checkBranchModel(root string) check {
+	cfg := config.Load(root)
+	if err := cfg.Validate(); err != nil {
+		return check{"branch model", fail,
+			fmt.Sprintf("work_branch and default_branch are both %q", cfg.VCS.WorkBranch),
+			err.Error()}
+	}
+	if waiver := cfg.ReleaseBranchWaiver(); waiver != "" {
+		return check{"branch model", warn,
+			fmt.Sprintf("single-branch model: %q", cfg.VCS.WorkBranch), waiver}
+	}
+	return check{"branch model", ok,
+		fmt.Sprintf("work %s -> release %s", cfg.VCS.WorkBranch, cfg.VCS.DefaultBranch), ""}
 }
 
 func checkProject(path string) check {

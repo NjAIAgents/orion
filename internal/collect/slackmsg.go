@@ -72,7 +72,7 @@ func msgMerged(key string, pr PR, checkout string, pruned bool, refreshed, work,
 			key + "`. " + closing + "_"
 	}
 	body := strings.Join([]string{
-		"*The work is on " + "`" + work + "`" + ".*",
+		"*The work is on the " + branchRole(work, prod) + " `" + work + "`.*",
 		"",
 		"• pull request  " + link(pr.URL, "what merged"),
 		checkoutLine,
@@ -80,6 +80,19 @@ func msgMerged(key string, pr PR, checkout string, pruned bool, refreshed, work,
 		tail,
 	}, "\n")
 	return title, body
+}
+
+// branchRole names a branch by what it is FOR, not only by what it is
+// called. "merged into develop" is only correct if the reader knows what
+// develop is for in this repository; "merged into the integration branch
+// develop" reads correctly whatever it is named -- and a repository where
+// the two collapse says "release branch", which is the thing a reader
+// needs to notice rather than the thing they skim past.
+func branchRole(branch, release string) string {
+	if release != "" && branch == release {
+		return "release branch"
+	}
+	return "integration branch"
 }
 
 // msgApprovalWanted is the one message in this system that asks for
