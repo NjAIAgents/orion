@@ -13,7 +13,15 @@ import (
 func TestGhCommandEnforcesItsTimeout(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "gh")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nsleep 5\necho too-late\n"), 0o755); err != nil {
+	// `exec sleep` rather than a plain `sleep` line: the real `gh` binary is
+	// a single process (it does not shell out and fork), so `exec` here
+	// makes the fake match that shape -- the interpreter REPLACES itself
+	// with sleep rather than forking a child. Without `exec`, sh forks
+	// sleep as a genuine child; killing the parent orphans it, and it keeps
+	// the stdout pipe open until its own 5s elapses regardless of the
+	// context firing -- a fixture artifact, not something a real gh hang
+	// would do.
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexec sleep 5\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -35,8 +43,8 @@ func TestGhCommandEnforcesItsTimeout(t *testing.T) {
 	if elapsed > 2*time.Second {
 		t.Fatalf("ghCommand did not enforce its timeout: took %s", elapsed)
 	}
-	if string(out) == "too-late\n" {
-		t.Fatal("the process was not actually killed before producing output")
+	if len(out) != 0 {
+		t.Fatalf("expected no output from a killed process, got: %q", out)
 	}
 }
 
