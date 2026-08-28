@@ -82,9 +82,6 @@
     "private": true
   },
 
-  "_comment_agents": "Who Orion's agents are called in its output, keyed by the STABLE identifier (implementer, architect, pm, router, describer, frontend, devops) and never by display name -- a key on a name would break the moment you renamed one. Any field you leave out keeps the shipped default, so renaming one agent does not mean restating its model. Two agents may not share a name; an empty name renders the job title alone, which is how you turn personas off. ci and the human are not configurable.",
-  "agents": {},
-
   "_comment_vcs": "Two long-lived branches. main is the release branch. develop is the integration branch and the default PR base (named develop, not dev, so it does not collide with the dev ENVIRONMENT in the autonomy block). Every task gets its own branch cut from develop. BOTH are push-protected: protecting only main would make the PR into dev optional, and an optional gate is not a gate. work_branch may NOT equal default_branch: Orion merges agent work into work_branch and a HUMAN promotes it to default_branch, so collapsing the two makes every agent merge a release nobody authorised -- Orion refuses that configuration at load, at init and in orion doctor. A repository that genuinely has one branch and no release process sets allow_release_branch_merges: true, which says out loud that the human promotion step is being given up.",
   "vcs": {
     "provider": "github",

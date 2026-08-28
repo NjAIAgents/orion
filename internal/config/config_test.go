@@ -60,6 +60,61 @@ func TestCommentKeysAreIgnored(t *testing.T) {
 	}
 }
 
+// A machine that has never run `orion config agents` must not be treated
+// as broken -- every actor just keeps its shipped default, the same as a
+// project that has never touched orion.json (OR-132).
+func TestLoadAgentsOnAMissingFileIsAnEmptyRosterNotAnError(t *testing.T) {
+	agents, err := LoadAgents(t.TempDir())
+	if err != nil {
+		t.Fatalf("a missing agents.json must not be an error: %v", err)
+	}
+	if len(agents) != 0 {
+		t.Errorf("got %d agents, want none", len(agents))
+	}
+}
+
+func TestLoadAgentsRejectsInvalidJSON(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(AgentsPath(home), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadAgents(home); err == nil {
+		t.Fatal("invalid JSON must be reported, not silently treated as no overrides")
+	}
+}
+
+func TestSaveAgentsThenLoadAgentsRoundTrips(t *testing.T) {
+	home := t.TempDir()
+	name := "Alex"
+	want := map[string]Agent{
+		"implementer": {Name: &name, Model: "opus", Effort: "high"},
+	}
+	if err := SaveAgents(home, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadAgents(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := got["implementer"]
+	if a.Name == nil || *a.Name != "Alex" || a.Model != "opus" || a.Effort != "high" {
+		t.Errorf("round trip = %+v", a)
+	}
+}
+
+// SaveAgents must create ORION_HOME if this is the very first thing written
+// there -- the global config file must not require some other command to
+// have run first just to create the directory.
+func TestSaveAgentsCreatesTheHomeDirectory(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "not-yet-created")
+	if err := SaveAgents(home, map[string]Agent{"qa": {Effort: "low"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(AgentsPath(home)); err != nil {
+		t.Fatalf("agents.json was not written: %v", err)
+	}
+}
+
 func TestFindRootWalksUp(t *testing.T) {
 	root := t.TempDir()
 	os.WriteFile(filepath.Join(root, "orion.json"), []byte("{}"), 0o644)
