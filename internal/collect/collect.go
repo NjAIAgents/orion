@@ -349,7 +349,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// merge because a fetch failed would be a worse fault than the one this
 	// prevents.
 	//
-// Measured against the SAME base the conflict path names -- the pull
+	// Measured against the SAME base the conflict path names -- the pull
 	// request's, config only as the fallback. Asking git whether the branch
 	// is behind a branch it does not merge into answers a question nobody
 	// asked (OR-112). Reached only when the branch merges cleanly -- the
