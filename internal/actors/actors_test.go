@@ -57,6 +57,37 @@ func TestTheNewActorsExist(t *testing.T) {
 	}
 }
 
+// QA is a first-class actor, not a mode the implementer runs in: its runs are
+// attributed to it in the event log, so the cost report has a row for it, and
+// a project may rename it and move it to another model like any other.
+func TestTheQAActorIsInTheRosterAndIsConfigurable(t *testing.T) {
+	t.Cleanup(Reset)
+	a := Get(events.ActorQA)
+	if a.Name == "" || a.Designation == "" {
+		t.Fatalf("qa is not in the roster: %+v", a)
+	}
+	if !strings.Contains(Display(events.ActorQA), Separator) {
+		t.Errorf("Display(qa) = %q, want a name and a job title", Display(events.ActorQA))
+	}
+	// Sonnet, not opus: the specification is written down, so this is careful
+	// reading rather than design, and opus would pay implementer prices to
+	// author test files.
+	if got := Model(events.ActorQA); got != "sonnet" {
+		t.Errorf("qa's default model = %q", got)
+	}
+	if err := Configure(map[string]config.Agent{
+		events.ActorQA: {Name: ptr("Quinn"), Designation: "test engineer", Model: "haiku"},
+	}); err != nil {
+		t.Fatalf("configuring qa: %v", err)
+	}
+	if got := Display(events.ActorQA); got != "Quinn"+Separator+"test engineer" {
+		t.Errorf("Display(qa) = %q after configuration", got)
+	}
+	if got := Model(events.ActorQA); got != "haiku" {
+		t.Errorf("qa's model = %q after configuration", got)
+	}
+}
+
 func TestConfigOverridesOneFieldAndKeepsTheRest(t *testing.T) {
 	t.Cleanup(Reset)
 	if err := Configure(map[string]config.Agent{

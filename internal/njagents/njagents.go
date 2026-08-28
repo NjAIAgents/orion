@@ -40,6 +40,25 @@ var RequiredSkills = []string{
 	"scaffold-project",
 }
 
+// TestingSkills are the ones the QA stage points its agent at when they are
+// there. NOT in RequiredSkills, and that is the whole distinction: the review
+// stages have no fallback, whereas QA does -- a repository's own test runner
+// -- so a missing testing skill degrades the stage rather than failing it.
+var TestingSkills = []string{"test-suite-author", "e2e-suite"}
+
+// HasSkill reports whether a located toolkit actually ships a skill.
+//
+// Asked of the RESOLVED clone rather than of the runner's skills directory,
+// for the reason this package exists: a symlink in ~/.claude says a skill was
+// installed once, not that the toolkit behind it is still there.
+func HasSkill(inst *Install, name string) bool {
+	if inst == nil || inst.Root == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(inst.Root, "skills", name, "SKILL.md"))
+	return err == nil
+}
+
 // RequiredDocs are the shared contracts the skills read at runtime. Their
 // absence is what a naive skills-directory check misses.
 var RequiredDocs = []string{

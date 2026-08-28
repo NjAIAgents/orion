@@ -129,8 +129,13 @@ func defaults() map[string]Actor {
 		events.ActorPM:          {ID: events.ActorPM, Name: "Priya", Designation: "product manager", Model: "sonnet"},
 		events.ActorDevOps:      {ID: events.ActorDevOps, Name: "Arjun", Designation: "devops engineer", Model: "sonnet"},
 		events.ActorDescriber:   {ID: events.ActorDescriber, Name: "Dana", Designation: "PR writer", Model: "sonnet"},
-		events.ActorCI:          {ID: events.ActorCI, Designation: "ci"},
-		events.ActorHuman:       {ID: events.ActorHuman, Designation: "you"},
+		// QA derives its cases from the ticket's acceptance criteria and
+		// writes tests against them. Sonnet: the specification is written
+		// down, so the work is careful reading rather than design, and opus
+		// would be paying implementer prices to author test files.
+		events.ActorQA:    {ID: events.ActorQA, Name: "Anita", Designation: "QA engineer", Model: "sonnet"},
+		events.ActorCI:    {ID: events.ActorCI, Designation: "ci"},
+		events.ActorHuman: {ID: events.ActorHuman, Designation: "you"},
 	}
 }
 

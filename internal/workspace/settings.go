@@ -248,6 +248,11 @@ const defaultProjectConfig = `{
     "create_project_per_idea": true,
     "confirm_tree_before_create": true
   },
+  "qa": {
+    "enabled": true,
+    "max_rounds": 2,
+    "e2e_base_url": ""
+  },
   "delegation": {
     "enabled": true,
     "extra_tool_calls_for_review": 200,
