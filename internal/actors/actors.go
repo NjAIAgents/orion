@@ -47,6 +47,9 @@ type Actor struct {
 	// one. A recorded model always wins: this is a default for display, not
 	// a claim about what actually ran.
 	Model string
+	// Effort is the `claude --effort` level this actor runs at. Empty means
+	// the CLI's own default, same convention as an empty Model.
+	Effort string
 }
 
 // Display is what a reader sees: name and job title together, or the job
@@ -166,6 +169,10 @@ func Display(id string) string { return Get(id).Display() }
 // Model is the model to show for an actor when the event recorded none.
 func Model(id string) string { return Get(id).Model }
 
+// Effort is the reasoning-effort level to run an actor at, or "" for the
+// `claude` CLI's own default.
+func Effort(id string) string { return Get(id).Effort }
+
 // Configure overlays a project's `agents` block on the defaults.
 //
 // Field by field, so overriding one name does not silently reset a model.
@@ -192,6 +199,9 @@ func Configure(agents map[string]config.Agent) error {
 		}
 		if s := strings.TrimSpace(over.Model); s != "" {
 			base.Model = s
+		}
+		if s := strings.TrimSpace(over.Effort); s != "" {
+			base.Effort = s
 		}
 		next[id] = base
 	}
@@ -245,6 +255,21 @@ func Reset() {
 	mu.Lock()
 	defer mu.Unlock()
 	current = defaults()
+}
+
+// ConfigurableIDs lists every actor `orion config agents` may edit: the
+// whole roster except ci and human, which are not configurable at all (see
+// fixed and Configure's refusal). Sorted, so the wizard walks the roster in
+// the same order every run.
+func ConfigurableIDs() []string {
+	ids := make([]string, 0, len(defaults()))
+	for id := range defaults() {
+		if !fixed[id] {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // DefaultNames lists every name this build ships with, for the test that

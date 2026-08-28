@@ -141,6 +141,53 @@ func TestADuplicateNameIsRefusedNamingBothActors(t *testing.T) {
 	}
 }
 
+// Effort merges field by field like Model: setting it must not disturb the
+// name or the model the way any other single-field override does not
+// (OR-131).
+func TestConfigOverridesEffortAndKeepsTheRest(t *testing.T) {
+	t.Cleanup(Reset)
+	if err := Configure(map[string]config.Agent{
+		events.ActorQA: {Effort: "low"},
+	}); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	a := Get(events.ActorQA)
+	if a.Effort != "low" {
+		t.Errorf("effort = %q, want the override", a.Effort)
+	}
+	if a.Name == "" || a.Model != "sonnet" {
+		t.Errorf("overriding effort must not reset name or model: %+v", a)
+	}
+}
+
+// The wizard walks this list to build its menu, so it has to name every
+// configurable actor and none of the two that are refused outright.
+func TestConfigurableIDsExcludesOnlyCIAndHuman(t *testing.T) {
+	ids := ConfigurableIDs()
+	for _, id := range []string{events.ActorCI, events.ActorHuman} {
+		for _, got := range ids {
+			if got == id {
+				t.Errorf("ConfigurableIDs includes %s, which Configure refuses", id)
+			}
+		}
+	}
+	for _, id := range []string{
+		events.ActorRouter, events.ActorImplementer, events.ActorFrontend,
+		events.ActorArchitect, events.ActorPM, events.ActorDevOps,
+		events.ActorDescriber, events.ActorQA,
+	} {
+		found := false
+		for _, got := range ids {
+			if got == id {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("ConfigurableIDs is missing %s", id)
+		}
+	}
+}
+
 func TestCIAndTheHumanAreNotConfigurable(t *testing.T) {
 	t.Cleanup(Reset)
 	for _, id := range []string{events.ActorCI, events.ActorHuman} {

@@ -55,6 +55,9 @@ type Options struct {
 	// implementer, haiku for routing. Empty uses whatever the CLI is
 	// configured with.
 	Model string
+	// Effort sets `claude --effort`: low, medium, high, xhigh, or max.
+	// Empty leaves the CLI's own default in force.
+	Effort string
 	// NoWait skips quota waiting entirely and fails fast instead. For CI,
 	// where sleeping a runner for forty minutes costs real money.
 	NoWait bool
@@ -462,6 +465,9 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	)
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
+	}
+	if opts.Effort != "" {
+		args = append(args, "--effort", opts.Effort)
 	}
 
 	if opts.DryRun {

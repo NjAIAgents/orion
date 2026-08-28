@@ -89,6 +89,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 		Stage:  "qa",
 		Prompt: supervisor.QAPrompt(key, job.Summary, job.Description, tools),
 		Model:  actors.Model(events.ActorQA),
+		Effort: actors.Effort(events.ActorQA),
 		// The implementer's allowance, not a smaller one. QA reads the
 		// ticket, reads the diff, writes tests and runs a suite; a suite that
 		// takes ten minutes to run takes ten minutes to run for either actor.
@@ -141,6 +142,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 			Stage: "qa", Resume: qaSession,
 			Prompt:     supervisor.QAReverifyMessage(),
 			Model:      actors.Model(events.ActorQA),
+			Effort:     actors.Effort(events.ActorQA),
 			MaxMinutes: job.MaxMinutes, MaxTurns: job.MaxTurns,
 			OnActivity: activityLogger(log, w, key, events.ActorQA),
 			Actor:      events.ActorQA, Key: key,
