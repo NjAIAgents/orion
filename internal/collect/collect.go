@@ -335,7 +335,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// the conflict clears, CI re-runs, and the normal flow resumes without
 	// anyone having to re-label anything.
 	if pr.Conflicted {
-		return conflicted(res, key, pr, branch, opts, deps, ws, log, w)
+		return conflicted(res, key, pr, cfg, branch, opts, deps, ws, log, w)
 	}
 
 	// A green check on a base that has moved is not evidence about the merge.
@@ -348,9 +348,16 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// An unreadable repository is not a stale branch, and refusing every
 	// merge because a fetch failed would be a worse fault than the one this
 	// prevents.
+	//
+	// Measured against the SAME base the conflict path names -- the pull
+	// request's, config only as the fallback. Asking git whether the branch
+	// is behind a branch it does not merge into answers a question nobody
+	// asked, and then prints a rebase onto it (OR-112).
 	if cfg.CI.RequireUpToDate {
-		if ok, known := upToDate(worktreeOrRepo(ws, branch), cfg.VCS.WorkBranch, branch); known && !ok {
-			return stale(res, key, pr, branch, cfg, opts, deps, ws, log, w)
+		if base, named := baseOf(pr, cfg); named {
+			if ok, known := upToDate(worktreeOrRepo(ws, branch), base, branch); known && !ok {
+				return stale(res, key, pr, branch, cfg, opts, deps, ws, log, w)
+			}
 		}
 	}
 
