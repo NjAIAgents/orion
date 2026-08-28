@@ -391,6 +391,17 @@ func runInit(args []string) {
 
 	cfg := config.Load(abs)
 
+	// Before anything is bound: a repository whose only branch is the
+	// release branch gets an integration branch created below, but only if
+	// the config names one. If work_branch has been pointed at the release
+	// branch, EnsureWorkBranch would happily "bind" it and the repository
+	// would be initialised into the very model Orion forbids. Say so here,
+	// where the remedy is one edit away.
+	exitOn(cfg.Validate())
+	if waiver := cfg.ReleaseBranchWaiver(); waiver != "" {
+		ui.Warn(os.Stdout, "%s", waiver)
+	}
+
 	// The work branch. orion.json can name `develop` as the base for every
 	// task branch while no such branch exists, and nothing notices until the
 	// first PR has nowhere to go.

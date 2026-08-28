@@ -255,9 +255,40 @@ Everything lives in `orion.json` at the repo root, reviewable like code.
 | `gates.protect_tests_during_fix` | true | an agent weakening the test that defines "fixed" |
 | `gates.production_requires_authorization` | true | an unauthorised production deploy |
 | `vcs.protected_branches` | `[main, develop]` | direct pushes to either long-lived branch |
+| `vcs.work_branch` ≠ `vcs.default_branch` | enforced | Orion merging agent work straight into the release branch |
 
 A limit of `0` restores the default rather than meaning unlimited. "No limit"
 is never a safe reading of an absent value in a circuit breaker.
+
+### The branch model is enforced, not merely documented
+
+Orion's responsibility ends when work merges into the **integration branch**
+(`vcs.work_branch`, `develop` by default). Promotion from there to the
+**release branch** (`vcs.default_branch`, `main`) is a human decision — it is
+where somebody decides that a set of merged changes constitutes a release. An
+agent must not make that call.
+
+So setting the two equal is **refused**: at config load, at `orion init`, and
+by `orion doctor`, each naming both values and the remedy. `orion init`
+creates the integration branch when it does not exist yet, so a repository
+with only a release branch is offered one rather than having its release
+branch adopted as the work branch.
+
+A repository that genuinely has one branch and no release process says so
+explicitly:
+
+```json
+"vcs": { "allow_release_branch_merges": true }
+```
+
+That is a named opt-in, not something reachable by editing one string, and
+every run that uses it prints what is being given up: there is no human
+promotion step left. **Orion's own repository does not set it** — `develop`
+is the integration branch, `main` is promoted by a human PR when a release is
+cut. (For a while it did the other thing: `work_branch` was pointed at `main`
+because `develop` had gone unused, and Orion merged agent output into the
+release branch for several releases, reporting it accurately the whole time.
+That is the failure this rule exists to prevent.)
 
 After a breaker trips, a human decides whether to continue:
 

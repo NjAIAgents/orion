@@ -285,6 +285,17 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// (OR-118). The user's checkout is where a person edits orion.json, and
 	// where they expect the edit to take effect on the next tick.
 	cfg := config.Load(entry.Source)
+	// Collect is the step that merges, so it is the last place a branch
+	// model with no integration branch can be caught before agent work
+	// lands on the release branch. Refuse rather than merge and report it.
+	if vErr := cfg.Validate(); vErr != nil {
+		ui.Fail(w, "%s: %v", key, vErr)
+		res.Err = vErr
+		return res
+	}
+	if waiver := cfg.ReleaseBranchWaiver(); waiver != "" {
+		ui.Warn(w, "%s", waiver)
+	}
 	if msg, syncErr := workspace.SyncSandbox(ws, cfg.VCS.WorkBranch); syncErr != nil {
 		ui.Warn(w, "could not refresh the sandbox: %v", syncErr)
 	} else if msg != "" {
@@ -490,9 +501,25 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	// Forget the fix history. A ticket reopened later must not start with
 	// its attempts already spent.
 	_ = clearFixes(ws.Dir, key)
-	log.Emit(events.Event{Kind: events.KindMerge, Actor: events.ActorCI, Msg: "merged " + pr.URL})
+	// The branch the PR actually merged into, per its BaseRef; config is only
+	// the fallback when the forge did not say. Everything below that talks
+	// about WHERE the merge went uses this, because a message built from
+	// config once announced "on main" for a merge GitHub put on develop.
+	//
+	// Reported by ROLE as well as by name. "OR-99 merged" followed by "the
+	// work is on main" is a true sentence that reads as routine; "merged
+	// into the release branch main" is the same fact stated so that a
+	// misconfigured repository is obvious rather than plausible.
+	mergedInto := pr.BaseRef
+	if mergedInto == "" {
+		mergedInto = cfg.VCS.WorkBranch
+	}
+	role := branchRole(mergedInto, cfg.VCS.DefaultBranch)
+
+	log.Emit(events.Event{Kind: events.KindMerge, Actor: events.ActorCI,
+		Msg: "merged into the " + role + " " + mergedInto + ": " + pr.URL})
 	res.Changed = true
-	ui.Ok(w, "ok", "%s merged  %s", key, pr.URL)
+	ui.Ok(w, "ok", "%s merged into the %s %s  %s", key, role, mergedInto, pr.URL)
 
 	// What the ticket cost, on the ticket and on the terminal, immediately
 	// after the merge is announced. Here rather than at the end of this
@@ -505,14 +532,6 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	// ticket left develop behind on the machine its owner works on -- and
 	// the next `orion work` preflight refuses on a stale base.
 	refreshed := ""
-	// The branch the PR actually merged into, per its BaseRef; config is only
-	// the fallback when the forge did not say. Everything below that talks
-	// about WHERE the merge went uses this, because a message built from
-	// config once announced "on main" for a merge GitHub put on develop.
-	mergedInto := pr.BaseRef
-	if mergedInto == "" {
-		mergedInto = cfg.VCS.WorkBranch
-	}
 	if deps.Refresh != nil {
 		msg, err := deps.Refresh(entry.Source, mergedInto)
 		switch {

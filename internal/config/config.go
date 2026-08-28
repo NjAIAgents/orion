@@ -7,6 +7,7 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -244,8 +245,23 @@ type VCS struct {
 	// DefaultBranch is the release branch. Most protected, merged into only
 	// from WorkBranch.
 	DefaultBranch string `json:"default_branch"`
-	// WorkBranch is the integration branch and the default PR base.
+	// WorkBranch is the integration branch and the default PR base. It must
+	// differ from DefaultBranch: see Validate.
 	WorkBranch string `json:"work_branch"`
+	// AllowReleaseBranchMerges waives the rule that WorkBranch and
+	// DefaultBranch are different branches.
+	//
+	// The rule exists because Orion's responsibility ends when work merges
+	// into the integration branch; promoting that to the release branch is a
+	// human decision about what constitutes a release. Collapse the two and
+	// Orion merges agent output straight into the release branch -- not as a
+	// bug, but as configured, which is worse.
+	//
+	// A repository with genuinely one branch and no release process is a
+	// legitimate case, so this stays possible. It is a named key rather than
+	// a reachable side effect of editing one string, because giving up the
+	// human promotion step should take a sentence that says so.
+	AllowReleaseBranchMerges bool `json:"allow_release_branch_merges"`
 	// ProtectedBranches may not be pushed to directly. Defaults to both
 	// long-lived branches.
 	ProtectedBranches []string `json:"protected_branches"`
@@ -606,6 +622,50 @@ func normalize(c *Config) {
 	if len(c.Delegation.HighRiskPaths) == 0 {
 		c.Delegation.HighRiskPaths = d.Delegation.HighRiskPaths
 	}
+}
+
+// Validate refuses a configuration Orion must not act on.
+//
+// Only one thing is refused today: a branch model with no integration
+// branch. Orion merges agent output into vcs.work_branch, and the whole
+// safety of that rests on work_branch not being the branch a release is cut
+// from. Set them equal and every merge Orion performs is a release nobody
+// authorised -- reported accurately, which is what makes it hard to notice.
+//
+// The rule was documented in the provision package and encoded in a default
+// value, and enforced nowhere; a default is not a constraint. This is the
+// constraint.
+func (c Config) Validate() error {
+	if c.VCS.WorkBranch == "" || c.VCS.WorkBranch != c.VCS.DefaultBranch {
+		return nil
+	}
+	if c.VCS.AllowReleaseBranchMerges {
+		return nil
+	}
+	return fmt.Errorf(
+		"vcs.work_branch and vcs.default_branch are both %q, so Orion would merge "+
+			"agent work straight into the release branch.\n"+
+			"  Agent work lands on the integration branch; a human promotes it to the "+
+			"release branch. Collapsing the two removes the human from the release decision.\n"+
+			"  Fix: set vcs.work_branch to an integration branch (\"develop\" is the "+
+			"default). `orion init` creates it and switches to it when it does not exist yet.\n"+
+			"  Or, if this repository genuinely has one branch and no release process, "+
+			"set vcs.allow_release_branch_merges: true to say so on purpose.",
+		c.VCS.WorkBranch)
+}
+
+// ReleaseBranchWaiver describes what an active
+// vcs.allow_release_branch_merges is giving up, or "" when it is not in
+// force. An override nobody is reminded of is an override nobody remembers
+// making.
+func (c Config) ReleaseBranchWaiver() string {
+	if !c.VCS.AllowReleaseBranchMerges || c.VCS.WorkBranch != c.VCS.DefaultBranch {
+		return ""
+	}
+	return fmt.Sprintf("vcs.allow_release_branch_merges is on: %q is both the "+
+		"integration and the release branch, so Orion merges agent work directly "+
+		"into the release branch and there is no human promotion step left.",
+		c.VCS.WorkBranch)
 }
 
 // StateDir returns the absolute path to the state directory.
