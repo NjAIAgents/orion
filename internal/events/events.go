@@ -49,6 +49,7 @@ const (
 	KindBlocked  = "blocked"   // stopped, needs a person
 	KindFailed   = "failed"    // stopped, something broke
 	KindBudget   = "budget"    // a spend checkpoint fired
+	KindUsage    = "usage"     // what one agent run consumed, per actor
 	KindTool     = "tool"      // an agent used a tool, as it used it
 	KindSay      = "say"       // an agent said what it was doing
 	KindNote     = "note"      // anything else worth seeing

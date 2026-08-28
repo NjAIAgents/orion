@@ -77,8 +77,8 @@ func VerbFor(kind string) string {
 	case events.KindNote:
 		return VerbOK
 	}
-	// answer, decision, commit, push, pr, merge, refresh, run-end: something
-	// happened and it worked.
+	// answer, decision, commit, push, pr, merge, refresh, run-end, usage:
+	// something happened and it worked.
 	return VerbOK
 }
 

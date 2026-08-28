@@ -50,6 +50,19 @@ type Run struct {
 	OutputTokens  int    `json:"output_tokens"`
 	ContextWindow int    `json:"context_window,omitempty"`
 	Model         string `json:"model,omitempty"`
+	// The three input counts kept apart, alongside the billed sum above.
+	//
+	// The ledger only ever needs the sum -- what a week cost is one number --
+	// but a per-ticket report cannot use it: cache reads are billed at a
+	// fraction of fresh input, so a row that lumps them together misstates
+	// both the usage and the price of the same run. Reported separately here
+	// so the sum stays the thing the budget gates on and the report can still
+	// say which kind of token was spent.
+	PromptTokens      int `json:"prompt_tokens,omitempty"`       // input_tokens, cache excluded
+	CacheCreateTokens int `json:"cache_create_tokens,omitempty"` // written to cache
+	CacheReadTokens   int `json:"cache_read_tokens,omitempty"`   // served from cache
+	// Turns is num_turns, what the run reported about its own length.
+	Turns int `json:"turns,omitempty"`
 }
 
 // Ledger is the durable record plus which thresholds have been acknowledged.
