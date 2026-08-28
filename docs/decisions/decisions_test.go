@@ -51,3 +51,74 @@ func TestPrecedenceRuleIsAlsoInClaudeMd(t *testing.T) {
 		}
 	}
 }
+
+// README.md is the discoverability path ("read before re-proposing something
+// that looks like a gap"). A file present on disk but missing from the index
+// is exactly the kind of decision nobody can find.
+func TestReadmeIndexesEveryDecision(t *testing.T) {
+	b, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatalf("README.md: %v", err)
+	}
+	body := string(b)
+	for _, name := range expectedDecisions {
+		if !strings.Contains(body, name) {
+			t.Errorf("README.md: does not link %s", name)
+		}
+	}
+}
+
+// Structural section headers alone would still pass if a decision's content
+// were vague or facts wrong. These checks pin the specific facts the ticket
+// asked for, so a regression to the substance fails loudly rather than only
+// a regression to file shape.
+func TestDecisionContentMatchesTicket(t *testing.T) {
+	cases := []struct {
+		file     string
+		mustHave []string
+	}{
+		{
+			// OR-138's file-locking rationale must be folded into the storage ADR.
+			"0004-no-sqlite-file-based-storage.md",
+			[]string{"OR-138", "procsafe", "MkdirAll", "flock", "Windows"},
+		},
+		{
+			// Three of five superpowers ideas adopted natively, named explicitly.
+			"0002-superpowers-declined-as-dependency.md",
+			[]string{"OR-156", "OR-157", "OR-158", "execute-plan"},
+		},
+		{
+			"0003-ponytail-scoped-to-development.md",
+			[]string{"OR-160"},
+		},
+		{
+			"0005-agent-roster-is-global.md",
+			[]string{"OR-132"},
+		},
+		{
+			"0007-auto-effort-standing-preference.md",
+			[]string{"OR-134", "prompt-cache"},
+		},
+		{
+			"0008-parallelism-level-ordering.md",
+			[]string{"OR-143", "OR-144", "OR-145", "auto-rebase"},
+		},
+		{
+			"0009-canonical-slug-one-name.md",
+			[]string{"OR-149"},
+		},
+	}
+
+	for _, c := range cases {
+		b, err := os.ReadFile(c.file)
+		if err != nil {
+			t.Fatalf("%s: %v", c.file, err)
+		}
+		body := string(b)
+		for _, fact := range c.mustHave {
+			if !strings.Contains(body, fact) {
+				t.Errorf("%s: expected to mention %q", c.file, fact)
+			}
+		}
+	}
+}
