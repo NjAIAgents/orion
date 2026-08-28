@@ -74,7 +74,15 @@ if [ "$QUICK" = 0 ]; then
   # Orion writes the event log and the ring buffer from more than one
   # goroutine, and a data race there corrupts the record of what happened --
   # which is exactly the thing you need when something has gone wrong.
-  go test -race ./internal/events/ ./internal/supervisor/ ./internal/state/
+  # internal/state also shares a state dir across parallel worktree
+  # sessions, and internal/procsafe (OR-138) is the lock those sessions and
+  # any other same-ORION_HOME process rely on to not tear each other's writes.
+  #
+  # -race needs cgo, so this step cannot run with CGO_ENABLED=0. CI runs it
+  # on real hosts, where that's a non-issue -- don't "fix" it to match the
+  # release build (Makefile), which stays CGO_ENABLED=0 on purpose for its
+  # six-target cross-compile that has no local C toolchain to link against.
+  go test -race ./internal/events/ ./internal/supervisor/ ./internal/state/ ./internal/procsafe/
 fi
 
 step "coverage by package"

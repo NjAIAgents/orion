@@ -60,13 +60,27 @@ func breakerPre(in Input, cfg config.Config, store *state.Store) Decision {
 			in.ToolName == "Bash" && looksLikeVerification(in.Command()) {
 			return Allow("")
 		}
+		// The recovery line is TRIP-SPECIFIC. It used to be printed on every
+		// kind, worded as a conditional ("if the trip is unverified-edits...").
+		// Two agents in a row read that as "Bash is still open", tried Bash on
+		// a LOOP trip, were refused, and reported the breaker as
+		// self-contradictory (OR-143, OR-156). The sentence was technically
+		// true and reliably misleading, which for a message whose whole job is
+		// to be obeyed is the same as being wrong.
+		recovery := "  There is no self-service recovery from this trip. Stop here.\n"
+		if sess.Tripped == "breaker/unverified-edits" {
+			recovery = "  Running the tests or the build IS still allowed, and is the way out:\n" +
+				"  a PASSING verify clears this trip and you may continue.\n"
+		}
 		return Block("%s already tripped this session (%s).\n"+
 			"  Stop and hand back to the human. Do not retry, do not work around it.\n"+
-			"  Write what you learned to %s/BLOCKED.md, then summarize and stop.\n"+
-			"  If the trip is unverified-edits, running the tests or build is still\n"+
-			"  allowed: a PASSING verify clears it and you may continue.\n"+
+			"  Write what you learned to %s/BLOCKED.md, then COMMIT whatever compiles\n"+
+			"  and summarize. Uncommitted work described in a plan file cannot be resumed.\n"+
+			"%s"+
+			"  The policy for every trip kind is docs/BREAKERS.md; it is the answer,\n"+
+			"  so do not stop to ask which recoveries exist.\n"+
 			"  To resume after review: orion reset --session %s",
-			sess.Tripped, sess.TrippedDetail, cfg.Paths.Plans, sess.ID)
+			sess.Tripped, sess.TrippedDetail, cfg.Paths.Plans, recovery, sess.ID)
 	}
 
 	// Wall clock is checked before the call rather than after, so a long

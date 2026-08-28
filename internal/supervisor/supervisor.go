@@ -501,6 +501,11 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = ws.RepoDir()
 	cmd.Env = childEnv(ws)
+	// New process group so a kill can take the whole tree with it -- see
+	// terminate() below. claude -p runs bash, which runs whatever the agent
+	// invoked (go test, npm, a dev server, docker); without this, killing
+	// only cmd.Process leaves those grandchildren orphaned and running.
+	setNewProcessGroup(cmd)
 	// Four destinations, and NOT the terminal: with stream-json the raw
 	// stream is machine output, and printing it would replace the missing
 	// progress with unreadable progress. The activity writer produces the
@@ -524,6 +529,15 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	res := &Result{LogPath: logPath}
 	select {
 	case err := <-done:
+		// claude itself has exited, but a background job it started (a dev
+		// server, a test run left with `&`) is a group member that outlives
+		// its parent, not a child that dies with it. This is not just the
+		// timeout path's problem: a breaker trip ends the agent's turn on
+		// this same branch -- an ordinary exit, no wall clock involved -- so
+		// an orphan left running here is invisible to terminate() entirely.
+		// Sweeping with SIGKILL is a no-op when the group is already empty,
+		// so there is no cost to doing it on every exit.
+		_ = killGroup(cmd)
 		res.Duration = time.Since(started)
 		res.ExitCode = exitCode(err)
 		res.Reason = classify(res.ExitCode, ws)
@@ -644,15 +658,31 @@ func appendLog(path, line string) {
 
 // terminate asks politely, then insists. SIGINT lets Claude Code flush
 // its transcript; without that flush the log is useless for diagnosis.
+//
+// Both steps signal the whole process group (see setNewProcessGroup), not
+// just cmd.Process, because claude runs bash and bash runs whatever the
+// agent invoked. The SIGKILL sweep runs unconditionally, even when the
+// direct child already exited on its own during the polite step: a
+// background job the agent started with `cmd &` gets SIGINT and SIGQUIT
+// set to ignored by the shell per POSIX (so an interactive Ctrl-C in a
+// script does not kill its background work), so the direct child (bash)
+// can die on the SIGINT above while the grandchild it left running never
+// saw a signal it could act on. Only SIGKILL, which cannot be ignored,
+// actually clears it. Sweeping a group that is already empty is a
+// harmless no-op, so there is no cost to always doing it.
 func terminate(cmd *exec.Cmd, done <-chan error) {
 	if cmd.Process == nil {
 		return
 	}
-	_ = cmd.Process.Signal(os.Interrupt)
+	_ = interruptGroup(cmd)
+	waited := false
 	select {
 	case <-done:
+		waited = true
 	case <-time.After(graceTimeout):
-		_ = cmd.Process.Kill()
+	}
+	_ = killGroup(cmd)
+	if !waited {
 		<-done
 	}
 }

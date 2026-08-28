@@ -6,6 +6,54 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.7.8
+
+### Added
+
+- Nine architecture decisions from 2026-08-28 are now recorded under
+  `docs/decisions/` instead of living only in Jira ticket descriptions:
+  the Orion/toolkit precedence rule, declining superpowers as a
+  dependency, scoping ponytail to development, no SQLite, the global
+  agent roster, `orion new`/plan as sequential phases, standing auto
+  effort, parallelism level ordering, and the canonical slug. The
+  precedence rule is also now stated in a new root `CLAUDE.md`, since it
+  binds future integration work rather than only recording a past choice
+  (OR-161).
+- `docs/BREAKERS.md`: what each breaker means, which recoveries exist for
+  which trip, what an agent should do when one fires, and what a human should
+  do afterwards. Two runs stopped to ask this and an advisor correctly
+  refused to invent the answer for lack of a written spec. The block message
+  now points here, so the next run reads the policy instead of asking
+  (OR-169).
+
+### Changed
+
+- The CI fix loop now requires the agent to state a root cause, distinct from
+  the failure log, before it writes a patch. A symptom-derived fix is the
+  most common way a fix attempt gets spent without moving the ticket forward,
+  and the loop only gets three per ticket (OR-157).
+
+### Fixed
+
+- Ending a `claude -p` run now kills its whole process tree on **every** exit
+  path, not only the wall-clock timeout. A grandchild the agent spawned via
+  `bash` (a test run, `npm`, a dev server, `docker`) previously survived the
+  kill and kept running orphaned, holding the worktree, burning CPU, and
+  possibly still writing files after Orion reported the run stopped. Unix
+  only for now; Windows keeps today's direct-child-only kill (OR-141).
+- A tripped breaker no longer advertises a recovery it does not have. The
+  block message printed "if the trip is unverified-edits, running the tests
+  or build is still allowed" on **every** trip kind, and two agents in a row
+  read that on a loop trip as "Bash is open", tried it, were refused, and
+  reported the breaker as contradicting itself. The line is now specific to
+  the trip that actually fired: a sealed trip says plainly that there is no
+  self-service recovery, and only an unverified-edits trip offers the verify
+  as the way out (OR-169).
+- A tripped session is now told to **commit whatever compiles** before it
+  stops, not only to write its stop-note. A branch with commits can be
+  resumed; a plan file describing uncommitted work cannot, and one run
+  stranded a half-written function exactly that way (OR-169).
+
 ## v0.7.7
 
 ### Fixed

@@ -196,6 +196,15 @@ func quote(s string) string {
 // an agent that "fixes" CI by weakening the test that caught it, which
 // produces a green build and a defect, and is the single most likely wrong
 // move available here.
+//
+// ROOT CAUSE FIRST requires a stated root cause before any patch, because a
+// patch derived from the symptom in the log often just addresses the
+// symptom -- that is what burns a fix attempt, and the ceiling is three
+// (ci.max_fix_attempts), so a wasted attempt is a third of the budget. The
+// root cause is asked for as the first line of the closing message on
+// purpose: OR-129 already surfaces that message in the console, so the
+// diagnosis becomes visible there instead of buried in a log file nobody
+// opens.
 func FixPrompt(key, branch, failure string) string {
 	return strings.Join([]string{
 		"CI failed on your branch. Fix it.",
@@ -206,10 +215,18 @@ func FixPrompt(key, branch, failure string) string {
 		"THE FAILURE",
 		strings.TrimSpace(failure),
 		"",
-		"WHAT TO DO",
+		"ROOT CAUSE FIRST",
 		"Reproduce it locally first -- run ./scripts/test.sh if it exists, or the",
 		"project's own suite. A fix for a failure you have not seen is a guess.",
-		"Then make the smallest change that makes it pass.",
+		"Before you write the patch, state the root cause in one sentence: not",
+		"what the log shows, but why the code produces it. A patch aimed at the",
+		"symptom the log names, rather than the reason for it, is the single",
+		"most common way a fix attempt gets spent without moving the ticket",
+		"forward.",
+		"",
+		"WHAT TO DO",
+		"Make the smallest change that fixes the root cause you stated, not",
+		"the symptom.",
 		"",
 		"WHAT NOT TO DO",
 		"Do not delete, skip, weaken or rewrite a test to make it pass unless the",
@@ -229,8 +246,10 @@ func FixPrompt(key, branch, failure string) string {
 		"the answer is not available to you.",
 		"",
 		"COMMITS",
-		"Commit on this branch. Say in the message what was broken and why the",
-		"change fixes it; 'fix CI' tells a reviewer nothing they did not know.",
+		"Commit on this branch. Say in the message what the root cause was and",
+		"why the change fixes it; 'fix CI' tells a reviewer nothing they did not",
+		"know. Lead your closing message with the root cause, in one sentence,",
+		"before anything else -- that line is what carries into the console.",
 		"Do not push, merge, or open a pull request: Orion does that.",
 	}, "\n")
 }

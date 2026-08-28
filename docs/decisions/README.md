@@ -1,0 +1,15 @@
+# Architecture decisions
+
+One file per decision: what was decided, why, and what it binds later work
+to. Read before re-proposing something that looks like a gap — it may
+already have been decided against, on purpose.
+
+- [0001](0001-precedence-rule-orion-owns-orchestration.md) — Orion owns orchestration; a toolkit supplies methodology inside a stage, never control flow across stages
+- [0002](0002-superpowers-declined-as-dependency.md) — Superpowers declined as a dependency; three of five ideas adopted natively
+- [0003](0003-ponytail-scoped-to-development.md) — Ponytail kept, scoped to development only
+- [0004](0004-no-sqlite-file-based-storage.md) — No SQLite; config, event logs and the audit trail stay as files
+- [0005](0005-agent-roster-is-global.md) — Agent roster is global, not per-repo
+- [0006](0006-new-and-plan-are-sequential-phases.md) — `orion new` and the plan stage are sequential phases, not two front doors
+- [0007](0007-auto-effort-standing-preference.md) — Auto effort is a standing preference, not per-ticket
+- [0008](0008-parallelism-level-ordering.md) — Parallelism ships level 3, then level 1, then level 2
+- [0009](0009-canonical-slug-one-name.md) — One canonical slug names the Jira project, workspace and git repo

@@ -254,6 +254,55 @@ func TestBreakerPreBlocksAfterTrip(t *testing.T) {
 	}
 }
 
+// The block message must describe the recovery THIS trip actually has.
+//
+// It used to print "if the trip is unverified-edits, running the tests or
+// build is still allowed" on every kind. Two agents in a row read that on a
+// LOOP trip as "Bash is open", tried Bash, were refused, and reported the
+// breaker as contradicting itself (OR-143, OR-156). Conditionally true and
+// reliably misread is, for a message whose only job is to be obeyed, the
+// same as wrong.
+func TestTheBlockMessageOnlyOffersRecoveryThatExists(t *testing.T) {
+	dir := t.TempDir()
+	store := state.New(dir)
+	cfg := testCfg()
+
+	msgFor := func(kind string) string {
+		if _, err := store.Update(kind, func(s *state.Session) {
+			s.Tripped, s.TrippedDetail = kind, "test"
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return Breaker(Input{
+			HookEventName: "PreToolUse", SessionID: kind,
+			ToolName: "Read", ToolInput: json.RawMessage(`{"file_path":"x.go"}`),
+		}, cfg, store).Msg
+	}
+
+	loop := msgFor("breaker/loop")
+	if strings.Contains(loop, "tests or the build IS still allowed") {
+		t.Errorf("a loop trip has no verify escape hatch; the message must not imply one:\n%s", loop)
+	}
+	if !strings.Contains(loop, "no self-service recovery") {
+		t.Errorf("a sealed trip must say so plainly:\n%s", loop)
+	}
+
+	unverified := msgFor("breaker/unverified-edits")
+	if !strings.Contains(unverified, "tests or the build IS still allowed") {
+		t.Errorf("unverified-edits DOES have a way out and must say so:\n%s", unverified)
+	}
+
+	// Both still point at the stop-note and the human reset, whatever the kind.
+	for kind, msg := range map[string]string{"loop": loop, "unverified-edits": unverified} {
+		if !strings.Contains(msg, "BLOCKED.md") {
+			t.Errorf("%s: every trip must name the stop-note", kind)
+		}
+		if !strings.Contains(msg, "orion reset --session") {
+			t.Errorf("%s: every trip must tell the human how to resume", kind)
+		}
+	}
+}
+
 // The deadlock found on OR-117's runs: an unverified-edits trip blocked the
 // go build that would clear it AND the BLOCKED.md write the trip message
 // demands. Both recovery paths must stay open; everything else stays sealed.
