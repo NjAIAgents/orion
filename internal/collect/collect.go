@@ -201,6 +201,13 @@ func Run(opts Options, deps Deps) []Result {
 
 	keys := opts.Keys
 	if len(keys) == 0 {
+		// A line before the search, not after it. The Jira client itself
+		// times out at 20s, but a person watching a freshly started
+		// `orion watch` has no way to tell "about to check" from "hung"
+		// until SOMETHING appears -- and this is the first network call
+		// every tick makes, before anything else has had a chance to print
+		// (OR-128).
+		fmt.Fprintln(w, "checking for tickets awaiting CI...")
 		found, err := waiting(deps.Jira, opts.Home)
 		if err != nil {
 			ui.Fail(w, "%v", err)

@@ -304,3 +304,29 @@ func TestNoRegisteredProjectsMeansNoSearch(t *testing.T) {
 func bindTo(home, wsID, source string) error {
 	return registry.Bind(home, registry.Entry{Key: "FCIA", Source: source, Workspace: wsID})
 }
+
+// OR-128: a line must appear before the Jira search, not only after it.
+// `orion watch`'s very first network call of every tick is this one, and a
+// person watching a freshly started run has no way to tell "about to check"
+// from "hung" until something appears on the console.
+func TestPrintsBeforeSearchingForWaitingTickets(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ORION_HOME", home)
+	if err := bindTo(home, "ws-1", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	jira := newTracker()
+	var buf bytes.Buffer
+
+	Run(Options{Home: home, Out: &buf}, Deps{Jira: jira})
+
+	out := buf.String()
+	checkingAt := strings.Index(out, "checking for tickets awaiting CI")
+	doneAt := strings.Index(out, "nothing is waiting on CI")
+	if checkingAt < 0 {
+		t.Fatalf("no pre-search line printed, got: %s", out)
+	}
+	if doneAt < 0 || checkingAt > doneAt {
+		t.Errorf("the checking line must come before the result, got: %s", out)
+	}
+}
