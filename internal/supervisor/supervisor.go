@@ -35,6 +35,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/discovery"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
+	"github.com/orion-sdlc/orion/internal/procsafe"
 	"github.com/orion-sdlc/orion/internal/quota"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -382,11 +383,20 @@ func recordUsage(ws *workspace.Workspace, stage, out string) {
 		return
 	}
 	run.Workspace, run.Stage = ws.ID, stage
-	ledger, _ := budget.Load(workspace.Home())
-	ledger.Record(run)
-	if err := ledger.Save(workspace.Home()); err != nil {
-		fmt.Fprintf(os.Stderr, "orion: could not record usage: %v\n", err)
-		return
+	// Locked load-modify-save. Two watchers in two terminals record runs at
+	// the same moment, and the unlocked version silently dropped one of them
+	// (OR-138). A lock timeout still writes; it is reported, not fatal.
+	if err := budget.Update(workspace.Home(), func(l *budget.Ledger) {
+		l.Record(run)
+	}); err != nil {
+		if errors.Is(err, procsafe.ErrLockTimeout) {
+			fmt.Fprintf(os.Stderr,
+				"orion: recorded usage without the lock (%v); if two watchers are "+
+					"running, spend may be undercounted for this run\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "orion: could not record usage: %v\n", err)
+			return
+		}
 	}
 	// Context pressure is NOT computed here any more. The result JSON reports
 	// cumulative session usage, which cannot answer "how full did the context

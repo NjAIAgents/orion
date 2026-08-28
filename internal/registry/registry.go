@@ -22,6 +22,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/orion-sdlc/orion/internal/procsafe"
 )
 
 // Entry is one adopted repository.
@@ -76,6 +78,9 @@ func Load(home string) (*File, error) {
 
 // Save writes the registry with the same owner-only mode as the rest of
 // ORION_HOME: it records local paths and channel ids.
+//
+// Prefer Update for anything that reads the registry first. Save alone
+// cannot protect a read-modify-write; see Update.
 func Save(home string, f *File) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
@@ -85,11 +90,42 @@ func Save(home string, f *File) error {
 	if err != nil {
 		return err
 	}
-	tmp := path(home) + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
+	return procsafe.WriteFile(path(home), append(b, '\n'), 0o600)
+}
+
+func lockPath(home string) string { return filepath.Join(home, "repos.lock") }
+
+// Update applies fn to the registry under a cross-process lock and saves the
+// result (OR-138).
+//
+// Bind and Unbind both load, mutate and save. Unlocked, two processes doing
+// that concurrently lose one of the two edits: `orion init` in one repository
+// while another is being bound could drop a binding, and a dropped binding
+// means the queue cannot find the repository that owns a project key.
+// Rarer than the budget race because the registry is written only during init
+// and provision, but the same defect.
+//
+// fn may return an error to abort without writing, which is how Bind refuses
+// a conflicting key while still holding the lock that made the check sound.
+//
+// A lock timeout proceeds unserialized and is returned alongside a successful
+// write, matching budget.Update. Callers should check errors.Is rather than
+// treating any error as failure.
+func Update(home string, fn func(*File) error) error {
+	release, lockErr := procsafe.Lock(lockPath(home))
+	defer release()
+
+	f, err := Load(home)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path(home))
+	if err := fn(f); err != nil {
+		return err
+	}
+	if err := Save(home, f); err != nil {
+		return err
+	}
+	return lockErr
 }
 
 // Bind records a repository against a project key.
@@ -109,36 +145,34 @@ func Bind(home string, e Entry) error {
 	}
 	e.Source = abs
 
-	f, err := Load(home)
-	if err != nil {
-		return err
-	}
-	if prev, ok := f.Repos[e.Key]; ok && !sameDir(prev.Source, e.Source) {
-		return fmt.Errorf("project %s is already bound to %s.\n"+
-			"  Binding %s to it as well would make the queue ambiguous: work for a\n"+
-			"  %s ticket could land in either repository.\n"+
-			"  Use a different project key here, or run: orion unbind %s",
-			e.Key, prev.Source, e.Source, e.Key, e.Key)
-	}
-	if e.BoundAt.IsZero() {
-		e.BoundAt = time.Now().UTC()
-	}
-	f.Repos[e.Key] = e
-	return Save(home, f)
+	// Under lock: the already-bound check below is only sound if nothing can
+	// bind that key between the check and the write.
+	return Update(home, func(f *File) error {
+		if prev, ok := f.Repos[e.Key]; ok && !sameDir(prev.Source, e.Source) {
+			return fmt.Errorf("project %s is already bound to %s.\n"+
+				"  Binding %s to it as well would make the queue ambiguous: work for a\n"+
+				"  %s ticket could land in either repository.\n"+
+				"  Use a different project key here, or run: orion unbind %s",
+				e.Key, prev.Source, e.Source, e.Key, e.Key)
+		}
+		if e.BoundAt.IsZero() {
+			e.BoundAt = time.Now().UTC()
+		}
+		f.Repos[e.Key] = e
+		return nil
+	})
 }
 
 // Unbind forgets a project key.
 func Unbind(home, key string) error {
-	f, err := Load(home)
-	if err != nil {
-		return err
-	}
 	key = NormalizeKey(key)
-	if _, ok := f.Repos[key]; !ok {
-		return fmt.Errorf("project %s is not registered", key)
-	}
-	delete(f.Repos, key)
-	return Save(home, f)
+	return Update(home, func(f *File) error {
+		if _, ok := f.Repos[key]; !ok {
+			return fmt.Errorf("project %s is not registered", key)
+		}
+		delete(f.Repos, key)
+		return nil
+	})
 }
 
 // Lookup resolves a project key, or an ISSUE key such as FCIA-6.
