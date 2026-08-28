@@ -1933,8 +1933,11 @@ func runBudget(args []string) {
 		}
 		// Acknowledge everything at or below, so returning after a long gap
 		// does not stop the next four runs in a row.
-		ledger.AckAll(pct)
-		exitOn(ledger.Save(home))
+		//
+		// Re-read under lock rather than saving the copy loaded above: a
+		// watcher may have recorded runs while the operator was reading the
+		// status, and saving this stale snapshot would discard them (OR-138).
+		exitOn(budget.Update(home, func(l *budget.Ledger) { l.AckAll(pct) }))
 		fmt.Printf("acknowledged the %d%% checkpoint. Runs may continue.\n", pct)
 		fmt.Println("The next checkpoint will stop again; this is consent for one step, not the rest.")
 

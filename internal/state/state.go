@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/orion-sdlc/orion/internal/procsafe"
 )
 
 // Session holds every counter a hook can consult or increment.
@@ -80,60 +82,29 @@ func (s *Store) lockPath(id string) string {
 	return filepath.Join(s.dir, sanitize(id)+".lock")
 }
 
-const (
-	lockTimeout = 3 * time.Second
-	lockStale   = 30 * time.Second
-)
-
-// acquire takes the per-session lock, breaking it if it is older than
-// lockStale. A crashed hook must not wedge every later invocation, and a
-// wedged hook that blocks all tool use is worse than a briefly racy
-// counter.
-// acquire takes the per-session lock.
+// acquire takes the per-session lock, breaking it if it has gone stale. A
+// crashed hook must not wedge every later invocation, and a wedged hook that
+// blocks all tool use is worse than a briefly racy counter.
 //
-// It NEVER returns a nil release function. Every caller does `defer
-// release()`, so a nil here is an immediate panic, and a panic inside a hook
-// means Claude Code receives a crash instead of a verdict: the guardrail
-// stops guarding at the exact moment it is being exercised hardest. Failure
-// degrades to running unlocked and reporting it, never to a nil func.
+// The implementation lives in internal/procsafe, which is this code lifted
+// out so budget and registry could stop growing a second copy of it (OR-138).
+// The contract is unchanged, including the one that matters most here: it
+// NEVER returns a nil release function, because every caller does `defer
+// release()` and a panic inside a hook means Claude Code receives a crash
+// instead of a verdict.
 func (s *Store) acquire(id string) (func(), error) {
-	noop := func() {}
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
-		return noop, err
+		return func() {}, err
 	}
-	lp := s.lockPath(id)
-	deadline := time.Now().Add(lockTimeout)
-	for {
-		err := os.Mkdir(lp, 0o755)
-		if err == nil {
-			return func() { _ = os.Remove(lp) }, nil
-		}
-		// Not just ErrExist. On Windows a directory pending deletion by a
-		// racing goroutine reports access-denied rather than already-exists,
-		// so treating anything but ErrExist as fatal turns ordinary
-		// contention into a crash. Keep retrying until the deadline and let
-		// the timeout below decide.
-		if !errors.Is(err, os.ErrExist) && !errors.Is(err, os.ErrPermission) {
-			return noop, err
-		}
-		if fi, statErr := os.Stat(lp); statErr == nil {
-			if time.Since(fi.ModTime()) > lockStale {
-				_ = os.Remove(lp)
-				continue
-			}
-		}
-		if time.Now().After(deadline) {
-			// Proceed unlocked rather than block the session. Report it so
-			// the degradation is visible in the transcript.
-			return noop, ErrLockTimeout
-		}
-		time.Sleep(15 * time.Millisecond)
-	}
+	return procsafe.Lock(s.lockPath(id))
 }
 
 // ErrLockTimeout signals the lock could not be taken and the update ran
 // unserialized. Counters may undercount under heavy parallelism.
-var ErrLockTimeout = errors.New("orion: state lock timeout; counter update ran unserialized")
+//
+// Aliased rather than redefined so `errors.Is(err, state.ErrLockTimeout)` in
+// internal/hook keeps working while the lock itself lives in procsafe.
+var ErrLockTimeout = procsafe.ErrLockTimeout
 
 // Update applies fn to the session under lock and persists the result.
 // The mutated session is returned so the caller can make its decision

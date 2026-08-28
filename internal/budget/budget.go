@@ -25,6 +25,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/orion-sdlc/orion/internal/procsafe"
 )
 
 // Window is the accounting period. Seven days to match how subscription
@@ -130,6 +132,8 @@ func Load(home string) (*Ledger, error) {
 	return l, nil
 }
 
+func lockPath(home string) string { return filepath.Join(home, "usage.lock") }
+
 func (l *Ledger) Save(home string) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
@@ -138,12 +142,40 @@ func (l *Ledger) Save(home string) error {
 	if err != nil {
 		return err
 	}
-	tmp := path(home) + ".tmp"
-	// Spend, token counts, workspace ids and the ideas behind them.
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	// Spend, token counts, workspace ids and the ideas behind them, so
+	// owner-only. The temp file is per-process: see procsafe.WriteFile.
+	return procsafe.WriteFile(path(home), b, 0o600)
+}
+
+// Update applies fn to the ledger under a cross-process lock and saves the
+// result. This is the ONLY correct way to modify the ledger when more than
+// one Orion process may be running (OR-138).
+//
+// Save alone is not enough. The lost update happens between the read and the
+// write: two watchers each load the same ledger, each append their own run,
+// and the second rename discards the first one's spend. Locking only the
+// write would leave that untouched. So the lock spans load, mutate and save.
+//
+// A lock timeout does not fail the update. Losing an accounting row is bad;
+// stalling a watcher because another watcher is mid-write is worse. The
+// update proceeds unserialized and procsafe.ErrLockTimeout is returned
+// alongside a successful write, so the caller can report the degradation
+// without treating it as a failure. Callers should check errors.Is.
+func Update(home string, fn func(*Ledger)) error {
+	release, lockErr := procsafe.Lock(lockPath(home))
+	defer release()
+
+	l, loadErr := Load(home)
+	fn(l)
+	if err := l.Save(home); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path(home))
+	if lockErr != nil {
+		return lockErr
+	}
+	// A corrupt ledger is reported by Load and started fresh rather than
+	// refused; surface that here rather than swallowing it.
+	return loadErr
 }
 
 // Record appends a run.
