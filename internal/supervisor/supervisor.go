@@ -529,6 +529,15 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	res := &Result{LogPath: logPath}
 	select {
 	case err := <-done:
+		// claude itself has exited, but a background job it started (a dev
+		// server, a test run left with `&`) is a group member that outlives
+		// its parent, not a child that dies with it. This is not just the
+		// timeout path's problem: a breaker trip ends the agent's turn on
+		// this same branch -- an ordinary exit, no wall clock involved -- so
+		// an orphan left running here is invisible to terminate() entirely.
+		// Sweeping with SIGKILL is a no-op when the group is already empty,
+		// so there is no cost to doing it on every exit.
+		_ = killGroup(cmd)
 		res.Duration = time.Since(started)
 		res.ExitCode = exitCode(err)
 		res.Reason = classify(res.ExitCode, ws)
