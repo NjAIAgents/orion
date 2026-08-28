@@ -32,10 +32,11 @@ import (
 // to be scrolled past to reach the diff is one nobody reads to the end of.
 const maxPRBody = 8000
 
-// Describer drafts a pull request title and body. Same signature as
-// advise.Runner, because it is the same kind of thing: a read-only agent
-// turn in a directory.
-type Describer func(dir, model, prompt string) (string, error)
+// Describer drafts a pull request title and body. Nearly advise.Runner's
+// signature, because it is the same kind of thing -- a read-only agent turn
+// in a directory -- with the actor's effort alongside its model, so the
+// registry decides how hard this run thinks as well as what it thinks on.
+type Describer func(dir, model, effort, prompt string) (string, error)
 
 // describePR asks for a description, and returns whether it got one.
 //
@@ -47,10 +48,11 @@ func describePR(run Describer, dir, key, fallbackTitle, fallbackBody string) (st
 	if run == nil {
 		return fallbackTitle, fallbackBody, false
 	}
-	// The describer's own model, from the registry rather than a literal, so
-	// the line that reports what wrote the description cannot disagree with
-	// what actually did.
-	out, err := run(dir, actors.Model(events.ActorDescriber), describePrompt(key))
+	// The describer's own model and effort, from the registry rather than a
+	// literal, so the line that reports what wrote the description cannot
+	// disagree with what actually did.
+	out, err := run(dir, actors.Model(events.ActorDescriber),
+		actors.Effort(events.ActorDescriber), describePrompt(key))
 	if err != nil {
 		return fallbackTitle, fallbackBody, false
 	}

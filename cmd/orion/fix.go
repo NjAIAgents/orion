@@ -6,12 +6,39 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
+
+// fixOptions is everything the ci-fix run is configured with except the
+// activity callback, which is a closure over the console writer.
+//
+// Separated from fixRun so what the run is actually configured with can be
+// asserted without standing up a workspace and a worktree.
+func fixOptions(key, branch, detail string, cfg config.Config) supervisor.Options {
+	return supervisor.Options{
+		Stage:      "ci-fix",
+		Prompt:     supervisor.FixPrompt(key, branch, detail),
+		MaxMinutes: cfg.Limits.MaxSessionMinutes,
+		MaxTurns:   cfg.Limits.MaxToolCalls,
+		// Attributed to the devops engineer and to the ticket, so the fix
+		// loop's spend lands in the ticket's cost report rather than
+		// disappearing: a re-entry is another run for the same ticket, and
+		// three of them is where a cheap ticket becomes an expensive one.
+		//
+		// Attributed AND run as the devops engineer: the roster's model and
+		// effort go to the CLI too, or the cost report names an actor that
+		// never ran (OR-133). Empty means the CLI's own setting, so an
+		// operator who configures nothing gets what they configured.
+		Actor: events.ActorDevOps, Key: key,
+		Model:  actors.Model(events.ActorDevOps),
+		Effort: actors.Effort(events.ActorDevOps),
+	}
+}
 
 // fixRun sends a CI failure back to an agent on the branch that caused it.
 //
@@ -61,22 +88,13 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, string,
 	jobWS := *ws
 	jobWS.RepoPath = dir
 
-	res, err := supervisor.Run(&jobWS, supervisor.Options{
-		Stage:      "ci-fix",
-		Prompt:     supervisor.FixPrompt(key, branch, detail),
-		MaxMinutes: cfg.Limits.MaxSessionMinutes,
-		MaxTurns:   cfg.Limits.MaxToolCalls,
-		// Attributed to the devops engineer and to the ticket, so the fix
-		// loop's spend lands in the ticket's cost report rather than
-		// disappearing: a re-entry is another run for the same ticket, and
-		// three of them is where a cheap ticket becomes an expensive one.
-		Actor: events.ActorDevOps, Key: key,
-		OnActivity: func(a supervisor.Activity) {
-			if a.Kind == "tool" {
-				ui.Ok(w, "working", "%s %s", a.Tool, a.Detail)
-			}
-		},
-	})
+	o := fixOptions(key, branch, detail, cfg)
+	o.OnActivity = func(a supervisor.Activity) {
+		if a.Kind == "tool" {
+			ui.Ok(w, "working", "%s %s", a.Tool, a.Detail)
+		}
+	}
+	res, err := supervisor.Run(&jobWS, o)
 	if err != nil {
 		return false, "", err
 	}

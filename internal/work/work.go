@@ -458,6 +458,12 @@ func one(key string, opts Options, deps Deps) (res Result) {
 
 	runRes, runErr := deps.Supervise(&jobWS, supervisor.Options{
 		Stage: "ticket", Prompt: prompt,
+		// The roster's own model and effort, not the operator's CLI defaults.
+		// Empty stays empty: the banner above reports what the registry says
+		// ran, and a run configured from anywhere else would make that line
+		// a claim about a different agent (OR-133).
+		Model:      actors.Model(events.ActorImplementer),
+		Effort:     actors.Effort(events.ActorImplementer),
 		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
 		OnActivity: activityLogger(log, w, key, events.ActorImplementer),
@@ -566,6 +572,8 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		runRes, runErr = deps.Supervise(&jobWS, supervisor.Options{
 			Stage: "ticket", Resume: runRes.SessionID,
 			Prompt:     AnswerMessage(ans, rel),
+			Model:      actors.Model(events.ActorImplementer),
+			Effort:     actors.Effort(events.ActorImplementer),
 			MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 			MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
 			OnActivity: activityLogger(log, w, key, events.ActorImplementer),
