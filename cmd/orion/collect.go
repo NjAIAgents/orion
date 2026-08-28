@@ -120,11 +120,12 @@ func prStatus(dir, branch string) (collect.PR, error) {
 	// recognised as such. Without them a conflict looked like any other merge
 	// failure, and the retry-on-failure path re-attempted an impossible merge
 	// every tick forever.
-	cmd := exec.Command("gh", "pr", "view", branch,
-		"--json", "url,state,mergedAt,statusCheckRollup,mergeable,headRefOid,baseRefName")
 	// The repository comes from the working directory. Getting this wrong is
-	// what broke openPR on the first real run.
-	cmd.Dir = dir
+	// what broke openPR on the first real run. Bounded by ghTimeout (OR-128):
+	// a hung gh used to block orion watch's whole loop indefinitely.
+	cmd, cancel := ghCommand(dir, "pr", "view", branch,
+		"--json", "url,state,mergedAt,statusCheckRollup,mergeable,headRefOid,baseRefName")
+	defer cancel()
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -278,8 +279,10 @@ func mergePR(dir, branch, reason, strategy string) error {
 	if flag != "--rebase" {
 		args = append(args, "--body", reason)
 	}
-	cmd := exec.Command("gh", args...)
-	cmd.Dir = dir
+	// Bounded by ghTimeout (OR-128): a hung merge call must not block the
+	// watcher forever with no line on the console to say why.
+	cmd, cancel := ghCommand(dir, args...)
+	defer cancel()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%v\n%s", err, strings.TrimSpace(string(out)))
 	}

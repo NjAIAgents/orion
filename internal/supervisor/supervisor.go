@@ -527,6 +527,19 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 		// because the WINDOW it must be divided by is not always on the
 		// stream -- the caller has the result JSON, which is.
 		res.PeakContext, res.ContextWindow = activity.Context()
+		// A process that exits 0 without ever emitting the stream's own
+		// "result" line did not finish -- it was cut off mid-run (a sandbox
+		// rejection killing the CLI, an OOM, a crash after a partial flush).
+		// Left alone this reads as a clean success with an empty SessionID
+		// and no cost recorded, and the caller (orion watch) never learns
+		// anything went wrong (OR-127). Re-report it as the failure it is,
+		// through the same Reason/ExitCode the caller already checks.
+		if res.ExitCode == 0 && !activity.SawResult() {
+			res.ExitCode = 1
+			res.Reason = "claude exited without ever emitting a stream result: " +
+				"the process was cut off mid-run rather than finishing"
+			fmt.Fprintf(logFile, "\n[orion] %s\n", res.Reason)
+		}
 	case <-ctx.Done():
 		res.Killed = true
 		res.Duration = time.Since(started)
