@@ -7,6 +7,7 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,6 +133,27 @@ type CI struct {
 	RequireUpToDate bool `json:"require_up_to_date"`
 }
 
+// Collect configures the pass that reconciles a pull request after CI.
+type Collect struct {
+	// AutoRebase replays a branch that is BEHIND its base and merges
+	// CLEANLY onto that base, force-pushes it with a lease, and lets the
+	// checks re-run against what would actually be merged.
+	//
+	// ON by default, and the only automatic rewrite of a branch in Orion.
+	// It is safe to default on because it does not choose anything: git has
+	// already said the merge is clean, so the rebase has one possible
+	// result. Contrast automatic conflict resolution, which decides.
+	//
+	// The alternative is not "a human reviews it" -- require_up_to_date
+	// makes every merge invalidate every other open pull request, so the
+	// alternative is a person typing the same three commands once per merge
+	// per open branch, which grows with the square of the queue.
+	//
+	// Turn it OFF for a repository you do not own: however safe the rewrite,
+	// a force-push to somebody else's branch is theirs to authorise.
+	AutoRebase bool `json:"auto_rebase"`
+}
+
 // Budget caps what Orion spends over a rolling seven days.
 //
 // NOT the plan limit. That one is now read from the runs themselves: the CLI
@@ -244,8 +266,23 @@ type VCS struct {
 	// DefaultBranch is the release branch. Most protected, merged into only
 	// from WorkBranch.
 	DefaultBranch string `json:"default_branch"`
-	// WorkBranch is the integration branch and the default PR base.
+	// WorkBranch is the integration branch and the default PR base. It must
+	// differ from DefaultBranch: see Validate.
 	WorkBranch string `json:"work_branch"`
+	// AllowReleaseBranchMerges waives the rule that WorkBranch and
+	// DefaultBranch are different branches.
+	//
+	// The rule exists because Orion's responsibility ends when work merges
+	// into the integration branch; promoting that to the release branch is a
+	// human decision about what constitutes a release. Collapse the two and
+	// Orion merges agent output straight into the release branch -- not as a
+	// bug, but as configured, which is worse.
+	//
+	// A repository with genuinely one branch and no release process is a
+	// legitimate case, so this stays possible. It is a named key rather than
+	// a reachable side effect of editing one string, because giving up the
+	// human promotion step should take a sentence that says so.
+	AllowReleaseBranchMerges bool `json:"allow_release_branch_merges"`
 	// ProtectedBranches may not be pushed to directly. Defaults to both
 	// long-lived branches.
 	ProtectedBranches []string `json:"protected_branches"`
@@ -331,6 +368,43 @@ type Attribution struct {
 	AutoInstall bool `json:"auto_install"`
 }
 
+// QA is the independent verification stage: an agent that derives test
+// cases from the ticket's acceptance criteria, writes the tests the
+// implementer did not, runs them, and reports what failed.
+//
+// Enabled is a POINTER because absent and false mean different things here.
+// Absent is "run it" -- verification a project never asked to switch off
+// should not be silently missing -- while an explicit false is a project
+// saying it does not want the spend, which a docs repository is right to
+// say.
+type QA struct {
+	Enabled *bool `json:"enabled"`
+	// MaxRounds bounds the findings-fix-reverify exchange. Zero means the
+	// built-in default. Past it Orion escalates to a person rather than
+	// paying two agents to argue: QA never blocks on its own authority, so
+	// an unbounded loop is the only way this stage could stop a run, and
+	// it would do it by spending.
+	MaxRounds int `json:"max_rounds"`
+	// E2EBaseURL is the explicit non-production target an end-to-end run may
+	// point at. EMPTY MEANS NO E2E, never "guess one": nj-agents
+	// CONVENTIONS-testing §T3 blocks an e2e execution without an explicit
+	// non-prod URL, and a suite that quietly found production is the failure
+	// that rule exists to prevent. Without it the stage still authors and
+	// runs unit and integration tests, and says that is what it did.
+	E2EBaseURL string `json:"e2e_base_url,omitempty"`
+}
+
+// On reports whether the stage runs. See the Enabled comment: absent is on.
+func (q QA) On() bool { return q.Enabled == nil || *q.Enabled }
+
+// Rounds is MaxRounds with the default applied.
+func (q QA) Rounds() int {
+	if q.MaxRounds > 0 {
+		return q.MaxRounds
+	}
+	return 2
+}
+
 // Agent overrides how one actor is displayed, and which model it runs on.
 //
 // Keyed in orion.json by the STABLE actor identifier ("implementer"), never
@@ -364,6 +438,8 @@ type Config struct {
 	Budget      Budget            `json:"budget"`
 	Slack       Slack             `json:"slack"`
 	CI          CI                `json:"ci"`
+	QA          QA                `json:"qa"`
+	Collect     Collect           `json:"collect"`
 	VCS         VCS               `json:"vcs"`
 	Tracker     Tracker           `json:"tracker"`
 	Delegation  Delegation        `json:"delegation"`
@@ -434,7 +510,12 @@ func Defaults() Config {
 		Budget: Budget{PauseAtPercent: []int{50, 75, 90, 95}},
 		// On by default: Orion performs the merge, so merging on a verdict
 		// that no longer describes the code is a correctness failure.
-		CI:          CI{RequireUpToDate: true},
+		CI: CI{RequireUpToDate: true},
+		// On by default too, and for the same reason turned inside out: the
+		// gate above is what makes every merge invalidate every other open
+		// branch, so shipping it without the mechanical half leaves a person
+		// typing three commands per merge per branch.
+		Collect:     Collect{AutoRebase: true},
 		Attribution: Attribution{Enabled: true, AutoInstall: true},
 		Slack: Slack{
 			Enabled:                 false,
@@ -606,6 +687,50 @@ func normalize(c *Config) {
 	if len(c.Delegation.HighRiskPaths) == 0 {
 		c.Delegation.HighRiskPaths = d.Delegation.HighRiskPaths
 	}
+}
+
+// Validate refuses a configuration Orion must not act on.
+//
+// Only one thing is refused today: a branch model with no integration
+// branch. Orion merges agent output into vcs.work_branch, and the whole
+// safety of that rests on work_branch not being the branch a release is cut
+// from. Set them equal and every merge Orion performs is a release nobody
+// authorised -- reported accurately, which is what makes it hard to notice.
+//
+// The rule was documented in the provision package and encoded in a default
+// value, and enforced nowhere; a default is not a constraint. This is the
+// constraint.
+func (c Config) Validate() error {
+	if c.VCS.WorkBranch == "" || c.VCS.WorkBranch != c.VCS.DefaultBranch {
+		return nil
+	}
+	if c.VCS.AllowReleaseBranchMerges {
+		return nil
+	}
+	return fmt.Errorf(
+		"vcs.work_branch and vcs.default_branch are both %q, so Orion would merge "+
+			"agent work straight into the release branch.\n"+
+			"  Agent work lands on the integration branch; a human promotes it to the "+
+			"release branch. Collapsing the two removes the human from the release decision.\n"+
+			"  Fix: set vcs.work_branch to an integration branch (\"develop\" is the "+
+			"default). `orion init` creates it and switches to it when it does not exist yet.\n"+
+			"  Or, if this repository genuinely has one branch and no release process, "+
+			"set vcs.allow_release_branch_merges: true to say so on purpose.",
+		c.VCS.WorkBranch)
+}
+
+// ReleaseBranchWaiver describes what an active
+// vcs.allow_release_branch_merges is giving up, or "" when it is not in
+// force. An override nobody is reminded of is an override nobody remembers
+// making.
+func (c Config) ReleaseBranchWaiver() string {
+	if !c.VCS.AllowReleaseBranchMerges || c.VCS.WorkBranch != c.VCS.DefaultBranch {
+		return ""
+	}
+	return fmt.Sprintf("vcs.allow_release_branch_merges is on: %q is both the "+
+		"integration and the release branch, so Orion merges agent work directly "+
+		"into the release branch and there is no human promotion step left.",
+		c.VCS.WorkBranch)
 }
 
 // StateDir returns the absolute path to the state directory.

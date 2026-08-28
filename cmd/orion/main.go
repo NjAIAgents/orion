@@ -10,6 +10,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -389,6 +390,17 @@ func runInit(args []string) {
 	exitOn(err)
 
 	cfg := config.Load(abs)
+
+	// Before anything is bound: a repository whose only branch is the
+	// release branch gets an integration branch created below, but only if
+	// the config names one. If work_branch has been pointed at the release
+	// branch, EnsureWorkBranch would happily "bind" it and the repository
+	// would be initialised into the very model Orion forbids. Say so here,
+	// where the remedy is one edit away.
+	exitOn(cfg.Validate())
+	if waiver := cfg.ReleaseBranchWaiver(); waiver != "" {
+		ui.Warn(os.Stdout, "%s", waiver)
+	}
 
 	// The work branch. orion.json can name `develop` as the base for every
 	// task branch while no such branch exists, and nothing notices until the
@@ -959,8 +971,13 @@ func mustJiraSearch() collect.TrackerAPI {
 
 // pushBranch sets upstream on first push so a later `git push` in that
 // worktree does the obvious thing.
+// Bounded by pushTimeout (OR-128): a push that stalls -- a credential
+// helper waiting on a prompt nobody will answer, a dead connection -- would
+// otherwise block orion watch's whole loop with nothing on the console.
 func pushBranch(dir, branch string) error {
-	out, err := exec.Command("git", "-C", dir, "push", "-u", "origin", branch).CombinedOutput()
+	cmd, cancel := gitCommand(dir, "push", "-u", "origin", branch)
+	defer cancel()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%v\n%s", err, strings.TrimSpace(string(out)))
 	}
@@ -975,13 +992,15 @@ func pushBranch(dir, branch string) error {
 // the user was standing, and on the first real end-to-end run was ~/.claude.
 // The branch pushed, then the PR failed with "not a git repository", leaving
 // a ticket marked failed over work that had entirely succeeded.
-func prCommand(dir, branch, title, body, base string) *exec.Cmd {
-	cmd := exec.Command("gh", "pr", "create", "--head", branch, "--base", base,
+//
+// gh resolves the repository from the working directory, and the branch
+// lives in a worktree, never in the cwd -- which ghCommand sets. Bounded by
+// ghTimeout (OR-128) like every other gh call on the watch path: opening the
+// pull request is the last step of a job that has already been paid for, so
+// hanging here strands work that is otherwise complete.
+func prCommand(dir, branch, title, body, base string) (*exec.Cmd, context.CancelFunc) {
+	return ghCommand(dir, "pr", "create", "--head", branch, "--base", base,
 		"--title", title, "--body", body)
-	// gh resolves the repository from the working directory, and the branch
-	// lives in a worktree, never in the cwd.
-	cmd.Dir = dir
-	return cmd
 }
 
 // openPR shells out to gh. Orion does not embed a GitHub client: gh already
@@ -991,7 +1010,9 @@ func openPR(dir, branch, title, body, base string) (string, error) {
 		return "", fmt.Errorf("gh is not installed, so the branch is pushed but no pull request was opened.\n" +
 			"  Open it yourself, or install gh and re-run")
 	}
-	out, err := prCommand(dir, branch, title, body, base).CombinedOutput()
+	cmd, cancel := prCommand(dir, branch, title, body, base)
+	defer cancel()
+	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil {
 		return "", fmt.Errorf("%v\n%s", err, text)
@@ -1085,6 +1106,14 @@ func runQueue(args []string) {
 	if counts["failed"] > 0 {
 		fmt.Fprintf(w, "  A failed ticket is not retried: remove %s and add %s to requeue it.\n",
 			tracker.LabelFailed, cfg.Tracker.QueueLabel)
+	}
+	// A finished ticket holding the claim lock stops the whole queue, and it
+	// looks identical to a job that is genuinely running. Say so here rather
+	// than let the reader spot that a "working" line's status reads Done.
+	if stale := tracker.StaleLocks(issues); len(stale) > 0 {
+		ui.Warn(w, "%s is finished but still holds the %s lock, which stops the queue.\n"+
+			"  Remove the label, or let `orion watch` clear it on its next tick.",
+			strings.Join(stale, ", "), tracker.LabelWorking)
 	}
 	fmt.Fprintln(w, "  Nothing has been started: this command only reads.")
 }

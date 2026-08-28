@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -30,9 +31,116 @@ func TestEveryLineCarriesKeyActorModelAndMessage(t *testing.T) {
 			t.Errorf("line is missing %q:\n%s", want, got)
 		}
 	}
-	// The ticket key first: that is the thread a reader follows.
-	if i := strings.Index(got, "FCIA-8"); i != 0 {
-		t.Errorf("the ticket key must lead the line, got %q", got)
+	// The ticket key first after the time: that is the thread a reader
+	// follows, and the stamp is the only thing that outranks it.
+	if i := strings.Index(got, "FCIA-8"); i != len("15:04:05 ") {
+		t.Errorf("the ticket key must lead the line after the time, got %q", got)
+	}
+}
+
+// Reading a log after the fact -- a scrollback, a nohup capture -- "when did
+// this happen" and "how long was that gap" cannot be answered by correlating
+// the event log by hand. Every line carries the time, including a live one
+// that has no stamp of its own.
+func TestEveryLineCarriesATimePrefix(t *testing.T) {
+	stamped := render(Line{At: time.Date(2026, 8, 27, 15, 4, 5, 0, time.Local),
+		Key: "OR-125", Verb: VerbOK, Msg: "done"})
+	if !strings.HasPrefix(stamped, "15:04:05 ") {
+		t.Errorf("a stamped line lost its time: %q", stamped)
+	}
+	// The date is deliberately absent: the event log carries full RFC3339
+	// stamps for the record, and a same-day console does not need it.
+	if strings.Contains(stamped, "2026") {
+		t.Errorf("the console line carries a date it does not need: %q", stamped)
+	}
+
+	live := render(Line{Key: "OR-125", Verb: VerbWorking, Msg: "claimed"})
+	if !regexp.MustCompile(`^\d\d:\d\d:\d\d `).MatchString(live) {
+		t.Errorf("a live line was printed without a time: %q", live)
+	}
+}
+
+// A status WORD is a thing to read; a glyph is a thing to notice, which is
+// what scanning hundreds of lines needs. Both, never one: the word is what
+// survives a terminal that cannot render the glyph.
+func TestEveryStatusRendersItsOwnIcon(t *testing.T) {
+	t.Setenv("LANG", "en_US.UTF-8")
+	for verb, want := range map[string]string{
+		VerbOK:      iconOK,
+		VerbWorking: iconWorking,
+		VerbWaiting: iconWaiting,
+		VerbWarn:    iconBlocked,
+		VerbFail:    iconFail,
+		"queued":    iconPending,
+		"pending":   iconPending,
+		"blocked":   iconBlocked,
+	} {
+		got := render(Line{Key: "OR-125", Verb: verb, Msg: "x"})
+		if !strings.Contains(got, want) {
+			t.Errorf("%q rendered without its %q icon: %s", verb, want, got)
+		}
+		if !strings.Contains(got, verb) {
+			t.Errorf("%q lost its status word to the icon: %s", verb, got)
+		}
+	}
+	// A verb this build has never seen still gets a column rather than a
+	// hole, so the ones after it stay aligned.
+	if got := render(Line{Key: "OR-125", Verb: "something-new", Msg: "x"}); !strings.Contains(got, iconPending) {
+		t.Errorf("an unknown status rendered without an icon: %s", got)
+	}
+}
+
+// The five icon categories are distinct. Two states sharing a glyph would
+// make the column decorative -- it exists to make a state JUMP visible.
+func TestTheIconsAreDistinctPerCategory(t *testing.T) {
+	seen := map[string]string{}
+	for _, verb := range []string{VerbOK, VerbWorking, VerbWaiting, VerbWarn, VerbFail, "queued"} {
+		g := icons[verb]
+		if other, dup := seen[g.glyph]; dup {
+			t.Errorf("%q and %q share the icon %q", verb, other, g.glyph)
+		}
+		seen[g.glyph] = verb
+		if a, dup := seen[g.ascii]; dup && a != verb {
+			t.Errorf("%q and %q share the ASCII icon %q", verb, a, g.ascii)
+		}
+		seen[g.ascii] = verb
+	}
+}
+
+// A glyph on a terminal that cannot render it is mojibake, not a status. The
+// same opt-outs as colour, plus a locale that says the terminal is not UTF-8.
+func TestTheIconsFallBackToASCII(t *testing.T) {
+	for _, env := range []struct{ name, value string }{
+		{"NO_COLOR", "1"},
+		{"TERM", "dumb"},
+		{"LC_ALL", "C"},
+	} {
+		t.Run(env.name+"="+env.value, func(t *testing.T) {
+			t.Setenv("LANG", "en_US.UTF-8")
+			t.Setenv(env.name, env.value)
+			got := render(Line{Key: "OR-125", Verb: VerbFail, Msg: "boom"})
+			if strings.Contains(got, iconFail) {
+				t.Errorf("a non-UTF-8 terminal was sent a glyph: %q", got)
+			}
+			if !strings.Contains(got, icons[VerbFail].ascii) {
+				t.Errorf("the ASCII icon is missing: %q", got)
+			}
+			if !strings.Contains(got, VerbFail) {
+				t.Errorf("the status word must survive the fallback: %q", got)
+			}
+		})
+	}
+}
+
+// The hourglass is double-width. Padding the column by rune count would push
+// every waiting line one column right of every other line -- the ragged wall
+// the fixed widths exist to prevent.
+func TestTheIconColumnIsPaddedInCellsNotRunes(t *testing.T) {
+	t.Setenv("LANG", "en_US.UTF-8")
+	for _, verb := range []string{VerbOK, VerbWorking, VerbWaiting, VerbWarn, VerbFail} {
+		if got := cells(iconFor(verb)); got != iconWidth {
+			t.Errorf("%q occupies %d cells, want %d", verb, got, iconWidth)
+		}
 	}
 }
 

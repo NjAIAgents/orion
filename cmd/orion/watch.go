@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -15,27 +16,14 @@ import (
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
-func runWatch(args []string) {
-	w := os.Stdout
-
-	projects, err := projectKeys(
-		positional(args, "--interval", "--max-jobs", "--max-minutes", "--max-turns"))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(64)
-	}
-
-	interval := time.Duration(intFlag(args, "--interval", 120)) * time.Second
-	maxJobs := intFlag(args, "--max-jobs", 0)
-	once := hasFlag(args, "--once")
-	dry := hasFlag(args, "--dry-run")
-
-	j, err := tracker.NewJiraFromEnv()
-	exitOn(err)
-
-	// State the terms before the first tick. This is the one command that
-	// spends money with nobody watching, so what it will and will not do
-	// belongs on screen before it starts rather than in a manual.
+// watchBanner states the terms before the first tick. This is the one
+// command that spends money with nobody watching, so what it will and will
+// not do belongs on screen before it starts rather than in a manual.
+//
+// Split out of runWatch so the "something is on screen before any network
+// call" guarantee is reachable from a test; runWatch itself needs a
+// configured tracker and exits the process on failure.
+func watchBanner(w io.Writer, projects []string, interval time.Duration, maxJobs int, dry bool) {
 	fmt.Fprintf(w, "%s\n", ui.Heading(w, "watching"))
 	scope := "every registered project"
 	if len(projects) > 0 {
@@ -55,6 +43,33 @@ func runWatch(args []string) {
 			"          Use --max-jobs N for an unattended run you have not watched before."))
 	}
 	fmt.Fprintf(w, "  %s\n\n", ui.Dim(w, "ctrl-c to stop after the current step"))
+}
+
+func runWatch(args []string) {
+	w := os.Stdout
+
+	projects, err := projectKeys(
+		positional(args, "--interval", "--max-jobs", "--max-minutes", "--max-turns"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(64)
+	}
+
+	interval := time.Duration(intFlag(args, "--interval", 120)) * time.Second
+	maxJobs := intFlag(args, "--max-jobs", 0)
+	once := hasFlag(args, "--once")
+	dry := hasFlag(args, "--dry-run")
+
+	// The banner goes out BEFORE anything that could block -- before the
+	// credential read, before the tracker client, and long before the first
+	// network call (OR-128). It used to print after the client was built,
+	// which was harmless right up until something ahead of it stalled: then
+	// `orion watch` sat there having printed literally nothing, and "still
+	// starting up" looked exactly like "hung, kill it".
+	watchBanner(w, projects, interval, maxJobs, dry)
+
+	j, err := tracker.NewJiraFromEnv()
+	exitOn(err)
 
 	watch.Listen(w)
 
@@ -90,7 +105,7 @@ func runWatch(args []string) {
 			return watch.Queued(j, home, ps, label)
 		},
 		InFlight: func(home string, ps []string) (bool, string, error) {
-			return watch.InFlight(j, home, ps)
+			return watch.InFlight(j, home, ps, os.Stdout)
 		},
 	})
 	exitOn(err)

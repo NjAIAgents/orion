@@ -6,6 +6,115 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.7.3
+
+### Added
+
+- Orion now rebases a stale branch itself. `ci.require_up_to_date` makes every
+  merge invalidate every other open pull request, and the answer was always the
+  same three commands typed by a person — fetch, rebase, force-push — once per
+  merge per open branch, which grows with the square of the queue. A branch that
+  is behind its base **and merges cleanly** is now replayed onto that base and
+  pushed with `--force-with-lease`, and the ticket stays in ci-wait so the checks
+  re-run against what would actually be merged. A branch that **conflicts** is
+  still handed to a human, exactly as before: resolving an overlap is judgement
+  (OR-114).
+- `collect.auto_rebase` turns it off, for anyone running Orion against a
+  repository they do not own. It defaults on. Consecutive automatic rebases are
+  capped at two per ticket; a ticket that hits the cap is escalated with the
+  manual commands rather than pushed a third time. Every rebase is an event in
+  the log and a comment on the ticket, attributed to Orion (OR-114).
+- A worktree can be locked for manual work by dropping a `.orion-manual-lock`
+  file in it; both the CI fix loop and the auto-rebase path back off entirely
+  while it is present, so a person resolving a real conflict by hand no longer
+  races an unattended agent force-pushing the same branch (OR-130).
+- `vcs.allow_release_branch_merges` — a named opt-in for a repository that
+  genuinely has one branch and no release process. Every run that uses it
+  prints what it gives up: there is no human promotion step left (OR-115).
+- Every `orion watch` and `orion work` console line now carries a `15:04:05`
+  time prefix and a status icon (`✓ ◐ ⏳ ⚠ ✗ ○`), so a log read after the fact
+  says when each step happened and a state change is visible while scanning.
+  Terminals that announce they cannot render the glyphs — `NO_COLOR`,
+  `TERM=dumb`, a non-UTF-8 locale — get the ASCII set (`+ > ~ ! x .`) instead.
+  The status word is unchanged in both cases, and the event log format is
+  untouched (OR-125).
+- A QA agent and a QA stage. After the implementer's change is committed and
+  before the pull request opens, a QA agent derives test cases from the
+  ticket's acceptance criteria, writes the tests the implementer did not,
+  runs them, and reports what failed. Findings go back to the developer as a
+  message, it fixes, QA re-verifies; after `qa.max_rounds` fix rounds
+  (default 2) Orion tells a person what is still open. QA reports and never
+  blocks: the pull request still opens (OR-126).
+- `qa` in `orion.json`: `enabled` (absent means on; set `false` for a
+  repository that does not need the spend), `max_rounds`, and `e2e_base_url`
+  — the explicit non-production target an end-to-end run may use. Without
+  one, QA authors and runs unit and integration tests only and says so
+  (OR-126).
+- A `qa` actor in the roster, "Anita · QA engineer" by default, with its
+  name, designation and model configurable through the `agents` block like
+  every other actor. Its runs are attributed to it in the event log, so they
+  appear as their own row in the ticket's cost report (OR-126).
+- The QA agent uses nj-agents' `/test-suite-author` and `/e2e-suite` when the
+  toolkit is installed and the repository's own test tooling when it is not.
+  Which of the two it used is printed and logged (OR-126).
+
+### Changed
+
+- **`vcs.work_branch` may no longer equal `vcs.default_branch`.** Orion merges
+  agent work into the integration branch and a human promotes it to the
+  release branch; setting them equal made Orion merge agent output straight
+  into the release branch and report it as a routine merge. The configuration
+  is now refused at config load, at `orion init`, and by `orion doctor`, each
+  naming both values, the reason, and the remedy — including that `orion init`
+  creates the integration branch when it does not exist. Repositories that
+  want the old behaviour set `vcs.allow_release_branch_merges: true` (OR-115).
+- Merge messages name the branch by role as well as by name — "merged into the
+  integration branch develop" rather than "merged", so a misconfigured
+  repository is obvious rather than plausible (OR-115).
+- The fix loop's console and event-log lines now carry the agent's own
+  one-line closing summary alongside the existing cost stats — what broke and
+  what changed, not just turns, tokens and cost (OR-129).
+
+### Fixed
+
+- The rebase command Orion prints for a conflicted branch now names the base
+  the pull request actually targets, taken from the forge, with
+  `vcs.work_branch` as the fallback. It previously picked any branch literally
+  named `develop` out of the workspace's branch list, so a repository listing
+  `develop` in `protected_branches` while working on `main` was told to
+  rebase onto `origin/develop` — a command that succeeds, quietly, onto
+  abandoned code. The staleness and conflict messages now always name the
+  same base for the same branch (OR-112).
+- When neither the pull request nor the configuration names a base, Orion
+  says it cannot determine one and points at `vcs.work_branch`, rather than
+  printing a rebase command built on a guess (OR-112).
+- A squash-merged ticket no longer leaves its worktree and local branch
+  behind. With `delete_branch_on_merge` active the branch's commits are
+  reachable from no remote ref, so the unpushed-commits guard warned about
+  work the forge had already accepted; that guard now applies only to prunes
+  without a merged-PR verdict, where it still protects genuinely unpushed
+  commits (OR-122).
+- A ticket closed outside Orion no longer wedges the queue. The
+  `orion-working` label is the claim lock, and nothing but Orion's own close
+  path cleared it — so a ticket fixed and moved to Done by hand kept it, and
+  every later `orion watch` tick reported that finished ticket as "still
+  running; not starting anything else". A resolved ticket is no longer
+  treated as in flight, the stale lock is cleared when the watcher trips over
+  it, and `orion queue` names a Done ticket that still holds one instead of
+  listing it as working. Sub-tasks closed by a merged parent now give up
+  their labels as well (OR-125).
+- `orion watch` prints its startup banner — project, queue label, poll
+  interval, job limit — before it reads a credential or makes a network call,
+  so a freshly started watcher can no longer sit silent in a way
+  indistinguishable from a hang (OR-128).
+- An unresponsive Jira now fails with a message naming the server and how
+  long Orion waited, instead of blocking a watch tick behind an error nobody
+  could read. A Jira client built any other way than `NewJiraFromEnv` gets
+  the same timeout rather than falling back to an unbounded one (OR-128).
+- `gh pr create` and `git push` — the last two network calls on the watch
+  path without a timeout — are now bounded, so a stalled credential prompt or
+  dead connection cannot park the watcher indefinitely (OR-128).
+
 ## v0.7.2
 
 ### Added

@@ -82,6 +82,78 @@ func VerbFor(kind string) string {
 	return VerbOK
 }
 
+// The icon column: a glyph saying the same thing as the status word.
+//
+// The word is what the line MEANS and the glyph is what a reader scanning
+// hundreds of lines actually sees, which is why both are here and why the
+// glyph is never the only carrier -- under an ASCII terminal it degrades to
+// a punctuation mark and the word is unchanged.
+//
+// Categories, matching the five verbs plus the pending state a queued but
+// unclaimed ticket sits in.
+const (
+	iconPending = "○" // queued, or a verb this build does not recognise
+	iconWorking = "◐" // in flight, money is being spent
+	iconOK      = "✓"
+	iconFail    = "✗"
+	iconWaiting = "⏳" // a machine or a person is deciding
+	iconBlocked = "⚠"
+)
+
+type icon struct{ glyph, ascii string }
+
+var icons = map[string]icon{
+	VerbOK:      {iconOK, "+"},
+	VerbWorking: {iconWorking, ">"},
+	VerbWaiting: {iconWaiting, "~"},
+	VerbWarn:    {iconBlocked, "!"},
+	VerbFail:    {iconFail, "x"},
+	// Not verbs of this renderer, but the words a reader uses for the same
+	// states -- and the vocabulary `orion queue` prints.
+	"queued":  {iconPending, "."},
+	"pending": {iconPending, "."},
+	"blocked": {iconBlocked, "!"},
+	"running": {iconWorking, ">"},
+	"ci-wait": {iconWaiting, "~"},
+}
+
+// iconWidth is the icon column in terminal CELLS rather than runes.
+//
+// The hourglass is double-width. Padding it by rune count would push every
+// waiting line one column right of every other line, which is precisely the
+// ragged wall the column widths exist to prevent.
+const iconWidth = 3
+
+// iconFor returns the icon column for a status word, already padded.
+func iconFor(verb string) string {
+	g, ok := icons[strings.ToLower(strings.TrimSpace(verb))]
+	if !ok {
+		g = icons["pending"]
+	}
+	s := g.ascii
+	if glyphs() {
+		s = g.glyph
+	}
+	if d := iconWidth - cells(s); d > 0 {
+		return s + strings.Repeat(" ", d)
+	}
+	return s
+}
+
+// cells is the terminal width of an icon. A table rather than a rune-range
+// guess: the set is six glyphs and only one of them is wide.
+func cells(s string) int {
+	n := 0
+	for _, r := range s {
+		if string(r) == iconWaiting {
+			n += 2
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 // Column widths. Metadata NEVER truncates and the message does: a line whose
 // actor has been cut has lost the thing this column layout exists to add,
 // and a message usually survives clipping because its first words carry the
@@ -114,13 +186,24 @@ type Line struct {
 // Render returns one formatted line, without a newline.
 func Render(w io.Writer, l Line) string {
 	var b strings.Builder
-	if !l.At.IsZero() {
-		b.WriteString(Dim(w, l.At.Local().Format("15:04:05")) + " ")
+	at := l.At
+	if at.IsZero() {
+		// A live line carries no stamp of its own, and still needs one on
+		// the page: read back afterwards -- a scrollback, a nohup capture --
+		// "when did this happen" and "how long was that gap" are otherwise
+		// unanswerable without correlating the event log by hand (OR-125).
+		//
+		// Time only. The date is in the event log's RFC3339 stamps for the
+		// record, and a console being read the same day does not need it.
+		at = time.Now()
 	}
+	b.WriteString(Dim(w, at.Local().Format("15:04:05")) + " ")
 	// Coloured by ticket, so two tickets in flight separate at a glance --
 	// and the key itself is still in the line, so nothing depends on colour.
 	b.WriteString(paint(w, ticketColor(l.Key), pad(l.Key, keyWidth)) + " ")
-	b.WriteString(paint(w, statusColor(l.Verb), pad(l.Verb, verbColumn)) + " ")
+	// Icon and word share the status colour: they are one column saying one
+	// thing twice, and colouring them apart would read as two facts.
+	b.WriteString(paint(w, statusColor(l.Verb), iconFor(l.Verb)+pad(l.Verb, verbColumn)) + " ")
 
 	who := ""
 	if l.Actor != "" {
@@ -311,10 +394,8 @@ func pad(s string, n int) string {
 }
 
 func metaWidth(l Line) int {
-	n := keyWidth + 1 + verbColumn + 1 + actorWidth + 1 + modelWidth + 1
-	if !l.At.IsZero() {
-		n += 9
-	}
+	// Time and icon are on every line now, so both are unconditional here.
+	n := 9 + keyWidth + 1 + iconWidth + verbColumn + 1 + actorWidth + 1 + modelWidth + 1
 	// An actor or key wider than its column widens the metadata rather than
 	// being cut, so the message must be clipped that much harder.
 	if over := utf8.RuneCountInString(actors.Display(l.Actor)) - actorWidth; over > 0 {

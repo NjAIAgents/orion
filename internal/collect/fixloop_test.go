@@ -13,16 +13,17 @@ import (
 )
 
 type fixSpy struct {
-	calls  int
-	pushed bool
-	err    error
-	sawAll []string
+	calls   int
+	pushed  bool
+	err     error
+	summary string
+	sawAll  []string
 }
 
-func (f *fixSpy) fix(_ *workspace.Workspace, _, _, failure string) (bool, error) {
+func (f *fixSpy) fix(_ *workspace.Workspace, _, _, failure string) (bool, string, error) {
 	f.calls++
 	f.sawAll = append(f.sawAll, failure)
-	return f.pushed, f.err
+	return f.pushed, f.summary, f.err
 }
 
 // ciRepo builds a bound project with the fix loop switched on.
@@ -359,4 +360,42 @@ func mergeIt(t *testing.T, home string) {
 		Refresh: func(string, string) (string, error) { return "", nil },
 		Prune:   func(*workspace.Workspace, string) error { return nil },
 	})
+}
+
+// The one-line summary from the agent's own closing message rides along on
+// both the "pushed a fix" console line and the event log, not just the cost
+// stats that were already there (OR-129).
+func TestPushedFixCarriesTheAgentsOwnSummary(t *testing.T) {
+	home, _ := ciRepo(t, 3)
+	f := &fixSpy{pushed: true, summary: "renamed the stale base helper to behind()"}
+
+	_, out := runFix(t, home, f, "test (failure)\nassert 1 == 2", Options{})
+
+	if !strings.Contains(out, "renamed the stale base helper to behind()") {
+		t.Errorf("the agent's summary must reach the console:\n%s", out)
+	}
+}
+
+// A held branch is left alone entirely -- the fix loop must not spend part
+// of a ticket's attempt budget, or touch the branch, while a person has it
+// locked for manual work (OR-130).
+func TestFixLoopSkipsAManuallyLockedBranch(t *testing.T) {
+	home, wsDir := ciRepo(t, 3)
+	repoDir := filepath.Join(wsDir, "repo")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, manualLockName), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := &fixSpy{pushed: true}
+
+	_, out := runFix(t, home, f, "test (failure)\nassert 1 == 2", Options{})
+
+	if f.calls != 0 {
+		t.Errorf("the fix loop must not run at all while the branch is locked, got %d calls", f.calls)
+	}
+	if !strings.Contains(out, manualLockName) {
+		t.Errorf("the lock must be named in the output so it is discoverable:\n%s", out)
+	}
 }

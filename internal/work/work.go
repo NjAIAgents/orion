@@ -219,6 +219,18 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		cfg = config.Load(ws.RepoDir())
 	}
 
+	// A branch model with no integration branch is refused before any agent
+	// runs, rather than discovered when the merge lands on the release
+	// branch. Nothing about this run is salvageable: every branch it cuts
+	// bases on, and merges back into, the branch a release is cut from.
+	if err := cfg.Validate(); err != nil {
+		ui.Say(w, key, events.ActorOrion, ui.VerbFail, "%v", err)
+		return fail(res, err)
+	}
+	if waiver := cfg.ReleaseBranchWaiver(); waiver != "" {
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "%s", waiver)
+	}
+
 	// The roster this project configured. A bad one is reported and then
 	// ignored: display names are not worth failing a run over, and the
 	// shipped roster still tells the reader who acted.
@@ -599,6 +611,24 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}
 	log.Emitf(events.KindCommit, events.ActorImplementer, "%d commit(s) on %s", commits, job.Branch)
 	ui.Say(w, key, events.ActorImplementer, ui.VerbOK, "%d commit(s) on %s", commits, job.Branch)
+
+	// QA, before the branch is pushed. The tests QA writes and any fix its
+	// findings force belong in the same pull request as the change they are
+	// about; verifying after the pull request opened would leave the reviewer
+	// reading the code without its evidence. See qa.go.
+	runQA(qaJob{
+		Key: key, Summary: issue.Summary, Description: issue.Description,
+		ImplSession: runRes.SessionID, WS: &jobWS,
+		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
+		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
+	}, cfg, opts, deps, log, w)
+
+	// Re-counted: QA commits its tests, and a fix round commits too, so the
+	// number in the pull request body would otherwise describe the branch as
+	// it was before it was verified.
+	if n, cErr := commitsOn(job.Path, cfg.VCS.WorkBranch); cErr == nil {
+		commits = n
+	}
 
 	if err := deps.Push(job.Path, job.Branch); err != nil {
 		return failAndTell(res, fmt.Errorf("pushing %s: %w", job.Branch, err), key, ws, log, w, deps)

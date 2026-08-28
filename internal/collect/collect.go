@@ -107,7 +107,7 @@ type Deps struct {
 	Merge func(dir, branch, reason, strategy string) error
 	// Fix sends a CI failure back to an agent on the same branch and reports
 	// whether it pushed anything. Nil disables the fix loop.
-	Fix func(ws *workspace.Workspace, key, branch, failure string) (pushed bool, err error)
+	Fix func(ws *workspace.Workspace, key, branch, failure string) (pushed bool, summary string, err error)
 	// Slack reads approvals. Nil disables the approval path entirely, which
 	// is the correct behaviour when the extra OAuth scopes are not granted:
 	// Orion then reports that checks pass and waits for a human to merge.
@@ -285,6 +285,17 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// (OR-118). The user's checkout is where a person edits orion.json, and
 	// where they expect the edit to take effect on the next tick.
 	cfg := config.Load(entry.Source)
+	// Collect is the step that merges, so it is the last place a branch
+	// model with no integration branch can be caught before agent work
+	// lands on the release branch. Refuse rather than merge and report it.
+	if vErr := cfg.Validate(); vErr != nil {
+		ui.Fail(w, "%s: %v", key, vErr)
+		res.Err = vErr
+		return res
+	}
+	if waiver := cfg.ReleaseBranchWaiver(); waiver != "" {
+		ui.Warn(w, "%s", waiver)
+	}
 	if msg, syncErr := workspace.SyncSandbox(ws, cfg.VCS.WorkBranch); syncErr != nil {
 		ui.Warn(w, "could not refresh the sandbox: %v", syncErr)
 	} else if msg != "" {
@@ -324,7 +335,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// the conflict clears, CI re-runs, and the normal flow resumes without
 	// anyone having to re-label anything.
 	if pr.Conflicted {
-		return conflicted(res, key, pr, branch, opts, deps, ws, log, w)
+		return conflicted(res, key, pr, cfg, branch, opts, deps, ws, log, w)
 	}
 
 	// A green check on a base that has moved is not evidence about the merge.
@@ -337,9 +348,20 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// An unreadable repository is not a stale branch, and refusing every
 	// merge because a fetch failed would be a worse fault than the one this
 	// prevents.
+	//
+	// Measured against the SAME base the conflict path names -- the pull
+	// request's, config only as the fallback. Asking git whether the branch
+	// is behind a branch it does not merge into answers a question nobody
+	// asked (OR-112). Reached only when the branch merges cleanly -- the
+	// conflict gate above has already returned otherwise -- so behind() has
+	// both facts it needs: behind and clean is a mechanical rebase Orion
+	// performs itself, behind and conflicting was handed to a person three
+	// lines up.
 	if cfg.CI.RequireUpToDate {
-		if ok, known := upToDate(worktreeOrRepo(ws, branch), cfg.VCS.WorkBranch, branch); known && !ok {
-			return stale(res, key, pr, branch, cfg, opts, deps, ws, log, w)
+		if base, named := baseOf(pr, cfg); named {
+			if ok, known := upToDate(worktreeOrRepo(ws, branch), base, branch); known && !ok {
+				return behind(res, key, pr, branch, cfg, opts, deps, ws, log, w)
+			}
 		}
 	}
 
@@ -481,18 +503,35 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 		ui.Warn(w, "%s: merged and released, but could not transition to Done: %v", key, err)
 	}
 	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion, "merged: "+pr.URL))
-	closeChildren(key, pr.URL, deps, w)
+	closeChildren(key, pr.URL, cfg.Tracker.QueueLabel, deps, w)
 	// A branch that went red and then merged is a mistake with its own
 	// correction attached, which is the one shape a lesson can be built from
 	// without an agent inferring anything. Read the history BEFORE it is
 	// cleared below -- this is the only moment both halves exist.
 	proposeLesson(key, pr, loadFixes(ws.Dir).States[key], entry.Source, ws, log, w)
-	// Forget the fix history. A ticket reopened later must not start with
-	// its attempts already spent.
+	// Forget the fix history, and the rebase count with it. A ticket reopened
+	// later must not start with either allowance already spent.
 	_ = clearFixes(ws.Dir, key)
-	log.Emit(events.Event{Kind: events.KindMerge, Actor: events.ActorCI, Msg: "merged " + pr.URL})
+	_ = clearRebases(ws.Dir, key)
+	// The branch the PR actually merged into, per its BaseRef; config is only
+	// the fallback when the forge did not say. Everything below that talks
+	// about WHERE the merge went uses this, because a message built from
+	// config once announced "on main" for a merge GitHub put on develop.
+	//
+	// Reported by ROLE as well as by name. "OR-99 merged" followed by "the
+	// work is on main" is a true sentence that reads as routine; "merged
+	// into the release branch main" is the same fact stated so that a
+	// misconfigured repository is obvious rather than plausible.
+	mergedInto := pr.BaseRef
+	if mergedInto == "" {
+		mergedInto = cfg.VCS.WorkBranch
+	}
+	role := branchRole(mergedInto, cfg.VCS.DefaultBranch)
+
+	log.Emit(events.Event{Kind: events.KindMerge, Actor: events.ActorCI,
+		Msg: "merged into the " + role + " " + mergedInto + ": " + pr.URL})
 	res.Changed = true
-	ui.Ok(w, "ok", "%s merged  %s", key, pr.URL)
+	ui.Ok(w, "ok", "%s merged into the %s %s  %s", key, role, mergedInto, pr.URL)
 
 	// What the ticket cost, on the ticket and on the terminal, immediately
 	// after the merge is announced. Here rather than at the end of this
@@ -505,14 +544,6 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	// ticket left develop behind on the machine its owner works on -- and
 	// the next `orion work` preflight refuses on a stale base.
 	refreshed := ""
-	// The branch the PR actually merged into, per its BaseRef; config is only
-	// the fallback when the forge did not say. Everything below that talks
-	// about WHERE the merge went uses this, because a message built from
-	// config once announced "on main" for a merge GitHub put on develop.
-	mergedInto := pr.BaseRef
-	if mergedInto == "" {
-		mergedInto = cfg.VCS.WorkBranch
-	}
 	if deps.Refresh != nil {
 		msg, err := deps.Refresh(entry.Source, mergedInto)
 		switch {
@@ -614,7 +645,7 @@ func firstLine(s string) string {
 //
 // Only sub-tasks Orion can see, and only ones not already Done -- a task
 // somebody closed by hand is left alone rather than re-transitioned.
-func closeChildren(key, prURL string, deps Deps, w io.Writer) {
+func closeChildren(key, prURL, queueLabel string, deps Deps, w io.Writer) {
 	kids, err := deps.Jira.Children(key)
 	if err != nil {
 		// Usually a tracker without a parent field, which is the ordinary
@@ -630,6 +661,13 @@ func closeChildren(key, prURL string, deps Deps, w io.Writer) {
 		if err := deps.Jira.TransitionTo(c.Key, "Done"); err != nil {
 			ui.Warn(w, "%s: merged, but %s could not be closed: %v", key, c.Key, err)
 			continue
+		}
+		// Closing without clearing would leave a Done sub-task holding the
+		// claim lock, which is the state that wedges the watcher (OR-125).
+		// A ticket transitioned to Done gives up every label Orion owns, on
+		// every path that does the transitioning.
+		if err := deps.Jira.SetLabels(c.Key, nil, tracker.Managed(queueLabel)); err != nil {
+			ui.Warn(w, "%s: closed, but its labels could not be cleared: %v", c.Key, err)
 		}
 		_ = deps.Jira.Comment(c.Key, actors.Comment(events.ActorOrion,
 			"delivered in "+key+" and merged: "+prURL))

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/actors"
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/ui"
@@ -30,10 +31,11 @@ import (
 //
 // A human is the only thing that can resolve this. So: say so, exactly once,
 // and then wait quietly for them.
-func conflicted(res Result, key string, pr PR, branch string,
+func conflicted(res Result, key string, pr PR, cfg config.Config, branch string,
 	opts Options, deps Deps, ws *workspace.Workspace, log *events.Log, w io.Writer) Result {
 
 	res.Verdict = VerdictConflicted
+	base, _ := baseOf(pr, cfg)
 
 	if opts.DryRun {
 		ui.Ok(w, "would", "%s: report that %s conflicts with its base", key, branch)
@@ -58,7 +60,7 @@ func conflicted(res Result, key string, pr PR, branch string,
 	// reading of this hint, run from the repository they are standing in,
 	// fails with "no such branch". A command that cannot be run where the
 	// reader is standing is not an instruction, it is a riddle.
-	for _, line := range rebaseSteps(ws, branch, baseOf(ws)) {
+	for _, line := range rebaseSteps(ws, branch, base) {
 		fmt.Fprintf(w, "          %s\n", ui.Dim(w, line))
 	}
 
@@ -102,6 +104,16 @@ func conflicted(res Result, key string, pr PR, branch string,
 // form instead. Printing `cd` into a directory that does not exist would be
 // the same class of error this function was written to fix.
 func rebaseSteps(ws *workspace.Workspace, branch, base string) []string {
+	// No base, no command. A rebase onto a guess is the one outcome worse
+	// than no instruction at all: it succeeds, quietly, onto the wrong
+	// branch -- see baseOf below.
+	if base == "" {
+		return []string{
+			"orion cannot tell what this branch is based on: the pull request",
+			"did not report a base and vcs.work_branch is not set. Set it in",
+			"orion.json, then rebase onto that branch and push.",
+		}
+	}
 	dir := filepath.Join(ws.Dir, "worktrees", strings.ReplaceAll(branch, "/", "-"))
 	if _, err := os.Stat(dir); err == nil {
 		return []string{
@@ -121,15 +133,34 @@ func rebaseSteps(ws *workspace.Workspace, branch, base string) []string {
 	}
 }
 
-// baseOf names the branch this project merges into, for the hint above.
-func baseOf(ws *workspace.Workspace) string {
-	for _, b := range ws.Task.Branches {
-		if b == "develop" {
-			return b
-		}
+// baseOf is the ONE answer to "what is this branch based on".
+//
+// It used to be two answers. The staleness path read cfg.VCS.WorkBranch; this
+// path scanned the workspace's branch list for one literally named "develop"
+// and returned it. A repository with protected_branches ["main", "develop"]
+// and work_branch main therefore got both, seconds apart in the same output:
+// "behind main, rebase onto origin/main" followed by "conflicts with its
+// base, rebase onto origin/develop" (OR-112).
+//
+// The develop branch still existed on that repository -- abandoned when the
+// work branch moved to main -- so the wrong command did not fail. It
+// succeeded, rebasing onto stale code, and buried the real change in a large
+// unrelated diff on a pull request whose base was main all along. A wrong
+// instruction that errors costs seconds; one that works costs an afternoon,
+// and it is handed over at the moment somebody is least likely to question
+// it: they have been told something is broken and are following steps.
+//
+// So: ask the forge. The base is a property of the pull request, and gh
+// already reports baseRefName -- correct even for a PR opened by hand
+// against something unexpected (same principle as OR-88). Config is the
+// fallback for the no-PR case. Nothing is chosen for what it is CALLED, and
+// when neither source answers, that is reported rather than guessed.
+func baseOf(pr PR, cfg config.Config) (string, bool) {
+	if pr.BaseRef != "" {
+		return pr.BaseRef, true
 	}
-	if len(ws.Task.Branches) > 0 {
-		return ws.Task.Branches[len(ws.Task.Branches)-1]
+	if cfg.VCS.WorkBranch != "" {
+		return cfg.VCS.WorkBranch, true
 	}
-	return "main"
+	return "", false
 }
