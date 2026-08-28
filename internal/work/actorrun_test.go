@@ -169,3 +169,39 @@ func TestTheDescribersModelAndEffortReachItsRun(t *testing.T) {
 		t.Errorf("describer ran with model=%q effort=%q, want haiku/low", gotModel, gotEffort)
 	}
 }
+
+// Model and effort are looked up independently, not as a pair -- an operator
+// who sets one without the other must get exactly that, not have Orion
+// invent the missing half or drop the one that was set.
+func TestModelAndEffortAreForwardedIndependently(t *testing.T) {
+	home := project(t, cfg)
+	roster(t, home, map[string]config.Agent{
+		"implementer": {Model: "sonnet"}, // effort deliberately unset
+	})
+
+	var seen supervisor.Options
+	var out strings.Builder
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: &fakeJira{},
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				seen = o
+				if err := os.WriteFile(filepath.Join(ws.RepoDir(), "impl.go"),
+					[]byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, ws.RepoDir(), "add", ".")
+				git(t, ws.RepoDir(), "commit", "-q", "-m", "feat: a change")
+				return &supervisor.Result{ExitCode: 0, Reason: "completed"}, nil
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	if seen.Model != "sonnet" {
+		t.Errorf("model = %q, want the configured sonnet", seen.Model)
+	}
+	if seen.Effort != "" {
+		t.Errorf("effort = %q, want none: setting a model must not invent an effort", seen.Effort)
+	}
+}
