@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/orion-sdlc/orion/internal/slack"
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -158,5 +159,36 @@ func TestLessonAnnouncementDoesNotInterruptTheMergeReport(t *testing.T) {
 	}
 	if !strings.Contains(out2, "b1f3bfe") {
 		t.Errorf("the notice must name the run it is about (the commit that actually failed):\n%s", out2)
+	}
+}
+
+// anchorFor is what makes the notice "unmistakably retrospective" (the
+// ticket's own phrase): it must name the run, not just say "earlier".
+// Missed by the implementer's own test, which only ever exercised a Head
+// long enough to truncate -- the empty-Head fallback (an older fix record,
+// or a status source that never reported one) never ran once.
+func TestAnchorForNamesTheFailingRun(t *testing.T) {
+	at := time.Date(2026, 8, 29, 6, 13, 0, 0, time.UTC)
+	wantWhen := at.Local().Format("2006-01-02 15:04")
+
+	cases := []struct {
+		name string
+		head string
+		want string
+	}{
+		{"long head truncates to nine characters", "3f38370aaaaaaaa", "3f38370aa, " + wantWhen},
+		{"short head is used as-is, not padded or re-truncated", "abc123", "abc123, " + wantWhen},
+		{"no head falls back to the time alone, with no dangling comma", "", wantWhen},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := anchorFor(Attempt{At: at, Head: c.head})
+			if got != c.want {
+				t.Errorf("anchorFor(Head=%q) = %q, want %q", c.head, got, c.want)
+			}
+			if c.head == "" && strings.Contains(got, ",") {
+				t.Errorf("anchor with no head must not carry a dangling comma: %q", got)
+			}
+		})
 	}
 }
