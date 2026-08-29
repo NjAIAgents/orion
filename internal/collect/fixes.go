@@ -32,6 +32,11 @@ type Attempt struct {
 	At          time.Time `json:"at"`
 	Fingerprint string    `json:"fingerprint"`
 	Detail      string    `json:"detail"`
+	// RootCause is the fix run's own diagnosis -- the first line of its
+	// closing message, which OR-157 requires it to lead with -- set only
+	// once the run actually pushed a fix. Empty for a round that never
+	// stated one: an older run, or one that gave up.
+	RootCause string `json:"root_cause,omitempty"`
 }
 
 // FixState is the history for one ticket.
@@ -122,6 +127,24 @@ func recordAttempt(wsDir, key, branch, fingerprint, detail string) (FixState, er
 	})
 	f.States[key] = s
 	return s, writeFixes(wsDir, f)
+}
+
+// recordRootCause attaches the fix run's stated diagnosis to the attempt
+// that just pushed. Attempts are written BEFORE the run starts (see
+// recordAttempt, and why), so this fills in the one field that only exists
+// once the run has finished -- and only when it actually stated one.
+func recordRootCause(wsDir, key, rootCause string) error {
+	if strings.TrimSpace(rootCause) == "" {
+		return nil
+	}
+	f := loadFixes(wsDir)
+	s, ok := f.States[key]
+	if !ok || len(s.Attempts) == 0 {
+		return nil
+	}
+	s.Attempts[len(s.Attempts)-1].RootCause = rootCause
+	f.States[key] = s
+	return writeFixes(wsDir, f)
 }
 
 // clearFixes forgets a ticket's history, once it has merged or been given up

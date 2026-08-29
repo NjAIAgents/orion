@@ -357,9 +357,10 @@ func TestMergingClearsTheAttemptHistory(t *testing.T) {
 func TestAFixedAndMergedBuildProposesALesson(t *testing.T) {
 	home, _ := ciRepo(t, 3)
 	failure := "test_impact.py::test_delta FAILED\nassert 100 == 99"
+	rootCause := "test_delta compares against a stale fixture baseline instead of the regenerated one"
 	store := lessons.New(home)
 
-	redThenMerged(t, home, failure)
+	redThenMerged(t, home, failure, rootCause)
 
 	// Once is circumstance. Nobody should be asked about it yet.
 	pending, err := store.Pending()
@@ -378,7 +379,7 @@ func TestAFixedAndMergedBuildProposesALesson(t *testing.T) {
 	}
 
 	// Twice is a pattern.
-	redThenMerged(t, home, failure)
+	redThenMerged(t, home, failure, rootCause)
 
 	pending, err = store.Pending()
 	if err != nil {
@@ -388,8 +389,13 @@ func TestAFixedAndMergedBuildProposesALesson(t *testing.T) {
 		t.Fatalf("got %d proposals awaiting approval, want 1", len(pending))
 	}
 	c := pending[0]
-	if !strings.Contains(c.Text, "test_delta FAILED") {
-		t.Errorf("the proposal does not say what actually happened: %q", c.Text)
+	// The text is the transferable diagnosis, not a restatement of the CI
+	// check name -- that is the whole point of OR-177.
+	if !strings.Contains(c.Text, "stale fixture baseline") {
+		t.Errorf("the proposal does not carry the stated root cause: %q", c.Text)
+	}
+	if strings.Contains(c.Text, "test_delta FAILED") {
+		t.Errorf("the CI failure line belongs in the evidence, not the text: %q", c.Text)
 	}
 	if len(c.Evidence) != 2 {
 		t.Errorf("each sighting must carry its own evidence, got %v", c.Evidence)
@@ -397,6 +403,9 @@ func TestAFixedAndMergedBuildProposesALesson(t *testing.T) {
 	for _, e := range c.Evidence {
 		if !strings.Contains(e, "FCIA-6") || !strings.Contains(e, "fcia") {
 			t.Errorf("evidence must name the ticket and the project: %q", e)
+		}
+		if !strings.Contains(e, "test_delta FAILED") {
+			t.Errorf("evidence must carry the CI check/failure that was seen: %q", e)
 		}
 	}
 
@@ -407,6 +416,57 @@ func TestAFixedAndMergedBuildProposesALesson(t *testing.T) {
 	}
 	if len(records) != 0 {
 		t.Fatalf("a lesson was written without anyone approving it: %+v", records)
+	}
+}
+
+// The bug OR-177 fixes: a repo with one job matrix produces the same CI
+// check name for every failure it will ever have, so keying the lesson on
+// the check name collapses a gofmt violation in one file and a broken build
+// in another into a single vacuous "CI sometimes fails" lesson. Keying on
+// the normalized root cause instead means two occurrences of the SAME
+// mistake in DIFFERENT files still collide into one lesson -- which is the
+// two-strike rule actually working, not two unrelated failures pretending
+// to agree because they share a job name.
+func TestTwoRootCausesInDifferentFilesCollapseToOneLesson(t *testing.T) {
+	home, _ := ciRepo(t, 3)
+	store := lessons.New(home)
+
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)",
+		"internal/work/work_test.go, added by this branch's commits, wasn't "+
+			"gofmt-formatted -- scripts/test.sh's gofmt -l gate runs before build/test")
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)",
+		"internal/lessons/propose_test.go, added by this branch's commits, wasn't "+
+			"gofmt-formatted -- scripts/test.sh's gofmt -l gate runs before build/test")
+
+	pending, err := store.Pending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("two sightings of the same mechanism in different files produced %d lessons, want 1: %+v",
+			len(pending), pending)
+	}
+	if strings.Contains(pending[0].Text, "work_test.go") || strings.Contains(pending[0].Text, "propose_test.go") {
+		t.Errorf("the lesson text still names one sighting's file: %q", pending[0].Text)
+	}
+}
+
+// A run with no stated root cause -- an older run, or a fix loop that gave up
+// before ever stating one -- has nothing transferable to say. Falling back to
+// the CI check name is exactly the bug OR-177 fixes, so this must propose
+// nothing rather than that fallback.
+func TestAFixWithNoStatedRootCauseProposesNothing(t *testing.T) {
+	home, _ := ciRepo(t, 3)
+
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)", "")
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)", "")
+
+	health, err := lessons.New(home).Health()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Sightings != 0 {
+		t.Fatalf("a fix with no stated root cause filed %d proposal(s)", health.Sightings)
 	}
 }
 
@@ -427,11 +487,12 @@ func TestAGreenMergeProposesNothing(t *testing.T) {
 	}
 }
 
-// redThenMerged drives one full episode: CI fails, an agent pushes a fix, the
-// pull request merges.
-func redThenMerged(t *testing.T, home, failure string) {
+// redThenMerged drives one full episode: CI fails, an agent pushes a fix
+// stating the given root cause as its closing message, the pull request
+// merges.
+func redThenMerged(t *testing.T, home, failure, rootCause string) {
 	t.Helper()
-	runFix(t, home, &fixSpy{pushed: true}, failure, Options{})
+	runFix(t, home, &fixSpy{pushed: true, summary: rootCause}, failure, Options{})
 	mergeIt(t, home)
 }
 
@@ -481,5 +542,61 @@ func TestFixLoopSkipsAManuallyLockedBranch(t *testing.T) {
 	}
 	if !strings.Contains(out, manualLockName) {
 		t.Errorf("the lock must be named in the output so it is discoverable:\n%s", out)
+	}
+}
+
+// normalizeRootCause must strip exactly what varies between two sightings of
+// the same mistake -- the file path, the branch, the ticket key -- and leave
+// the mechanism readable, since the result is both the dedup key and the
+// text a human reads in the approval prompt and, later, in CLAUDE.md.
+func TestNormalizeRootCause(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "strips a file path but keeps the mechanism",
+			in:   "internal/work/work_test.go wasn't gofmt-formatted before the build/test gate ran",
+			want: "a file wasn't gofmt-formatted before the build/test gate ran",
+		},
+		{
+			name: "two different files normalize to the same text",
+			in:   "internal/lessons/propose_test.go wasn't gofmt-formatted before the build/test gate ran",
+			want: "a file wasn't gofmt-formatted before the build/test gate ran",
+		},
+		{
+			name: "strips a branch name",
+			in:   "fix/OR-114-gofmt reintroduced the same missing nil check",
+			want: "a branch reintroduced the same missing nil check",
+		},
+		{
+			name: "strips a bare ticket key",
+			in:   "OR-114 regressed the same nil check",
+			want: "regressed the same nil check",
+		},
+		{
+			name: "empty input normalizes to empty",
+			in:   "",
+			want: "",
+		},
+		{
+			name: "whitespace-only input normalizes to empty",
+			in:   "   ",
+			want: "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := normalizeRootCause(c.in); got != c.want {
+				t.Errorf("normalizeRootCause(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+
+	a := normalizeRootCause("internal/work/work_test.go wasn't gofmt-formatted before the build/test gate ran")
+	b := normalizeRootCause("internal/lessons/propose_test.go wasn't gofmt-formatted before the build/test gate ran")
+	if a != b || a == "" {
+		t.Errorf("two sightings differing only by file path must normalize identically, got %q and %q", a, b)
 	}
 }
