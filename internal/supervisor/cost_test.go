@@ -7,6 +7,7 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/cost"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
 const resultJSON = `{"type":"result","is_error":false,"num_turns":7,"session_id":"s",` +
@@ -84,5 +85,41 @@ func TestARunWithNoTicketBooksNothing(t *testing.T) {
 
 	if rep := aggregate(t, w.Dir, "OR-9"); !rep.Empty() {
 		t.Errorf("booked %d runs against a ticket that started none", len(rep.Runs))
+	}
+}
+
+// recordTicketCost is the wiring the ticket exists for: it must record what
+// THIS run was dispatched with (opts.Model/Effort/Stage), not the actor id
+// alone, into the durable history under ORION_HOME. cost_test.go and
+// history_test.go in package cost exercise cost.Record directly with a
+// hand-built Run; nothing until now proved the supervisor actually threads
+// its own dispatch options and the run's project/session into that row.
+func TestRecordTicketCostWritesDispatchedModelAndEffortToHistory(t *testing.T) {
+	w := ws(t, "")
+	opts := Options{
+		Stage: "implement", Actor: events.ActorImplementer, Key: "OR-9",
+		Model: "opus", Effort: "high",
+	}
+	recordTicketCost(w, opts, &Result{Duration: 90 * time.Second, SessionID: "s"}, resultJSON)
+
+	rows, err := cost.ReadHistory(workspace.Home())
+	if err != nil {
+		t.Fatalf("reading the history: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("appended %d history rows, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.Model != "opus" || row.Effort != "high" {
+		t.Errorf("row recorded model %q effort %q, want opus/high -- the "+
+			"supervisor must record what THIS run dispatched, not look it up "+
+			"later", row.Model, row.Effort)
+	}
+	if row.Key != "OR-9" || row.Project != "OR" || row.Actor != events.ActorImplementer {
+		t.Errorf("row not relatable: key %q project %q actor %q",
+			row.Key, row.Project, row.Actor)
+	}
+	if row.Stage != "implement" || row.Session != "s" {
+		t.Errorf("row stage %q session %q, want implement/s", row.Stage, row.Session)
 	}
 }
