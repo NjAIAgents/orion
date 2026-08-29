@@ -21,6 +21,11 @@ type Limits struct {
 	MaxSessionMinutes      int `json:"max_session_minutes"`
 	MaxEditsWithoutVerify  int `json:"max_edits_without_verify"`
 	MaxFilesTouched        int `json:"max_files_touched"`
+	// MaxConcurrentChildren caps how many subagents supervisor.Fan runs at
+	// once. Low by default: unbounded fan-out against a rate-limited API
+	// converts a queue into a stampede (OR-162 is what misreading this limit
+	// costs).
+	MaxConcurrentChildren int `json:"max_concurrent_children"`
 }
 
 // Delegation configures handoff to nj-agents skills.
@@ -483,6 +488,7 @@ func Defaults() Config {
 			MaxSessionMinutes:      90,
 			MaxEditsWithoutVerify:  25,
 			MaxFilesTouched:        60,
+			MaxConcurrentChildren:  2,
 		},
 		Gates: Gates{
 			RequirePlanBeforeEdit:          false, // opt-in: too disruptive to force on an unconfigured repo
@@ -698,6 +704,9 @@ func normalize(c *Config) {
 	}
 	if c.Limits.MaxFilesTouched <= 0 {
 		c.Limits.MaxFilesTouched = d.Limits.MaxFilesTouched
+	}
+	if c.Limits.MaxConcurrentChildren <= 0 {
+		c.Limits.MaxConcurrentChildren = d.Limits.MaxConcurrentChildren
 	}
 	if c.Paths.State == "" {
 		c.Paths.State = d.Paths.State
