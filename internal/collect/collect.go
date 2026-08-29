@@ -110,7 +110,11 @@ type Deps struct {
 	Merge func(dir, branch, reason, strategy string) error
 	// Fix sends a CI failure back to an agent on the same branch and reports
 	// whether it pushed anything. Nil disables the fix loop.
-	Fix func(ws *workspace.Workspace, key, branch, failure string) (pushed bool, summary string, err error)
+	//
+	// denied is non-nil when nothing was pushed because the sandbox itself
+	// refused the agent's edit -- a different failure from the agent not
+	// knowing what to change, and one no further attempt can fix (OR-174).
+	Fix func(ws *workspace.Workspace, key, branch, failure string) (pushed bool, summary string, denied *PolicyDenial, err error)
 	// Slack reads approvals. Nil disables the approval path entirely, which
 	// is the correct behaviour when the extra OAuth scopes are not granted:
 	// Orion then reports that checks pass and waits for a human to merge.

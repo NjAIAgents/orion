@@ -7,8 +7,10 @@ import (
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/actors"
+	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/match"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -48,15 +50,17 @@ func fixOptions(key, branch, detail string, cfg config.Config) supervisor.Option
 // fix would be attempted by something that had never seen the reasoning.
 //
 // Returns whether anything was actually pushed. Exit 0 with no new commit
-// means the agent could not see what to change, and that is a stop condition
-// rather than an attempt to repeat -- a second identical run produces the
-// same nothing at the same price.
-func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, string, error) {
+// means the agent either could not see what to change, or saw it and was
+// refused by the sandbox -- denied distinguishes the two (OR-174), since
+// they call for different remedies: a person thinking about the first, a
+// person applying a diff for the second, and no further attempt fixes
+// either from inside the sandbox.
+func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, string, *collect.PolicyDenial, error) {
 	w := os.Stdout
 
 	jobs, err := workspace.ListWorktrees(ws)
 	if err != nil {
-		return false, "", err
+		return false, "", nil, err
 	}
 	var dir string
 	for _, j := range jobs {
@@ -66,7 +70,7 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, string,
 		}
 	}
 	if dir == "" {
-		return false, "", fmt.Errorf("no worktree for %s.\n"+
+		return false, "", nil, fmt.Errorf("no worktree for %s.\n"+
 			"  It was pruned, so there is nowhere to apply a fix. "+
 			"Re-queue the ticket to start again", branch)
 	}
@@ -81,25 +85,37 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, string,
 
 	before, err := headOf(dir)
 	if err != nil {
-		return false, "", err
+		return false, "", nil, err
 	}
 
 	cfg := config.Load(ws.RepoDir())
 	jobWS := *ws
 	jobWS.RepoPath = dir
 
+	// Caught live, off the same activity stream the console line below is
+	// built from -- not guessed at afterwards from the agent's prose. Shield
+	// (internal/hook.Shield) blocks every Edit/Write/MultiEdit/NotebookEdit
+	// that targets cfg.Paths.Protected unconditionally, so a tool call seen
+	// here against that list is proof the sandbox refused it, regardless of
+	// whether the agent said so in its closing message (OR-174).
+	var deniedEdit *collect.PolicyDenial
 	o := fixOptions(key, branch, detail, cfg)
 	o.OnActivity = func(a supervisor.Activity) {
 		if a.Kind == "tool" {
 			ui.Ok(w, "working", "%s %s", a.Tool, a.Detail)
 		}
+		if deniedEdit == nil && isEditTool(a.Tool) {
+			if rule := matchedRule(cfg.Paths.Protected, a.Detail); rule != "" {
+				deniedEdit = &collect.PolicyDenial{Tool: a.Tool, Path: a.Detail, Rule: rule}
+			}
+		}
 	}
 	res, err := supervisor.Run(&jobWS, o)
 	if err != nil {
-		return false, "", err
+		return false, "", nil, err
 	}
 	if res.ExitCode != 0 {
-		return false, "", fmt.Errorf("the fix run exited %d: %s", res.ExitCode, res.Reason)
+		return false, "", nil, fmt.Errorf("the fix run exited %d: %s", res.ExitCode, res.Reason)
 	}
 
 	// The agent's own closing message, not re-derived: it already said what
@@ -111,16 +127,46 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, string,
 
 	after, err := headOf(dir)
 	if err != nil {
-		return false, "", err
+		return false, "", nil, err
 	}
 	if after == before {
-		return false, summary, nil
+		if deniedEdit != nil {
+			// The full closing message, not the one-line summary: this is
+			// the hand-off a human applies, and OR-172's agent had already
+			// written the exact fix in prose here -- worth keeping whole.
+			deniedEdit.HandOff = strings.TrimSpace(res.Final)
+			return false, summary, deniedEdit, nil
+		}
+		return false, summary, nil, nil
 	}
 
 	if err := pushBranch(dir, branch); err != nil {
-		return false, "", fmt.Errorf("the fix was committed but not pushed: %w", err)
+		return false, "", nil, fmt.Errorf("the fix was committed but not pushed: %w", err)
 	}
-	return true, summary, nil
+	return true, summary, nil, nil
+}
+
+// isEditTool reports whether a tool call can modify a file -- the same set
+// Shield is wired to in PreToolUse (see writeSettings's "Edit|Write|
+// MultiEdit|NotebookEdit" matcher).
+func isEditTool(tool string) bool {
+	switch tool {
+	case "Edit", "Write", "MultiEdit", "NotebookEdit":
+		return true
+	default:
+		return false
+	}
+}
+
+// matchedRule returns the first protected-path pattern that matches path,
+// or "" when none does.
+func matchedRule(patterns []string, path string) string {
+	for _, p := range patterns {
+		if match.Match(p, path) {
+			return p
+		}
+	}
+	return ""
 }
 
 // oneLine reduces a closing message to something that fits a console line.

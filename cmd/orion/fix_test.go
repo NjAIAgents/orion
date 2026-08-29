@@ -37,3 +37,35 @@ func TestOneLineTruncatesAnOverlongLine(t *testing.T) {
 		t.Errorf("len([]rune(oneLine(long))) = %d, want 161", n)
 	}
 }
+
+// isEditTool must name the exact set Shield is wired to in PreToolUse
+// ("Edit|Write|MultiEdit|NotebookEdit" in writeSettings) -- missing one here
+// means a write that Shield blocks goes undetected as a policy denial.
+func TestIsEditToolMatchesWhatShieldGuards(t *testing.T) {
+	for _, tool := range []string{"Edit", "Write", "MultiEdit", "NotebookEdit"} {
+		if !isEditTool(tool) {
+			t.Errorf("isEditTool(%q) = false, want true", tool)
+		}
+	}
+	for _, tool := range []string{"Read", "Bash", "Grep", "Task"} {
+		if isEditTool(tool) {
+			t.Errorf("isEditTool(%q) = true, want false", tool)
+		}
+	}
+}
+
+// This is the exact OR-172 scenario: an Edit targeting the CI workflow,
+// which orion.json's default paths.protected list denies unconditionally.
+func TestMatchedRuleFindsTheProtectedCIWorkflowPath(t *testing.T) {
+	protected := []string{".github/workflows/**", "orion.json", "managed-settings.json"}
+
+	if got := matchedRule(protected, ".github/workflows/ci.yml"); got != ".github/workflows/**" {
+		t.Errorf("matchedRule(ci.yml) = %q, want the workflows rule", got)
+	}
+	if got := matchedRule(protected, "orion.json"); got != "orion.json" {
+		t.Errorf("matchedRule(orion.json) = %q, want an exact match", got)
+	}
+	if got := matchedRule(protected, "internal/collect/fixloop.go"); got != "" {
+		t.Errorf("matchedRule(fixloop.go) = %q, want no match for an ordinary source file", got)
+	}
+}
