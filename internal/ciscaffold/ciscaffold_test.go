@@ -154,6 +154,51 @@ func TestTheWorkflowRunsTheScriptRatherThanItsOwnCommands(t *testing.T) {
 	}
 }
 
+// github.ref alone cannot collapse a push and its pull_request into one
+// concurrency group: push uses refs/heads/<branch>, pull_request uses
+// refs/pull/<n>/merge, so the two never cancel each other and a branch with
+// an open PR runs the whole matrix twice on the same SHA (OR-172). The
+// group must fall back to the ref only when there is no PR number.
+func TestConcurrencyGroupCollapsesPushAndPullRequest(t *testing.T) {
+	for _, s := range []Stack{StackGo, StackPython, StackNode} {
+		flow := workflowFor(s)
+		if !strings.Contains(flow, "github.event.pull_request.number") {
+			t.Errorf("%s workflow's concurrency group has no pull_request number fallback, "+
+				"so a push and its PR land in different groups and both run: %s", s, flow)
+		}
+	}
+}
+
+// The commit that fixed the scaffolded template says fixing this repository's
+// own .github/workflows/ci.yml was left for manual application. Until that
+// manual edit lands, Orion's own CI still runs the doubled matrix the ticket
+// describes (worst on the develop-to-main promotion PR) every time this repo
+// itself has an open PR against develop or main.
+func TestThisRepositorysOwnCIWorkflowHasTheSameFix(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	flow := string(b)
+	if !strings.Contains(flow, "github.event.pull_request.number") {
+		t.Error(".github/workflows/ci.yml's concurrency group has no pull_request number fallback, " +
+			"so this repo's own push and PR checks still run the full matrix twice on the same SHA (OR-172)")
+	}
+}
+
+// The secret-scan workflow scaffolded alongside "tests" has the identical
+// on: { pull_request, push: [main, develop] } trigger pair and the identical
+// github.ref-only concurrency group, so it is exposed to the exact same
+// OR-172 failure mode. Fixing the "tests" workflow's group and leaving this
+// one alone still runs the scan twice on every branch with an open PR.
+func TestSecretScanConcurrencyGroupCollapsesPushAndPullRequest(t *testing.T) {
+	flow := scanWorkflow()
+	if !strings.Contains(flow, "github.event.pull_request.number") {
+		t.Errorf("secret-scan workflow's concurrency group has no pull_request number fallback, "+
+			"so a push and its PR land in different groups and both run: %s", flow)
+	}
+}
+
 // The scan is scaffolded, not hand-added. Editing one repository's workflow
 // fixes that repository and leaves every adopted project unscanned.
 func TestEveryAdoptedProjectGetsTheSecretScan(t *testing.T) {

@@ -15,8 +15,15 @@ on:
 # Orion SCAFFOLDS this into the workflow it writes for adopted projects and
 # did not have it itself, which is how it went unnoticed: the repository that
 # generates the good default was the one missing it.
+#
+# Key on the PR number when there is one, and only fall back to the ref.
+# github.ref is refs/heads/<branch> for a push and refs/pull/<n>/merge for a
+# pull_request, so grouping on it alone puts the two events in DIFFERENT
+# groups and neither cancels the other -- every branch with an open PR built
+# twice, worst on the develop-to-main promotion PR whose head branch IS
+# develop, which therefore doubled on every release (OR-172).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:

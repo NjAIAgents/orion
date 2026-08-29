@@ -61,11 +61,16 @@ type qaJob struct {
 	WS          *workspace.Workspace // the JOB worktree, not the shared clone
 	MaxMinutes  int
 	MaxTurns    int
+	// BaseSHA is the commit this ticket's branch was cut from, before the
+	// implementer touched anything. It is what every test QA writes must be
+	// demonstrated failing against -- see redgreen.go and OR-156. Empty skips
+	// that check rather than failing the stage over it.
+	BaseSHA string
 }
 
 // runQA drives the exchange to clean, to the ceiling, or to nothing at all.
 func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
-	log *events.Log, w io.Writer) qaOutcome {
+	log *events.Log, w io.Writer) (out qaOutcome) {
 
 	key := job.Key
 	if !cfg.QA.On() {
@@ -75,6 +80,20 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 	if deps.Supervise == nil {
 		return qaOutcome{}
 	}
+
+	// Captured before QA's first turn, so the tests it goes on to write can
+	// be told apart from the implementer's own -- the diff between this and
+	// HEAD once the stage ends is QA's, and only QA's, regardless of how many
+	// fix rounds run in between.
+	preQA, _ := headSHA(job.WS.RepoDir())
+	defer func() {
+		// Only when QA actually ran: a stage that never started wrote no
+		// tests, and there is nothing to prove red about a run that failed
+		// before its first turn (qaRan below handles that case).
+		if out.Ran {
+			reportRedBeforeGreen(job, preQA, log, w)
+		}
+	}()
 
 	tools := qaTools(cfg, opts.Home)
 	// Which path it took, said out loud. A stage that silently degraded to
@@ -101,15 +120,26 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 		return qaOutcome{}
 	}
 
-	out := qaOutcome{Ran: true}
+	out = qaOutcome{Ran: true}
 	findings, clean := qaVerdict(tailOf(res))
 	qaSession := res.SessionID
 
 	for max := cfg.QA.Rounds(); !clean; {
 		out.Findings = findings
+		// The full text, not firstLine(findings): the event log has no width
+		// limit and is what `orion logs` reads, so this is the one durable
+		// record of what QA actually found on the common path where the fix
+		// lands in round one and QA never escalates (OR-167).
 		log.Emit(events.Event{Kind: events.KindQA, Actor: events.ActorQA,
-			Model: actors.Model(events.ActorQA), Msg: firstLine(findings)})
-		ui.Say(w, key, events.ActorQA, ui.VerbWarn, "findings: %s", firstLine(findings))
+			Model: actors.Model(events.ActorQA), Msg: findings})
+		line := firstSubstantiveLine(findings)
+		if line == strings.TrimSpace(findings) {
+			ui.Say(w, key, events.ActorQA, ui.VerbWarn, "findings: %s", line)
+		} else {
+			ui.Say(w, key, events.ActorQA, ui.VerbWarn,
+				"findings: %s (full text in the event log)", line)
+		}
+		qaPostFindings(deps, key, out.Rounds+1, findings)
 
 		if out.Rounds >= max {
 			// The ceiling. Two agents can disagree about a test for as long
@@ -191,6 +221,42 @@ func qaGiveUp(key, why string, log *events.Log, w io.Writer) {
 		"%s, so this change goes to review unverified by QA", why)
 }
 
+// reportRedBeforeGreen says which of QA's own tests were proven to fail
+// against the pre-change commit and which were not (OR-156) -- on the
+// console and in the event log, in the style of OR-129: what actually
+// happened, not that a check merely ran.
+//
+// Reporting only. A test that could not be shown red is not dropped and does
+// not stop the branch going to review either: QA does not block on its own
+// authority (see the file comment above), and this check runs with the same
+// authority QA does.
+func reportRedBeforeGreen(job qaJob, preQA string, log *events.Log, w io.Writer) {
+	key := job.Key
+	res := checkRedBeforeGreen(job.WS.RepoDir(), job.BaseSHA, preQA)
+
+	if res.Skipped != "" {
+		log.Emitf(events.KindNote, events.ActorQA, "red-before-green not checked: %s", res.Skipped)
+		return
+	}
+	if len(res.Proven) > 0 {
+		msg := fmt.Sprintf("proved red before green on %d test file(s): %s",
+			len(res.Proven), strings.Join(res.Proven, ", "))
+		log.Emit(events.Event{Kind: events.KindQA, Actor: events.ActorQA, Msg: msg})
+		ui.Say(w, key, events.ActorQA, ui.VerbOK, "%s", msg)
+	}
+	if len(res.Unproven) > 0 {
+		msg := fmt.Sprintf("%d test file(s) already passed against the code before this change, "+
+			"so they prove nothing about it: %s", len(res.Unproven), strings.Join(res.Unproven, ", "))
+		log.Emit(events.Event{Kind: events.KindQA, Actor: events.ActorQA, Msg: msg})
+		ui.Say(w, key, events.ActorQA, ui.VerbWarn, "%s", msg)
+	}
+	for _, u := range res.Unclear {
+		msg := fmt.Sprintf("could not tell whether %s was red before this change: %s", u.File, u.Reason)
+		log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorQA, Msg: msg})
+		ui.Say(w, key, events.ActorQA, ui.VerbWarn, "%s", msg)
+	}
+}
+
 // qaVerdict reads the QA agent's closing message.
 //
 // Clean only on the sentinel, and only when it starts a line: an agent that
@@ -212,6 +278,34 @@ func qaVerdict(final string) (findings string, clean bool) {
 		return "QA finished without reporting anything, so nothing was verified.", false
 	}
 	return strings.TrimSpace(final), false
+}
+
+// firstSubstantiveLine is what the console shows: the first line that
+// actually says something, not just the first line. QA's closing message
+// often opens with a header ("Verification done. Summary:") before the
+// content -- returning the literal first line would spend the one line the
+// console has on a sentence that carries no information (OR-167).
+func firstSubstantiveLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasSuffix(t, ":") {
+			continue
+		}
+		return t
+	}
+	return strings.TrimSpace(s)
+}
+
+// qaPostFindings puts one round's findings on the ticket. Every round, not
+// only the one that hits the ceiling -- by the time someone reads the ticket
+// weeks later, the in-memory findings and the raw stage log are both gone,
+// and the ticket is the only place left to look (OR-167).
+func qaPostFindings(deps Deps, key string, round int, findings string) {
+	if deps.Jira == nil {
+		return
+	}
+	body := fmt.Sprintf("QA round %d found:\n\n%s", round, findings)
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorQA, body))
 }
 
 // qaEscalate hands the open findings to a person.

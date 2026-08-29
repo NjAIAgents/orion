@@ -111,7 +111,7 @@ func Send(e Event) []error {
 			who = events.ActorOrion
 		}
 		text := "*" + actors.Attribution(who) + "*\n" + e.Title + "\n" + e.Body
-		if err := slackSend(e.Channel, text); err != nil {
+		if err := slackSend(e.Channel, text, e.Level); err != nil {
 			errs = append(errs, fmt.Errorf("slack: %w", err))
 		}
 	}
@@ -140,17 +140,22 @@ func Send(e Event) []error {
 // alert silently did not arrive and nothing said so. For a package whose
 // entire job is telling you something happened while you were not watching,
 // that is the worst possible failure.
-var slackSend = func(channel, text string) error {
+//
+// level travels through to Slack rather than being dropped, which is what
+// used to happen here: Level was computed on every Event and then Post took
+// only a channel and text, so an approval request and a status update
+// arrived looking identical.
+var slackSend = func(channel, text string, level Level) error {
 	c, err := slack.FromEnv()
 	if err != nil {
 		return err
 	}
-	return c.Post(channel, text)
+	return c.PostLevel(channel, slack.Level(level), text)
 }
 
 // SetSlackSender replaces the Slack delivery function. Used by tests, and
 // available to a caller that already holds a configured client.
-func SetSlackSender(f func(channel, text string) error) func(channel, text string) error {
+func SetSlackSender(f func(channel, text string, level Level) error) func(channel, text string, level Level) error {
 	prev := slackSend
 	if f != nil {
 		slackSend = f
