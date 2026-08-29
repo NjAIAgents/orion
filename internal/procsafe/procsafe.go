@@ -23,7 +23,6 @@ package procsafe
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -101,8 +100,32 @@ func WriteFile(path string, data []byte, perm os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp := fmt.Sprintf("%s.tmp.%d.%d", path, os.Getpid(), time.Now().UnixNano())
-	if err := os.WriteFile(tmp, data, perm); err != nil {
+	// os.CreateTemp, not a name built from pid and clock. Every goroutine in
+	// one process shares a pid, and two that start within the same clock tick
+	// share a nanosecond -- so the old name could collide, both writers would
+	// open the SAME temp file, interleave into it, and rename a mixture into
+	// place. Across processes it was safe; within one it was not, which is the
+	// case parallel agents inside a single run are made of. The kernel's
+	// uniqueness guarantee is the only one that holds for both.
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp.*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	cleanup := func() { _ = f.Close(); _ = os.Remove(tmp) }
+
+	if _, err := f.Write(data); err != nil {
+		cleanup()
+		return err
+	}
+	// CreateTemp always makes 0600; restore the caller's mode before the
+	// rename so the published file never briefly has the wrong permissions.
+	if err := f.Chmod(perm); err != nil {
+		cleanup()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
