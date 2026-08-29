@@ -206,8 +206,10 @@ func TestARetriedTicketsSuffixedBranchIsRecordedForCollect(t *testing.T) {
 				git(t, ws.RepoDir(), "commit", "-q", "-m", "feat: implement")
 				return &supervisor.Result{ExitCode: 0, Reason: "completed"}, nil
 			},
-			Push:   func(dir, branch string) error { return nil },
-			OpenPR: func(dir, branch, title, body, base string) (string, error) { return "https://github.com/x/y/pull/5", nil },
+			Push: func(dir, branch string) error { return nil },
+			OpenPR: func(dir, branch, title, body, base string) (string, error) {
+				return "https://github.com/x/y/pull/5", nil
+			},
 		})
 
 	if res[0].Branch != "orion/fcia-6-2" {
