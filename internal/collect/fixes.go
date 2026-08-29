@@ -37,6 +37,10 @@ type Attempt struct {
 	// once the run actually pushed a fix. Empty for a round that never
 	// stated one: an older run, or one that gave up.
 	RootCause string `json:"root_cause,omitempty"`
+	// Head is the branch's commit at the moment this attempt failed. Carried
+	// so a lesson proposed from this history can later name what actually
+	// broke instead of a bare, unanchored past-tense clause (OR-178).
+	Head string `json:"head,omitempty"`
 }
 
 // FixState is the history for one ticket.
@@ -118,12 +122,12 @@ func loadFixes(wsDir string) fixFile {
 // leave the attempt uncounted, and the ceiling that exists to bound spending
 // would reset every time the process died -- which is exactly the condition
 // under which a runaway loop is most likely.
-func recordAttempt(wsDir, key, branch, fingerprint, detail string) (FixState, error) {
+func recordAttempt(wsDir, key, branch, fingerprint, detail, head string) (FixState, error) {
 	f := loadFixes(wsDir)
 	s := f.States[key]
 	s.Key, s.Branch = key, branch
 	s.Attempts = append(s.Attempts, Attempt{
-		At: time.Now().UTC(), Fingerprint: fingerprint, Detail: firstLine(detail),
+		At: time.Now().UTC(), Fingerprint: fingerprint, Detail: firstLine(detail), Head: head,
 	})
 	f.States[key] = s
 	return s, writeFixes(wsDir, f)
