@@ -104,8 +104,17 @@ func (w Workspace) RepoDir() string {
 	if w.RepoPath != "" {
 		return w.RepoPath
 	}
-	return filepath.Join(w.Dir, "repo")
+	return w.CloneDir()
 }
+
+// CloneDir is the shared sandbox clone, never a job worktree.
+//
+// Distinct from RepoDir, which a running job overrides to point at its own
+// worktree. Anything that belongs to the REPOSITORY rather than to one run
+// has to ask for this: git hooks are the case that proved it, since a
+// worktree keeps none of its own and resolves them from the clone's common
+// dir (OR-193).
+func (w Workspace) CloneDir() string     { return filepath.Join(w.Dir, "repo") }
 func (w Workspace) MetaDir() string      { return filepath.Join(w.Dir, ".orion") }
 func (w Workspace) LogsDir() string      { return filepath.Join(w.MetaDir(), "logs") }
 func (w Workspace) StateDir() string     { return filepath.Join(w.MetaDir(), "state") }

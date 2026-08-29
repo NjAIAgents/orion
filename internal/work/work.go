@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/actors"
+	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/advise"
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
@@ -430,6 +431,19 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	job, err := workspace.AddWorktree(ws, cfg.VCS.WorkBranch, branch)
 	if err != nil {
 		return fail(res, err)
+	}
+	// Attribution hooks live in the sandbox CLONE, not in the worktree and
+	// not in the user's checkout. Before this, the clone was never
+	// instrumented, so every commit an agent made carried no AI-Attribution
+	// trailer at all -- the most agent-written code in the repository was the
+	// part with no record that an agent wrote it (OR-193).
+	//
+	// Best-effort and reported: a missing trailer is a worse record, not a
+	// reason to throw away the run that would have produced one.
+	if cfg.Attribution.Enabled {
+		if err := adopt.EnsureSandboxDun(ws.CloneDir()); err != nil {
+			ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "attribution: %v", err)
+		}
 	}
 	res.Branch = job.Branch
 	// Record the ACTUAL branch now, while it is known -- AddWorktree may have

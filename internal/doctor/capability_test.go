@@ -205,6 +205,34 @@ func TestCheckHooksCatchesCommandsThatDoNotResolve(t *testing.T) {
 	}
 }
 
+// Attribution is a check because it went wrong silently: the sandbox clone
+// carried no dun hooks for months and nothing in `orion doctor` said so. A
+// missing dun must degrade, not pass (OR-193).
+func TestCheckAttributionDegradesWithoutDun(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	c := checkAttribution(t.TempDir(), false)
+	if c.grade == ok {
+		t.Fatalf("reported OK with no dun on PATH: %+v", c)
+	}
+	if !strings.Contains(c.fix, "attribution trailer") {
+		t.Errorf("fix does not say what is lost: %q", c.fix)
+	}
+}
+
+// A project that has turned attribution off is not degraded, it is
+// configured. Warning there is how a check gets ignored everywhere else.
+func TestCheckAttributionRespectsTheDisabledFlag(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	root := t.TempDir()
+	cfg := []byte(`{"version":1,"attribution":{"enabled":false}}`)
+	if err := os.WriteFile(filepath.Join(root, "orion.json"), cfg, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c := checkAttribution(root, false); c.grade != ok {
+		t.Fatalf("graded %v with attribution disabled: %+v", c.grade, c)
+	}
+}
+
 func TestUniqPreservesOrder(t *testing.T) {
 	got := uniq([]string{"b", "a", "b", "c", "a"})
 	if strings.Join(got, ",") != "b,a,c" {
