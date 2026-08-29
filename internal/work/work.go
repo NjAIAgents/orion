@@ -305,8 +305,14 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// Said out loud on every ticket, including the default: a route that
 	// falls through in silence is how the frontend actor went unreached for
 	// as long as it did (OR-171).
+	//
+	// A DECISION, not a note. Another actor could have worked this ticket and
+	// the reason it did not is right there in the same line -- both halves the
+	// rule in internal/events asks for. As a note it was indistinguishable
+	// from the ninety-odd other things worth seeing, which is the same as not
+	// having been recorded (OR-201).
 	actorID, routeWhy := route(*issue)
-	log.Emitf(events.KindNote, events.ActorOrion, "routed to the %s: %s", actorID, routeWhy)
+	log.Emitf(events.KindDecision, events.ActorOrion, "routed to the %s: %s", actorID, routeWhy)
 	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "routed to %s: %s", actors.Display(actorID), routeWhy)
 
 	// Is it already finished? The queue query excludes resolved tickets, but
@@ -598,7 +604,13 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			return failAndTell(res, cErr, key, ws, log, w, deps)
 		}
 		rel, _ := filepath.Rel(job.Path, path)
-		log.Emitf(events.KindDecision, events.ActorOrion, "recorded %s", rel)
+		// What was chosen and what it was derived from, not just which file
+		// now holds it. "recorded docs/decisions/OR-1-1.md" is the same empty
+		// line as "the advisor responded": it says a decision happened and
+		// leaves the decision out of it (OR-201). The path stays on the end
+		// because the record is on the branch and a reader will want it.
+		log.Emitf(events.KindDecision, events.ActorOrion, "%s -- grounded in %s; recorded in %s",
+			ans.Decision, ans.Grounding, rel)
 		ui.Say(w, key, events.ActorOrion, ui.VerbOK, "recorded %s", rel)
 
 		anTitle, anBody := msgAnswered(key, ans, question)
@@ -1024,8 +1036,18 @@ const maxQuestions = 5
 // The retry exists because routing is a guess. A product question sent to the
 // architect comes back as "escalate", and forwarding it costs one more cheap
 // call -- far better than declaring the run blocked over a misclassification.
+//
+// EVERY PATH OUT OF HERE CLOSES THE ASK, with an answer or a refuse. The two
+// advisor-unreachable returns below used to leave without emitting either, so
+// the log recorded a question and never what became of it -- and the reply the
+// implementer then acted on was gone (OR-201).
 func consult(deps Deps, key, actorID, dir, question string, log *events.Log, w io.Writer) (advise.Answer, bool) {
-	log.Emitf(events.KindAsk, actorID, "%s", firstLine(question))
+	// The whole question, like the whole answer below. Six of the six asks
+	// ever recorded were the agent's closing message, and the last of them
+	// ends "...worth having on record:" -- cut mid-sentence, one line into
+	// the thing it was about to put on record (OR-201). The terminal takes
+	// the first line; the log takes what was said.
+	log.Emitf(events.KindAsk, actorID, "%s", question)
 	ui.Say(w, key, actorID, ui.VerbWorking, "asking: %s", firstLine(question))
 
 	role := advise.Route(deps.Advise, dir, question)
@@ -1036,9 +1058,7 @@ func consult(deps Deps, key, actorID, dir, question string, log *events.Log, w i
 		Model: advise.ModelRouter, Msg: "routed to the " + string(role)})
 	ans, err := advise.Ask(deps.Advise, dir, role, question, advise.Artifacts(dir, role))
 	if err != nil {
-		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not reach the %s: %v", role, err)
-		return advise.Answer{Role: role, Verdict: advise.VerdictRefused,
-			Reason: "the advisor could not be reached: " + err.Error()}, false
+		return unreachable(log, w, key, role, err), false
 	}
 
 	if ans.Verdict == advise.VerdictEscalate {
@@ -1052,26 +1072,47 @@ func consult(deps Deps, key, actorID, dir, question string, log *events.Log, w i
 		ui.Say(w, key, actorFor(role), ui.VerbWarn, "this is for the %s", other)
 		ans, err = advise.Ask(deps.Advise, dir, other, question, advise.Artifacts(dir, other))
 		if err != nil {
-			return advise.Answer{Role: other, Verdict: advise.VerdictRefused,
-				Reason: "the advisor could not be reached: " + err.Error()}, false
+			return unreachable(log, w, key, other, err), false
 		}
 	}
 
 	if ans.Answered() {
+		// The decision UNEDITED, the way KindSay records the agent's own
+		// prose. A first line is a headline, and an answer reduced to its
+		// headline cannot explain what the implementer did next -- the
+		// terminal below is the place to be brief, not the record.
 		log.Emit(events.Event{Kind: events.KindAnswer, Actor: string(ans.Role),
 			Model:  ans.Model,
-			Msg:    firstLine(ans.Decision),
+			Msg:    ans.Decision,
 			Detail: map[string]any{"grounding": ans.Grounding}})
 		ui.SayModel(w, key, actorFor(ans.Role), ans.Model, ui.VerbOK, "%s", firstLine(ans.Decision))
 		fmt.Fprintf(w, "          %s\n", ui.Dim(w, ans.Grounding))
 		return ans, true
 	}
 
+	// The whole reason, for the same reason: "the artifacts are silent" is
+	// the beginning of a refusal, and what it goes on to say is which
+	// document a person now has to amend.
 	log.Emit(events.Event{Kind: events.KindRefuse, Actor: string(ans.Role),
-		Model: ans.Model, Msg: firstLine(ans.Reason)})
+		Model: ans.Model, Msg: ans.Reason})
 	ui.SayModel(w, key, actorFor(ans.Role), ans.Model, ui.VerbWarn,
 		"could not decide this: %s", firstLine(ans.Reason))
 	return ans, true
+}
+
+// unreachable closes an ask that never reached an advisor.
+//
+// A transport failure is a refusal like any other -- the question is
+// unanswered and a person has to decide -- and it is recorded as one so that
+// the ask it closes is not left dangling. Attributed to the role that was
+// being asked, matching the Answer this returns, because "the architect could
+// not be reached" is the fact; who failed to reach it is Orion either way.
+func unreachable(log *events.Log, w io.Writer, key string, role advise.Role, err error) advise.Answer {
+	ans := advise.Answer{Role: role, Verdict: advise.VerdictRefused,
+		Reason: "the advisor could not be reached: " + err.Error()}
+	log.Emit(events.Event{Kind: events.KindRefuse, Actor: string(role), Msg: ans.Reason})
+	ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not reach the %s: %v", role, err)
+	return ans
 }
 
 // actorFor maps an advisor's role to its actor identifier.
