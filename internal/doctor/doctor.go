@@ -68,6 +68,7 @@ func Run(w io.Writer, path string, autoFix bool) int {
 		checkProject(path),
 		checkBranchModel(rootOr(path)),
 		checkHooks(rootOr(path)),
+		checkAttribution(rootOr(path), autoFix),
 		checkJira(trackerRequired(rootOr(path))),
 		checkSlack(config.Load(rootOr(path)).Slack.Enabled),
 		checkSlackAudience(workspace.FindBySource(rootOr(path))),
