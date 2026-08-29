@@ -532,8 +532,16 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 		return &Result{ExitCode: 1, Reason: "starting claude: " + err.Error(), LogPath: logPath}, ""
 	}
 
+	// Registered while it runs so a caller outside this goroutine can kill
+	// the group -- the watcher's force-quit path, which never reaches any of
+	// the exits below because the process is going away (OR-195).
+	live := track(cmd)
 	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		live.done()
+		done <- err
+	}()
 
 	res := &Result{LogPath: logPath}
 	select {
