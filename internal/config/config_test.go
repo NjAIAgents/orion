@@ -138,3 +138,46 @@ func TestFindRootFailsOutsideAnyProject(t *testing.T) {
 		t.Error("no orion.json and no .git should be an error, not a silent root")
 	}
 }
+
+// OR-179: an operator who never touches vcs.require_up_to_date must keep
+// today's behaviour -- `orion protect` enforcing strict.
+func TestRequireUpToDateDefaultsTrue(t *testing.T) {
+	cfg := Load(t.TempDir())
+	if !cfg.VCS.RequireUpToDate {
+		t.Error("vcs.require_up_to_date must default true so nothing changes for an unconfigured repo")
+	}
+	if got := cfg.VCSRequireUpToDateSource(); got != "default; not set in orion.json" {
+		t.Errorf("VCSRequireUpToDateSource() = %q, want the default source", got)
+	}
+}
+
+// OR-179: an operator's explicit false must be honoured, not silently
+// coerced back to true the way a bare zero-value limit is.
+func TestRequireUpToDateExplicitFalseIsHonoured(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "orion.json"),
+		[]byte(`{"vcs":{"require_up_to_date":false}}`), 0o644)
+	cfg := Load(dir)
+	if cfg.VCS.RequireUpToDate {
+		t.Error("an explicit require_up_to_date:false must be honoured, not reverted to the default")
+	}
+	if got := cfg.VCSRequireUpToDateSource(); got != "orion.json (vcs.require_up_to_date)" {
+		t.Errorf("VCSRequireUpToDateSource() = %q, want the explicit source", got)
+	}
+}
+
+// An explicit true must not be reported as coming from the default, so the
+// message `orion protect` prints stays honest about where the value came
+// from either way.
+func TestRequireUpToDateExplicitTrueReportsExplicitSource(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "orion.json"),
+		[]byte(`{"vcs":{"require_up_to_date":true}}`), 0o644)
+	cfg := Load(dir)
+	if !cfg.VCS.RequireUpToDate {
+		t.Error("require_up_to_date:true must stay true")
+	}
+	if got := cfg.VCSRequireUpToDateSource(); got != "orion.json (vcs.require_up_to_date)" {
+		t.Errorf("VCSRequireUpToDateSource() = %q, want the explicit source", got)
+	}
+}
