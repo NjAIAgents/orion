@@ -5,26 +5,36 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/collect"
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/work"
 )
 
 type spy struct {
+	// mu guards everything below. Jobs run in their own goroutines now, so a
+	// spy without a lock is a data race in every test that starts two.
+	mu        sync.Mutex
 	collects  int
 	worked    []string
-	queued    []string
+	queued    []tracker.Issue
 	queueErr  error
-	busy      bool
-	busyKey   string
+	busy      []string
 	busyErr   error
 	outcome   work.Outcome
 	sleeps    int
 	maxSleeps int
+	// hold blocks every job until it is closed, so a test can observe how
+	// many agents are in flight AT ONCE rather than in total.
+	hold chan struct{}
+	// peak is the highest number of jobs seen running simultaneously.
+	peak    int
+	running int
 	// pendingTicks makes Collect report a ticket awaiting CI for that many
 	// ticks AFTER a job has started -- the shape of a real run.
 	//
@@ -37,41 +47,86 @@ type spy struct {
 	pendingTicks int
 }
 
+func (s *spy) workedKeys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.worked...)
+}
+
 func (s *spy) deps() Deps {
 	return Deps{
 		Collect: func(collect.Options) []collect.Result {
+			s.mu.Lock()
 			s.collects++
 			// Nothing is in flight until a job has been started. A collect
 			// that reported otherwise would be describing a ticket that does
 			// not exist yet.
-			if len(s.worked) == 0 {
+			started, pending := len(s.worked), s.pendingTicks
+			if started > 0 && pending > 0 {
+				s.pendingTicks--
+			}
+			s.mu.Unlock()
+			if started == 0 || pending == 0 {
 				return nil
 			}
-			if s.pendingTicks > 0 {
-				s.pendingTicks--
-				return []collect.Result{{Key: "FCIA-7", Verdict: collect.VerdictPending}}
-			}
-			return nil
+			return []collect.Result{{Key: "FCIA-7", Verdict: collect.VerdictPending}}
 		},
 		Work: func(o work.Options) []work.Result {
+			s.mu.Lock()
 			s.worked = append(s.worked, o.Keys...)
-			out := s.outcome
+			s.running++
+			if s.running > s.peak {
+				s.peak = s.running
+			}
+			hold, out := s.hold, s.outcome
+			s.mu.Unlock()
+
+			if hold != nil {
+				<-hold
+			}
+
+			s.mu.Lock()
+			s.running--
+			s.mu.Unlock()
+
 			if out == "" {
 				out = work.OutcomeCIWait
 			}
 			return []work.Result{{Key: o.Keys[0], Outcome: out}}
 		},
-		Queued: func(string, []string, string) ([]string, error) {
+		Queued: func(string, []string, string) ([]tracker.Issue, error) {
+			s.mu.Lock()
+			defer s.mu.Unlock()
 			return s.queued, s.queueErr
 		},
-		InFlight: func(string, []string) (bool, string, error) {
-			return s.busy, s.busyKey, s.busyErr
+		InFlight: func(string, []string) ([]string, error) {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			return s.busy, s.busyErr
 		},
 		Sleep: func(time.Duration) bool {
+			// A REAL pause, however short. The spy's first version returned
+			// instantly, which made the loop spin so tightly that a dispatched
+			// job's goroutine never got the spy's own mutex -- so every test
+			// saw one job in flight and would have passed against a watcher
+			// that could not run two.
+			time.Sleep(time.Millisecond)
+			s.mu.Lock()
+			defer s.mu.Unlock()
 			s.sleeps++
 			return s.sleeps < s.maxSleeps
 		},
 	}
+}
+
+// issues turns keys into queued issues, one per (fictional) component so
+// nothing in a test is silently reordered by the area spread.
+func issues(keys ...string) []tracker.Issue {
+	out := make([]tracker.Issue, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, tracker.Issue{Key: k, Components: []string{k}})
+	}
+	return out
 }
 
 func runWatch(t *testing.T, s *spy, o Options) string {
@@ -93,57 +148,143 @@ func runWatch(t *testing.T, s *spy, o Options) string {
 // paid for. Starting a new job while a merged ticket sat unclosed would mean
 // spending money to begin something before banking something already done.
 func TestATickReconcilesBeforeItStartsAnything(t *testing.T) {
-	s := &spy{queued: []string{"FCIA-7"}}
-	runWatch(t, s, Options{Once: true})
+	s := &spy{queued: issues("FCIA-7")}
+	runWatch(t, s, Options{Once: true, MaxConcurrent: 1})
 
 	if s.collects != 1 {
 		t.Errorf("collect ran %d times, want 1", s.collects)
 	}
-	if len(s.worked) != 1 || s.worked[0] != "FCIA-7" {
-		t.Errorf("worked = %v, want [FCIA-7]", s.worked)
+	if got := s.workedKeys(); len(got) != 1 || got[0] != "FCIA-7" {
+		t.Errorf("worked = %v, want [FCIA-7]", got)
 	}
 }
 
 // The claim label is the lock, and it lives on the TICKET. A watcher
-// restarted mid-job, or a second one somebody started by accident, must see
-// the same answer -- two agents in one repository fight over git.
-func TestNothingStartsWhileAJobIsAlreadyRunning(t *testing.T) {
-	s := &spy{busy: true, busyKey: "FCIA-6", queued: []string{"FCIA-7"}}
-	out := runWatch(t, s, Options{Once: true})
+// restarted mid-job, or a second one somebody started by accident, holds
+// slots this watcher must not fill on top of.
+func TestNothingStartsWhenTheCapIsAlreadyTakenElsewhere(t *testing.T) {
+	s := &spy{busy: []string{"FCIA-6"}, queued: issues("FCIA-7")}
+	out := runWatch(t, s, Options{Once: true, MaxConcurrent: 1})
 
-	if len(s.worked) != 0 {
-		t.Fatalf("started %v while FCIA-6 was in flight", s.worked)
+	if got := s.workedKeys(); len(got) != 0 {
+		t.Fatalf("started %v while FCIA-6 was in flight", got)
 	}
 	if !strings.Contains(out, "FCIA-6") {
 		t.Errorf("the reason nothing started must name what is running: %s", out)
 	}
 }
 
-// One at a time, however long the queue. The order a person expressed by
-// ranking their backlog is the whole point of a queue; running three at once
-// spends more to produce a less predictable order.
-func TestOnlyOneJobIsStartedPerTick(t *testing.T) {
-	s := &spy{queued: []string{"FCIA-7", "FCIA-8", "FCIA-9"}}
-	runWatch(t, s, Options{Once: true})
+// A claim held elsewhere consumes a SLOT, not the whole queue. With a cap of
+// two and one ticket claimed by another watcher, exactly one more may start --
+// the counting version of the old boolean, and the reason the cap is a number.
+func TestAClaimElsewhereConsumesOneSlotNotAllOfThem(t *testing.T) {
+	s := &spy{busy: []string{"FCIA-6"}, queued: issues("FCIA-7", "FCIA-8", "FCIA-9")}
+	runWatch(t, s, Options{Once: true, MaxConcurrent: 2})
 
-	if len(s.worked) != 1 {
-		t.Fatalf("started %d jobs in one tick: %v", len(s.worked), s.worked)
+	if got := s.workedKeys(); len(got) != 1 {
+		t.Fatalf("started %v; a cap of 2 with 1 claimed elsewhere leaves room for exactly 1", got)
 	}
-	if s.worked[0] != "FCIA-7" {
-		t.Errorf("started %s; the queue's own order must be respected", s.worked[0])
+}
+
+// The cap is on agents IN FLIGHT, not on starts per tick. This is the property
+// the whole change turns on, and the only way to observe it is to hold every
+// job open and count how many are inside at once.
+func TestACapOfTwoNeverHasThreeAgentRunsInFlight(t *testing.T) {
+	s := &spy{
+		queued:    issues("FCIA-7", "FCIA-8", "FCIA-9", "FCIA-10", "FCIA-11"),
+		maxSleeps: 6,
+		hold:      make(chan struct{}),
+	}
+	d := s.deps()
+	// Release everything once the loop has had several ticks to over-dispatch
+	// if it were going to.
+	var once sync.Once
+	sleep := d.Sleep
+	d.Sleep = func(dur time.Duration) bool {
+		ok := sleep(dur)
+		if !ok {
+			once.Do(func() { close(s.hold) })
+		}
+		return ok
+	}
+
+	stopping.Store(false)
+	var buf bytes.Buffer
+	if err := Run(Options{
+		Out: &buf, Home: t.TempDir(), Interval: time.Millisecond, MaxConcurrent: 2,
+	}, d); err != nil {
+		t.Fatal(err)
+	}
+
+	s.mu.Lock()
+	peak := s.peak
+	s.mu.Unlock()
+	if peak > 2 {
+		t.Fatalf("%d agent runs were in flight at once; the cap is 2", peak)
+	}
+	if peak != 2 {
+		t.Fatalf("peak concurrency was %d; a cap of 2 with 5 queued must actually reach 2", peak)
+	}
+}
+
+// The ceiling is a ceiling. A hand-edited orion.json asking for forty must not
+// get forty, and neither must a caller passing one straight through.
+func TestTheConcurrencyCapIsClampedToTheCeiling(t *testing.T) {
+	s := &spy{
+		queued:    issues("A-1", "A-2", "A-3", "A-4", "A-5", "A-6", "A-7", "A-8"),
+		maxSleeps: 4,
+		hold:      make(chan struct{}),
+	}
+	d := s.deps()
+	var once sync.Once
+	sleep := d.Sleep
+	d.Sleep = func(dur time.Duration) bool {
+		ok := sleep(dur)
+		if !ok {
+			once.Do(func() { close(s.hold) })
+		}
+		return ok
+	}
+
+	stopping.Store(false)
+	var buf bytes.Buffer
+	if err := Run(Options{
+		Out: &buf, Home: t.TempDir(), Interval: time.Millisecond,
+		MaxConcurrent: 40,
+	}, d); err != nil {
+		t.Fatal(err)
+	}
+
+	s.mu.Lock()
+	peak := s.peak
+	s.mu.Unlock()
+	if peak > config.MaxConcurrentTicketsCeiling {
+		t.Fatalf("ran %d at once; the ceiling is %d", peak, config.MaxConcurrentTicketsCeiling)
 	}
 }
 
 // The limit that makes a first unattended run safe to try.
 func TestMaxJobsStopsTheLoop(t *testing.T) {
-	s := &spy{queued: []string{"FCIA-7"}, maxSleeps: 99}
-	out := runWatch(t, s, Options{MaxJobs: 2})
+	s := &spy{queued: issues("FCIA-7"), maxSleeps: 99}
+	out := runWatch(t, s, Options{MaxJobs: 2, MaxConcurrent: 1})
 
-	if len(s.worked) != 2 {
-		t.Fatalf("started %d jobs, want exactly 2", len(s.worked))
+	if got := s.workedKeys(); len(got) != 2 {
+		t.Fatalf("started %d jobs, want exactly 2", len(got))
 	}
 	if !strings.Contains(out, "the limit for this run") {
 		t.Errorf("stopping at the limit must be stated: %s", out)
+	}
+}
+
+// --max-jobs bounds STARTS across the whole run, and concurrency must not let
+// the pool overshoot it: with a cap of 3 and a limit of 2, three agents must
+// never have been paid for.
+func TestMaxJobsIsNotOvershotByTheConcurrencyCap(t *testing.T) {
+	s := &spy{queued: issues("FCIA-7", "FCIA-8", "FCIA-9"), maxSleeps: 99}
+	runWatch(t, s, Options{MaxJobs: 2, MaxConcurrent: 3})
+
+	if got := s.workedKeys(); len(got) != 2 {
+		t.Fatalf("started %v; --max-jobs 2 must cap starts however wide the concurrency is", got)
 	}
 }
 
@@ -160,11 +301,11 @@ func TestMaxJobsStopsTheLoop(t *testing.T) {
 // Reaching the cap must stop STARTING, not stop WATCHING.
 func TestTheJobLimitDrainsInFlightWorkInsteadOfAbandoningIt(t *testing.T) {
 	// CI is still running for the first two ticks after the job starts.
-	s := &spy{queued: []string{"FCIA-7"}, maxSleeps: 20, pendingTicks: 2}
-	out := runWatch(t, s, Options{MaxJobs: 1})
+	s := &spy{queued: issues("FCIA-7"), maxSleeps: 20, pendingTicks: 2}
+	out := runWatch(t, s, Options{MaxJobs: 1, MaxConcurrent: 1})
 
-	if len(s.worked) != 1 {
-		t.Fatalf("started %d jobs, want exactly 1 -- the cap must still cap", len(s.worked))
+	if got := s.workedKeys(); len(got) != 1 {
+		t.Fatalf("started %d jobs, want exactly 1 -- the cap must still cap", len(got))
 	}
 	// The tick that started the job collected BEFORE starting it, so
 	// finishing that job needs at least two more reconciles.
@@ -189,8 +330,8 @@ func TestTheJobLimitDrainsInFlightWorkInsteadOfAbandoningIt(t *testing.T) {
 // broken. A blocked ticket is the real "nothing to drain toward" case -- it
 // needs a person, and no amount of waiting produces one.
 func TestTheJobLimitExitsAtOnceWhenNothingIsInFlight(t *testing.T) {
-	s := &spy{queued: []string{"FCIA-7"}, outcome: work.OutcomeBlocked, maxSleeps: 20}
-	out := runWatch(t, s, Options{MaxJobs: 1})
+	s := &spy{queued: issues("FCIA-7"), outcome: work.OutcomeBlocked, maxSleeps: 20}
+	out := runWatch(t, s, Options{MaxJobs: 1, MaxConcurrent: 1})
 
 	if s.sleeps > 1 {
 		t.Errorf("slept %d times with nothing to wait for", s.sleeps)
@@ -205,8 +346,8 @@ func TestTheJobLimitExitsAtOnceWhenNothingIsInFlight(t *testing.T) {
 // never happened, and retrying it immediately would hammer the tracker while
 // the condition that refused it is still true.
 func TestASkippedTicketDoesNotCountAsAStartedJob(t *testing.T) {
-	s := &spy{queued: []string{"FCIA-7"}, outcome: work.OutcomeSkipped, maxSleeps: 3}
-	out := runWatch(t, s, Options{MaxJobs: 1})
+	s := &spy{queued: issues("FCIA-7"), outcome: work.OutcomeSkipped, maxSleeps: 3}
+	out := runWatch(t, s, Options{MaxJobs: 1, MaxConcurrent: 1})
 
 	if !strings.Contains(out, "not started") {
 		t.Errorf("a skip must be explained: %s", out)
@@ -235,11 +376,11 @@ func TestATickErrorIsReportedAndTheLoopContinues(t *testing.T) {
 // Dry run is what someone reaches for before trusting this unattended. If it
 // starts an agent, it is worse than useless.
 func TestDryRunStartsNothing(t *testing.T) {
-	s := &spy{queued: []string{"FCIA-7"}}
+	s := &spy{queued: issues("FCIA-7")}
 	out := runWatch(t, s, Options{Once: true, DryRun: true})
 
-	if len(s.worked) != 0 {
-		t.Fatalf("dry run started %v", s.worked)
+	if got := s.workedKeys(); len(got) != 0 {
+		t.Fatalf("dry run started %v", got)
 	}
 	if !strings.Contains(out, "would") {
 		t.Errorf("got: %s", out)
@@ -250,7 +391,7 @@ func TestAnEmptyQueueDoesNothingQuietly(t *testing.T) {
 	s := &spy{}
 	out := runWatch(t, s, Options{Once: true})
 
-	if len(s.worked) != 0 {
+	if got := s.workedKeys(); len(got) != 0 {
 		t.Fatal("started something with an empty queue")
 	}
 	// A tick with nothing to do must not produce output, or a watcher left
@@ -264,25 +405,44 @@ func TestAnEmptyQueueDoesNothingQuietly(t *testing.T) {
 // Ctrl-c must not kill an agent mid-run: that leaves a ticket claimed with a
 // half-written branch and no process to finish it, which is precisely the
 // state an unattended tool must never create.
-func TestStoppingWaitsForTheCurrentStep(t *testing.T) {
+//
+// Concurrency makes this a stronger claim than it was, and the one OR-141
+// names for n: Run must not return while ANY of the jobs it dispatched is
+// still going. A loop that only waited for "the current job" would leave the
+// other n-1 as orphans -- agent processes with no parent watching, holding
+// claims nobody will release.
+func TestStoppingWaitsForEveryJobAlreadyRunning(t *testing.T) {
 	stopping.Store(false)
-	s := &spy{queued: []string{"FCIA-7"}, maxSleeps: 99}
+	s := &spy{
+		queued: issues("FCIA-7", "FCIA-8"), maxSleeps: 99,
+		hold: make(chan struct{}),
+	}
 
-	// Signal mid-job, as ctrl-c would.
+	// Ctrl-c arrives while both agents are mid-run.
 	d := s.deps()
-	inner := d.Work
-	d.Work = func(o work.Options) []work.Result {
+	var once sync.Once
+	sleep := d.Sleep
+	d.Sleep = func(dur time.Duration) bool {
 		stopping.Store(true)
-		return inner(o)
+		once.Do(func() { close(s.hold) })
+		return sleep(dur)
 	}
 
 	var buf bytes.Buffer
-	if err := Run(Options{Out: &buf, Home: t.TempDir(), Interval: time.Millisecond}, d); err != nil {
+	if err := Run(Options{
+		Out: &buf, Home: t.TempDir(), Interval: time.Millisecond, MaxConcurrent: 2,
+	}, d); err != nil {
 		t.Fatal(err)
 	}
 
-	if len(s.worked) != 1 {
-		t.Fatalf("the in-flight job was abandoned: %v", s.worked)
+	if got := s.workedKeys(); len(got) != 2 {
+		t.Fatalf("worked = %v, want both jobs dispatched before the stop", got)
+	}
+	s.mu.Lock()
+	running := s.running
+	s.mu.Unlock()
+	if running != 0 {
+		t.Fatalf("Run returned with %d agent(s) still going: exactly the orphan OR-141 forbids", running)
 	}
 	if !strings.Contains(buf.String(), "stopped") {
 		t.Errorf("stopping must be reported: %s", buf.String())
@@ -332,7 +492,7 @@ func TestAPermanentErrorStopsTheWatcherRatherThanRetryingForever(t *testing.T) {
 	stopping.Store(false)
 	s := &spy{maxSleeps: 99}
 	d := s.deps()
-	d.Queued = func(string, []string, string) ([]string, error) {
+	d.Queued = func(string, []string, string) ([]tracker.Issue, error) {
 		return nil, errors.New(`not a registered project: FCRA`)
 	}
 
@@ -351,7 +511,7 @@ func TestAPermanentErrorStopsTheWatcherRatherThanRetryingForever(t *testing.T) {
 // Without --once it looped forever, which is why `orion watch fcia
 // --dry-run --max-jobs 1` appeared to hang.
 func TestADryRunRehearsesOnceAndStops(t *testing.T) {
-	s := &spy{queued: []string{"FCIA-7"}, maxSleeps: 99}
+	s := &spy{queued: issues("FCIA-7"), maxSleeps: 99}
 	runWatch(t, s, Options{DryRun: true})
 
 	if s.sleeps != 0 {
@@ -361,7 +521,7 @@ func TestADryRunRehearsesOnceAndStops(t *testing.T) {
 
 // Rehearsing is for checking the ORDER, which a count cannot show.
 func TestADryRunPrintsTheWholeQueueInOrder(t *testing.T) {
-	s := &spy{queued: []string{"FCIA-7", "FCIA-8", "FCIA-10"}}
+	s := &spy{queued: issues("FCIA-7", "FCIA-8", "FCIA-10")}
 	out := runWatch(t, s, Options{DryRun: true, MaxJobs: 2})
 
 	for _, k := range []string{"FCIA-7", "FCIA-8", "FCIA-10"} {
@@ -389,7 +549,7 @@ func TestASubTaskIsNotStartedWhenItsParentIs(t *testing.T) {
 		{Key: "OR-52", Parent: "OR-50"},
 		{Key: "OR-60"}, // an unrelated ticket
 	}
-	got := dropClaimedChildren(issues)
+	got := keysOf(dropClaimedChildren(issues))
 
 	want := []string{"OR-50", "OR-60"}
 	if len(got) != len(want) {
@@ -402,13 +562,21 @@ func TestASubTaskIsNotStartedWhenItsParentIs(t *testing.T) {
 	}
 }
 
+func keysOf(issues []tracker.Issue) []string {
+	out := make([]string, 0, len(issues))
+	for _, i := range issues {
+		out = append(out, i.Key)
+	}
+	return out
+}
+
 // An orphan keeps its place. A sub-task whose parent is NOT queued is
 // ordinary work somebody asked for directly -- dropping it would silently
 // refuse a ticket that was labelled on purpose.
 func TestASubTaskWhoseParentIsNotQueuedIsStillWorked(t *testing.T) {
-	got := dropClaimedChildren([]tracker.Issue{
+	got := keysOf(dropClaimedChildren([]tracker.Issue{
 		{Key: "OR-51", Parent: "OR-50"}, // OR-50 is not in the list
-	})
+	}))
 	if len(got) != 1 || got[0] != "OR-51" {
 		t.Errorf("queued %v; a sub-task worked on its own must be allowed", got)
 	}
@@ -417,10 +585,10 @@ func TestASubTaskWhoseParentIsNotQueuedIsStillWorked(t *testing.T) {
 // Jira keys are upper-case by convention and not by guarantee. A case
 // mismatch that silently failed to match would let both run.
 func TestParentMatchingIgnoresCase(t *testing.T) {
-	got := dropClaimedChildren([]tracker.Issue{
+	got := keysOf(dropClaimedChildren([]tracker.Issue{
 		{Key: "OR-50"},
 		{Key: "OR-51", Parent: "or-50"},
-	})
+	}))
 	if len(got) != 1 {
 		t.Errorf("queued %v; the parent link was missed on case alone", got)
 	}
@@ -511,12 +679,12 @@ func TestAHandClosedTicketDoesNotHoldTheQueue(t *testing.T) {
 	}}
 
 	var b bytes.Buffer
-	busy, key, err := InFlight(j, home, nil, &b)
+	running, err := InFlight(j, home, nil, &b)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if busy {
-		t.Errorf("a ticket that is already Done was reported in flight as %q", key)
+	if len(running) != 0 {
+		t.Errorf("a ticket that is already Done was reported in flight as %v", running)
 	}
 	// Cleared, not merely ignored: ignoring it would re-diagnose the same
 	// ticket every tick forever, and `orion queue` reads the label too.
@@ -538,12 +706,12 @@ func TestAnUnresolvedClaimStillHoldsTheQueue(t *testing.T) {
 			Labels: []string{tracker.LabelWorking}},
 	}}
 
-	busy, key, err := InFlight(j, home, nil, io.Discard)
+	running, err := InFlight(j, home, nil, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !busy || key != "OR-130" {
-		t.Errorf("InFlight = %v, %q; a running job must hold the lock", busy, key)
+	if len(running) != 1 || running[0] != "OR-130" {
+		t.Errorf("InFlight = %v; a running job must hold a slot", running)
 	}
 	if len(j.removed) != 0 {
 		t.Errorf("a live claim was cleared: %v", j.removed)
@@ -560,12 +728,12 @@ func TestALiveClaimBehindAStaleOneIsStillFound(t *testing.T) {
 		{Key: "OR-130", StatusCategory: "indeterminate", Labels: []string{tracker.LabelWorking}},
 	}}
 
-	busy, key, err := InFlight(j, home, nil, io.Discard)
+	running, err := InFlight(j, home, nil, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !busy || key != "OR-130" {
-		t.Errorf("InFlight = %v, %q; the live claim was lost behind a stale one", busy, key)
+	if len(running) != 1 || running[0] != "OR-130" {
+		t.Errorf("InFlight = %v; the live claim was lost behind a stale one", running)
 	}
 }
 
@@ -581,11 +749,11 @@ func TestALockThatCannotBeClearedIsReportedAndNotTreatedAsRunning(t *testing.T) 
 	}
 
 	var b bytes.Buffer
-	busy, _, err := InFlight(j, home, nil, &b)
+	running, err := InFlight(j, home, nil, &b)
 	if err != nil {
 		t.Fatalf("a label write that failed must not fail the tick: %v", err)
 	}
-	if busy {
+	if len(running) != 0 {
 		t.Error("a finished ticket held the queue because its label could not be cleared")
 	}
 	if !strings.Contains(b.String(), "403 forbidden") {

@@ -187,7 +187,19 @@ func (l *Ledger) Record(r Run) {
 }
 
 // Status totals the window and reports the highest unacknowledged threshold.
-func (l *Ledger) Status(lim Limits) Status {
+func (l *Ledger) Status(lim Limits) Status { return l.StatusWith(lim, Run{}) }
+
+// StatusWith is Status plus spend that has not been recorded yet -- what the
+// runs currently in flight are expected to cost.
+//
+// This is the difference between a budget check and admission control. Read
+// the ledger and start, and serially that is correct because there is nothing
+// in flight to miss. Run several tickets at once and all of them pass the same
+// check and then all of them spend, so a 95% checkpoint is sailed straight
+// past by the runs already going. Counting the outstanding reservations is
+// what makes the checkpoint hold for the second concurrent run as well as the
+// first.
+func (l *Ledger) StatusWith(lim Limits, pending Run) Status {
 	now := time.Now()
 	s := Status{Limits: lim, WindowStart: now.Add(-Window)}
 	for _, r := range l.Runs {
@@ -198,6 +210,8 @@ func (l *Ledger) Status(lim Limits) Status {
 		s.Tokens += r.InputTokens + r.OutputTokens
 		s.Runs++
 	}
+	s.SpentUSD += pending.CostUSD
+	s.Tokens += pending.InputTokens + pending.OutputTokens
 	if lim.WeeklyUSD > 0 {
 		s.PercentUSD = int(s.SpentUSD / lim.WeeklyUSD * 100)
 	}

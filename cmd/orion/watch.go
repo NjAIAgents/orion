@@ -23,7 +23,7 @@ import (
 // Split out of runWatch so the "something is on screen before any network
 // call" guarantee is reachable from a test; runWatch itself needs a
 // configured tracker and exits the process on failure.
-func watchBanner(w io.Writer, projects []string, interval time.Duration, maxJobs int, dry bool) {
+func watchBanner(w io.Writer, projects []string, interval time.Duration, maxJobs, concurrent int, concurrentFrom string, dry bool) {
 	fmt.Fprintf(w, "%s\n", ui.Heading(w, "watching"))
 	scope := "every registered project"
 	if len(projects) > 0 {
@@ -32,6 +32,10 @@ func watchBanner(w io.Writer, projects []string, interval time.Duration, maxJobs
 	fmt.Fprintf(w, "  %s\n", ui.Dim(w, "scope     "+scope))
 	fmt.Fprintf(w, "  %s\n", ui.Dim(w, "queue     tickets labelled "+tracker.QueueLabelDefault))
 	fmt.Fprintf(w, "  %s\n", ui.Dim(w, "interval  "+interval.String()))
+	// Said up front, with its source, because it is the setting that decides
+	// how much money is in flight at once and it is read from a file the
+	// operator may not have opened.
+	fmt.Fprintf(w, "  %s\n", ui.Dim(w, fmt.Sprintf("at once   %d ticket(s) (%s)", concurrent, concurrentFrom)))
 	switch {
 	case dry:
 		fmt.Fprintf(w, "  %s\n", ui.Dim(w, "limit     --dry-run: nothing will be started"))
@@ -66,7 +70,8 @@ func runWatch(args []string) {
 	// which was harmless right up until something ahead of it stalled: then
 	// `orion watch` sat there having printed literally nothing, and "still
 	// starting up" looked exactly like "hung, kill it".
-	watchBanner(w, projects, interval, maxJobs, dry)
+	concurrent, concurrentFrom := watch.Concurrency(workspace.Home(), projects)
+	watchBanner(w, projects, interval, maxJobs, concurrent, concurrentFrom, dry)
 
 	j, err := tracker.NewJiraFromEnv()
 	exitOn(err)
@@ -76,7 +81,7 @@ func runWatch(args []string) {
 	err = watch.Run(watch.Options{
 		Out: w, Home: workspace.Home(),
 		Interval: interval, MaxJobs: maxJobs, Once: once, DryRun: dry,
-		Projects: projects,
+		Projects: projects, MaxConcurrent: concurrent,
 		// Zero is the sentinel for "not set", NOT a default. Filling the
 		// human-readable defaults in here made them EXPLICIT values, and
 		// turnsFor/minutesFor let explicit win -- so the sub-task scaling
@@ -101,10 +106,10 @@ func runWatch(args []string) {
 				Push:     pushBranch, OpenPR: openPR, Merged: mergedBranch,
 			})
 		},
-		Queued: func(home string, ps []string, label string) ([]string, error) {
+		Queued: func(home string, ps []string, label string) ([]tracker.Issue, error) {
 			return watch.Queued(j, home, ps, label)
 		},
-		InFlight: func(home string, ps []string) (bool, string, error) {
+		InFlight: func(home string, ps []string) ([]string, error) {
 			return watch.InFlight(j, home, ps, os.Stdout)
 		},
 	})

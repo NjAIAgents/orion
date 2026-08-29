@@ -26,6 +26,41 @@ type Limits struct {
 	// converts a queue into a stampede (OR-162 is what misreading this limit
 	// costs).
 	MaxConcurrentChildren int `json:"max_concurrent_children"`
+
+	// MaxConcurrentTickets caps how many tickets a watcher works at the same
+	// time. Unlike the limits above it does not bound one agent's behaviour;
+	// it bounds how many agents exist.
+	//
+	// Two by default, and never more than MaxConcurrentTicketsCeiling. Two is
+	// not caution for its own sake: every hazard concurrency introduces --
+	// concurrent git against one shared clone, a budget checkpoint sailed past
+	// by runs already in flight, N sessions hitting one rate limit, N tickets
+	// picked that all edit the same files -- is invisible at one and obvious
+	// at two, and diagnosing it at two is cheap. Prove it at two, then raise
+	// it.
+	MaxConcurrentTickets int `json:"max_concurrent_tickets"`
+}
+
+// MaxConcurrentTicketsCeiling is the highest value limits.max_concurrent_tickets
+// may ask for. A hard ceiling rather than advice: the cost of being wrong about
+// this number is paid by a queue of half-finished branches and a bill, neither
+// of which is visible until afterwards.
+const MaxConcurrentTicketsCeiling = 5
+
+// ConcurrentTickets is the cap actually enforced: the configured value,
+// clamped to [1, MaxConcurrentTicketsCeiling], with 0 meaning the default.
+//
+// Clamped here rather than at the call site so every reader gets the same
+// answer -- a watcher that read the raw field would honour a hand-edited 40.
+func (l Limits) ConcurrentTickets() int {
+	n := l.MaxConcurrentTickets
+	if n <= 0 {
+		n = Defaults().Limits.MaxConcurrentTickets
+	}
+	if n > MaxConcurrentTicketsCeiling {
+		n = MaxConcurrentTicketsCeiling
+	}
+	return n
 }
 
 // Delegation configures handoff to nj-agents skills.
@@ -523,6 +558,7 @@ func Defaults() Config {
 			MaxEditsWithoutVerify:  25,
 			MaxFilesTouched:        60,
 			MaxConcurrentChildren:  2,
+			MaxConcurrentTickets:   2,
 		},
 		Gates: Gates{
 			RequirePlanBeforeEdit:          false, // opt-in: too disruptive to force on an unconfigured repo
@@ -752,6 +788,14 @@ func normalize(c *Config) {
 	}
 	if c.Limits.MaxConcurrentChildren <= 0 {
 		c.Limits.MaxConcurrentChildren = d.Limits.MaxConcurrentChildren
+	}
+	// Clamped rather than defaulted, because too HIGH is the dangerous
+	// direction here and the ceiling has to survive a hand edit.
+	if c.Limits.MaxConcurrentTickets <= 0 {
+		c.Limits.MaxConcurrentTickets = d.Limits.MaxConcurrentTickets
+	}
+	if c.Limits.MaxConcurrentTickets > MaxConcurrentTicketsCeiling {
+		c.Limits.MaxConcurrentTickets = MaxConcurrentTicketsCeiling
 	}
 	if c.Paths.State == "" {
 		c.Paths.State = d.Paths.State

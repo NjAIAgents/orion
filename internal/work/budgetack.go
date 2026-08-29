@@ -82,21 +82,28 @@ func clearBudgetRequest(home string) { _ = os.Remove(budgetAckPath(home)) }
 // budgetGate decides whether this run may spend, asking if it must.
 //
 // Returns proceed=true when the checkpoint is clear or has just been
-// acknowledged. When it returns false the caller must not start the job --
-// but by then a person has been asked, in Slack and at the terminal, so the
-// refusal is a question awaiting an answer rather than a dead end.
+// acknowledged, along with the release for the reservation the admission took.
+// When it returns false the caller must not start the job -- but by then a
+// person has been asked, in Slack and at the terminal, so the refusal is a
+// question awaiting an answer rather than a dead end.
+//
+// This is ADMISSION, not a read: the run's own expected cost and every
+// concurrent run's are counted before it is let through. See budget.Admit.
 func budgetGate(key string, opts Options, cfg config.Config, ws *workspace.Workspace,
-	log *events.Log, w io.Writer) (bool, string) {
+	log *events.Log, w io.Writer) (bool, func(), string) {
 
-	st, ok := budgetStatus(opts.Home, cfg)
-	if !ok || st.Crossed == 0 {
-		// Nothing owing. Drop any stale question so a LATER checkpoint is
-		// asked afresh rather than being answered by an old tick.
+	noop := func() {}
+
+	st, release, ok, admitted := admitBudget(opts.Home, cfg)
+	if !ok || admitted {
+		// Nothing owing, or the budget covers this run and everything already
+		// in flight. Drop any stale question so a LATER checkpoint is asked
+		// afresh rather than being answered by an old tick.
 		clearBudgetRequest(opts.Home)
-		return true, ""
+		return true, release, ""
 	}
 	if opts.DryRun {
-		return false, st.Message()
+		return false, noop, st.Message()
 	}
 
 	channel, _ := resolveChannel(ws)
@@ -108,14 +115,18 @@ func budgetGate(key string, opts Options, cfg config.Config, ws *workspace.Works
 			if err := ackBudget(opts.Home, st.Crossed); err != nil {
 				ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
 					"could not record the acknowledgement: %v", err)
-				return false, st.Message()
+				return false, noop, st.Message()
 			}
 			clearBudgetRequest(opts.Home)
 			log.Emitf(events.KindBudget, events.ActorHuman,
 				"%s acknowledged the %d%% checkpoint in Slack", by, st.Crossed)
 			ui.Say(w, key, events.ActorHuman, ui.VerbOK,
 				"%s acknowledged the %d%% budget checkpoint; continuing", by, st.Crossed)
-			return true, ""
+			// Consent clears the checkpoint; it does not skip admission. The
+			// run still has to be reserved, or the next concurrent one reads a
+			// budget with this one missing from it.
+			_, release, _, admitted := admitBudget(opts.Home, cfg)
+			return admitted, release, ""
 		}
 	}
 
@@ -143,14 +154,15 @@ func budgetGate(key string, opts Options, cfg config.Config, ws *workspace.Works
 		if err := ackBudget(opts.Home, st.Crossed); err != nil {
 			ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
 				"could not record the acknowledgement: %v", err)
-			return false, ""
+			return false, noop, ""
 		}
 		clearBudgetRequest(opts.Home)
 		log.Emitf(events.KindBudget, events.ActorHuman,
 			"%s acknowledged the %d%% checkpoint", who, st.Crossed)
 		ui.Say(w, key, events.ActorHuman, ui.VerbOK,
 			"acknowledged the %d%% checkpoint (%s); continuing", st.Crossed, who)
-		return true, ""
+		_, release, _, admitted := admitBudget(opts.Home, cfg)
+		return admitted, release, ""
 	}
 
 	if channel != "" {
@@ -158,7 +170,23 @@ func budgetGate(key string, opts Options, cfg config.Config, ws *workspace.Works
 			"the request is still in Slack -- tick it there and the next pass continues, "+
 				"or run: orion budget ack %d", st.Crossed)))
 	}
-	return false, ""
+	return false, noop, ""
+}
+
+// admitBudget is budgetStatus's admission-controlling twin: it reserves this
+// run's expected cost when the budget covers it.
+//
+// set reports whether a budget is configured at all. With none set there is
+// nothing to admit against and nothing to reserve, which is why it returns
+// admitted=true alongside set=false -- an unconfigured budget has never
+// stopped a run and must not start now.
+func admitBudget(home string, cfg config.Config) (st budget.Status, release func(), set, admitted bool) {
+	lim := budget.Limits{WeeklyUSD: cfg.Budget.WeeklyUSD, WeeklyTokens: cfg.Budget.WeeklyTokens}
+	if !lim.Set() {
+		return budget.Status{}, func() {}, false, true
+	}
+	st, release, admitted = budget.Admit(home, lim)
+	return st, release, true, admitted
 }
 
 // awaitConsent takes an answer from the terminal or from Slack, first to
