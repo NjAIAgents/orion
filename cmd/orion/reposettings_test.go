@@ -131,4 +131,90 @@ func TestReportStrictDryRunNamesTheMismatch(t *testing.T) {
 			t.Errorf("dry-run output must mention %q, got: %s", want, out)
 		}
 	}
+	if strings.Contains(out, "no change") {
+		t.Errorf("a real mismatch must not be reported as no-op, got: %s", out)
+	}
+}
+
+// OR-179 AC: "orion protect --dry-run shows the change against what the
+// branch currently has, so re-running it cannot silently revert an
+// operator's edit." A dry-run where GitHub already matches the desired
+// value must say so plainly -- otherwise there is no way to tell "checked,
+// nothing to do" from "checked, and it would revert your edit" by reading
+// the output alone.
+func TestReportStrictDryRunReportsNoChangeWhenAlreadyMatching(t *testing.T) {
+	fakeBin(t, "gh", "#!/bin/sh\ncat <<'EOF'\n{\"required_status_checks\":{\"strict\":false,\"contexts\":[]}}\nEOF\n")
+
+	out := captureStdout(t, func() {
+		reportStrictDryRun(t.TempDir(), "acme/widgets", "main", false, "orion.json (vcs.require_up_to_date)")
+	})
+
+	if !strings.Contains(out, "no change") {
+		t.Errorf("dry-run must report no-op when GitHub already matches the desired value, got: %s", out)
+	}
+	if strings.Contains(out, "would change it") {
+		t.Errorf("a matching dry-run must not warn about reverting anything, got: %s", out)
+	}
+}
+
+// A branch with no protection at all (never run through `orion protect`,
+// or protected by hand with no required_status_checks block) has nothing to
+// compare a dry-run against. That must read as "would set X", not as a
+// false "no change" -- there IS a change, from nothing to something.
+func TestReportStrictDryRunHandlesNoExistingProtection(t *testing.T) {
+	fakeBin(t, "gh", "#!/bin/sh\necho 'HTTP 404: Branch not protected' >&2\nexit 1\n")
+
+	out := captureStdout(t, func() {
+		reportStrictDryRun(t.TempDir(), "acme/widgets", "main", true, "orion.json (vcs.require_up_to_date)")
+	})
+
+	if !strings.Contains(out, "no existing required-status-checks") {
+		t.Errorf("dry-run against an unprotected branch must say there is nothing to compare against, got: %s", out)
+	}
+	if strings.Contains(out, "no change") {
+		t.Errorf("an unprotected branch is not a no-op, got: %s", out)
+	}
+}
+
+// OR-179 AC: "orion protect says which value it is applying and where it
+// came from, so the setting is visible at the moment it is enforced rather
+// than discovered later from a merge refusal." This exercises the real,
+// non-dry-run command end to end and checks the announcement appears before
+// protection is applied, carrying both the value and its source -- the gap
+// this ticket closed: previously nothing on screen said strict was being
+// forced to true.
+func TestRunProtectAnnouncesTheStrictValueAndItsSource(t *testing.T) {
+	dir := t.TempDir()
+	fakeBin(t, "gh", `#!/bin/sh
+case "$*" in
+  "repo view --json nameWithOwner")
+    echo '{"nameWithOwner":"acme/widgets"}'
+    ;;
+  "api repos/acme/widgets/collaborators --paginate")
+    echo '[]'
+    ;;
+  "api repos/acme/widgets/commits/main/check-runs")
+    echo '{"check_runs":[{"name":"build"}]}'
+    ;;
+  "api repos/acme/widgets/commits/main/status")
+    echo '{"statuses":[]}'
+    ;;
+  "api --method PUT repos/acme/widgets/branches/main/protection --input -")
+    cat >/dev/null
+    echo '{}'
+    ;;
+  *)
+    echo "unexpected gh invocation: $*" >&2
+    exit 1
+    ;;
+esac
+`)
+
+	out := captureStdout(t, func() {
+		runProtect([]string{"--dir", dir, "--branch", "main"})
+	})
+
+	if !strings.Contains(out, "true") || !strings.Contains(out, "default; not set in orion.json") {
+		t.Errorf("runProtect must state the strict value and its source before applying it, got: %s", out)
+	}
 }
