@@ -56,6 +56,39 @@ func fixActivity(log *events.Log, w io.Writer, key string) func(supervisor.Activ
 	return work.ActivityLogger(log, w, key, events.ActorDevOps)
 }
 
+// fixWatch is the ci-fix run's activity callback: the shared logger, plus
+// OR-174's watch for an edit the sandbox refused.
+//
+// It exists as a named type rather than a closure at the call site because
+// TestNoHandRolledOnActivity bans an inline OnActivity outright, and that ban
+// is the point of OR-176 -- a second, hand-rolled callback is exactly how the
+// fix loop came to print unattributed lines and log nothing. Composing here
+// keeps both behaviours on ONE activity stream, so the console line and the
+// denial can never disagree about what the agent did.
+type fixWatch struct {
+	say       func(supervisor.Activity)
+	protected []string
+	denied    *collect.PolicyDenial
+}
+
+func newFixWatch(log *events.Log, w io.Writer, key string, protected []string) *fixWatch {
+	return &fixWatch{say: fixActivity(log, w, key), protected: protected}
+}
+
+// record draws the line, writes the event, and notices a refused edit.
+//
+// First denial wins: a run refused twice was refused for the same reason, and
+// the first is the one whose context the summary explains.
+func (f *fixWatch) record(a supervisor.Activity) {
+	f.say(a)
+	if f.denied != nil || !isEditTool(a.Tool) {
+		return
+	}
+	if rule := matchedRule(f.protected, a.Detail); rule != "" {
+		f.denied = &collect.PolicyDenial{Tool: a.Tool, Path: a.Detail, Rule: rule}
+	}
+}
+
 // fixRun sends a CI failure back to an agent on the branch that caused it.
 //
 // The worktree is reused rather than recreated. The branch already has the
@@ -115,20 +148,9 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string, log *events.Lo
 	// that targets cfg.Paths.Protected unconditionally, so a tool call seen
 	// here against that list is proof the sandbox refused it, regardless of
 	// whether the agent said so in its closing message (OR-174).
-	var deniedEdit *collect.PolicyDenial
+	watch := newFixWatch(log, w, key, cfg.Paths.Protected)
 	o := fixOptions(key, branch, detail, cfg)
-	// The shared logger draws the console line and writes the event (OR-176);
-	// the denial watch rides the same stream rather than a second one, so the
-	// two cannot observe different activity (OR-174).
-	say := fixActivity(log, w, key)
-	o.OnActivity = func(a supervisor.Activity) {
-		say(a)
-		if deniedEdit == nil && isEditTool(a.Tool) {
-			if rule := matchedRule(cfg.Paths.Protected, a.Detail); rule != "" {
-				deniedEdit = &collect.PolicyDenial{Tool: a.Tool, Path: a.Detail, Rule: rule}
-			}
-		}
-	}
+	o.OnActivity = watch.record
 	res, err := supervisor.Run(&jobWS, o)
 	if err != nil {
 		return false, "", nil, err
@@ -149,12 +171,12 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string, log *events.Lo
 		return false, "", nil, err
 	}
 	if after == before {
-		if deniedEdit != nil {
+		if watch.denied != nil {
 			// The full closing message, not the one-line summary: this is
 			// the hand-off a human applies, and OR-172's agent had already
 			// written the exact fix in prose here -- worth keeping whole.
-			deniedEdit.HandOff = strings.TrimSpace(res.Final)
-			return false, summary, deniedEdit, nil
+			watch.denied.HandOff = strings.TrimSpace(res.Final)
+			return false, summary, watch.denied, nil
 		}
 		return false, summary, nil, nil
 	}
