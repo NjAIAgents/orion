@@ -45,6 +45,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,6 +56,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/registry"
+	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/work"
@@ -158,6 +160,11 @@ func Run(opts Options, deps Deps) error {
 	w = &syncWriter{w: w}
 
 	p := newPool(opts.MaxConcurrent)
+	// Published for the signal handler, which has to name what it abandons
+	// if it is forced to quit (OR-195). Cleared on the way out so a later
+	// run does not report a pool that finished.
+	running.Store(p)
+	defer running.Store(nil)
 	// Nothing exits while an agent is still running. Killing one leaves a
 	// ticket claimed with a half-written branch and no process to finish it,
 	// which is the state an unattended tool must never create -- and that is
@@ -869,20 +876,94 @@ func scope(home string, projects []string) ([]string, error) {
 // arrives, the current job finishes, and the loop stops before the next one.
 var stopping atomic.Bool
 
+// running is the pool the signal handler reaches for, so the force path can
+// name the tickets it is abandoning. Package-level because Listen installs
+// the handler before Run builds the pool.
+var running atomic.Pointer[pool]
+
+// forceGrace is how long the force path waits for a killed process group to
+// actually die before it names the pid and leaves. Short on purpose: forcing
+// has to be faster than draining, and SIGKILL cannot be ignored, so anything
+// still here after this is a problem no further waiting will solve.
+const forceGrace = 3 * time.Second
+
+// forceExit is what the process exits with when it was forced. Non-zero, so
+// a supervisor or a script can tell "the operator gave up on it" from "the
+// queue drained"; 130 is the shell's own convention for death by SIGINT.
+const forceExit = 130
+
 // Listen installs the signal handler. Separate from Run so a caller can
 // install it before any long-running work begins.
-func Listen(w io.Writer) {
-	sig := make(chan os.Signal, 1)
+func Listen(w io.Writer) { listen(w, os.Exit) }
+
+// listen is Listen with its exit seam exposed, and returns a function that
+// unregisters the handler. Tests use both; nothing else needs them.
+func listen(w io.Writer, exit func(int)) (stop func()) {
+	// Room for both signals: the handler is busy printing after the first,
+	// and an unbuffered send from the runtime is dropped, not queued.
+	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sig
-		stopping.Store(true)
-		fmt.Fprintln(w, "\nstopping after the current step. Press ctrl-c again to force,\n"+
-			"which risks leaving a ticket claimed with nothing running.")
-		// A second signal restores the default behaviour, so a genuinely
-		// stuck process can still be killed without finding its pid.
-		signal.Stop(sig)
-	}()
+	go handle(w, sig, exit)
+	return func() { signal.Stop(sig) }
+}
+
+// handle is the two-signal protocol: the first drains, the second forces.
+//
+// The second signal used to be handed back to the default disposition
+// (signal.Stop), reasoning that a genuinely stuck watcher must still be
+// killable without hunting for a pid. It is -- but the default disposition
+// for SIGINT terminates THE WATCHER and nothing else. Every agent it started
+// is in its own process group (setNewProcessGroup), which is exactly why
+// ctrl-c never reaches them, so that escape hatch left `claude -p` running
+// with its parent gone: reparented to init, holding a worktree, spending for
+// as long as it took somebody to notice (OR-195). At a concurrency cap of
+// five it left five of them.
+//
+// So the watcher owns the force path: kill the groups, say what could not be
+// killed and what is left claimed, and exit non-zero.
+//
+// SIGTERM counts as either signal. `kill <watcher-pid>` from another shell
+// has the same shape as ctrl-c, and an unattended watcher is more likely to
+// be stopped that way than interactively.
+func handle(w io.Writer, sig <-chan os.Signal, exit func(int)) {
+	<-sig
+	stopping.Store(true)
+	fmt.Fprintln(w, "\nstopping after the current step. Press ctrl-c again to force,\n"+
+		"which kills the running agents now and leaves their tickets claimed.")
+	<-sig
+	exit(forceQuit(w, supervisor.KillAll))
+}
+
+// forceQuit kills every agent this watcher started and reports what it left
+// behind, returning the code the process should exit with.
+//
+// The claim is NOT released here, and says so rather than going quiet. The
+// alternative is a tracker write per ticket from inside a signal handler,
+// which is a network call with no timeout on the one path whose whole point
+// is to be immediate -- a hung Jira would hang the force, and the next
+// ctrl-c would have nothing left to fall back to. Killing is local and
+// always works; naming the ticket is what a person needs to finish the job.
+func forceQuit(w io.Writer, kill func(time.Duration) []int) int {
+	var keys []string
+	if p := running.Load(); p != nil {
+		keys = p.keys()
+		sort.Strings(keys)
+	}
+
+	fmt.Fprintln(w, "\nforcing: killing the agent process group(s) this watcher started.")
+	for _, pid := range kill(forceGrace) {
+		fmt.Fprintf(w, "  pid %d did not die, and is still running now: "+
+			"ps -o pid,ppid,etime,command -p %d\n", pid, pid)
+	}
+	if len(keys) == 0 {
+		fmt.Fprintln(w, "  no ticket was in flight; nothing is left claimed.")
+		return forceExit
+	}
+	fmt.Fprintf(w, "  still claimed and NOT released: %s\n"+
+		"  Their agents are dead, but the %s label is still on them, so no\n"+
+		"  watcher will pick them up until it is removed in the tracker.\n",
+		strings.Join(keys, ", "), tracker.LabelWorking)
+	return forceExit
 }
 
 func sleepInterruptible(d time.Duration) bool {
