@@ -37,14 +37,21 @@ now refuses to do**.
   message now opens with "Action needed", a warning with "Heads up"; an
   attachment colour bar reinforces the distinction on desktop and never
   replaces it (OR-163).
-- CI no longer runs twice for a branch that also has an open pull request.
-  `github.ref` is `refs/heads/<branch>` for a push and `refs/pull/<n>/merge`
-  for a pull_request, so a concurrency group keyed on it alone put the two
-  events in different groups and neither cancelled the other -- a full
-  three-OS matrix under each. The group now keys on the pull request number
-  where there is one and falls back to the ref for a plain push. Fixed in
-  the scaffolded workflows Orion writes for adopted projects, in the
-  scaffolded secret-scan workflow, and in this repository's own (OR-172).
+- CI concurrency groups now key on the pull request number where there is
+  one, falling back to the ref for a plain push, in the scaffolded CI and
+  secret-scan workflows and in this repository's own. This keeps a pull
+  request's run and a push run on the same branch name from cancelling one
+  another, so a rebase force-push cancels only its own superseded run
+  (OR-172).
+
+  It does NOT stop the develop-to-main promotion pull request from building
+  twice, which is what OR-172 originally claimed to fix. That doubling comes
+  from the trigger list, not the grouping: `push: { branches: [main,
+  develop] }` and `pull_request:` both match a pull request whose head
+  branch is `develop`, and the two events are by construction in different
+  groups, so no grouping expression can merge them. Feature branches are not
+  in the push list and were never affected. Cost is one extra matrix per
+  release, not per pull request. Tracked in OR-175.
 
 ## v0.7.8
 
