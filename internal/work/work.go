@@ -416,6 +416,15 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "branch %s", job.Branch)
 	fmt.Fprintf(w, "          %s\n", ui.Dim(w, job.Path))
 
+	// The commit before anything about this ticket exists. QA's red-before-
+	// green check (OR-156) needs it to prove a test would actually have
+	// caught the change; a failure here just means that check degrades with
+	// a stated reason later rather than losing the ticket over bookkeeping.
+	baseSHA, shaErr := headSHA(job.Path)
+	if shaErr != nil {
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not record the base commit: %v", shaErr)
+	}
+
 	// The job runs in its own worktree, not the shared clone.
 	jobWS := *ws
 	jobWS.RepoPath = job.Path
@@ -635,6 +644,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		ImplSession: runRes.SessionID, WS: &jobWS,
 		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
+		BaseSHA:    baseSHA,
 	}, cfg, opts, deps, log, w)
 
 	// Re-counted: QA commits its tests, and a fix round commits too, so the
