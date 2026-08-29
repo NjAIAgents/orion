@@ -23,6 +23,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/orion-sdlc/orion/internal/changelog"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
@@ -37,6 +38,10 @@ const releaseUsage = `orion release <command>
 
   list [--project KEY]
         Every version on the project, and whether it is released.
+
+  status <version> [--project KEY]
+        What is in the milestone, what is unfinished, and whether the
+        changelog fragments and the version agree in both directions.
 
 This manages MILESTONES in Jira. It does not build, tag or publish anything.
 `
@@ -56,6 +61,8 @@ func releaseAction(args []string) string {
 		return "create"
 	case "list", "ls":
 		return "list"
+	case "status":
+		return "status"
 	case "help", "--help", "-h":
 		return "help"
 	}
@@ -68,6 +75,8 @@ func runRelease(args []string) {
 		runReleaseCreate(args[1:])
 	case "list":
 		runReleaseList(args[1:])
+	case "status":
+		runReleaseStatus(args[1:])
 	case "help":
 		fmt.Print(releaseUsage)
 	default:
@@ -178,4 +187,81 @@ func runReleaseList(args []string) {
 		}
 		fmt.Printf("  %-14s %-9s %s\n", v.Name, state, v.ID)
 	}
+}
+
+// runReleaseStatus answers "what is in this release, and does the changelog
+// agree" -- before the tag exists, rather than after (OR-187).
+//
+// It REPORTS and does not fix. A mismatch has two possible resolutions,
+// inventing a release note or deleting one, and both are worse than telling
+// a person what does not line up.
+//
+// Exit code is 0 for a clean milestone and 1 for one with mismatches, so this
+// is usable as a gate. An INCOMPLETE milestone is not a failure: the correct
+// behaviour is to ship what is done and roll the rest forward, and one stuck
+// ticket must never hold a tag hostage.
+func runReleaseStatus(args []string) {
+	var project string
+	rest := []string{}
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--project" && i+1 < len(args) {
+			i++
+			project = args[i]
+			continue
+		}
+		rest = append(rest, args[i])
+	}
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "orion release status: which version?")
+		os.Exit(64)
+	}
+	version := rest[0]
+	key := projectKeyFor(project)
+
+	j, err := tracker.NewJiraFromEnv()
+	exitOn(err)
+
+	issues, err := j.IssuesInVersion(key, version)
+	exitOn(err)
+
+	root, err := os.Getwd()
+	exitOn(err)
+	fragments, err := changelog.Load(root)
+	exitOn(err)
+
+	tickets := make([]changelog.Ticket, 0, len(issues))
+	for _, is := range issues {
+		tickets = append(tickets, changelog.Ticket{Key: is.Key, Done: is.Resolved()})
+	}
+	r := changelog.Reconcile(version, fragments, tickets)
+
+	w := os.Stdout
+	ui.Ok(w, version, "%d ticket(s): %d done, %d not done",
+		len(tickets), len(r.Done), len(r.NotDone))
+
+	for _, k := range r.NotDone {
+		fmt.Fprintf(w, "          %s\n", ui.Dim(w, "not done   "+k))
+	}
+	for _, k := range r.TicketsWithoutFragment {
+		ui.Warn(w, "%s is done but has no changelog fragment; it would ship unmentioned", k)
+	}
+	for _, k := range r.FragmentsWithoutTicket {
+		ui.Warn(w, "fragment %s is not in %s; either it ships elsewhere or the ticket "+
+			"is missing its fixVersion", k, version)
+	}
+
+	// Tickets that belong to no milestone at all. Not part of this version's
+	// reconciliation, but the gap this whole convention exists to close, and
+	// the moment before a release is when it is worth seeing.
+	if orphans, err := j.IssuesWithoutVersion(key); err == nil && len(orphans) > 0 {
+		ui.Warn(w, "%d open ticket(s) carry no fixVersion at all", len(orphans))
+		for _, is := range orphans {
+			fmt.Fprintf(w, "          %s\n", ui.Dim(w, is.Key+"  "+is.Summary))
+		}
+	}
+
+	if !r.Clean() {
+		os.Exit(1)
+	}
+	ui.Ok(w, "reconciled", "every done ticket has a fragment and every fragment has a ticket")
 }
