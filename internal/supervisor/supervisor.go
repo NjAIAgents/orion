@@ -37,6 +37,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/procsafe"
 	"github.com/orion-sdlc/orion/internal/quota"
+	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -442,9 +443,16 @@ func recordUsage(ws *workspace.Workspace, stage, out string) {
 // sent, and a report that silently omits it presents a lowball total as
 // complete.
 //
-// Every failure here is silent by design. Losing an accounting line must not
-// lose the work, and the log is opened per run rather than held open because
-// the supervisor has no lifecycle to hang it on.
+// Failure to OPEN the log is silent by design. Losing an accounting line must
+// not lose the work, and the log is opened per run rather than held open
+// because the supervisor has no lifecycle to hang it on. A failure to append
+// the durable history row is reported to stderr rather than swallowed: that
+// file is the whole record, and a gap in it that nobody is told about is
+// exactly the silent loss it exists to prevent.
+//
+// Model and effort are taken from opts -- what this run was DISPATCHED with.
+// Looking them up in the roster afterwards would read today's agents.json and
+// relabel every past run the day somebody moves an actor to another model.
 func recordTicketCost(ws *workspace.Workspace, opts Options, res *Result, out string) {
 	if res == nil || opts.DryRun || opts.Actor == "" || opts.Key == "" {
 		return
@@ -455,8 +463,17 @@ func recordTicketCost(ws *workspace.Workspace, opts Options, res *Result, out st
 	}
 	defer func() { _ = log.Close() }()
 	run, ok := budget.FromResultJSON(out)
-	cost.Record(log, opts.Actor, opts.Key,
-		cost.FromBudgetRun(run, ok, res.ExitCode != 0, res.Reason, res.Duration))
+	r := cost.FromBudgetRun(run, ok, res.ExitCode != 0, res.Reason, res.Duration)
+	r.Model, r.Effort, r.Stage = opts.Model, opts.Effort, opts.Stage
+	r.Project, r.Session = registry.ProjectOf(opts.Key), res.SessionID
+	if err := cost.Record(log, workspace.Home(), opts.Actor, opts.Key, r); err != nil {
+		if errors.Is(err, procsafe.ErrLockTimeout) {
+			fmt.Fprintf(os.Stderr,
+				"orion: appended the usage history without the lock (%v)\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "orion: could not append the usage history: %v\n", err)
+		}
+	}
 }
 
 func humanTokens(n int) string {
