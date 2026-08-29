@@ -9,7 +9,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/ui"
 )
 
-// activityLogger turns the agent's live activity into event-log lines.
+// ActivityLogger turns the agent's live activity into event-log lines.
 //
 // Why this exists: with the run's output buffered to exit, the event log
 // showed "implementing FCIA-6" and then nothing at all until the run ended.
@@ -22,7 +22,13 @@ import (
 // NDJSON is already in the run log for postmortems. What belongs in the event
 // stream is the trace a person scans to answer "is it doing something sane":
 // which files it touched, which commands it ran, what it said it was doing.
-func activityLogger(log *events.Log, w io.Writer, key, actor string) func(supervisor.Activity) {
+//
+// Exported so cmd/orion's fix loop -- a different package, run from outside
+// internal/work -- wires the SAME logger rather than a second one. A second
+// copy is how the two drift apart: OR-176 was exactly that, a hand-rolled
+// OnActivity that printed unattributed lines and emitted nothing to the
+// event log at all.
+func ActivityLogger(log *events.Log, w io.Writer, key, actor string) func(supervisor.Activity) {
 	return func(a supervisor.Activity) {
 		switch a.Kind {
 		case "start":

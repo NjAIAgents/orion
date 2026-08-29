@@ -119,7 +119,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 		// ticket, reads the diff, writes tests and runs a suite; a suite that
 		// takes ten minutes to run takes ten minutes to run for either actor.
 		MaxMinutes: job.MaxMinutes, MaxTurns: job.MaxTurns,
-		OnActivity: activityLogger(log, w, key, events.ActorQA),
+		OnActivity: ActivityLogger(log, w, key, events.ActorQA),
 		Actor:      events.ActorQA, Key: key,
 	})
 	if !qaRan(res, err, key, log, w) {
@@ -170,7 +170,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 			Model:      actors.Model(job.Actor),
 			Effort:     actors.Effort(job.Actor),
 			MaxMinutes: job.MaxMinutes, MaxTurns: job.MaxTurns,
-			OnActivity: activityLogger(log, w, key, job.Actor),
+			OnActivity: ActivityLogger(log, w, key, job.Actor),
 			Actor:      job.Actor, Key: key,
 		})
 		if fixErr != nil || fix == nil || fix.ExitCode != 0 {
@@ -188,7 +188,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 			Model:      actors.Model(events.ActorQA),
 			Effort:     actors.Effort(events.ActorQA),
 			MaxMinutes: job.MaxMinutes, MaxTurns: job.MaxTurns,
-			OnActivity: activityLogger(log, w, key, events.ActorQA),
+			OnActivity: ActivityLogger(log, w, key, events.ActorQA),
 			Actor:      events.ActorQA, Key: key,
 		})
 		if !qaRan(res, err, key, log, w) {

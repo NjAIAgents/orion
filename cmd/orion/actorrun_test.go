@@ -9,6 +9,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/supervisor"
 )
 
 // OR-133. The ci-fix run is attributed to the devops engineer in the event
@@ -41,6 +42,63 @@ func TestTheCIFixRunPassesNoEffortWhenNoneIsConfigured(t *testing.T) {
 	}
 	if o := fixOptions("FCIA-6", "orion/FCIA-6", "boom", config.Config{}); o.Effort != "" {
 		t.Errorf("effort = %q, want none", o.Effort)
+	}
+}
+
+// OR-176. The fix loop hand-rolled its own OnActivity instead of the shared
+// work.ActivityLogger every other supervised run uses, so its tool calls
+// printed as unattributed console lines and never reached the event log at
+// all. fixActivity is the exact callback fixRun wires up; driving it
+// directly proves both halves are fixed without standing up a workspace, a
+// worktree or the supervisor.
+func TestFixActivityAttributesConsoleLinesAndLogsToolEvents(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := events.Open(logPath, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	var console strings.Builder
+	activity := fixActivity(log, &console, "OR-173")
+
+	activity(supervisor.Activity{Kind: "tool", Tool: "Bash", Detail: "go test ./...", Model: "sonnet"})
+	log.Close()
+
+	// The console line: no reader can tell who is acting or what it costs
+	// from a bare "working   Bash go test ./..." -- the ticket key, the
+	// devops actor and the model all have to be there.
+	out := console.String()
+	for _, want := range []string{"OR-173", actors.Display(events.ActorDevOps), "sonnet", "go test ./..."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("fix activity console line missing %q, got: %q", want, out)
+		}
+	}
+
+	// The event log: the hand-rolled version emitted nothing, so `orion logs`
+	// had no record the devops engineer ran at all.
+	logged, err := events.Read(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawTool bool
+	for _, e := range logged {
+		if e.Kind != events.KindTool {
+			continue
+		}
+		sawTool = true
+		if e.Actor != events.ActorDevOps {
+			t.Errorf("tool event actor = %q, want %q", e.Actor, events.ActorDevOps)
+		}
+		if e.Model != "sonnet" {
+			t.Errorf("tool event model = %q, want sonnet", e.Model)
+		}
+		if !strings.Contains(e.Msg, "Bash") || !strings.Contains(e.Msg, "go test ./...") {
+			t.Errorf("tool event msg = %q, want it to name the tool and its detail", e.Msg)
+		}
+	}
+	if !sawTool {
+		t.Error("no KindTool event was logged for the fix run's tool call")
 	}
 }
 

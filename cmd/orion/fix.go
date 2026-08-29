@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -12,7 +13,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/match"
 	"github.com/orion-sdlc/orion/internal/supervisor"
-	"github.com/orion-sdlc/orion/internal/ui"
+	"github.com/orion-sdlc/orion/internal/work"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -42,6 +43,19 @@ func fixOptions(key, branch, detail string, cfg config.Config) supervisor.Option
 	}
 }
 
+// fixActivity is the ci-fix run's activity callback, separated out so a test
+// can drive it directly without standing up a workspace, a worktree or the
+// supervisor.
+//
+// Delegates to work.ActivityLogger -- the SAME logger every other supervised
+// run uses -- rather than a second implementation. A hand-rolled OnActivity
+// here once printed unattributed console lines and emitted nothing to the
+// event log at all (OR-176): the roster knew who was running, but nothing
+// downstream of the callback did.
+func fixActivity(log *events.Log, w io.Writer, key string) func(supervisor.Activity) {
+	return work.ActivityLogger(log, w, key, events.ActorDevOps)
+}
+
 // fixRun sends a CI failure back to an agent on the branch that caused it.
 //
 // The worktree is reused rather than recreated. The branch already has the
@@ -55,7 +69,10 @@ func fixOptions(key, branch, detail string, cfg config.Config) supervisor.Option
 // they call for different remedies: a person thinking about the first, a
 // person applying a diff for the second, and no further attempt fixes
 // either from inside the sandbox.
-func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, string, *collect.PolicyDenial, error) {
+//
+// Takes the event log so this run's activity is attributed and recorded the
+// same way every other supervised run's is (OR-176).
+func fixRun(ws *workspace.Workspace, key, branch, failure string, log *events.Log) (bool, string, *collect.PolicyDenial, error) {
 	w := os.Stdout
 
 	jobs, err := workspace.ListWorktrees(ws)
@@ -100,10 +117,12 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, string,
 	// whether the agent said so in its closing message (OR-174).
 	var deniedEdit *collect.PolicyDenial
 	o := fixOptions(key, branch, detail, cfg)
+	// The shared logger draws the console line and writes the event (OR-176);
+	// the denial watch rides the same stream rather than a second one, so the
+	// two cannot observe different activity (OR-174).
+	say := fixActivity(log, w, key)
 	o.OnActivity = func(a supervisor.Activity) {
-		if a.Kind == "tool" {
-			ui.Ok(w, "working", "%s %s", a.Tool, a.Detail)
-		}
+		say(a)
 		if deniedEdit == nil && isEditTool(a.Tool) {
 			if rule := matchedRule(cfg.Paths.Protected, a.Detail); rule != "" {
 				deniedEdit = &collect.PolicyDenial{Tool: a.Tool, Path: a.Detail, Rule: rule}

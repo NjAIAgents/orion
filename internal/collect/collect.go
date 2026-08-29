@@ -114,7 +114,10 @@ type Deps struct {
 	// denied is non-nil when nothing was pushed because the sandbox itself
 	// refused the agent's edit -- a different failure from the agent not
 	// knowing what to change, and one no further attempt can fix (OR-174).
-	Fix func(ws *workspace.Workspace, key, branch, failure string) (pushed bool, summary string, denied *PolicyDenial, err error)
+	//
+	// Takes the event log so the fix run's activity is attributed and recorded
+	// the same way every other supervised run's is (OR-176).
+	Fix func(ws *workspace.Workspace, key, branch, failure string, log *events.Log) (pushed bool, summary string, denied *PolicyDenial, err error)
 	// Slack reads approvals. Nil disables the approval path entirely, which
 	// is the correct behaviour when the extra OAuth scopes are not granted:
 	// Orion then reports that checks pass and waits for a human to merge.
