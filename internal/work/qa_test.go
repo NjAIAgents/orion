@@ -307,6 +307,88 @@ func TestQAPostsFindingsToTheTicketEveryRound(t *testing.T) {
 	}
 }
 
+// OR-167: "every round", not just "the first non-clean round" -- two
+// consecutive rounds each with distinct findings must both land on the
+// ticket. A version that only posted once (e.g. on entry to the loop, or
+// only at the end) would pass TestQAPostsFindingsToTheTicketEveryRound
+// since that test only has one non-clean round.
+func TestQAPostsEachRoundsDistinctFindingsToTheTicket(t *testing.T) {
+	home := project(t, `{"vcs":{"default_branch":"main","work_branch":"develop","branch_prefix":"orion/"},
+	                     "tracker":{"enabled":true,"project_key":"FCIA","queue_label":"ORION"},
+	                     "qa":{"max_rounds":2}}`)
+	j := &fakeJira{}
+	f := &qaFake{t: t, qaReplies: []string{
+		"Round one problem: the discount is applied twice.",
+		"Round two problem: the refund path still double-charges.",
+		"QA CLEAN",
+	}}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j, Supervise: f.run,
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+	if res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("outcome = %q", res[0].Outcome)
+	}
+
+	comments := strings.Join(j.comments, "\n")
+	if !strings.Contains(comments, "discount is applied twice") {
+		t.Errorf("round one's finding never reached the ticket:\n%s", comments)
+	}
+	if !strings.Contains(comments, "refund path still double-charges") {
+		t.Errorf("round two's finding never reached the ticket:\n%s", comments)
+	}
+}
+
+// qaPostFindings itself must not reach for a nil deps.Jira -- runQA is
+// reachable directly (unlike the outer Run, which already dereferences
+// deps.Jira unconditionally before QA is ever claimed), and its own guard
+// is the only thing standing between a nil tracker and a panic here.
+func TestQAPostFindingsDoesNotPanicWithoutATracker(t *testing.T) {
+	qaPostFindings(Deps{Jira: nil}, "FCIA-6", 1, "the rounding case is wrong")
+}
+
+// OR-167: the console note "(full text in the event log)" only makes sense
+// when the console line actually dropped something. A single-line finding
+// with no header shows the whole thing on the console already, so tacking
+// on the pointer would claim there is more to read when there is not.
+func TestQAConsoleOmitsThePointerWhenNothingWasTruncated(t *testing.T) {
+	home := project(t, qaCfg)
+	f := &qaFake{t: t, qaReplies: []string{
+		"Case 3 fails: expected 400, got 500.",
+		"QA CLEAN",
+	}}
+	var out strings.Builder
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: &fakeJira{}, Supervise: f.run,
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	printed := out.String()
+	if !strings.Contains(printed, "Case 3 fails: expected 400, got 500.") {
+		t.Errorf("the console did not show the finding:\n%s", printed)
+	}
+	if strings.Contains(printed, "full text in the event log") {
+		t.Errorf("the console pointed at the event log though nothing was truncated:\n%s", printed)
+	}
+}
+
+// firstSubstantiveLine's fallback: if every line looks like a header (ends
+// in ":"), there is no substantive line to prefer, and returning nothing
+// would be worse than returning the original text.
+func TestFirstSubstantiveLineFallsBackWhenEveryLineIsAHeader(t *testing.T) {
+	got := firstSubstantiveLine("Verification done:\nSummary:")
+	if got != "Verification done:\nSummary:" {
+		t.Errorf("firstSubstantiveLine of all-header text = %q, want the original text back", got)
+	}
+}
+
 // The ceiling. Two agents can disagree about a test for as long as somebody
 // keeps paying them, so a fixed number of rounds ends it and a person is
 // told what is still open -- and the change still goes to review, because QA
