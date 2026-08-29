@@ -30,9 +30,13 @@ func ticket(t *testing.T) string {
 	}
 	defer log.Close()
 
+	// Empty home: this fixture exercises the event-log sink only. The durable
+	// history sink has its own tests in history_test.go.
 	rec := func(actor, key string, b budget.Run, ok, failed bool, reason string, secs int) {
-		Record(log, actor, key, FromBudgetRun(b, ok, failed, reason,
-			time.Duration(secs)*time.Second))
+		if err := Record(log, "", actor, key, FromBudgetRun(b, ok, failed, reason,
+			time.Duration(secs)*time.Second)); err != nil {
+			t.Fatalf("recording a run: %v", err)
+		}
 	}
 
 	rec(events.ActorImplementer, "OR-9", budget.Run{
@@ -207,7 +211,7 @@ func TestReadAllIncludesRotatedGenerations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	Record(old, events.ActorImplementer, "OR-9", FromBudgetRun(
+	Record(old, "", events.ActorImplementer, "OR-9", FromBudgetRun(
 		budget.Run{Turns: 10, PromptTokens: 5, CostUSD: 2}, true, false, "completed", 30))
 	old.Close()
 	if err := os.Rename(path, path+".1"); err != nil {
@@ -218,7 +222,7 @@ func TestReadAllIncludesRotatedGenerations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	Record(cur, events.ActorImplementer, "OR-9", FromBudgetRun(
+	Record(cur, "", events.ActorImplementer, "OR-9", FromBudgetRun(
 		budget.Run{Turns: 1, PromptTokens: 5, CostUSD: 0.5}, true, false, "completed", 5))
 	cur.Close()
 

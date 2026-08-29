@@ -35,15 +35,15 @@ func spend(t *testing.T, home, key string) {
 	}
 	defer log.Close()
 
-	cost.Record(log, events.ActorImplementer, key, cost.FromBudgetRun(budget.Run{
+	cost.Record(log, "", events.ActorImplementer, key, cost.FromBudgetRun(budget.Run{
 		Turns: 34, PromptTokens: 12_410, OutputTokens: 8_922,
 		CacheCreateTokens: 41_203, CacheReadTokens: 1_203_554, CostUSD: 3.84,
 	}, true, false, "completed", 12*time.Minute))
-	cost.Record(log, events.ActorDevOps, key, cost.FromBudgetRun(budget.Run{
+	cost.Record(log, "", events.ActorDevOps, key, cost.FromBudgetRun(budget.Run{
 		Turns: 6, PromptTokens: 2_101, OutputTokens: 944,
 		CacheReadTokens: 210_388, CostUSD: 0.41,
 	}, true, false, "completed", 2*time.Minute))
-	cost.Record(log, events.ActorDevOps, key, cost.FromBudgetRun(budget.Run{
+	cost.Record(log, "", events.ActorDevOps, key, cost.FromBudgetRun(budget.Run{
 		Turns: 40, PromptTokens: 300, OutputTokens: 100, CostUSD: 0.05,
 	}, true, true, "timed out", 30*time.Minute))
 }
