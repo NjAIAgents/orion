@@ -531,6 +531,41 @@ func TestQAUsesTheTestingSkillsWhenTheToolkitHasThem(t *testing.T) {
 	}
 }
 
+// OR-156: once QA's stage ends, whatever tests it wrote must be proven
+// against the commit the branch started from. This exercises the wiring --
+// runQA calling down into reportRedBeforeGreen and checkRedBeforeGreen --
+// with a test that already passes before the change, which is exactly the
+// case a person needs to see and not have silently dropped.
+func TestRunQAReportsATestThatAlreadyPassedBeforeTheChange(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init", "-q", "-b", "main")
+	writeExec(t, repo, "scripts/test.sh", "#!/bin/sh\nexit 0\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "seed")
+	baseSHA := git(t, repo, "rev-parse", "HEAD")
+
+	ws := &workspace.Workspace{RepoPath: repo}
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		if err := os.WriteFile(filepath.Join(w.RepoDir(), "weak_test.go"), []byte("package fake\n"), 0o644); err != nil {
+			return nil, err
+		}
+		git(t, w.RepoDir(), "add", ".")
+		git(t, w.RepoDir(), "commit", "-q", "-m", "test: qa")
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+
+	var out strings.Builder
+	outcome := runQA(qaJob{Key: "FCIA-6", WS: ws, BaseSHA: baseSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out)
+
+	if !outcome.Clean {
+		t.Fatalf("outcome = %+v", outcome)
+	}
+	if !strings.Contains(out.String(), "weak_test.go") || !strings.Contains(out.String(), "prove nothing") {
+		t.Errorf("did not report the test that already passed before the change:\n%s", out.String())
+	}
+}
+
 // The sentinel decides the verdict, and only when it starts a line. An agent
 // that quotes its own instructions must not declare a clean branch by
 // describing one.
