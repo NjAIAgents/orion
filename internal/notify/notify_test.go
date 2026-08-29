@@ -18,7 +18,7 @@ import (
 // exercising, rather than accidentally firing a real webhook.
 func isolate(t *testing.T) {
 	t.Helper()
-	prev := SetSlackSender(func(string, string) error { return nil })
+	prev := SetSlackSender(func(string, string, Level) error { return nil })
 	t.Cleanup(func() { SetSlackSender(prev) })
 	SetWebhookResolver(func() string { return "" })
 	t.Setenv("ORION_NOTIFY_WEBHOOK", "")
@@ -272,7 +272,7 @@ func TestSlackIsSentOnlyWhenAChannelIsSet(t *testing.T) {
 
 	var gotChannel, gotText string
 	calls := 0
-	SetSlackSender(func(ch, text string) error {
+	SetSlackSender(func(ch, text string, _ Level) error {
 		calls++
 		gotChannel, gotText = ch, text
 		return nil
@@ -303,7 +303,7 @@ func TestSlackIsSentOnlyWhenAChannelIsSet(t *testing.T) {
 // swallowed, so the caller believed the notification had been delivered.
 func TestSlackFailuresAreReportedNotSwallowed(t *testing.T) {
 	isolate(t)
-	SetSlackSender(func(string, string) error {
+	SetSlackSender(func(string, string, Level) error {
 		return errors.New("ORION_SLACK_TOKEN is not set")
 	})
 
@@ -328,7 +328,7 @@ func TestSlackFailuresAreReportedNotSwallowed(t *testing.T) {
 // them at once.
 func TestSlackFailureDoesNotStopTheWebhook(t *testing.T) {
 	isolate(t)
-	SetSlackSender(func(string, string) error { return errors.New("token revoked") })
+	SetSlackSender(func(string, string, Level) error { return errors.New("token revoked") })
 
 	delivered := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -343,5 +343,21 @@ func TestSlackFailureDoesNotStopTheWebhook(t *testing.T) {
 	}
 	if len(errs) != 1 {
 		t.Errorf("errs = %v; exactly the Slack failure should be reported", errs)
+	}
+}
+
+// OR-163: notify.Level used to be computed and then thrown away -- Post took
+// only a channel and text, so an approval request (Blocked) and a plain
+// status update (Info) reached slackSend, and therefore Slack, identically.
+func TestEventLevelReachesSlack(t *testing.T) {
+	isolate(t)
+	var got Level
+	prev := SetSlackSender(func(_, _ string, level Level) error { got = level; return nil })
+	t.Cleanup(func() { SetSlackSender(prev) })
+
+	Send(Event{Channel: "C123", Level: Blocked, Title: "t", Body: "b"})
+
+	if got != Blocked {
+		t.Errorf("level delivered to Slack = %q, want %q", got, Blocked)
 	}
 }
