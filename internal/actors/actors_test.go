@@ -290,3 +290,28 @@ func TestLogTriageIsInTheRosterAndPinnedCheap(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = Configure(nil) })
 }
+
+// The explore actor is the same bet as log-triage, on the question that
+// recurs most often inside a single run: it must be in the roster, pinned
+// cheap, and configurable. An explore that inherits the asking run's opus is
+// a second expensive run wearing a cheap one's name (OR-183).
+func TestExploreIsInTheRosterAndPinnedCheap(t *testing.T) {
+	a := Get(events.ActorExplore)
+	if a.Name == "" || a.Designation == "" {
+		t.Errorf("explore renders as %q; every acting agent needs a name and a job title",
+			a.Display())
+	}
+	if a.Model != "haiku" {
+		t.Errorf("explore model = %q, want haiku: locating a definition is mechanical "+
+			"reading, not the judgement the asking run is paying opus for", a.Model)
+	}
+	if err := Configure(map[string]config.Agent{
+		events.ActorExplore: {Model: "sonnet"},
+	}); err != nil {
+		t.Fatalf("explore must be configurable like any other agent: %v", err)
+	}
+	if got := Model(events.ActorExplore); got != "sonnet" {
+		t.Errorf("after Configure, model = %q, want sonnet", got)
+	}
+	t.Cleanup(func() { _ = Configure(nil) })
+}

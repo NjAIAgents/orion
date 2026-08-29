@@ -78,6 +78,7 @@ const (
 	ActorQA          = "qa"         // derives test cases, writes the tests, runs them
 	ActorDescriber   = "describer"  // writes the pull request description
 	ActorLogTriage   = "log-triage" // reads a failing CI log, reports what broke and why
+	ActorExplore     = "explore"    // answers one question about the repository, citing the paths
 	ActorHuman       = "human"
 	ActorCI          = "ci"
 )

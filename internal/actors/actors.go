@@ -150,8 +150,17 @@ func defaults() map[string]Actor {
 		// actor for which the model is a real cost decision besides the
 		// developer.
 		events.ActorLogTriage: {ID: events.ActorLogTriage, Name: "Milo", Designation: "log triage", Model: "haiku"},
-		events.ActorCI:        {ID: events.ActorCI, Designation: "ci"},
-		events.ActorHuman:     {ID: events.ActorHuman, Designation: "you"},
+		// Explore answers one narrow question about a repository the asking
+		// run has not read -- where a thing is defined, whether a pattern
+		// already exists, what a config actually contains -- so the greps and
+		// files it takes to find out stay in ITS context instead of the
+		// asker's for the rest of the run (OR-183). Haiku, for the same
+		// reason log triage is: locating a definition is mechanical reading
+		// rather than judgement, and this is the question that recurs most
+		// often within a single run, so its model is a real cost decision.
+		events.ActorExplore: {ID: events.ActorExplore, Name: "Zoya", Designation: "code explorer", Model: "haiku"},
+		events.ActorCI:      {ID: events.ActorCI, Designation: "ci"},
+		events.ActorHuman:   {ID: events.ActorHuman, Designation: "you"},
 	}
 }
 
