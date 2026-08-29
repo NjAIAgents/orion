@@ -98,6 +98,7 @@ func breakerPre(in Input, cfg config.Config, store *state.Store) Decision {
 
 func breakerPost(in Input, cfg config.Config, store *state.Store) Decision {
 	sig := in.Signature()
+	actor := actorKey(in)
 	failed := in.Failed()
 	cmd := normalizeCmd(in.Command())
 	file := in.FilePath()
@@ -113,7 +114,10 @@ func breakerPost(in Input, cfg config.Config, store *state.Store) Decision {
 		// each other (OR-124). A FAILING verify still counts: retrying a red
 		// test with nothing changed is a real loop signal.
 		if !isVerify || failed {
-			s.Repeats[sig]++
+			if s.Repeats[actor] == nil {
+				s.Repeats[actor] = map[string]int{}
+			}
+			s.Repeats[actor][sig]++
 		}
 
 		if failed {
@@ -190,17 +194,18 @@ type tripDecision struct {
 // tool calls" is not.
 func verdict(in Input, cfg config.Config, sess *state.Session) tripDecision {
 	sig := in.Signature()
+	actor := actorKey(in)
 	cmd := normalizeCmd(in.Command())
 
 	switch {
-	case sess.Repeats[sig] >= cfg.Limits.MaxRepeatIdentical:
+	case sess.Repeats[actor][sig] >= cfg.Limits.MaxRepeatIdentical:
 		return tripDecision{
 			Block("breaker: LOOP. The identical %s call has now run %d times with no change in input.\n"+
 				"  Repeating it will not produce a different result.\n"+
 				"  Do one of: change the approach, read the error properly, or stop and report.\n"+
-				"  Do not retry this call.", in.ToolName, sess.Repeats[sig]),
+				"  Do not retry this call.", in.ToolName, sess.Repeats[actor][sig]),
 			"breaker/loop",
-			fmt.Sprintf("%s repeated %d times", in.ToolName, sess.Repeats[sig]),
+			fmt.Sprintf("%s repeated %d times", in.ToolName, sess.Repeats[actor][sig]),
 		}
 
 	case cmd != "" && sess.CmdFailures[cmd] >= cfg.Limits.MaxSameCommandFailures:
@@ -264,6 +269,21 @@ func trip(store *state.Store, sessionID, kind, detail string) {
 			s.TrippedDetail = detail
 		}
 	})
+}
+
+// actorKey identifies WHICH agent made a call: the main thread or one
+// specific subagent. A subagent spawned inside a run shares its parent's
+// SessionID -- the harness gives it its own transcript file instead, so
+// TranscriptPath is what actually distinguishes them. Without this, two
+// agents each innocently reading the same file twice sum to a false loop
+// trip that neither one caused (OR-170). SessionID is the fallback for a
+// payload that omits transcript_path, matching the old, session-wide
+// behavior rather than inventing a new failure mode.
+func actorKey(in Input) string {
+	if in.TranscriptPath != "" {
+		return in.TranscriptPath
+	}
+	return in.SessionID
 }
 
 func isEditTool(name string) bool {

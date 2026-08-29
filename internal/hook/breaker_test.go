@@ -25,7 +25,7 @@ func testCfg() config.Config {
 
 func sess(mut func(*state.Session)) *state.Session {
 	s := &state.Session{
-		Repeats:      map[string]int{},
+		Repeats:      map[string]map[string]int{},
 		CmdFailures:  map[string]int{},
 		FilesTouched: map[string]int{},
 	}
@@ -33,6 +33,16 @@ func sess(mut func(*state.Session)) *state.Session {
 		mut(s)
 	}
 	return s
+}
+
+// setRepeat records a repeat count for the actor derived from in, matching
+// how breakerPost would have populated it -- so tests exercise the same
+// keying verdict() reads.
+func setRepeat(s *state.Session, in Input, n int) {
+	if s.Repeats[actorKey(in)] == nil {
+		s.Repeats[actorKey(in)] = map[string]int{}
+	}
+	s.Repeats[actorKey(in)][in.Signature()] = n
 }
 
 func input(tool, jsonInput string) Input {
@@ -62,14 +72,14 @@ func TestVerdict(t *testing.T) {
 			name: "identical call under threshold allows",
 			in:   bashLs,
 			s: sess(func(s *state.Session) {
-				s.Repeats[bashLs.Signature()] = 2
+				setRepeat(s, bashLs, 2)
 			}),
 		},
 		{
 			name: "identical call at threshold blocks as loop",
 			in:   bashLs,
 			s: sess(func(s *state.Session) {
-				s.Repeats[bashLs.Signature()] = 3
+				setRepeat(s, bashLs, 3)
 			}),
 			wantBlock: true,
 			wantKind:  "breaker/loop",
@@ -130,7 +140,7 @@ func TestVerdict(t *testing.T) {
 			name: "loop reported before budget when both tripped",
 			in:   bashLs,
 			s: sess(func(s *state.Session) {
-				s.Repeats[bashLs.Signature()] = 5
+				setRepeat(s, bashLs, 5)
 				s.ToolCalls = 99
 			}),
 			wantBlock: true,
@@ -436,5 +446,73 @@ func TestPassingVerifyIsExemptFromLoopCounter(t *testing.T) {
 	}
 	if d := run(other, pass, 2); d.Blocked() {
 		t.Errorf("a non-verify call under the threshold must not trip, got: %s", d.Msg)
+	}
+}
+
+// OR-170: a subagent shares its parent's SessionID but gets its own
+// transcript file. Two agents that each, independently, read the same file
+// twice used to sum to one shared counter and trip the loop breaker at a
+// call neither of them repeated -- a false trip from parallel fan-out, not a
+// real loop. Regression for the incident behind OR-143 and OR-156.
+func TestParallelSubagentsDoNotShareTheLoopCounter(t *testing.T) {
+	dir := t.TempDir()
+	store := state.New(dir)
+	cfg := testCfg() // MaxRepeatIdentical = 3
+
+	readSame := json.RawMessage(`{"file_path":"CONVENTIONS.md"}`)
+	call := func(transcript string) Decision {
+		return Breaker(Input{
+			HookEventName:  "PostToolUse",
+			SessionID:      "parent-session",
+			TranscriptPath: transcript,
+			ToolName:       "Read",
+			ToolInput:      readSame,
+		}, cfg, store)
+	}
+
+	// Parent and two subagents, all under the same SessionID, each read the
+	// identical file twice -- six calls total, none of them a real loop.
+	var last Decision
+	for _, transcript := range []string{
+		"main.jsonl", "subagents/agent-a.jsonl", "subagents/agent-b.jsonl",
+	} {
+		for i := 0; i < 2; i++ {
+			last = call(transcript)
+			if last.Blocked() {
+				t.Fatalf("call %d for %s falsely tripped the loop breaker: %s", i+1, transcript, last.Msg)
+			}
+		}
+	}
+
+	// The same subagent repeating its OWN identical call a third time is a
+	// real loop and must still trip -- the fix must not have gone the other
+	// way and stopped detecting loops altogether.
+	call("subagents/agent-a.jsonl")
+	if d := call("subagents/agent-a.jsonl"); !d.Blocked() {
+		t.Fatal("a single actor repeating the identical call past the threshold must still trip as a loop")
+	}
+}
+
+// A payload with no transcript_path (an older harness, or a malformed
+// input) must fall back to the old session-wide behavior rather than
+// silently disabling loop detection.
+func TestLoopCounterFallsBackToSessionWhenTranscriptPathIsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	store := state.New(dir)
+	cfg := testCfg() // MaxRepeatIdentical = 3
+
+	call := func() Decision {
+		return Breaker(Input{
+			HookEventName: "PostToolUse",
+			SessionID:     "s1",
+			ToolName:      "Read",
+			ToolInput:     json.RawMessage(`{"file_path":"a.go"}`),
+		}, cfg, store)
+	}
+
+	call()
+	call()
+	if d := call(); !d.Blocked() {
+		t.Fatal("without a transcript_path, repeats must still be counted against the session")
 	}
 }
