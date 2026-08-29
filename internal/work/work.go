@@ -271,7 +271,14 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// route forward was to kill the process and run another command was a
 	// crash with instructions, and it stopped an unattended watcher without
 	// telling anyone.
-	if proceed, msg := budgetGate(key, opts, cfg, ws, log, w); !proceed {
+	//
+	// It also RESERVES what this run is expected to cost, released when the
+	// run ends. With tickets worked concurrently, a gate that only reads the
+	// ledger lets every concurrent run past the same checkpoint and then lets
+	// every one of them spend through it (OR-184).
+	proceed, releaseBudget, msg := budgetGate(key, opts, cfg, ws, log, w)
+	defer releaseBudget()
+	if !proceed {
 		log.Emitf(events.KindBudget, events.ActorOrion,
 			"waiting for the budget checkpoint to be acknowledged")
 		if msg != "" {
