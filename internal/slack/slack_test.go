@@ -244,6 +244,81 @@ func TestPostLevelDiffersFromTheFirstWord(t *testing.T) {
 	}
 }
 
+// OR-163: LevelWarning was never exercised by TestPostLevelDiffersFromTheFirstWord,
+// which only compared Blocked against Info. A regression that merged Warning's
+// marker with either of the other two would have passed that test.
+func TestPostLevelWarningDiffersFromBothOtherLevels(t *testing.T) {
+	texts := map[Level]string{}
+	colors := map[Level]string{}
+	c, srv := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		text := r.PostForm.Get("text")
+		switch {
+		case strings.Contains(text, "needs a decision"):
+			texts[LevelBlocked] = text
+			colors[LevelBlocked] = r.PostForm.Get("attachments")
+		case strings.Contains(text, "is ready for review"):
+			texts[LevelInfo] = text
+			colors[LevelInfo] = r.PostForm.Get("attachments")
+		case strings.Contains(text, "quota is getting close"):
+			texts[LevelWarning] = text
+			colors[LevelWarning] = r.PostForm.Get("attachments")
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	defer srv.Close()
+
+	if err := c.PostLevel("C123", LevelBlocked, "FCIA-8 needs a decision from you"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.PostLevel("C123", LevelInfo, "FCIA-8 is ready for review"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.PostLevel("C123", LevelWarning, "FCIA-8 quota is getting close"); err != nil {
+		t.Fatal(err)
+	}
+
+	firstLine := func(s string) string { return strings.SplitN(s, "\n", 2)[0] }
+	warningFirst := firstLine(texts[LevelWarning])
+	if warningFirst == firstLine(texts[LevelBlocked]) || warningFirst == firstLine(texts[LevelInfo]) {
+		t.Fatalf("warning first line collides with another level: %q", warningFirst)
+	}
+	if !strings.Contains(texts[LevelWarning], "Heads up") {
+		t.Errorf("a warning must say heads up, got: %q", texts[LevelWarning])
+	}
+	// The three colour bars must be pairwise distinct, or the desktop
+	// reinforcement stops reinforcing anything.
+	if colors[LevelBlocked] == colors[LevelInfo] || colors[LevelBlocked] == colors[LevelWarning] ||
+		colors[LevelInfo] == colors[LevelWarning] {
+		t.Errorf("colours are not pairwise distinct: blocked=%q info=%q warning=%q",
+			colors[LevelBlocked], colors[LevelInfo], colors[LevelWarning])
+	}
+}
+
+// The ticket requires informational messages to stay "visibly secondary" --
+// they must not borrow either alarming marker meant for the levels that
+// actually need attention.
+func TestPostLevelInfoCarriesNoAlarmMarker(t *testing.T) {
+	var got url.Values
+	c, srv := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		got = r.PostForm
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	defer srv.Close()
+
+	if err := c.PostLevel("C123", LevelInfo, "nothing is waiting on you yet"); err != nil {
+		t.Fatal(err)
+	}
+	text := got.Get("text")
+	if strings.Contains(text, "Action needed") || strings.Contains(text, "Heads up") {
+		t.Errorf("an info message must not carry an alarm marker, got: %q", text)
+	}
+	if !strings.HasPrefix(text, "nothing is waiting on you yet") {
+		t.Errorf("an info message's own wording must lead, got: %q", text)
+	}
+}
+
 // Arguments must travel as FORM fields, not a JSON body.
 //
 // Slack's cursor-paginated read methods ignore a JSON body and answer with

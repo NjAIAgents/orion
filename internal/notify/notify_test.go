@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/orion-sdlc/orion/internal/slack"
 )
 
 // isolate clears every delivery channel so a test opts in to the one it is
@@ -349,15 +351,37 @@ func TestSlackFailureDoesNotStopTheWebhook(t *testing.T) {
 // OR-163: notify.Level used to be computed and then thrown away -- Post took
 // only a channel and text, so an approval request (Blocked) and a plain
 // status update (Info) reached slackSend, and therefore Slack, identically.
+//
+// Table-driven over all three levels, not just Blocked: a fix that special-
+// cased Blocked and left Info/Warning still hardcoded (or swapped) would
+// have passed a Blocked-only assertion.
 func TestEventLevelReachesSlack(t *testing.T) {
+	for _, lvl := range []Level{Info, Warning, Blocked} {
+		t.Run(string(lvl), func(t *testing.T) {
+			isolate(t)
+			var got Level
+			prev := SetSlackSender(func(_, _ string, level Level) error { got = level; return nil })
+			t.Cleanup(func() { SetSlackSender(prev) })
+
+			Send(Event{Channel: "C123", Level: lvl, Title: "t", Body: "b"})
+
+			if got != lvl {
+				t.Errorf("level delivered to Slack = %q, want %q", got, lvl)
+			}
+		})
+	}
+}
+
+// slackSend converts notify.Level to slack.Level by value, not by a mapping
+// table that could scramble the three -- the doc comment on slackSend says
+// so explicitly. Exercise the real conversion (bypassing SetSlackSender, the
+// var slackSend swaps in) rather than a mock, since a mock cannot catch a
+// broken cast in slackSend's own body.
+func TestSlackSendConversionPreservesLevel(t *testing.T) {
 	isolate(t)
-	var got Level
-	prev := SetSlackSender(func(_, _ string, level Level) error { got = level; return nil })
-	t.Cleanup(func() { SetSlackSender(prev) })
-
-	Send(Event{Channel: "C123", Level: Blocked, Title: "t", Body: "b"})
-
-	if got != Blocked {
-		t.Errorf("level delivered to Slack = %q, want %q", got, Blocked)
+	for _, lvl := range []Level{Info, Warning, Blocked} {
+		if got := slack.Level(lvl); string(got) != string(lvl) {
+			t.Errorf("slack.Level(%q) = %q; notify and slack level values must match verbatim", lvl, got)
+		}
 	}
 }
