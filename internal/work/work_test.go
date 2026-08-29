@@ -175,6 +175,50 @@ func TestSuccessfulRunClaimsRunsPushesAndHandsOffToCI(t *testing.T) {
 	}
 }
 
+// AddWorktree suffixes a retry's branch (orion/fcia-6 -> orion/fcia-6-2) to
+// keep it off a prior attempt's still-open pull request. `orion work` must
+// record THAT name, not the one it originally asked for -- otherwise collect
+// keeps looking up a branch the retry never used (OR-173).
+func TestARetriedTicketsSuffixedBranchIsRecordedForCollect(t *testing.T) {
+	home := project(t, cfg)
+	entry, err := registry.Lookup(home, "FCIA-6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Open(entry.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a first attempt: orion/fcia-6 already exists, so uniqueBranch
+	// must suffix the retry's branch.
+	git(t, ws.RepoDir(), "branch", "orion/fcia-6")
+
+	j := &fakeJira{}
+	var out strings.Builder
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				if err := os.WriteFile(filepath.Join(ws.RepoDir(), "impl.go"), []byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, ws.RepoDir(), "add", ".")
+				git(t, ws.RepoDir(), "commit", "-q", "-m", "feat: implement")
+				return &supervisor.Result{ExitCode: 0, Reason: "completed"}, nil
+			},
+			Push:   func(dir, branch string) error { return nil },
+			OpenPR: func(dir, branch, title, body, base string) (string, error) { return "https://github.com/x/y/pull/5", nil },
+		})
+
+	if res[0].Branch != "orion/fcia-6-2" {
+		t.Fatalf("branch = %q, want the suffixed orion/fcia-6-2", res[0].Branch)
+	}
+	recorded, ok := workspace.BranchOf(ws, "FCIA-6")
+	if !ok || recorded != "orion/fcia-6-2" {
+		t.Errorf("BranchOf = (%q, %v), want the suffixed branch collect must read (OR-173)", recorded, ok)
+	}
+}
+
 // Exit 0 does not mean work happened. An agent that stops to ask a question
 // exits cleanly with nothing to show, and pushing that would open a pull
 // request describing no change.

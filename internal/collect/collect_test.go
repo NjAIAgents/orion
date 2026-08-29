@@ -284,6 +284,45 @@ func TestNoPullRequestReleasesFromCIWaitInsteadOfPollingForever(t *testing.T) {
 	}
 }
 
+// When the branch searched was a RECORDED one, not a guess, the message must
+// not say "guess" -- that caveat is only true for the convention fallback,
+// and claiming it for a name the run actually used would send a human
+// looking for a suffix that was never applied.
+func TestNoPullRequestWithARecordedBranchDoesNotClaimItWasGuessed(t *testing.T) {
+	home, _ := bound(t)
+	entry, err := registry.Lookup(home, "FCIA-6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Open(entry.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.RecordBranch(ws, "FCIA-6", "orion/fcia-6"); err != nil {
+		t.Fatal(err)
+	}
+
+	jira := newTracker()
+	res, out, _ := run(t, home, jira,
+		PR{Verdict: VerdictUnknown, Detail: "no pull requests found"}, Options{})
+
+	if res[0].Verdict != VerdictUnknown || !res[0].Changed {
+		t.Fatalf("unexpected result: %+v", res[0])
+	}
+	if got := jira.removed["FCIA-6"]; len(got) != 1 || got[0] != tracker.LabelCIWait {
+		t.Errorf("must clear ci-wait so nothing polls it again: %v", got)
+	}
+	if got := jira.added["FCIA-6"]; len(got) != 1 || got[0] != tracker.LabelFailed {
+		t.Errorf("must mark it for a human rather than leave it silently stuck: %v", got)
+	}
+	if strings.Contains(out, "guess") {
+		t.Errorf("a recorded branch is not a guess, but the output claims it is: %s", out)
+	}
+	if !strings.Contains(out, "orion/fcia-6") {
+		t.Errorf("must still name the branch that was searched: %s", out)
+	}
+}
+
 // Closed without merging is a human decision, not a fault to retry. Release
 // it from the queue and leave the status for a person.
 func TestAClosedPullRequestIsReleasedNotFailed(t *testing.T) {
