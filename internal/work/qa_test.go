@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -199,6 +200,110 @@ func TestQAFindingsGoToTheDeveloperAndAreReVerified(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "A person needs to look") {
 		t.Error("a cleared finding escalated to a person")
+	}
+}
+
+// OR-167: on the common path -- QA finds something, the implementer fixes it
+// in round one, QA goes clean -- the full findings text still has to reach
+// somewhere durable. Before this, the only copy of the full text lived in
+// memory and reached storage solely via qaEscalate, which never runs when the
+// branch clears within the round ceiling.
+func TestQAFullFindingsReachTheEventLogEvenWhenQAGoesClean(t *testing.T) {
+	home := project(t, qaCfg)
+	f := &qaFake{t: t, qaReplies: []string{
+		"Verification done. Summary:\nThe rounding case is wrong: expected 2 decimal places, got 4.",
+		"QA CLEAN",
+	}}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: &fakeJira{}, Supervise: f.run,
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+	if res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("outcome = %q", res[0].Outcome)
+	}
+
+	ws, err := workspace.Open(mustWorkspaceID(t, home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	evs, err := events.Read(events.Path(ws.Dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var qaMsgs []string
+	for _, e := range evs {
+		if e.Kind == events.KindQA {
+			qaMsgs = append(qaMsgs, e.Msg)
+		}
+	}
+	joined := strings.Join(qaMsgs, "\n---\n")
+	if !strings.Contains(joined, "Verification done. Summary:") ||
+		!strings.Contains(joined, "expected 2 decimal places, got 4") {
+		t.Errorf("the event log did not carry the full findings text:\n%s", joined)
+	}
+}
+
+// OR-167: the console line is the first SUBSTANTIVE line, not the literal
+// first line -- a header like "Verification done. Summary:" must not be the
+// one line the operator sees, and when the console does drop content it must
+// say where the rest is.
+func TestQAConsoleSkipsTheHeaderAndPointsAtTheEventLog(t *testing.T) {
+	home := project(t, qaCfg)
+	f := &qaFake{t: t, qaReplies: []string{
+		"Verification done. Summary:\nThe rounding case is wrong: expected 2 decimal places, got 4.",
+		"QA CLEAN",
+	}}
+	var out strings.Builder
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: &fakeJira{}, Supervise: f.run,
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	printed := out.String()
+	if strings.Contains(printed, "findings: Verification done. Summary:") {
+		t.Errorf("the console line was the header, not the content:\n%s", printed)
+	}
+	if !strings.Contains(printed, "The rounding case is wrong") {
+		t.Errorf("the console did not show the substantive line:\n%s", printed)
+	}
+	if !strings.Contains(printed, "full text in the event log") {
+		t.Errorf("the console did not say where the full text is:\n%s", printed)
+	}
+}
+
+// OR-167: the ticket gets the findings every round, not only when the round
+// ceiling escalates to a person -- otherwise the common case (fixed in round
+// one) leaves nothing on the ticket for someone reading it weeks later.
+func TestQAPostsFindingsToTheTicketEveryRound(t *testing.T) {
+	home := project(t, qaCfg)
+	j := &fakeJira{}
+	f := &qaFake{t: t, qaReplies: []string{
+		"The rounding case is wrong: expected 2 decimal places, got 4.",
+		"QA CLEAN",
+	}}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j, Supervise: f.run,
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+	if res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("outcome = %q", res[0].Outcome)
+	}
+
+	comments := strings.Join(j.comments, "\n")
+	if !strings.Contains(comments, "expected 2 decimal places, got 4") {
+		t.Errorf("round one's findings were never posted to the ticket, though the branch never hit "+
+			"the round ceiling:\n%s", comments)
 	}
 }
 
