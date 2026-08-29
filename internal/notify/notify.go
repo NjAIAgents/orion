@@ -102,7 +102,7 @@ func Send(e Event) []error {
 	// line, as it happened.
 	fmt.Fprintf(Out, "[orion:%s] %s\n", e.Level, Plain(e.Title))
 
-	if err := desktop(e); err != nil {
+	if err := desktopSend(e); err != nil {
 		errs = append(errs, fmt.Errorf("desktop notify: %w", err))
 	}
 	if e.Channel != "" {
@@ -163,9 +163,25 @@ func SetSlackSender(f func(channel, text string, level Level) error) func(channe
 	return prev
 }
 
-// desktop raises a native notification. Silently a no-op where no
+// desktopSend raises a native notification. Silently a no-op where no
 // mechanism exists, since a missing notifier is not an error worth
-// reporting on every event.
+// reporting on every event. A var, like slackSend, so a test can replace it:
+// the real desktop() shells out to whatever notifier the host has, and on a
+// headless CI runner that binary can exist yet fail to actually deliver
+// (no display session), which is a real error a production caller should
+// see -- but not one a test asserting an exact error count should have to
+// tolerate.
+var desktopSend = desktop
+
+// SetDesktopSender replaces the desktop delivery function. Used by tests.
+func SetDesktopSender(f func(Event) error) func(Event) error {
+	prev := desktopSend
+	if f != nil {
+		desktopSend = f
+	}
+	return prev
+}
+
 // webhookURL is supplied by the CLI at startup; the fallback keeps the
 // environment working when nothing set a resolver.
 var webhookURL = func() string { return strings.TrimSpace(os.Getenv("ORION_NOTIFY_WEBHOOK")) }
