@@ -6,6 +6,168 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.8.0
+
+### Added
+
+- `vcs.require_up_to_date` in `orion.json` controls whether `orion protect` requires branches to be up to date before merging (GitHub's `strict` check). Defaults to `true`, matching prior behaviour. `orion protect` now states the value it is applying and where it came from, and `--dry-run` reports any mismatch against what the branch currently has on GitHub instead of silently overwriting it.
+
+- A `Fan` primitive in `internal/supervisor` runs N subagent runs concurrently
+  instead of one after another, capped at a configurable
+  `limits.max_concurrent_children` (default 2). One child failing does not
+  discard the others: every child runs to completion and its result comes
+  back regardless of what its siblings did. Each child keeps its own actor,
+  model and ticket key, so the cost report still shows one row per child, and
+  Fan states the fleet size, cap and models before any child starts. This is
+  concurrency inside a single run only -- more than one ticket in flight at
+  once is a separate, larger change (OR-181).
+
+- `orion explore "<question>"` answers one narrow question about the repository
+  in a subagent's own context and cites the files the answer came from, so an
+  agent that needs to know where something is defined no longer greps and reads
+  until it finds out with every file it opened staying in its context, re-sent
+  on every remaining turn of the run. The implementer is told about it in its
+  prompt. The explore run is its own actor on its own pinned cheap model,
+  attributed to the same ticket, so its spend is a separate row in that ticket's
+  cost report rather than hidden inside the asking run's total. The answer and
+  its cited paths both go to the event log, so what a run was told can be
+  checked afterwards. An answer citing no file is reported as unproven, and an
+  explore that fails for any reason sends the caller back to reading the
+  repository itself — it can only ever save reading, never prevent it (OR-183).
+
+- `orion watch` now works several tickets at once, capped by
+  `limits.max_concurrent_tickets` in `orion.json` — 2 by default, 5 is a hard
+  ceiling and a larger number is clamped rather than honoured. A tick
+  reconciles, then tops the running set back up to the cap, instead of
+  starting one ticket and blocking until it finishes. The cap and where it was
+  read from are printed in the startup banner. Set it to 1 for the previous
+  strictly-sequential behaviour.
+
+- `internal/conflict` and `orion conflict verify` check a merge resolution for
+  changes that were silently dropped. Beyond conflict markers and merge-tool
+  litter, it compares the resolved tree against BOTH parents: a file that both
+  sides changed and which came out byte-identical to one of them does not
+  contain the other side's edit. That is occasionally correct, so it is
+  reported with the specific claim to check rather than treated as a failure.
+- The reason this is not "run the tests and trust them": on 2026-08-29 a
+  hand-resolved three-way conflict built, vetted and passed the package's own
+  tests while having reverted one ticket's actor routing and violated a
+  property another had just introduced. It was caught only because one of the
+  conflicting tickets happened to have added a test that failed. A green
+  build is the floor, not the proof, because it cannot distinguish a line
+  deliberately removed from one that was lost. This is the guardrail half of
+  OR-186; dispatching the devops agent to resolve conflicts in parallel, and
+  the bounded Slack question when the diff cannot decide, are still to come.
+  The guardrail is usable on its own, because whoever resolves a conflict
+  today needs exactly the check the agent will need later.
+
+- `orion release status <version>` answers "what is in this release, and does
+  the changelog agree" before the tag exists rather than after. It lists the
+  milestone's tickets split into done and not done, and reconciles them
+  against the `.changelog.d/` fragments in BOTH directions: a done ticket with
+  no fragment is a change that would ship unmentioned, and a fragment with no
+  ticket in the version is a note for something that is not in this release.
+  It also lists open tickets carrying no `fixVersion` at all, which is the gap
+  the convention exists to close.
+- Mismatches are reported, never resolved: the only two ways to "fix" one
+  automatically are to invent a release note or delete one, and both are worse
+  than telling a person. Exit is non-zero on a mismatch so it can gate a
+  release, but an INCOMPLETE milestone is not a failure -- the correct
+  behaviour there is to ship what is done and roll the rest forward, because
+  one stuck ticket must never hold a tag hostage.
+
+- `orion release verify <version>` runs the five promotion checks: the
+  milestone is complete, fragments and the version reconcile, the integration
+  branch is green ON THE EXACT COMMIT being promoted, no open pull request is
+  about to land, and every commit in the range is attributable to a ticket in
+  the version. Blocking and warning are split deliberately -- a gate that
+  refuses for everything is bypassed within two releases, and one that warns
+  about everything is not a gate. Unfinished tickets and hand-pushed commits
+  warn; a shipped change with no release note, a build that failed or ran on a
+  different commit, and a pull request one click from landing all block.
+- "Green on the exact SHA" is two separate findings, because they mean
+  different things: a failing build is a broken tree, while a build for a
+  different commit means the verdict being trusted was produced by code other
+  than the code about to ship.
+- The decision is a pure function over gathered inputs, so the blocking and
+  warning split is asserted in tests without needing a git repository, a Jira
+  and a forge. This is the verification half of OR-188; opening the promotion
+  pull request, asking in Slack at its own level, and merging, tagging and
+  publishing on approval are still to come.
+
+- `orion release create <version>` and `orion release list` manage Jira
+  versions, which Orion uses as release milestones. Creating one is
+  idempotent: a version that already exists is reported rather than erroring,
+  because a command that fails on re-run cannot be called from automation,
+  which is the whole reason it exists -- an automated promotion has to create
+  the next milestone unattended. `internal/tracker` gains `CreateVersion`,
+  `ListVersions`, `FindVersion` and `MarkReleased` over the same REST client
+  that already provisions projects. The Jira MCP cannot create a version,
+  which is why this had been a manual step in the Jira UI; that is a limit of
+  the MCP rather than of Jira.
+- `release` is a noun with subcommands and never acts on its own: a bare
+  `orion release` prints its usage and exits non-zero. In this repository
+  "release" already means cutting the binary -- a tag, the Homebrew tap and
+  the Scoop bucket -- and the failure modes are not symmetrical, so the
+  dangerous meaning can only be reached by naming it explicitly.
+
+### Changed
+
+- The budget checkpoint is now admission control rather than a pre-flight
+  check. A run is admitted only if the budget covers it *including* what is
+  currently running: its expected cost — the mean of the runs actually
+  recorded in the window, never an invented figure — is reserved on dispatch
+  and released on completion. Before this, several concurrent runs all read
+  the same spend, all passed the same check, and all spent through it, so a
+  95% stop was crossed by the runs already in flight.
+- Git against a project's shared sandbox clone is serialised. Worktrees
+  isolate files and share the object store, refs and packed-refs, so
+  concurrent job starts, worktree removals and auto-rebases were writing to
+  one `.git` — which handed two jobs the same branch name and failed on ref
+  and config locks.
+- A rate limit is decided once for the whole watcher instead of per run: the
+  first run to report an exhausted window pauses *dispatch* until the reset
+  (capped at 30 minutes, as before), while everything already running is left
+  to finish.
+- When more than one ticket starts together, they are chosen to spread across
+  areas — a ticket's Jira component, or failing that its project — rather than
+  taken strictly top-N by priority. Concurrency does not cause merge
+  conflicts; starting N tickets that all edit the same files does. Rank still
+  decides what gets worked, and with a cap of 1 the order is unchanged.
+
+### Fixed
+
+- The develop-to-main promotion pull request no longer rebuilds a tree the
+  push build already tested. `push: [develop]` and a bare `pull_request:`
+  both matched the promotion, whose head branch is always develop, so the
+  full three-OS matrix ran twice on the same SHA; excluding `base=main` from
+  the pull_request trigger drops the duplicate and nothing else, since
+  feature pull requests target develop and still build. Fixed in both this
+  repository's workflow and the one `orion init` scaffolds -- the scaffold is
+  where it costs money, because a private repository bills macOS at 10x and
+  Windows at 2x, roughly 61 billable minutes per release. Corrects the record
+  from OR-172, which attributed the duplication to the concurrency group:
+  grouping decides which runs cancel each other and can never merge two
+  events into one run.
+
+- The in-flight check counts claimed tickets instead of answering yes/no, so a
+  ticket claimed by another watcher consumes one slot rather than holding the
+  whole queue.
+
+- Quota exhaustion is no longer detected from the agent's own words. The
+  patterns were matched against combined stdout and stderr, and stdout is
+  where the agent's prose lives, so a run working a ticket *about* rate
+  limits paused itself for a limit that did not exist and then backed off
+  again with the delay doubled. Detection now reads the error channel only:
+  bare stderr lines and structured NDJSON entries that are not assistant
+  messages or tool results. Tightening the patterns was rejected as a fix,
+  because the next false positive is a ticket about HTTP status codes or a
+  test for this very file -- the channel was wrong, not the wording.
+- A quota notification's title no longer claims a reset the provider never
+  stated. `Verdict.Parsed` already kept the body honest, but the title read
+  "waiting Nm for quota reset" either way, and the title is what a Slack
+  notification and a mobile push actually show.
+
 ## v0.7.10
 
 The parallelism release. Two of these are the same bug in different clothes:
