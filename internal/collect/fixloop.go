@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/config"
@@ -127,6 +128,15 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 		return false, res
 	}
 
+	// The same summary the run just stated its root cause in (OR-157) is
+	// what proposeLesson reads back at merge time -- attached to the attempt
+	// now because this is the only place it is ever known. Best-effort: a
+	// lesson field failing to write must never turn a pushed fix into a
+	// reported failure.
+	if err := recordRootCause(ws.Dir, key, summary); err != nil {
+		ui.Warn(w, "could not record the fix's root cause: %v", err)
+	}
+
 	// The one-line summary is the point of OR-129: without it this event and
 	// the "run complete" line above it are both pure bookkeeping -- turns,
 	// tokens, cost -- and say nothing about what was actually wrong or what
@@ -168,9 +178,20 @@ func proposeLesson(key string, pr PR, state FixState, source string,
 	if len(state.Attempts) == 0 {
 		return // it merged without ever going red; there is no mistake to learn from
 	}
-	failure := firstLine(state.Attempts[0].Detail)
-	if failure == "" {
-		return // nothing grounded to say about it
+
+	// The root cause comes from the LAST attempt: the one whose fix actually
+	// stuck, since the merge proves it. Keying on it -- not the CI check name
+	// -- is the point of OR-177: a repo with one job matrix produces the same
+	// check name for every failure it will ever have, so that fallback
+	// collapses a gofmt violation, a broken build and a failing test into one
+	// lesson that only ever says "CI sometimes fails." An attempt with no
+	// stated root cause -- an older run, or a fix loop that gave up before
+	// ever stating one -- has nothing transferable to propose, so it
+	// proposes NOTHING rather than falling back to the check name. A store of
+	// vacuous lessons is worse than an empty one: a reviewer stops reading.
+	rootCause := normalizeRootCause(state.Attempts[len(state.Attempts)-1].RootCause)
+	if rootCause == "" {
+		return
 	}
 	// The same identifier the session hook scopes lessons by, so a lesson
 	// recorded here is one the next session in that repo actually reads.
@@ -180,14 +201,14 @@ func proposeLesson(key string, pr PR, state FixState, source string,
 	}
 	last := state.Attempts[len(state.Attempts)-1].At
 
-	// The text carries only what recurs. Attempt counts, ticket keys and PR
-	// urls differ between two occurrences of the same mistake, so putting
-	// them in the text would give every sighting its own signature and the
-	// second strike would never land. They go in the evidence instead, which
-	// is per-sighting and is what a reviewer reads to judge the proposal.
-	text := fmt.Sprintf("CI failed with %q, and the branch needed a fix before it could merge.", failure)
-	evidence := fmt.Sprintf("%s in %s on %s: %d fix attempt(s), merged %s",
-		key, project, last.Format("2006-01-02"), state.Count(), pr.URL)
+	// The text carries only the normalized root cause -- the mechanism, not
+	// the specifics of this one sighting. The CI check name, ticket key,
+	// attempt count and PR url differ between two occurrences of the same
+	// mistake, so they go in the evidence instead, which is per-sighting and
+	// is what a reviewer reads to judge the proposal.
+	text := rootCause
+	evidence := fmt.Sprintf("%s in %s on %s: CI failed with %q, %d fix attempt(s), merged %s",
+		key, project, last.Format("2006-01-02"), state.Attempts[0].Detail, state.Count(), pr.URL)
 
 	store := lessons.New(workspace.Home())
 	c, err := store.Observe(lessons.Proposal{
@@ -223,6 +244,30 @@ func proposeLesson(key string, pr PR, state FixState, source string,
 			"```\norion lessons approve %s\norion lessons reject %s\n```",
 			c.Strikes, quote(text), quote(strings.Join(c.Evidence, "\n")), c.Signature, c.Signature),
 	})
+}
+
+var (
+	// A branch name of the form "fix/OR-114-gofmt", matched before the file
+	// path pattern below since it would otherwise be swallowed as one.
+	rootCauseBranchRe = regexp.MustCompile(`\b[\w][\w-]*/[A-Z][A-Z0-9]{1,9}-\d+[\w-]*\b`)
+	// A path or filename with an extension, e.g. "internal/work/work_test.go"
+	// or "scripts/test.sh". Requiring the extension keeps ordinary prose like
+	// "before build/test" intact -- it has no dot, so it is not a path.
+	rootCauseFileRe = regexp.MustCompile(`\b[\w][\w./-]*\.[a-zA-Z]{1,6}\b`)
+	rootCauseKeyRe  = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-\d+\b`)
+)
+
+// normalizeRootCause strips what is unique to ONE sighting -- a file path, a
+// branch name, a ticket key -- so two occurrences of the same underlying
+// mistake collapse to the same lesson even when they hit different files on
+// different tickets. What survives is the mechanism: why the code produced
+// the failure, which is the part a future session can actually act on.
+func normalizeRootCause(s string) string {
+	s = rootCauseBranchRe.ReplaceAllString(s, "a branch")
+	s = rootCauseFileRe.ReplaceAllString(s, "a file")
+	s = rootCauseKeyRe.ReplaceAllString(s, "")
+	s = strings.Join(strings.Fields(s), " ")
+	return strings.Trim(s, " ,-")
 }
 
 // giveUp records why the loop stopped, without marking the ticket.
