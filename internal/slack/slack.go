@@ -417,11 +417,75 @@ func (c *Client) LookupUserByEmail(email string) (string, error) {
 	return res.User.ID, nil
 }
 
-// Post sends a message to a channel id.
+// Post sends a message to a channel id, with no level marker or colour.
+// For a message that carries a notify.Level, use PostLevel: an unmarked
+// message and an approval request must not render identically.
 func (c *Client) Post(channelID, text string) error {
 	return c.call("chat.postMessage", map[string]any{
 		"channel": channelID,
 		"text":    text,
+	}, nil)
+}
+
+// Level distinguishes an approval request from a status update, so the two
+// stop rendering identically in Slack.
+//
+// Duplicated from notify.Level rather than imported: notify already imports
+// slack, and Go refuses the cycle back. The values must stay in sync with
+// notify.Info / notify.Warning / notify.Blocked.
+type Level string
+
+const (
+	LevelInfo    Level = "info"
+	LevelWarning Level = "warning"
+	LevelBlocked Level = "blocked"
+)
+
+// levelMarker leads the message with WORDS, never an emoji alone. A mobile
+// push notification shows Slack's text field and nothing else -- no
+// attachment, no colour bar -- so whatever carries the meaning has to be
+// inside that field, at the very start where a truncated push still shows
+// it. The emoji is there too, but only to reinforce, the same rule the
+// terminal's own "[orion:blocked]" marker already follows.
+func levelMarker(l Level) string {
+	switch l {
+	case LevelBlocked:
+		return "🔴 Action needed — "
+	case LevelWarning:
+		return "⚠️ Heads up — "
+	default:
+		return ""
+	}
+}
+
+// levelColor is Slack's attachment colour bar -- reinforcement for a
+// desktop client, and only reinforcement: it never reaches a mobile push,
+// so a message that relied on it alone would look identical to every other
+// message on the one surface that matters most.
+func levelColor(l Level) string {
+	switch l {
+	case LevelBlocked:
+		return "#e01e5a"
+	case LevelWarning:
+		return "#ecb22e"
+	default:
+		return "#2eb67d"
+	}
+}
+
+// PostLevel sends a message marked for its level. The marker leads TEXT,
+// so an approval request and a status update differ from the first word
+// rather than only in colour; the attachment colour bar is added purely as
+// desktop reinforcement.
+func (c *Client) PostLevel(channelID string, level Level, text string) error {
+	marked := levelMarker(level) + text
+	return c.call("chat.postMessage", map[string]any{
+		"channel": channelID,
+		"text":    marked,
+		"attachments": []map[string]any{{
+			"color":    levelColor(level),
+			"fallback": marked,
+		}},
 	}, nil)
 }
 
