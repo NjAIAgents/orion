@@ -125,14 +125,6 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string, log *events.Lo
 			"Re-queue the ticket to start again", branch)
 	}
 
-	// The full log, not the summary. "test (failure)" names which check went
-	// red and nothing about why; an agent handed only that has to re-run the
-	// suite locally to discover what a log already says.
-	detail := failure
-	if full := failingLog(dir, branch); strings.TrimSpace(full) != "" {
-		detail = full
-	}
-
 	before, err := headOf(dir)
 	if err != nil {
 		return false, "", nil, err
@@ -141,6 +133,19 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string, log *events.Lo
 	cfg := config.Load(ws.RepoDir())
 	jobWS := *ws
 	jobWS.RepoPath = dir
+
+	// The full log, not the summary: "test (failure)" names which check went
+	// red and nothing about why, and an agent handed only that has to re-run
+	// the suite locally to discover what a log already says.
+	//
+	// But the log is TRIAGED before it is handed over, not embedded whole. A
+	// raw CI log runs to thousands of lines, and everything in the fix run's
+	// prompt rides along on every one of its turns; a subagent reads it once
+	// in its own context and returns only its answer (OR-143).
+	detail := failure
+	if full := failingLog(dir, branch); strings.TrimSpace(full) != "" {
+		detail = triageLog(&jobWS, key, branch, full)
+	}
 
 	// Caught live, off the same activity stream the console line below is
 	// built from -- not guessed at afterwards from the agent's prose. Shield
@@ -216,6 +221,63 @@ func matchedRule(patterns []string, path string) string {
 // mid-sentence -- an agent's summary is normally front-loaded ("Fixed the
 // off-by-one in X"), so the first line is usually the whole answer and the
 // rest is the reasoning that got there.
+// Bounds for the log-triage subagent, deliberately far tighter than the fix
+// run's own cfg.Limits: this is a mechanical read-and-report, not the work of
+// fixing anything, and a run that gets stuck hunting has stopped being cheap.
+const (
+	triageMaxMinutes = 5
+	triageMaxTurns   = 10
+)
+
+// triageOptions is what the log-triage subagent runs with, separated from
+// triageLog so the actor, model and prompt it is configured with can be
+// asserted without spawning a process -- the same reason fixOptions is split
+// from fixRun.
+func triageOptions(key, branch, log string) supervisor.Options {
+	return supervisor.Options{
+		Stage:      "log-triage",
+		Prompt:     supervisor.LogTriagePrompt(branch, log),
+		MaxMinutes: triageMaxMinutes,
+		MaxTurns:   triageMaxTurns,
+		// Its own actor and its own model, pinned cheap rather than inherited
+		// from the fix run: this is a mechanical read, not the implementer's
+		// judgement, and pinning it is what makes the split a cost win instead
+		// of a second expensive run. Attributed to the same ticket key so its
+		// spend shows up as its own row in that ticket's cost report rather
+		// than hiding inside the fix run's total (OR-143).
+		Actor: events.ActorLogTriage, Key: key,
+		Model:  actors.Model(events.ActorLogTriage),
+		Effort: actors.Effort(events.ActorLogTriage),
+	}
+}
+
+// triageLog reduces a failing job's raw log to a short report of what broke
+// and why, through a subagent that reads the log in its own context and
+// returns only its answer -- the log itself never reaches the fix run.
+//
+// Falls back to the raw log on any failure of the subagent itself. The fix run
+// still needs something to react to, and a raw log an agent has to work harder
+// to read loses less than a triage step that silently produced nothing.
+//
+// The report is written to the event log for the same reason OR-129 made the
+// fix loop record its own closing summary: what a subagent returns is all the
+// parent session ever sees of it, so an answer that is not written down is
+// gone the moment this function returns.
+func triageLog(jobWS *workspace.Workspace, key, branch, rawLog string) string {
+	res, err := supervisor.Run(jobWS, triageOptions(key, branch, rawLog))
+	if err != nil || res == nil || strings.TrimSpace(res.Final) == "" {
+		return rawLog
+	}
+	report := strings.TrimSpace(res.Final)
+
+	if l, openErr := events.Open(events.Path(jobWS.Dir), events.Event{}); openErr == nil {
+		defer func() { _ = l.Close() }()
+		l.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorLogTriage, Key: key,
+			Msg: "triaged the failing log: " + oneLine(report)})
+	}
+	return report
+}
+
 func oneLine(s string) string {
 	for _, line := range strings.Split(s, "\n") {
 		if t := strings.TrimSpace(line); t != "" {

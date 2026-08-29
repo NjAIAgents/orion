@@ -265,3 +265,28 @@ func TestNoDefaultNameAppearsOutsideTheRegistry(t *testing.T) {
 		t.Fatalf("walk: %v", err)
 	}
 }
+
+// The log-triage actor exists so a failing CI log is read once, cheaply, in
+// its own context instead of riding along on every turn of the fix run
+// (OR-143). Two properties make that a saving rather than a second expensive
+// run: it is in the roster at all, and its model is pinned cheap.
+func TestLogTriageIsInTheRosterAndPinnedCheap(t *testing.T) {
+	a := Get(events.ActorLogTriage)
+	if a.Name == "" || a.Designation == "" {
+		t.Errorf("log-triage renders as %q; every acting agent needs a name and a job title",
+			a.Display())
+	}
+	if a.Model != "haiku" {
+		t.Errorf("log-triage model = %q, want haiku: it runs on every red build, so it is "+
+			"one of the two actors whose model is a real cost decision", a.Model)
+	}
+	if err := Configure(map[string]config.Agent{
+		events.ActorLogTriage: {Model: "sonnet"},
+	}); err != nil {
+		t.Fatalf("log-triage must be configurable like any other agent: %v", err)
+	}
+	if got := Model(events.ActorLogTriage); got != "sonnet" {
+		t.Errorf("after Configure, model = %q, want sonnet", got)
+	}
+	t.Cleanup(func() { _ = Configure(nil) })
+}
