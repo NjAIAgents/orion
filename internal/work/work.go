@@ -495,7 +495,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		Effort:     actors.Effort(actorID),
 		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
-		OnActivity: activityLogger(log, w, key, actorID),
+		OnActivity: ActivityLogger(log, w, key, actorID),
 		Actor:      actorID, Key: key,
 	})
 	code := -1
@@ -605,7 +605,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			Effort:     actors.Effort(actorID),
 			MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 			MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
-			OnActivity: activityLogger(log, w, key, actorID),
+			OnActivity: ActivityLogger(log, w, key, actorID),
 			Actor:      actorID, Key: key,
 		})
 		if runErr != nil || runRes == nil || runRes.ExitCode != 0 {

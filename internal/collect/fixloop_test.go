@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/lessons"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -21,7 +22,7 @@ type fixSpy struct {
 	sawAll  []string
 }
 
-func (f *fixSpy) fix(_ *workspace.Workspace, _, _, failure string) (bool, string, *PolicyDenial, error) {
+func (f *fixSpy) fix(_ *workspace.Workspace, _, _, failure string, _ *events.Log) (bool, string, *PolicyDenial, error) {
 	f.calls++
 	f.sawAll = append(f.sawAll, failure)
 	return f.pushed, f.summary, f.denied, f.err
