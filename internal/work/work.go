@@ -459,6 +459,14 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if err := workspace.RecordBranch(ws, key, job.Branch); err != nil {
 		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not record the branch for collect: %v", err)
 	}
+	// Registered here, before anything can run in the worktree, so it fires
+	// however this run ends -- pushed, blocked, failed, or killed. A tripped
+	// breaker stops the agent from looping and, by the time it fires, from
+	// acting at all, so the tidy-up cannot be the agent's job (OR-194).
+	defer func() {
+		revertTripResidue(job.Path, job.Branch, key, issue.Summary, issue.URL, cfg, ws, log, w)
+	}()
+
 	log.Emitf(events.KindBranch, events.ActorOrion, "branch %s from %s", job.Branch, cfg.VCS.WorkBranch)
 	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "branch %s", job.Branch)
 	fmt.Fprintf(w, "          %s\n", ui.Dim(w, job.Path))

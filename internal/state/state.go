@@ -42,6 +42,15 @@ type Session struct {
 	// after a block report the original cause rather than a new one.
 	Tripped       string `json:"tripped,omitempty"`
 	TrippedDetail string `json:"tripped_detail,omitempty"`
+	// CleanupCalls counts the post-trip cleanup allowance already spent.
+	//
+	// A trip must stop the agent from LOOPING without also stopping it from
+	// leaving the worktree in a reportable state (OR-194), so a tripped
+	// session may still run a short, fixed list of git commands. Counting
+	// them here is what keeps the allowance an exit rather than a reprieve:
+	// it is bounded, it survives the cold start between hook processes, and
+	// spending it never clears Tripped.
+	CleanupCalls int `json:"cleanup_calls,omitempty"`
 }
 
 func newSession(id string) *Session {
@@ -201,6 +210,41 @@ func (s *Store) Reset(id string) error {
 		return nil
 	}
 	return err
+}
+
+// AnyTripped returns the first session in this store whose breaker fired.
+//
+// Deliberately not "look up session X". A run's worktree accumulates one
+// state file per session -- the implementer, QA, each fix round -- and any
+// one of them tripping leaves the same residue behind. OR-192 tripped in
+// QA, not in the implementer's session, so a lookup by the id the caller
+// happens to be holding is exactly the check that would have missed it.
+//
+// An unreadable or corrupt file is skipped rather than reported: the caller
+// uses this to decide whether to tidy up, and failing that decision over
+// one bad file would leave the worktree dirty for a reason unrelated to it.
+func (s *Store) AnyTripped() (*Session, bool) {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, false
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(s.dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var sess Session
+		if json.Unmarshal(b, &sess) != nil {
+			continue
+		}
+		if sess.Tripped != "" {
+			return &sess, true
+		}
+	}
+	return nil, false
 }
 
 // Sweep deletes session files untouched for longer than maxAge, keeping

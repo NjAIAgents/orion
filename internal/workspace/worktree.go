@@ -199,6 +199,38 @@ func Dirty(path string) (bool, string) {
 	return len(lines) > 0, strings.Join(lines, "\n")
 }
 
+// DirtyTracked reports uncommitted changes to TRACKED files, as porcelain
+// lines, and the empty string when there are none.
+//
+// Deliberately narrower than Dirty. Dirty guards a deletion, so it counts
+// anything a person or an agent produced; this answers a different question
+// -- will the next rebase of this branch refuse -- and collect's rebaseOnto
+// passes --untracked-files=no for the stated reason that git leaves
+// untracked files alone across a rebase. Matching that exactly is the point:
+// a check that flagged a stray build artefact would revert a worktree to fix
+// a problem it does not have.
+func DirtyTracked(path string) (string, error) {
+	out, err := git(path, "status", "--porcelain", "--untracked-files=no")
+	if err != nil {
+		return "", fmt.Errorf("reading the state of %s: %w", path, err)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// RevertTracked discards uncommitted changes to tracked files, staged or not.
+//
+// `git checkout -- .` is not enough: a change that was staged and never
+// committed survives it, and a worktree that still fails DirtyTracked after
+// being cleaned is worse than one nobody tried to clean. Commits are
+// untouched -- this resets to HEAD, not past it -- so work the agent DID
+// commit is never what this destroys.
+func RevertTracked(path string) error {
+	if _, err := git(path, "reset", "--hard", "HEAD"); err != nil {
+		return fmt.Errorf("reverting tracked changes in %s: %w", path, err)
+	}
+	return nil
+}
+
 // RemoveWorktree deletes a job checkout, refusing while it holds work that
 // exists nowhere else.
 //

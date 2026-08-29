@@ -160,6 +160,48 @@ func msgAnswered(key string, a advise.Answer, question string) (string, string) 
 	return title, body
 }
 
+// msgTripResidue reports a run that ended with its breaker tripped and its
+// worktree dirty.
+//
+// Sent even though Orion has already fixed it, because the interesting part
+// is not the tidy-up. It is that a run stopped somewhere it could not clean
+// up after itself, and that the branch was one collect tick away from a
+// rebase that would have refused with no explanation attached to it.
+func msgTripResidue(key, summary, kind, detail, branch, dirty, issueURL string, revertErr error) (string, string) {
+	title := fmt.Sprintf("%s tripped the breaker and left the worktree dirty", key)
+	lines := []string{
+		"*" + summary + "*",
+		"",
+		"*What tripped*",
+		quote(kind + " — " + detail),
+		"",
+		"*What it left uncommitted*",
+		quote(dirty),
+		"",
+	}
+	if revertErr != nil {
+		lines = append(lines,
+			"Orion could *not* revert it:",
+			quote(revertErr.Error()),
+			"",
+			"Until the worktree is clean, `orion collect` cannot rebase `"+branch+"`.",
+		)
+	} else {
+		lines = append(lines,
+			"Orion reverted those changes. They were never verified — the session was",
+			"stopped for not making progress — and left in place they would have blocked",
+			"the next rebase of `"+branch+"`. Anything the run committed is untouched.",
+		)
+	}
+	lines = append(lines,
+		"",
+		"• branch  `"+branch+"`",
+		"• ticket  "+link(issueURL, key),
+		"• the trip is described in `plans/BLOCKED.md` on that branch",
+	)
+	return title, strings.Join(lines, "\n")
+}
+
 // link renders Slack's link syntax, degrading to bare text when there is no
 // URL so a message never shows an empty <|label>.
 func link(url, label string) string {
