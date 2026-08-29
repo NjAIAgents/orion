@@ -141,9 +141,17 @@ func defaults() map[string]Actor {
 		// writes tests against them. Sonnet: the specification is written
 		// down, so the work is careful reading rather than design, and opus
 		// would be paying implementer prices to author test files.
-		events.ActorQA:    {ID: events.ActorQA, Name: "Anita", Designation: "QA engineer", Model: "sonnet"},
-		events.ActorCI:    {ID: events.ActorCI, Designation: "ci"},
-		events.ActorHuman: {ID: events.ActorHuman, Designation: "you"},
+		events.ActorQA: {ID: events.ActorQA, Name: "Anita", Designation: "QA engineer", Model: "sonnet"},
+		// Log triage reads a failing CI log and reports what broke, so the fix
+		// run that follows carries that report instead of the raw log riding
+		// along on every turn (OR-143). Haiku: the reading is mechanical --
+		// find the failure in a wall of output -- not the judgement the fix
+		// itself takes, and it runs on every red build, so it is the one
+		// actor for which the model is a real cost decision besides the
+		// developer.
+		events.ActorLogTriage: {ID: events.ActorLogTriage, Name: "Milo", Designation: "log triage", Model: "haiku"},
+		events.ActorCI:        {ID: events.ActorCI, Designation: "ci"},
+		events.ActorHuman:     {ID: events.ActorHuman, Designation: "you"},
 	}
 }
 

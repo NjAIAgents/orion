@@ -77,6 +77,7 @@ const (
 	ActorDevOps      = "devops"    // repairs a red build
 	ActorQA          = "qa"        // derives test cases, writes the tests, runs them
 	ActorDescriber   = "describer" // writes the pull request description
+	ActorLogTriage   = "log-triage" // reads a failing CI log, reports what broke and why
 	ActorHuman       = "human"
 	ActorCI          = "ci"
 )
