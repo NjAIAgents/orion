@@ -248,6 +248,90 @@ func TestNoPathProducesAnAskWithNeitherAnAnswerNorARefusal(t *testing.T) {
 	}
 }
 
+// An escalation is not the end of the story: the first advisor declines and
+// the retry to the other role is the one that actually answers. The ask has
+// to close on THAT answer, not get lost in the handoff between the two calls.
+func TestAnEscalatedAskIsClosedByTheOtherRolesAnswer(t *testing.T) {
+	home := project(t, cfg)
+	var out strings.Builder
+
+	run, _ := advisor("TECHNICAL",
+		`{"verdict":"escalate","reason":"that is a product call"}`,
+		`{"verdict":"derived","decision":"Ship it behind a flag.","grounding":"roadmap.md"}`)
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: &fakeJira{}, Advise: run,
+			Supervise: stopsToAsk(t, "Should this ship now or wait for the redesign?"),
+			Push:      func(string, string) error { return nil },
+			OpenPR:    func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	evs, err := events.Read(findEventLog(t, home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	asks := eventsOfKind(evs, events.KindAsk)
+	answers := eventsOfKind(evs, events.KindAnswer)
+	escalations := eventsOfKind(evs, events.KindEscalate)
+	if len(asks) != 1 || len(answers) != 1 {
+		t.Fatalf("%d ask(s) and %d answer(s): the ask must close on the second role's answer",
+			len(asks), len(answers))
+	}
+	if len(escalations) != 1 {
+		t.Errorf("%d escalate event(s); the handoff between roles should itself be on record", len(escalations))
+	}
+	if answers[0].Msg != "Ship it behind a flag." {
+		t.Errorf("the answer event carries %q, want the second role's decision", answers[0].Msg)
+	}
+	if n := len(eventsOfKind(evs, events.KindRefuse)); n != 0 {
+		t.Errorf("%d refusal(s) for an ask that the second role answered", n)
+	}
+}
+
+// A ticket is not limited to one question. Each ask the implementer raises
+// has to close on ITS OWN answer -- a run that asks five times and only
+// records one closed pair would still pass a single-question test.
+func TestEachAskInARepeatedLoopClosesOnItsOwnAnswer(t *testing.T) {
+	home := project(t, cfg)
+	var out strings.Builder
+
+	run := advise.Runner(func(dir, model, prompt string) (string, error) {
+		if model == advise.ModelRouter {
+			return "TECHNICAL", nil
+		}
+		return `{"verdict":"derived","decision":"Do it this way.","grounding":"spec.md 1"}`, nil
+	})
+
+	runs := 0
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: &fakeJira{}, Advise: run,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				runs++ // never commits, always asks again, until the cap stops it
+				return &supervisor.Result{ExitCode: 0, SessionID: "s",
+					Final: "But what about the other case?"}, nil
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	evs, err := events.Read(findEventLog(t, home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	asks := eventsOfKind(evs, events.KindAsk)
+	answers := eventsOfKind(evs, events.KindAnswer)
+	if len(asks) < 2 {
+		t.Fatalf("only %d ask(s) logged; this case needs more than one to prove pairing "+
+			"across a loop, not just within a single question", len(asks))
+	}
+	if len(answers) != len(asks) {
+		t.Errorf("%d ask(s) but %d answer(s): every ask in the loop must close on its own answer, "+
+			"not just the first or the last", len(asks), len(answers))
+	}
+}
+
 // Routing is a CHOICE BETWEEN ALTERNATIVES with a stated reason -- another
 // actor could have worked this ticket, and the label says why this one did.
 // It was a note, which put it among the ninety-odd other things worth seeing
