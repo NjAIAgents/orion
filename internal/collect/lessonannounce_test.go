@@ -76,7 +76,14 @@ func (s *statusScript) status(string, string) (PR, error) {
 func runEpisode(t *testing.T, home, approver, failure, head string) string {
 	t.Helper()
 	m := &mergeSpy{}
-	f := &fixSpy{pushed: true}
+	// A root cause is what a lesson is keyed on since OR-177, and OR-157
+	// requires a real fix run to state one, so the spy states one too. Both
+	// episodes state the SAME cause: that is what makes them two strikes of
+	// one pattern rather than two unrelated red builds.
+	f := &fixSpy{
+		pushed:  true,
+		summary: "Root cause: an unformatted file fails the gofmt gate, which runs before build",
+	}
 	s := &slackSpy{fakeSlack: fakeSlack{names: map[string]string{"UNAV": approver}}}
 	ss := &statusScript{m: m, url: "https://pr/1", detail: failure, head: head}
 
