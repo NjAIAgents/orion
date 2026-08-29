@@ -412,6 +412,13 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		return fail(res, err)
 	}
 	res.Branch = job.Branch
+	// Record the ACTUAL branch now, while it is known -- AddWorktree may have
+	// suffixed it. Best-effort: a write failure here must not lose an agent
+	// run over bookkeeping, but it does mean collect falls back to guessing
+	// (OR-173).
+	if err := workspace.RecordBranch(ws, key, job.Branch); err != nil {
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not record the branch for collect: %v", err)
+	}
 	log.Emitf(events.KindBranch, events.ActorOrion, "branch %s from %s", job.Branch, cfg.VCS.WorkBranch)
 	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "branch %s", job.Branch)
 	fmt.Fprintf(w, "          %s\n", ui.Dim(w, job.Path))
