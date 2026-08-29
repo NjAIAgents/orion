@@ -131,6 +131,10 @@ func issues(keys ...string) []tracker.Issue {
 
 func runWatch(t *testing.T, s *spy, o Options) string {
 	t.Helper()
+	// ui clips a message to COLUMNS when the environment sets it. A test that
+	// asserts on the text of a line must not pass or fail on the width of the
+	// terminal that happened to run it.
+	t.Setenv("COLUMNS", "")
 	stopping.Store(false)
 	var buf bytes.Buffer
 	o.Out = &buf
@@ -183,6 +187,118 @@ func TestAClaimElsewhereConsumesOneSlotNotAllOfThem(t *testing.T) {
 
 	if got := s.workedKeys(); len(got) != 1 {
 		t.Fatalf("started %v; a cap of 2 with 1 claimed elsewhere leaves room for exactly 1", got)
+	}
+}
+
+// The observed bug, in full (OR-196). On 2026-08-29 the watcher announced a
+// cap of 2, claimed exactly one ticket with five queued, and said nothing
+// about the difference. Nothing was broken: OR-192 was Done but still carried
+// orion-working, so it counted as a live claim and free went 2 - 1 = 1. The
+// reduction was reported only when free reached ZERO, and 1 is not zero, so
+// the run proceeded at half capacity in silence and it took reading the source
+// to find out why.
+//
+// The arithmetic is right; it has to be VISIBLE. And it has to name the
+// holder: "1 claimed elsewhere" is a fact, "OR-192" is something a person can
+// go and look at.
+func TestAClaimElsewhereIsReportedWhenItReducesFreeRatherThanOnlyAtZero(t *testing.T) {
+	s := &spy{
+		busy:   []string{"OR-192"},
+		queued: issues("OR-193", "OR-194", "OR-195", "OR-196", "OR-197"),
+	}
+	out := runWatch(t, s, Options{Once: true, MaxConcurrent: 2})
+
+	if got := s.workedKeys(); len(got) != 1 {
+		t.Fatalf("started %v; a cap of 2 with 1 claimed elsewhere leaves room for 1", got)
+	}
+	for _, want := range []string{
+		"cap 2",
+		"1 claimed elsewhere (OR-192)", // the count AND the holder
+		"1 free",
+		"starting 1 of 5 queued",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the tick never said %q, so half capacity is invisible again:\n%s", want, out)
+		}
+	}
+	// And what to do about it: the label is the lock, and the operator cannot
+	// see it from the terminal.
+	if !strings.Contains(out, tracker.LabelWorking) {
+		t.Errorf("a claim held elsewhere must say how to clear it if it is residue:\n%s", out)
+	}
+}
+
+// The counterpart, and the reason the line is printed on EVERY dispatch rather
+// than only when a slot was lost: "2 free, starting 2" has to be
+// distinguishable from the bug above, and from a short queue below.
+func TestAFullCapacityTickSaysSoRatherThanLookingLikeALostSlot(t *testing.T) {
+	s := &spy{queued: issues("OR-1", "OR-2", "OR-3")}
+	out := runWatch(t, s, Options{Once: true, MaxConcurrent: 2})
+
+	if got := s.workedKeys(); len(got) != 2 {
+		t.Fatalf("started %v, want 2", got)
+	}
+	if !strings.Contains(out, "cap 2, 2 free; starting 2 of 3 queued") {
+		t.Errorf("a full-capacity tick must state the arithmetic too:\n%s", out)
+	}
+	if strings.Contains(out, "claimed elsewhere") {
+		t.Errorf("nothing was claimed elsewhere; the term must not appear:\n%s", out)
+	}
+}
+
+// The third case that used to look identical to the other two: the slot is
+// free and there is simply nothing to put in it.
+func TestAShortQueueIsNamedAsTheReasonOnlyOneStarted(t *testing.T) {
+	s := &spy{queued: issues("OR-1")}
+	out := runWatch(t, s, Options{Once: true, MaxConcurrent: 2})
+
+	if !strings.Contains(out, "cap 2, 2 free; starting 1 of 1 queued") {
+		t.Errorf("a short queue must be distinguishable from a lost slot:\n%s", out)
+	}
+}
+
+// Reaching zero still reports, and still reports the whole sum rather than a
+// bare count -- this is the line the old code got right and said too little in.
+func TestAFullyClaimedCapReportsTheWholeSumAndNotJustACount(t *testing.T) {
+	s := &spy{busy: []string{"OR-192", "OR-193"}, queued: issues("OR-194")}
+	out := runWatch(t, s, Options{Once: true, MaxConcurrent: 2})
+
+	if got := s.workedKeys(); len(got) != 0 {
+		t.Fatalf("started %v with the cap fully claimed elsewhere", got)
+	}
+	for _, want := range []string{"cap 2", "2 claimed elsewhere (OR-192, OR-193)", "0 free"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q from a wedged tick:\n%s", want, out)
+		}
+	}
+}
+
+// Every term that moved the number has to be named, or the operator is back to
+// reconciling a cap against a start count with nothing in between. The gap
+// term matters most: --max-jobs and a rate-limit pause both trim free, and an
+// unexplained shortfall is exactly the defect this line exists to remove.
+func TestSlotsNamesEveryTermThatMovedTheNumber(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   slots
+		want string
+	}{
+		{"nothing taken", slots{cap: 2, free: 2}, "cap 2, 2 free"},
+		{"our own jobs", slots{cap: 2, here: 1, free: 1}, "cap 2, 1 running here, 1 free"},
+		{"a claim elsewhere", slots{cap: 2, elsewhere: []string{"OR-192"}, free: 1},
+			"cap 2, 1 claimed elsewhere (OR-192), 1 free"},
+		{"both", slots{cap: 3, here: 1, elsewhere: []string{"OR-192"}, free: 1},
+			"cap 3, 1 running here, 1 claimed elsewhere (OR-192), 1 free"},
+		{"trimmed by --max-jobs", slots{cap: 2, free: 1},
+			"cap 2, 1 held back by this run's limits, 1 free"},
+		// More claimed than the cap allows. Reporting -1 free would be a
+		// second puzzle rather than an answer.
+		{"over-subscribed", slots{cap: 1, elsewhere: []string{"OR-192", "OR-193"}, free: -1},
+			"cap 1, 2 claimed elsewhere (OR-192, OR-193), 0 free"},
+	} {
+		if got := tc.in.String(); got != tc.want {
+			t.Errorf("%s: slots = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
 
