@@ -76,7 +76,7 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 	// Counted BEFORE the run. A crash mid-fix must not refund the attempt --
 	// a ceiling that resets whenever the process dies is no ceiling at all,
 	// and process death is exactly what a runaway loop tends to produce.
-	state, err := recordAttempt(ws.Dir, key, branch, fp, pr.Detail)
+	state, err := recordAttempt(ws.Dir, key, branch, fp, pr.Detail, pr.Head)
 	if err != nil {
 		ui.Warn(w, "could not record the fix attempt: %v", err)
 		return false, res
@@ -156,8 +156,25 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 	return true, res
 }
 
-// proposeLesson files a lesson candidate when a branch that went red was
-// fixed and then merged.
+// lessonNotice is what recordLesson learned, held until the merge it came
+// from has been fully reported. Printing it eagerly is the OR-178 bug: a
+// retrospective bookkeeping request rendered inside the merge report reads as
+// a live problem WITH that merge.
+type lessonNotice struct {
+	key         string
+	recordErr   error // set means: announce a "could not record" warning, nothing else
+	text        string
+	signature   string
+	strikes     int
+	evidence    []string
+	anchor      string // e.g. "3f38370, 2026-08-29 06:13" -- names the run this is ABOUT
+	channel     string
+	workspaceID string
+}
+
+// recordLesson files a lesson candidate when a branch that went red was
+// fixed and then merged, and returns what should be announced once the merge
+// report has finished -- nil when there is nothing to say yet.
 //
 // This is the shape a lesson wants: a mistake with a correction attached, both
 // observed by the system rather than inferred. CI said what broke, an agent
@@ -165,19 +182,25 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 // decides the lesson is TRUE -- it only says this happened, here, on this date,
 // and files it for a human to accept or throw away.
 //
-// It proposes on every such merge; the two-strike rule inside the store is what
-// decides when a person is actually asked. A build that goes red once is a bad
-// afternoon. The same build going red the same way a second time is a rule
-// nobody has written down yet.
+// It observes on every such merge; the two-strike rule inside the store is
+// what decides when a person is actually asked. A build that goes red once is
+// a bad afternoon. The same build going red the same way a second time is a
+// rule nobody has written down yet.
+//
+// Called BEFORE the fix history is cleared -- this is the only moment both
+// halves (what broke, and that it was fixed) exist together -- so the read
+// cannot be deferred to announcement time the way the printing can.
 //
 // Best-effort throughout. The merge has already happened, and a memory-keeping
 // failure must never turn a successful merge into a reported failure.
-func proposeLesson(key string, pr PR, state FixState, source string,
-	ws *workspace.Workspace, log *events.Log, w io.Writer) {
+func recordLesson(key string, pr PR, state FixState, source string,
+	ws *workspace.Workspace, log *events.Log) *lessonNotice {
 
 	if len(state.Attempts) == 0 {
-		return // it merged without ever going red; there is no mistake to learn from
+		return nil // it merged without ever going red; there is no mistake to learn from
 	}
+
+	first := state.Attempts[0]
 
 	// The root cause comes from the LAST attempt: the one whose fix actually
 	// stuck, since the merge proves it. Keying on it -- not the CI check name
@@ -191,7 +214,7 @@ func proposeLesson(key string, pr PR, state FixState, source string,
 	// vacuous lessons is worse than an empty one: a reviewer stops reading.
 	rootCause := normalizeRootCause(state.Attempts[len(state.Attempts)-1].RootCause)
 	if rootCause == "" {
-		return
+		return nil
 	}
 	// The same identifier the session hook scopes lessons by, so a lesson
 	// recorded here is one the next session in that repo actually reads.
@@ -220,8 +243,7 @@ func proposeLesson(key string, pr PR, state FixState, source string,
 		Stack:    lessons.DetectStack(source),
 	})
 	if err != nil {
-		ui.Warn(w, "could not record a lesson proposal: %v", err)
-		return
+		return &lessonNotice{key: key, recordErr: err}
 	}
 	if log != nil {
 		log.Emitf(events.KindNote, events.ActorOrion,
@@ -231,18 +253,63 @@ func proposeLesson(key string, pr PR, state FixState, source string,
 		// Seen once. Saying nothing is deliberate: asking a person about
 		// every one-off is how an approval prompt becomes noise they dismiss
 		// without reading, which costs more than the lesson is worth.
+		return nil
+	}
+	return &lessonNotice{
+		key: key, text: text, signature: c.Signature, strikes: c.Strikes,
+		evidence: c.Evidence, anchor: anchorFor(first),
+		channel: channelOf(ws), workspaceID: ws.ID,
+	}
+}
+
+// anchorFor names the run a lesson is ABOUT: the commit that failed, and
+// when. Without this, "CI failed ... and the branch needed a fix" is a
+// past-tense clause with nothing marking it retrospective or saying which
+// run it describes -- a reader watching a live merge cannot tell it is not
+// about the merge in front of them (OR-178).
+func anchorFor(a Attempt) string {
+	when := a.At.Local().Format("2006-01-02 15:04")
+	if a.Head == "" {
+		return when
+	}
+	sha := a.Head
+	if len(sha) > 9 {
+		sha = sha[:9]
+	}
+	return fmt.Sprintf("%s, %s", sha, when)
+}
+
+// announceLesson prints and notifies about a lesson recorded earlier by
+// recordLesson. Called strictly AFTER the merge has finished being reported,
+// never between its lines: a request to review a past mistake is not a fact
+// about the merge just announced, and printing it there is what turned a
+// clean merge into something that read as a supervisor shipping over a red
+// build (OR-178).
+//
+// Given its own level -- reused from the informational one already used for
+// the matching Slack message -- rather than WARNING. Nothing is wrong and
+// nothing is at risk; a bookkeeping entry waiting for review is not a live
+// problem, and WARNING is the word this renderer uses for those.
+func announceLesson(n *lessonNotice, w io.Writer, log *events.Log) {
+	if n == nil {
 		return
 	}
-	ui.Warn(w, "a lesson is waiting for your decision: %s\n  approve it with: orion lessons approve %s", text, c.Signature)
+	if n.recordErr != nil {
+		ui.Warn(w, "could not record a lesson proposal: %v", n.recordErr)
+		return
+	}
+	ui.Ok(w, "note", "%s: from an earlier failure on this ticket (%s): %s\n"+
+		"          a lesson is waiting for your decision -- approve it with: orion lessons approve %s",
+		n.key, n.anchor, n.text, n.signature)
 	tell(w, log, notify.Event{
-		Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
+		Channel: n.channel, Level: notify.Info, Workspace: n.workspaceID,
 		Title: "A lesson is waiting for your decision",
 		Body: fmt.Sprintf("*This has now happened %d times, so it may be a pattern worth remembering.*\n\n"+
-			"%s\n\n*Where it was seen*\n%s\n\n"+
+			"From an earlier failure on this ticket (%s):\n%s\n\n*Where it was seen*\n%s\n\n"+
 			"Nothing has been recorded yet. Approve it and it is injected into every future session's "+
 			"CLAUDE.md; reject it and it is never asked about again.\n\n"+
 			"```\norion lessons approve %s\norion lessons reject %s\n```",
-			c.Strikes, quote(text), quote(strings.Join(c.Evidence, "\n")), c.Signature, c.Signature),
+			n.strikes, n.anchor, quote(n.text), quote(strings.Join(n.evidence, "\n")), n.signature, n.signature),
 	})
 }
 

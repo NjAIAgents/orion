@@ -566,8 +566,10 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	// A branch that went red and then merged is a mistake with its own
 	// correction attached, which is the one shape a lesson can be built from
 	// without an agent inferring anything. Read the history BEFORE it is
-	// cleared below -- this is the only moment both halves exist.
-	proposeLesson(key, pr, loadFixes(ws.Dir).States[key], entry.Source, ws, log, w)
+	// cleared below -- this is the only moment both halves exist. The
+	// resulting notice is not printed until after the merge report closes
+	// (OR-178); only the recording happens here.
+	lesson := recordLesson(key, pr, loadFixes(ws.Dir).States[key], entry.Source, ws, log)
 	// Forget the fix history, and the rebase count with it. A ticket reopened
 	// later must not start with either allowance already spent.
 	_ = clearFixes(ws.Dir, key)
@@ -591,6 +593,11 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 		Msg: "merged into the " + role + " " + mergedInto + ": " + pr.URL})
 	res.Changed = true
 	ui.Ok(w, "ok", "%s merged into the %s %s  %s", key, role, mergedInto, pr.URL)
+
+	// Only now, once the merge itself has been fully reported -- not a line
+	// earlier -- so a retrospective lesson can never be mistaken for a fact
+	// about the merge just announced (OR-178).
+	announceLesson(lesson, w, log)
 
 	// What the ticket cost, on the ticket and on the terminal, immediately
 	// after the merge is announced. Here rather than at the end of this
