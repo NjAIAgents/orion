@@ -21,15 +21,23 @@ import (
 
 // Session holds every counter a hook can consult or increment.
 type Session struct {
-	ID              string         `json:"id"`
-	StartedAt       time.Time      `json:"started_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	ToolCalls       int            `json:"tool_calls"`
-	Repeats         map[string]int `json:"repeats"`
-	ConsecFailures  int            `json:"consecutive_failures"`
-	CmdFailures     map[string]int `json:"cmd_failures"`
-	EditsSinceCheck int            `json:"edits_since_verify"`
-	FilesTouched    map[string]int `json:"files_touched"`
+	ID        string    `json:"id"`
+	StartedAt time.Time `json:"started_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	ToolCalls int       `json:"tool_calls"`
+	// Repeats counts identical calls per ACTOR, not per session: keyed first
+	// by actor (the main thread or one specific subagent), then by call
+	// signature. A session run in parallel fan-out has one Session file
+	// shared by the parent and every subagent it spawns (they carry the same
+	// SessionID), so a flat signature->count map would let two agents each
+	// reading the same file twice add up to a false loop trip that neither
+	// individually caused (OR-170). Nesting by actor keeps each one's count
+	// its own.
+	Repeats         map[string]map[string]int `json:"repeats"`
+	ConsecFailures  int                       `json:"consecutive_failures"`
+	CmdFailures     map[string]int            `json:"cmd_failures"`
+	EditsSinceCheck int                       `json:"edits_since_verify"`
+	FilesTouched    map[string]int            `json:"files_touched"`
 	// Tripped records which breaker fired first, so repeated hook fires
 	// after a block report the original cause rather than a new one.
 	Tripped       string `json:"tripped,omitempty"`
@@ -40,7 +48,7 @@ func newSession(id string) *Session {
 	now := time.Now().UTC()
 	return &Session{
 		ID: id, StartedAt: now, UpdatedAt: now,
-		Repeats: map[string]int{}, CmdFailures: map[string]int{}, FilesTouched: map[string]int{},
+		Repeats: map[string]map[string]int{}, CmdFailures: map[string]int{}, FilesTouched: map[string]int{},
 	}
 }
 
@@ -141,7 +149,7 @@ func (s *Store) readUnlocked(id string) *Session {
 		return newSession(sanitize(id))
 	}
 	if sess.Repeats == nil {
-		sess.Repeats = map[string]int{}
+		sess.Repeats = map[string]map[string]int{}
 	}
 	if sess.CmdFailures == nil {
 		sess.CmdFailures = map[string]int{}
