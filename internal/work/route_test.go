@@ -42,6 +42,21 @@ func TestRouteLabelledTicketPicksItsActor(t *testing.T) {
 	}
 }
 
+// A ticket carrying both a documentation and a UI signal must resolve to
+// exactly one actor, not silently pick whichever the map happens to iterate
+// to last. routeRules is a slice specifically so this order is deterministic
+// (see route.go's comment); this pins that the written order -- docs before
+// UI -- is what actually runs, not just what the source says it intends.
+func TestRouteDocumentationTakesPrecedenceOverUI(t *testing.T) {
+	got, why := route(tracker.Issue{Labels: []string{"ui", "documentation"}})
+	if got != events.ActorDocs {
+		t.Fatalf("route(ui+documentation) = %q, want %q (documentation must win)", got, events.ActorDocs)
+	}
+	if why == "" {
+		t.Error("a matched route must still say why")
+	}
+}
+
 // An unlabelled ticket picks the implementer -- and says so, rather than
 // falling through in silence. A silent default is how the frontend actor
 // went unreached for as long as it did.
