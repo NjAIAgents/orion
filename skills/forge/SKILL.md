@@ -54,7 +54,8 @@ Stopping the run is not the same as abandoning the worktree. You keep a
 bounded allowance of `git status`, `git diff`, `git checkout -- <path>`,
 `git restore`, `git add` and `git commit` — use it to revert what should not
 survive and commit what compiles, then hand back. Nothing else is allowed,
-and using it does not clear the trip. See `docs/BREAKERS.md`.
+`--amend` is refused, and using it does not clear the trip. See
+`docs/BREAKERS.md`.
 
 ## Exit
 
