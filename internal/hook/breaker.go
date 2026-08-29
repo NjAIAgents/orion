@@ -119,7 +119,7 @@ func breakerPre(in Input, cfg config.Config, store *state.Store) Decision {
 			"%s"+
 			"  You may still leave the worktree tidy, %d of %d cleanup commands used:\n"+
 			"    git status, git diff, git checkout -- <path>, git restore <path>,\n"+
-			"    git add <path>, git commit\n"+
+			"    git add <path>, git commit (adding a commit; --amend is refused)\n"+
 			"  Revert what should not survive, COMMIT whatever compiles, then stop.\n"+
 			"  Uncommitted work described in a plan file cannot be resumed, and an\n"+
 			"  uncommitted change also blocks the next rebase of this branch.\n"+
@@ -432,9 +432,19 @@ func isBlockedNoteWrite(in Input, cfg config.Config) bool {
 // The metacharacter check is load-bearing, not defensive tidiness. Without
 // it `git status; <anything>` passes a prefix test and the whole allowance
 // becomes a general reprieve with an extra step.
+//
+// So is the rewrite check. A prefix match answers "which command is this",
+// not "what can it do", and `git commit` and `git commit --amend` are the
+// same command doing opposite things: one ADDS a commit, the other replaces
+// the tip. The allowance promises that what the run already committed
+// survives -- it is the only durable record a tripped run leaves -- and
+// --amend is exactly the flag that breaks that promise.
 func isCleanupCommand(cmd string) bool {
 	c := normalizeCmd(cmd)
 	if c == "" || strings.ContainsAny(c, ";&|`<>\n") || strings.Contains(c, "$(") {
+		return false
+	}
+	if rewritesHistory(c) {
 		return false
 	}
 	for _, form := range []string{
@@ -443,6 +453,22 @@ func isCleanupCommand(cmd string) bool {
 		"git add ", "git commit",
 	} {
 		if strings.HasPrefix(c, form) {
+			return true
+		}
+	}
+	return false
+}
+
+// rewritesHistory reports whether a command would replace a commit rather
+// than add one.
+//
+// Compared field by field rather than by substring, so `git commit -m
+// "reverted the --amend attempt"` is not refused for quoting the flag in its
+// message. A bare, unquoted --amend anywhere in the command is an amend
+// whatever else is on the line, which is what this has to catch.
+func rewritesHistory(cmd string) bool {
+	for _, f := range strings.Fields(cmd) {
+		if f == "--amend" {
 			return true
 		}
 	}

@@ -46,6 +46,10 @@ git status    git diff    git checkout -- <path>    git restore <path>
 git add <path>    git commit
 ```
 
+`git commit --amend` is **refused**. It is the same command doing the
+opposite thing: it replaces the tip commit rather than adding one, and what
+the run already committed is the only durable record a tripped run leaves.
+
 Three things this is not:
 
 - **Not Bash for cleanup.** Nothing distinguishes a cleanup edit from another
