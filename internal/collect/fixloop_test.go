@@ -225,6 +225,34 @@ func TestAPolicyDenialNeverSpendsTheCeiling(t *testing.T) {
 	}
 }
 
+// retractAttempt is documented to remove only the single most recent
+// attempt, not the ticket's whole history -- a prior GENUINE attempt (one
+// that actually ran and taught nothing) must still count toward the
+// three-attempt budget even after a later round on the same ticket is
+// denied by policy and retracted. Both existing denial tests start from an
+// empty history, so neither would catch retractAttempt trimming too much.
+func TestAPolicyDenialRetractsOnlyItsOwnAttemptNotPriorHistory(t *testing.T) {
+	home, wsDir := ciRepo(t, 3)
+	f := &fixSpy{pushed: false}
+
+	// Round 1: a genuine attempt that changed nothing and was not denied --
+	// spends the budget, as TestAnAgentThatChangesNothingEndsTheLoop covers.
+	runFix(t, home, f, "failure A", Options{})
+	if got := loadFixes(wsDir).States["FCIA-6"].Count(); got != 1 {
+		t.Fatalf("after a genuine no-change attempt, count = %d, want 1", got)
+	}
+
+	// Round 2: a DIFFERENT failure (so the repeat brake does not intervene),
+	// this time denied by policy.
+	f.denied = &PolicyDenial{Tool: "Edit", Path: "orion.json", Rule: "orion.json"}
+	runFix(t, home, f, "failure B", Options{})
+
+	if got := loadFixes(wsDir).States["FCIA-6"].Count(); got != 1 {
+		t.Fatalf("attempts recorded = %d, want 1 -- retracting the denied round must not "+
+			"also erase the prior genuine attempt", got)
+	}
+}
+
 func TestAFixRunThatErrorsStopsTheLoop(t *testing.T) {
 	home, _ := ciRepo(t, 3)
 	f := &fixSpy{err: errors.New("breaker tripped")}
