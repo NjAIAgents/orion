@@ -138,6 +138,28 @@ func TestEveryJobRefreshesTheSandboxPolicy(t *testing.T) {
 	}
 }
 
+// `orion explore` has to be allowed outright. A supervised run is
+// non-interactive, so a command that needs a permission prompt is a command
+// that is denied -- and an explore that cannot run is an implementer grepping
+// its way through the repository, which is the cost the whole thing removes
+// (OR-183).
+func TestSandboxAllowsTheExploreCommand(t *testing.T) {
+	got := settingsFor(t, testWorkspace(t))
+
+	perms, _ := got["permissions"].(map[string]any)
+	allow, _ := perms["allow"].([]any)
+	found := false
+	for _, a := range allow {
+		if s, ok := a.(string); ok && strings.Contains(s, "explore") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("permissions.allow = %v, missing an explore rule; the subagent would be "+
+			"unreachable from inside the run that is meant to use it", allow)
+	}
+}
+
 // A cache under the repo directory would be rebuilt per ticket -- RepoDir
 // resolves to the per-job worktree while a job runs -- and would dirty a
 // clone that is fast-forwarded between runs.

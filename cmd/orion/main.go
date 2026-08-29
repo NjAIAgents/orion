@@ -100,6 +100,10 @@ GUARDRAILS
   orion reset --session <id>  clear a tripped breaker after human review
   orion fix start|end         mark a bug fix, protecting the failing test
 
+FOR AN AGENT INSIDE A RUN
+  orion explore "<question>"  answer one question about this repository in a
+                              subagent's context, citing the paths (--repo DIR)
+
 DEPENDENCIES
   orion njagents status       where nj-agents is, which commit, how stale
   orion njagents update       fast-forward Orion's own clone, if it has one
@@ -212,6 +216,8 @@ func main() {
 	case "fix":
 		mustArg(os.Args, 2, "orion fix start|end")
 		runFix(os.Args[2])
+	case "explore":
+		runExplore(os.Args[2:])
 	case "njagents", "nj-agents":
 		runNJAgents(os.Args[2:])
 	case "report":

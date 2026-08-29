@@ -67,3 +67,19 @@ func BranchOf(ws *Workspace, key string) (string, bool) {
 	branch, ok := loadBranches(ws.Dir).Branches[key]
 	return branch, ok
 }
+
+// KeyOfBranch is BranchOf backwards: which ticket a checkout belongs to.
+//
+// The question a command run from INSIDE a worktree has to answer. It knows
+// the branch it is standing on and nothing else, and the branch name cannot
+// be reversed by convention -- a retried attempt carries a "-2" suffix that
+// no rule recovers the key from (OR-173). This record is the only thing that
+// knows, so it is read rather than re-derived.
+func KeyOfBranch(ws *Workspace, branch string) (string, bool) {
+	for key, b := range loadBranches(ws.Dir).Branches {
+		if b == branch {
+			return key, true
+		}
+	}
+	return "", false
+}
