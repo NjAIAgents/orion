@@ -18,12 +18,19 @@ import (
 // fix is that SOMETHING reaches the console before anything that can block.
 func TestWatchBannerNamesTheTermsBeforeAnythingElse(t *testing.T) {
 	var buf bytes.Buffer
-	watchBanner(&buf, []string{"OR", "FCIA"}, 90*time.Second, 2, false)
+	watchBanner(&buf, []string{"OR", "FCIA"}, 90*time.Second, 2, 2,
+		"OR's limits.max_concurrent_tickets", false)
 
 	// Which project, which label, what interval: the three things the issue
 	// asks for, because a banner that says only "watching" confirms the
 	// process is alive without confirming it is watching what you meant.
-	for _, want := range []string{"OR, FCIA", tracker.QueueLabelDefault, "1m30s", "2 job(s)"} {
+	// The concurrency cap is on the list too: it decides how much money is in
+	// flight at once and it comes from a file the operator may not have opened,
+	// so discovering it from a bill is the wrong way to learn it (OR-184).
+	for _, want := range []string{
+		"OR, FCIA", tracker.QueueLabelDefault, "1m30s", "2 job(s)",
+		"2 ticket(s)", "max_concurrent_tickets",
+	} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("the startup banner does not mention %q:\n%s", want, buf.String())
 		}
