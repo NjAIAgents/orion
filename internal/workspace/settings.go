@@ -64,6 +64,14 @@ func writeSettings(ws *Workspace) error {
 				"Edit(.github/workflows/**)",
 			},
 			"allow": []string{
+				// Asking Orion a question about the repository has to be
+				// cheaper than reading it, and a permission prompt in a
+				// non-interactive run is not cheaper -- it is a denial. Both
+				// spellings: the agent will type `orion`, and only the
+				// resolved path is guaranteed to be the binary that
+				// provisioned this workspace (OR-183).
+				"Bash(orion explore *)",
+				fmt.Sprintf("Bash(%s explore *)", bin),
 				"Bash(git *)",
 				"Bash(gh pr *)",
 				"Bash(gh repo view*)",

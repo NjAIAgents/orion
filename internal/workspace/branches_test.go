@@ -22,6 +22,27 @@ func TestRecordBranchRoundTrips(t *testing.T) {
 	}
 }
 
+// A command run from inside a worktree knows its branch and nothing else, so
+// it has to get back to the ticket the other way (OR-183). The suffixed
+// branch is the case that matters: no convention recovers FCIA-6 from
+// orion/fcia-6-2, which is why the record is read rather than re-derived.
+func TestKeyOfBranchFindsTheTicketFromASuffixedBranch(t *testing.T) {
+	ws := &Workspace{ID: "t", Dir: t.TempDir()}
+	if err := RecordBranch(ws, "FCIA-6", "orion/fcia-6-2"); err != nil {
+		t.Fatal(err)
+	}
+	key, ok := KeyOfBranch(ws, "orion/fcia-6-2")
+	if !ok || key != "FCIA-6" {
+		t.Fatalf("KeyOfBranch = (%q, %v), want (\"FCIA-6\", true)", key, ok)
+	}
+	// An unrecorded branch must say so rather than return some other
+	// ticket's key: attributing spend to the wrong ticket is worse than
+	// attributing it to none.
+	if key, ok := KeyOfBranch(ws, "orion/fcia-7"); ok || key != "" {
+		t.Fatalf("KeyOfBranch on an unrecorded branch = (%q, %v), want (\"\", false)", key, ok)
+	}
+}
+
 // A retry gets a NEW job and a new, suffixed branch. The record must follow
 // the ticket's current attempt, not whichever attempt recorded first.
 func TestRecordBranchOverwritesAnEarlierAttempt(t *testing.T) {
