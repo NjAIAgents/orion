@@ -144,6 +144,63 @@ exit 0
 	}
 }
 
+// TestFanFailedChildReportsErrForCaller proves the ticket's "report which
+// failed and why" half of the failure policy, not just that the sibling
+// results survive. FanResult carries an Err alongside the Result precisely
+// so a caller can distinguish a clean exit from a failed one without
+// re-deriving it from ExitCode -- a caller that only looks at ExitCode is
+// one missed check away from treating a failure as a pass.
+func TestFanFailedChildReportsErrForCaller(t *testing.T) {
+	fakeClaudeTree(t, `for a in "$@"; do
+  if [ "$a" = "FAIL" ]; then
+    echo "boom" >&2
+    exit 1
+  fi
+done
+echo '`+fanResultJSON+`'
+exit 0
+`)
+
+	w := ws(t, "")
+	jobs := []Options{
+		{Stage: "ok-1", Prompt: "PASS", MaxMinutes: 1, MaxTurns: 1},
+		{Stage: "broken", Prompt: "FAIL", MaxMinutes: 1, MaxTurns: 1},
+	}
+
+	results := Fan(w, jobs)
+	if results[0].Err != nil {
+		t.Errorf("passing child reported an error it did not have: %v", results[0].Err)
+	}
+	if results[1].Err == nil {
+		t.Fatalf("failing child reported no error -- a caller has no way to learn why it failed")
+	}
+	if !strings.Contains(results[1].Err.Error(), "broken") {
+		t.Errorf("failing child's error does not name its own stage, so a caller cannot "+
+			"tell which of several failures this is: %v", results[1].Err)
+	}
+}
+
+// TestFanWithNoJobsReturnsEmptyWithoutBlocking guards the boundary the other
+// tests never exercise: zero jobs. A WaitGroup of zero and a results slice
+// of length zero must return immediately rather than hang -- the kind of
+// off-by-one a fan-out primitive is exactly the place to get wrong.
+func TestFanWithNoJobsReturnsEmptyWithoutBlocking(t *testing.T) {
+	fakeClaudeTree(t, "echo '"+fanResultJSON+"'\nexit 0\n")
+	w := ws(t, "")
+
+	done := make(chan []FanResult, 1)
+	go func() { done <- Fan(w, nil) }()
+
+	select {
+	case results := <-done:
+		if len(results) != 0 {
+			t.Fatalf("got %d results for 0 jobs, want 0", len(results))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Fan(w, nil) did not return -- it hung on zero jobs")
+	}
+}
+
 // TestFanCostReportShowsARowPerChild proves recordTicketCost's existing
 // per-run accounting (OR-143) survives being called from N goroutines
 // concurrently rather than from one caller in sequence -- each child keeps
