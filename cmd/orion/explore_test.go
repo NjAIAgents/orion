@@ -1,12 +1,17 @@
 package main
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/supervisor"
+	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
 // The point of OR-183 is that explore is CHEAP and separately attributed. An
@@ -150,6 +155,143 @@ func TestLogExploreRecordsTheAnswerAndItsPaths(t *testing.T) {
 		t.Error("nothing was written to the event log; the answer is gone the moment " +
 			"the process exits, and with it any way to audit what the run was told")
 	}
+}
+
+// "NONE" and other-cased spellings of the no-source marker must land as
+// unsourced too. The prompt does not pin the subagent to lowercase, and a
+// parser that only recognises one case would treat a capitalised "none" as a
+// file named NONE -- the exact mistake this parse must not make.
+func TestSplitPathsTreatsNoneCaseInsensitively(t *testing.T) {
+	for _, none := range []string{"none", "None", "NONE", "  none  "} {
+		got := splitPaths(none)
+		if len(got) != 0 {
+			t.Errorf("splitPaths(%q) = %v, want none dropped regardless of case", none, got)
+		}
+	}
+}
+
+// exploreWorkspace answers from ORION_WORKSPACE alone -- the asking agent is
+// never told a workspace id, because the supervisor already exports it into
+// every run it starts. Without it there is no workspace to run the subagent
+// in at all, and that has to fail rather than silently pick one.
+func TestExploreWorkspaceRequiresTheEnvVar(t *testing.T) {
+	t.Setenv("ORION_WORKSPACE", "")
+	if _, err := exploreWorkspace(); err == nil {
+		t.Fatal("want an error when ORION_WORKSPACE is unset, got nil")
+	}
+}
+
+// An id that ORION_WORKSPACE names but that does not exist on disk must
+// surface workspace.Open's own error rather than a workspace built out of
+// nothing -- a hand-built one would overwrite the task record the supervisor
+// already wrote back to.
+func TestExploreWorkspaceRejectsAnUnknownID(t *testing.T) {
+	t.Setenv("ORION_HOME", t.TempDir())
+	t.Setenv("ORION_WORKSPACE", "does-not-exist")
+	if _, err := exploreWorkspace(); err == nil {
+		t.Fatal("want an error for a workspace id nothing on disk matches, got nil")
+	}
+}
+
+// The happy path: a real workspace on disk resolves by id.
+func TestExploreWorkspaceOpensARealWorkspace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ORION_HOME", home)
+	dir := filepath.Join(home, "projects", "t-1")
+	if err := os.MkdirAll(filepath.Join(dir, ".orion"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".orion", "task.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ORION_WORKSPACE", "t-1")
+
+	ws, err := exploreWorkspace()
+	if err != nil {
+		t.Fatalf("exploreWorkspace() error = %v, want the workspace to open", err)
+	}
+	if ws.ID != "t-1" {
+		t.Errorf("ws.ID = %q, want %q", ws.ID, "t-1")
+	}
+}
+
+// topLevel is what points the subagent at the worktree the ASKING run is
+// mid-change in, not the sandbox clone -- so it must refuse a directory that
+// is not a git repository rather than guessing one.
+func TestTopLevelRejectsANonGitDirectory(t *testing.T) {
+	if _, err := topLevel(t.TempDir()); err == nil {
+		t.Fatal("want an error for a directory outside any git repository, got nil")
+	}
+}
+
+func TestTopLevelResolvesAGitRepository(t *testing.T) {
+	dir := t.TempDir()
+	if err := runGit(t, dir, "init"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := topLevel(dir)
+	if err != nil {
+		t.Fatalf("topLevel() error = %v", err)
+	}
+	wantResolved, _ := filepath.EvalSymlinks(dir)
+	gotResolved, _ := filepath.EvalSymlinks(got)
+	if gotResolved != wantResolved {
+		t.Errorf("topLevel() = %q, want %q", got, dir)
+	}
+}
+
+// exploreKey is the only thing standing between an explore run and an
+// unattributed spend: it reads the branch record `orion collect` already
+// keeps, because a retried attempt's branch cannot be reversed back to its
+// ticket by convention (OR-173). A branch nothing recorded must come back
+// empty, not some other ticket's key.
+func TestExploreKeyResolvesFromTheBranchRecord(t *testing.T) {
+	dir := t.TempDir()
+	if err := runGit(t, dir, "init"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGit(t, dir, "checkout", "-b", "orion/or-183-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGit(t, dir, "commit", "--allow-empty", "-m", "init"); err != nil {
+		t.Fatal(err)
+	}
+	ws := &workspace.Workspace{ID: "t-1", Dir: t.TempDir()}
+	if err := workspace.RecordBranch(ws, "OR-183", "orion/or-183-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := exploreKey(ws, dir); got != "OR-183" {
+		t.Errorf("exploreKey() = %q, want %q", got, "OR-183")
+	}
+}
+
+func TestExploreKeyIsEmptyWhenNothingWasRecorded(t *testing.T) {
+	dir := t.TempDir()
+	if err := runGit(t, dir, "init"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGit(t, dir, "commit", "--allow-empty", "-m", "init"); err != nil {
+		t.Fatal(err)
+	}
+	ws := &workspace.Workspace{ID: "t-1", Dir: t.TempDir()}
+
+	if got := exploreKey(ws, dir); got != "" {
+		t.Errorf("exploreKey() = %q, want empty so the run says so on stderr rather than "+
+			"attributing spend to the wrong ticket", got)
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) error {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, out)
+	}
+	return nil
 }
 
 // The parser and the prompt have to agree on the marker, or every answer
