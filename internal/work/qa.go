@@ -107,9 +107,20 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 
 	for max := cfg.QA.Rounds(); !clean; {
 		out.Findings = findings
+		// The full text, not firstLine(findings): the event log has no width
+		// limit and is what `orion logs` reads, so this is the one durable
+		// record of what QA actually found on the common path where the fix
+		// lands in round one and QA never escalates (OR-167).
 		log.Emit(events.Event{Kind: events.KindQA, Actor: events.ActorQA,
-			Model: actors.Model(events.ActorQA), Msg: firstLine(findings)})
-		ui.Say(w, key, events.ActorQA, ui.VerbWarn, "findings: %s", firstLine(findings))
+			Model: actors.Model(events.ActorQA), Msg: findings})
+		line := firstSubstantiveLine(findings)
+		if line == strings.TrimSpace(findings) {
+			ui.Say(w, key, events.ActorQA, ui.VerbWarn, "findings: %s", line)
+		} else {
+			ui.Say(w, key, events.ActorQA, ui.VerbWarn,
+				"findings: %s (full text in the event log)", line)
+		}
+		qaPostFindings(deps, key, out.Rounds+1, findings)
 
 		if out.Rounds >= max {
 			// The ceiling. Two agents can disagree about a test for as long
@@ -212,6 +223,34 @@ func qaVerdict(final string) (findings string, clean bool) {
 		return "QA finished without reporting anything, so nothing was verified.", false
 	}
 	return strings.TrimSpace(final), false
+}
+
+// firstSubstantiveLine is what the console shows: the first line that
+// actually says something, not just the first line. QA's closing message
+// often opens with a header ("Verification done. Summary:") before the
+// content -- returning the literal first line would spend the one line the
+// console has on a sentence that carries no information (OR-167).
+func firstSubstantiveLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasSuffix(t, ":") {
+			continue
+		}
+		return t
+	}
+	return strings.TrimSpace(s)
+}
+
+// qaPostFindings puts one round's findings on the ticket. Every round, not
+// only the one that hits the ceiling -- by the time someone reads the ticket
+// weeks later, the in-memory findings and the raw stage log are both gone,
+// and the ticket is the only place left to look (OR-167).
+func qaPostFindings(deps Deps, key string, round int, findings string) {
+	if deps.Jira == nil {
+		return
+	}
+	body := fmt.Sprintf("QA round %d found:\n\n%s", round, findings)
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorQA, body))
 }
 
 // qaEscalate hands the open findings to a person.
