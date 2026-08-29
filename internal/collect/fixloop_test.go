@@ -470,6 +470,79 @@ func TestAFixWithNoStatedRootCauseProposesNothing(t *testing.T) {
 	}
 }
 
+// A whitespace-only root cause is not a stated one. recordRootCause trims
+// before deciding whether to write it, so this must propose nothing rather
+// than filing a lesson whose text is blank.
+func TestAWhitespaceOnlyRootCauseProposesNothing(t *testing.T) {
+	home, _ := ciRepo(t, 3)
+
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)", "   ")
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)", "   ")
+
+	health, err := lessons.New(home).Health()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Sightings != 0 {
+		t.Fatalf("a whitespace-only root cause filed %d proposal(s)", health.Sightings)
+	}
+}
+
+// A root cause built entirely out of what normalizeRootCause strips -- a bare
+// ticket key, with no surrounding mechanism -- normalizes to the empty
+// string even though the agent did state something. This must propose
+// nothing for the same reason an actually-empty root cause does: falling
+// back to whatever text happens to survive is exactly the vacuous-lesson bug
+// OR-177 fixes, and an empty text would file a lesson nobody could read.
+func TestARootCauseThatNormalizesToNothingProposesNothing(t *testing.T) {
+	home, _ := ciRepo(t, 3)
+
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)", "OR-114")
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)", "OR-114")
+
+	health, err := lessons.New(home).Health()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Sightings != 0 {
+		t.Fatalf("a root cause that normalizes to nothing filed %d proposal(s)", health.Sightings)
+	}
+}
+
+// proposeLesson reads the root cause off state.Attempts[len-1] -- the LAST
+// attempt, the one whose fix actually stuck since the merge proves it. An
+// episode can push more than one fix before it merges (the first fix didn't
+// fully work, CI failed again with a different failure, a second fix did);
+// the lesson must reflect what actually fixed it, not what the first attempt
+// guessed.
+func TestLessonReflectsTheLastAttemptsRootCauseNotAnEarlierOnes(t *testing.T) {
+	home, _ := ciRepo(t, 3)
+
+	twoAttemptEpisode := func() {
+		runFix(t, home, &fixSpy{pushed: true, summary: "an unrelated helper had a stale cache key"},
+			"failure A", Options{})
+		runFix(t, home, &fixSpy{pushed: true, summary: "the real fix: a nil check was missing on the parsed config"},
+			"failure B", Options{})
+		mergeIt(t, home)
+	}
+	twoAttemptEpisode()
+	twoAttemptEpisode()
+
+	pending, err := lessons.New(home).Pending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("got %d proposals, want 1: %+v", len(pending), pending)
+	}
+	if !strings.Contains(pending[0].Text, "nil check was missing") {
+		t.Errorf("the lesson must carry the LAST attempt's root cause, got %q", pending[0].Text)
+	}
+	if strings.Contains(pending[0].Text, "stale cache key") {
+		t.Errorf("the lesson must not carry an earlier attempt's root cause that didn't actually fix it, got %q", pending[0].Text)
+	}
+}
+
 // A ticket that merged green taught nobody anything. Proposing on every merge
 // would fill the reviewer's queue with non-events, and a queue of non-events
 // gets dismissed without reading -- taking the real lessons with it.
