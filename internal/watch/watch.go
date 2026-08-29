@@ -205,17 +205,22 @@ func Run(opts Options, deps Deps) error {
 			}
 		}
 
-		free := p.free()
+		// Read the pool ONCE. free and here are two halves of one sentence --
+		// "cap 2, 1 running here, 1 free" -- and reading the pool twice lets a
+		// job finish between the two, so the terms stop adding up. An
+		// unexplained gap in that line is the very thing OR-196 is about.
+		s := slots{cap: opts.MaxConcurrent, here: p.len()}
+		s.free = s.cap - s.here
 		if opts.MaxJobs > 0 {
-			if room := opts.MaxJobs - started - p.len(); room < free {
-				free = room
+			if room := opts.MaxJobs - started - s.here; room < s.free {
+				s.free = room
 			}
 		}
-		if free > 0 && deps.Now().Before(pausedUntil) {
-			free = 0
+		if s.free > 0 && deps.Now().Before(pausedUntil) {
+			s.free = 0
 		}
 
-		unfinished, err := oneTick(opts, deps, w, free, p)
+		unfinished, err := oneTick(opts, deps, w, s, p)
 		unfinished = unfinished || jobsUnfinished || p.len() > 0
 		if err != nil {
 			// A misconfiguration will NEVER fix itself, so retrying it every
@@ -303,7 +308,7 @@ func permanent(err error) bool {
 // The unfinished flag is what lets the loop know it must not exit yet. A
 // ticket that has been pushed and is awaiting CI is Orion's responsibility
 // until it merges or fails, and nothing else in the system will pick it up.
-func oneTick(opts Options, deps Deps, w io.Writer, free int, p *pool) (unfinished bool, err error) {
+func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished bool, err error) {
 	// 1. Finish what is already in flight. Cheap, and it can free the job
 	// slot this tick is about to look for.
 	//
@@ -340,17 +345,20 @@ func oneTick(opts Options, deps Deps, w io.Writer, free int, p *pool) (unfinishe
 		if err != nil {
 			return unfinished, err
 		}
-		if elsewhere := claimedElsewhere(keys, p.keys()); len(elsewhere) > 0 {
-			free -= len(elsewhere)
-			if free <= 0 && !opts.DryRun {
-				ui.Say(w, elsewhere[0], events.ActorOrion, ui.VerbWorking,
-					"still running; not starting anything else (%d claimed, cap %d)",
-					len(elsewhere)+p.len(), opts.MaxConcurrent)
-			}
-		}
+		s.elsewhere = claimedElsewhere(keys, p.keys())
+		s.free -= len(s.elsewhere)
 	}
 
-	if free <= 0 && !opts.DryRun {
+	if s.free <= 0 && !opts.DryRun {
+		// Worth a line only when a claim held elsewhere is WHY. A rate-limit
+		// pause and the job limit both announce themselves already, and a tick
+		// with nothing to do has to stay silent or a watcher left running
+		// overnight buries the one line that matters.
+		if len(s.elsewhere) > 0 {
+			ui.Say(w, s.elsewhere[0], events.ActorOrion, ui.VerbWorking,
+				"%s; starting nothing else", s)
+			ui.Say(w, s.elsewhere[0], events.ActorOrion, ui.VerbWarn, residueHint)
+		}
 		return unfinished, nil
 	}
 
@@ -368,13 +376,83 @@ func oneTick(opts Options, deps Deps, w io.Writer, free int, p *pool) (unfinishe
 		return unfinished, nil
 	}
 
-	next := pick(queued, free)
+	next := pick(queued, s.free)
+	// Said on EVERY dispatch, not only when a slot was lost. The operator can
+	// see the cap in the banner and can see what started, and until OR-196
+	// nothing joined the two: "cap 2, 1 free" because a claim is held
+	// elsewhere, "2 free, starting 1" because only one ticket is queued, and
+	// "2 free, starting 2" all looked identical from outside, so a run at half
+	// capacity read as parallelism being broken.
+	ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
+		"%s; starting %d of %d queued", s, len(next), len(queued))
+	if len(s.elsewhere) > 0 {
+		ui.Say(w, s.elsewhere[0], events.ActorOrion, ui.VerbWarn, residueHint)
+	}
 	for _, key := range next {
-		ui.Say(w, key, events.ActorOrion, ui.VerbWorking, "claimed (%d queued)", len(queued))
+		ui.Say(w, key, events.ActorOrion, ui.VerbWorking, "claimed")
 		p.dispatch(deps, opts, w, key)
 	}
 	return unfinished, nil
 }
+
+// slots is one tick's slot arithmetic: the cap, everything that took a slot,
+// and what is left for this tick to start.
+type slots struct {
+	cap int
+	// here is what this watcher itself dispatched and has not yet reaped.
+	here int
+	// elsewhere is the claims held by another watcher -- or by nobody, when
+	// the label outlived the work that set it.
+	elsewhere []string
+	free      int
+}
+
+// String names every term that moved the number, and names the HOLDERS with
+// it.
+//
+// The arithmetic was already right; only the reporting was missing. A claim
+// held elsewhere is subtracted because the label is the lock and it lives on
+// the ticket, so a second watcher or a restarted one reaches the same answer
+// -- that is the design working. What was missing is a line the operator can
+// check the banner against: "1 claimed elsewhere" is a fact, "OR-192" is
+// something a person can go and look at.
+func (s slots) String() string {
+	free := s.free
+	if free < 0 {
+		free = 0
+	}
+	terms := []string{fmt.Sprintf("cap %d", s.cap)}
+	if s.here > 0 {
+		terms = append(terms, fmt.Sprintf("%d running here", s.here))
+	}
+	if len(s.elsewhere) > 0 {
+		terms = append(terms, fmt.Sprintf("%d claimed elsewhere (%s)",
+			len(s.elsewhere), strings.Join(s.elsewhere, ", ")))
+	}
+	// Whatever --max-jobs or a rate-limit pause took, so the terms add up. A
+	// gap with no name is the same defect in a different place.
+	if gap := s.cap - s.here - len(s.elsewhere) - free; gap > 0 {
+		terms = append(terms, fmt.Sprintf("%d held back by this run's limits", gap))
+	}
+	return strings.Join(terms, ", ") + fmt.Sprintf(", %d free", free)
+}
+
+// residueHint is what to do about a claim that is not work.
+//
+// The label is the lock, and the operator cannot see it from the terminal, so
+// naming the condition without naming the fix leaves them to work out that the
+// answer is removing a label they were never shown. OR-192 was completed by
+// hand, so it never took Orion's own close path and never had its claim
+// cleared; anything touched outside the normal flow can leave one, which means
+// this recurs rather than being cleaned up once.
+//
+// Offered rather than asserted: a claim held elsewhere is just as likely to be
+// a second watcher doing real work, and this cannot tell the two apart. The
+// staleness check in InFlight can, and clears it -- but only where the tracker
+// categorises the status as Done, which the OR project's own workflow
+// currently does not.
+const residueHint = "if one of those has actually finished, its " +
+	tracker.LabelWorking + " label is residue: remove it to release the slot"
 
 // reportFinished says how a dispatched job ended, for the endings that are not
 // already reported by the job itself.
@@ -738,10 +816,9 @@ type LockAPI interface {
 // what makes a restarted watcher resume rather than double-start. It also
 // outlives the WORK, though, and nothing but the watch-driven close path
 // ever cleared it. A ticket fixed and transitioned to Done by hand kept
-// orion-working forever, and every later tick reported a ticket that
-// finished hours ago as "still running; not starting anything else" --
-// indistinguishable from a genuinely stuck job without opening Jira
-// (OR-125).
+// orion-working forever, and every later tick counted a ticket that finished
+// hours ago as a live claim -- indistinguishable from a genuinely stuck job
+// without opening Jira (OR-125).
 //
 // So a resolved ticket is not in flight, whatever its labels say. The lock
 // is stripped here rather than merely ignored, because ignoring it would
@@ -775,7 +852,8 @@ func InFlight(j LockAPI, home string, projects []string, w io.Writer) ([]string,
 		// failing the tick over.
 		if err := j.SetLabels(i.Key, nil, []string{tracker.LabelWorking}); err != nil {
 			ui.Say(w, i.Key, events.ActorOrion, ui.VerbWarn,
-				"is %s but still holds the %s lock, and it could not be cleared: %v",
+				"is %s but still holds the %s lock, and it could not be cleared: %v"+
+					" -- remove the label by hand or it keeps a slot",
 				i.Status, tracker.LabelWorking, err)
 			continue
 		}
