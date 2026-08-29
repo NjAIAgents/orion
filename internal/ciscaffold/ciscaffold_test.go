@@ -154,6 +154,21 @@ func TestTheWorkflowRunsTheScriptRatherThanItsOwnCommands(t *testing.T) {
 	}
 }
 
+// github.ref alone cannot collapse a push and its pull_request into one
+// concurrency group: push uses refs/heads/<branch>, pull_request uses
+// refs/pull/<n>/merge, so the two never cancel each other and a branch with
+// an open PR runs the whole matrix twice on the same SHA (OR-172). The
+// group must fall back to the ref only when there is no PR number.
+func TestConcurrencyGroupCollapsesPushAndPullRequest(t *testing.T) {
+	for _, s := range []Stack{StackGo, StackPython, StackNode} {
+		flow := workflowFor(s)
+		if !strings.Contains(flow, "github.event.pull_request.number") {
+			t.Errorf("%s workflow's concurrency group has no pull_request number fallback, "+
+				"so a push and its PR land in different groups and both run: %s", s, flow)
+		}
+	}
+}
+
 // The scan is scaffolded, not hand-added. Editing one repository's workflow
 // fixes that repository and leaves every adopted project unscanned.
 func TestEveryAdoptedProjectGetsTheSecretScan(t *testing.T) {

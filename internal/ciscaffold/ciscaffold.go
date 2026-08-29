@@ -411,10 +411,16 @@ on:
   push:
     branches: [main, develop]
 
-# One run per branch. A force-push mid-review otherwise leaves an older run
-# still reporting, and Orion would act on a verdict for code that is gone.
+# One run per branch or PR. A force-push mid-review otherwise leaves an older
+# run still reporting, and Orion would act on a verdict for code that is gone.
+#
+# github.ref alone is not enough: push uses refs/heads/<branch>, pull_request
+# uses refs/pull/<n>/merge, so the two never land in the same group and a
+# push whose branch also has an open PR runs the whole suite twice on the
+# same SHA. Keying on the PR number when one exists, falling back to the ref
+# otherwise, collapses the pair (OR-172).
 concurrency:
-  group: tests-${{ github.ref }}
+  group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
