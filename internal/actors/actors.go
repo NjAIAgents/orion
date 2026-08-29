@@ -128,10 +128,15 @@ func defaults() map[string]Actor {
 		events.ActorRouter:      {ID: events.ActorRouter, Name: "Sam", Designation: "dispatcher", Model: "haiku"},
 		events.ActorImplementer: {ID: events.ActorImplementer, Name: "Ravi", Designation: "backend developer", Model: "opus"},
 		events.ActorFrontend:    {ID: events.ActorFrontend, Name: "Kai", Designation: "frontend developer", Model: "opus"},
-		events.ActorArchitect:   {ID: events.ActorArchitect, Name: "Navjyot", Designation: "architect", Model: "opus"},
-		events.ActorPM:          {ID: events.ActorPM, Name: "Priya", Designation: "product manager", Model: "sonnet"},
-		events.ActorDevOps:      {ID: events.ActorDevOps, Name: "Arjun", Designation: "devops engineer", Model: "sonnet"},
-		events.ActorDescriber:   {ID: events.ActorDescriber, Name: "Dana", Designation: "PR writer", Model: "sonnet"},
+		// Docs writes ADRs and other prose from a codebase that already exists.
+		// Sonnet, the same argument as QA's: the source of truth is already
+		// committed, so the work is careful reading and structured writing
+		// rather than design, and opus would pay implementer prices for it.
+		events.ActorDocs:      {ID: events.ActorDocs, Name: "Iris", Designation: "docs engineer", Model: "sonnet"},
+		events.ActorArchitect: {ID: events.ActorArchitect, Name: "Navjyot", Designation: "architect", Model: "opus"},
+		events.ActorPM:        {ID: events.ActorPM, Name: "Priya", Designation: "product manager", Model: "sonnet"},
+		events.ActorDevOps:    {ID: events.ActorDevOps, Name: "Arjun", Designation: "devops engineer", Model: "sonnet"},
+		events.ActorDescriber: {ID: events.ActorDescriber, Name: "Dana", Designation: "PR writer", Model: "sonnet"},
 		// QA derives its cases from the ticket's acceptance criteria and
 		// writes tests against them. Sonnet: the specification is written
 		// down, so the work is careful reading rather than design, and opus
