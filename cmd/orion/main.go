@@ -213,6 +213,8 @@ func main() {
 		runChangelog(os.Args[2:])
 	case "release":
 		runRelease(os.Args[2:])
+	case "conflict":
+		runConflict(os.Args[2:])
 	case "reset":
 		runReset(os.Args[2:])
 	case "fix":
