@@ -58,9 +58,15 @@ type qaJob struct {
 	// the conversation that produced the code rather than a new run that pays
 	// for the whole context again. Empty means a fresh run.
 	ImplSession string
-	WS          *workspace.Workspace // the JOB worktree, not the shared clone
-	MaxMinutes  int
-	MaxTurns    int
+	// Actor is whichever actor route() picked to work this ticket -- not
+	// necessarily the implementer. A fix round must resume THIS actor: a
+	// docs ticket whose findings were "fixed" by the backend developer would
+	// commit under one actor's session and report under another's, and the
+	// run would carry two different authors for one branch (OR-171).
+	Actor      string
+	WS         *workspace.Workspace // the JOB worktree, not the shared clone
+	MaxMinutes int
+	MaxTurns   int
 	// BaseSHA is the commit this ticket's branch was cut from, before the
 	// implementer touched anything. It is what every test QA writes must be
 	// demonstrated failing against -- see redgreen.go and OR-156. Empty skips
@@ -150,19 +156,22 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 		}
 		out.Rounds++
 
-		ui.Say(w, key, events.ActorImplementer, ui.VerbWorking,
+		ui.Say(w, key, job.Actor, ui.VerbWorking,
 			"fixing what QA found (round %d of %d)", out.Rounds, max)
 		fix, fixErr := deps.Supervise(job.WS, supervisor.Options{
 			Stage: "ticket", Resume: job.ImplSession,
 			Prompt: supervisor.QAFindingsMessage(findings),
-			// The implementer's own model and effort. Fixing what QA found is
-			// implementation work, so it must not silently run on whatever the
-			// operator's CLI defaults to (OR-133).
-			Model:      actors.Model(events.ActorImplementer),
-			Effort:     actors.Effort(events.ActorImplementer),
+			// The actor that opened this branch, on its own model and effort.
+			// Fixing what QA found is implementation work, so it must not
+			// silently run on whatever the operator's CLI defaults to
+			// (OR-133), and it must not silently switch actors either
+			// (OR-171): a docs ticket's fixes belong to the docs actor, not
+			// the backend developer.
+			Model:      actors.Model(job.Actor),
+			Effort:     actors.Effort(job.Actor),
 			MaxMinutes: job.MaxMinutes, MaxTurns: job.MaxTurns,
-			OnActivity: activityLogger(log, w, key, events.ActorImplementer),
-			Actor:      events.ActorImplementer, Key: key,
+			OnActivity: activityLogger(log, w, key, job.Actor),
+			Actor:      job.Actor, Key: key,
 		})
 		if fixErr != nil || fix == nil || fix.ExitCode != 0 {
 			qaGiveUp(key, "the developer's fix run did not finish", log, w)

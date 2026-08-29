@@ -288,6 +288,19 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	res.Summary, res.IssueURL = issue.Summary, issue.URL
 	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "%s", issue.Summary)
 
+	// Routed once, here, at the top -- before the claim, before the agent
+	// runs, before the QA fix loop that must resume whichever actor this
+	// picks. Threaded through the rest of the run as actorID rather than
+	// re-derived at each site, so the run start, the resume and the fix loop
+	// can never disagree about who is working the ticket.
+	//
+	// Said out loud on every ticket, including the default: a route that
+	// falls through in silence is how the frontend actor went unreached for
+	// as long as it did (OR-171).
+	actorID, routeWhy := route(*issue)
+	log.Emitf(events.KindNote, events.ActorOrion, "routed to the %s: %s", actorID, routeWhy)
+	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "routed to %s: %s", actors.Display(actorID), routeWhy)
+
 	// Is it already finished? The queue query excludes resolved tickets, but
 	// between that search and this claim a person can close one -- and `orion
 	// work KEY` typed by hand never went through the queue at all. So ask
@@ -325,7 +338,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
 				"could not check whether %s has already merged: %v", branch, mErr)
 		case merged:
-			return alreadyMerged(res, key, prURL, branch, cfg, opts, deps, ws, log, w)
+			return alreadyMerged(res, key, actorID, prURL, branch, cfg, opts, deps, ws, log, w)
 		}
 	}
 
@@ -462,13 +475,13 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// stops meaning "something new started". It carries everything somebody
 	// scrolling back to the top of a ticket needs at once: the key, the
 	// summary, who is working it, on what, and the branch.
-	ui.Banner(w, key, issue.Summary, events.ActorImplementer,
-		actors.Model(events.ActorImplementer), job.Branch)
+	ui.Banner(w, key, issue.Summary, actorID,
+		actors.Model(actorID), job.Branch)
 
-	log.Emitf(events.KindRunStart, events.ActorImplementer, "implementing %s", key)
+	log.Emitf(events.KindRunStart, actorID, "implementing %s", key)
 	stTitle, stBody := msgStarted(key, issue.Summary, job.Branch, issue.URL)
 	tell(w, log, ws, notify.Event{
-		Level: notify.Info, Workspace: ws.ID, Actor: events.ActorImplementer,
+		Level: notify.Info, Workspace: ws.ID, Actor: actorID,
 		Title: stTitle, Body: stBody,
 	})
 
@@ -478,19 +491,19 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		// Empty stays empty: the banner above reports what the registry says
 		// ran, and a run configured from anywhere else would make that line
 		// a claim about a different agent (OR-133).
-		Model:      actors.Model(events.ActorImplementer),
-		Effort:     actors.Effort(events.ActorImplementer),
+		Model:      actors.Model(actorID),
+		Effort:     actors.Effort(actorID),
 		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
-		OnActivity: activityLogger(log, w, key, events.ActorImplementer),
-		Actor:      events.ActorImplementer, Key: key,
+		OnActivity: activityLogger(log, w, key, actorID),
+		Actor:      actorID, Key: key,
 	})
 	code := -1
 	if runRes != nil {
 		code = runRes.ExitCode
 		res.LogPath = runRes.LogPath
 	}
-	log.Emit(events.Event{Kind: events.KindRunEnd, Actor: events.ActorImplementer,
+	log.Emit(events.Event{Kind: events.KindRunEnd, Actor: actorID,
 		Msg:    fmt.Sprintf("exit %d", code),
 		Detail: map[string]any{"reason": reasonOf(runRes)}})
 
@@ -532,7 +545,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// the reply.
 	if commits == 0 {
 		if why, ok := noopDeclared(tailOf(runRes)); ok {
-			return noChange(res, key, why, cfg, opts, deps, ws, log, w)
+			return noChange(res, key, actorID, why, cfg, opts, deps, ws, log, w)
 		}
 	}
 
@@ -546,7 +559,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		round <= maxQuestions && deps.Advise != nil; round++ {
 
 		question := strings.TrimSpace(runRes.Final)
-		ans, asked := consult(deps, key, job.Path, question, log, w)
+		ans, asked := consult(deps, key, actorID, job.Path, question, log, w)
 		if !asked || !ans.Answered() {
 			res.Question = question
 			res.Advice = ans
@@ -588,12 +601,12 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		runRes, runErr = deps.Supervise(&jobWS, supervisor.Options{
 			Stage: "ticket", Resume: runRes.SessionID,
 			Prompt:     AnswerMessage(ans, rel),
-			Model:      actors.Model(events.ActorImplementer),
-			Effort:     actors.Effort(events.ActorImplementer),
+			Model:      actors.Model(actorID),
+			Effort:     actors.Effort(actorID),
 			MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 			MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
-			OnActivity: activityLogger(log, w, key, events.ActorImplementer),
-			Actor:      events.ActorImplementer, Key: key,
+			OnActivity: activityLogger(log, w, key, actorID),
+			Actor:      actorID, Key: key,
 		})
 		if runErr != nil || runRes == nil || runRes.ExitCode != 0 {
 			err := runErr
@@ -611,13 +624,13 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		// Again, because the advisor loop may have resumed the run and the
 		// resumed run may be the one that found there was nothing to do.
 		if why, ok := noopDeclared(tailOf(runRes)); ok {
-			return noChange(res, key, why, cfg, opts, deps, ws, log, w)
+			return noChange(res, key, actorID, why, cfg, opts, deps, ws, log, w)
 		}
 		res.Question = tailOf(runRes)
 		res.Outcome = OutcomeBlocked
-		log.Emitf(events.KindBlocked, events.ActorImplementer,
+		log.Emitf(events.KindBlocked, actorID,
 			"ran cleanly but produced no commits; treating the closing message as a question")
-		ui.Say(w, key, events.ActorImplementer, ui.VerbFail, "produced no commits. It is blocked, not done.")
+		ui.Say(w, key, actorID, ui.VerbFail, "produced no commits. It is blocked, not done.")
 		if res.Question != "" {
 			fmt.Fprintf(w, "          %s\n", ui.Dim(w, firstLine(res.Question)))
 		}
@@ -631,16 +644,16 @@ func one(key string, opts Options, deps Deps) (res Result) {
 				res.Advice.Reason +
 				"\n\nDecide it, then amend the artifact so the next ticket does not ask again."
 		}
-		_ = deps.Jira.Comment(key, actors.Comment(events.ActorImplementer, body))
+		_ = deps.Jira.Comment(key, actors.Comment(actorID, body))
 		blTitle, blBody := msgBlocked(key, issue.Summary, res.Question, issue.URL, res.Advice)
 		tell(w, log, ws, notify.Event{
-			Level: notify.Blocked, Workspace: ws.ID, Actor: events.ActorImplementer,
+			Level: notify.Blocked, Workspace: ws.ID, Actor: actorID,
 			Title: blTitle, Body: blBody,
 		})
 		return res
 	}
-	log.Emitf(events.KindCommit, events.ActorImplementer, "%d commit(s) on %s", commits, job.Branch)
-	ui.Say(w, key, events.ActorImplementer, ui.VerbOK, "%d commit(s) on %s", commits, job.Branch)
+	log.Emitf(events.KindCommit, actorID, "%d commit(s) on %s", commits, job.Branch)
+	ui.Say(w, key, actorID, ui.VerbOK, "%d commit(s) on %s", commits, job.Branch)
 
 	// QA, before the branch is pushed. The tests QA writes and any fix its
 	// findings force belong in the same pull request as the change they are
@@ -648,7 +661,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// reading the code without its evidence. See qa.go.
 	runQA(qaJob{
 		Key: key, Summary: issue.Summary, Description: issue.Description,
-		ImplSession: runRes.SessionID, WS: &jobWS,
+		ImplSession: runRes.SessionID, Actor: actorID, WS: &jobWS,
 		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
 		BaseSHA:    baseSHA,
@@ -990,9 +1003,9 @@ const maxQuestions = 5
 // The retry exists because routing is a guess. A product question sent to the
 // architect comes back as "escalate", and forwarding it costs one more cheap
 // call -- far better than declaring the run blocked over a misclassification.
-func consult(deps Deps, key, dir, question string, log *events.Log, w io.Writer) (advise.Answer, bool) {
-	log.Emitf(events.KindAsk, events.ActorImplementer, "%s", firstLine(question))
-	ui.Say(w, key, events.ActorImplementer, ui.VerbWorking, "asking: %s", firstLine(question))
+func consult(deps Deps, key, actorID, dir, question string, log *events.Log, w io.Writer) (advise.Answer, bool) {
+	log.Emitf(events.KindAsk, actorID, "%s", firstLine(question))
+	ui.Say(w, key, actorID, ui.VerbWorking, "asking: %s", firstLine(question))
 
 	role := advise.Route(deps.Advise, dir, question)
 	// The router, not Orion. Haiku makes this call on every escalation and
