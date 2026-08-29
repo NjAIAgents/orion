@@ -2,12 +2,23 @@ package hook
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/state"
 )
+
+// cleanupAllowance is how many cleanup commands a tripped session may still
+// run: enough to look at the tree, revert it and commit what compiles, and
+// not enough to be useful for anything else.
+//
+// Bounded on purpose. The allowance exists so a trip is not also an order to
+// abandon a modified file (OR-194); a session that can run `git status`
+// forever has been given its budget back under another name.
+const cleanupAllowance = 6
 
 // Breaker is the circuit breaker: loop detection, failure budgets,
 // tool-call and wall-clock ceilings.
@@ -52,6 +63,12 @@ func breakerPre(in Input, cfg config.Config, store *state.Store) Decision {
 	//      allowed through, and breakerPost clears the trip when it passes.
 	//      Other trip kinds (session-time, tool budget, loops) have no
 	//      self-service recovery and stay fully sealed.
+	//   3. The CLEANUP ALLOWANCE: a bounded list of git commands that leave
+	//      the worktree in a reportable state. "Stop looping" and "stop
+	//      acting" are not the same instruction, and treating them as one
+	//      left OR-192 with a modified test file, no way to revert it, and
+	//      nothing coming back for it. See isCleanupCommand for why this is
+	//      a list of forms rather than a permission to use Bash.
 	if sess.Tripped != "" {
 		if isBlockedNoteWrite(in, cfg) {
 			return Allow("")
@@ -59,6 +76,23 @@ func breakerPre(in Input, cfg config.Config, store *state.Store) Decision {
 		if sess.Tripped == "breaker/unverified-edits" &&
 			in.ToolName == "Bash" && looksLikeVerification(in.Command()) {
 			return Allow("")
+		}
+		if in.ToolName == "Bash" && isCleanupCommand(in.Command()) {
+			if sess.CleanupCalls >= cleanupAllowance {
+				return Block("%s tripped this session (%s) and the cleanup allowance\n"+
+					"  of %d commands is spent. Nothing further will be allowed.\n"+
+					"  Say what is left undone and stop.\n"+
+					"  To resume after review: orion reset --session %s",
+					sess.Tripped, sess.TrippedDetail, cleanupAllowance, sess.ID)
+			}
+			// Counted BEFORE the call runs. A post-hoc count would let a
+			// session that dies mid-cleanup come back with its allowance
+			// intact, which is the reset this must never be.
+			after, _ := store.Update(in.SessionID, func(s *state.Session) { s.CleanupCalls++ })
+			return Allow(fmt.Sprintf(
+				"cleanup allowance: %d of %d used. This tidies the worktree; it does not "+
+					"reopen the task, and spending it does not clear the trip.",
+				after.CleanupCalls, cleanupAllowance))
 		}
 		// The recovery line is TRIP-SPECIFIC. It used to be printed on every
 		// kind, worded as a conditional ("if the trip is unverified-edits...").
@@ -72,21 +106,35 @@ func breakerPre(in Input, cfg config.Config, store *state.Store) Decision {
 			recovery = "  Running the tests or the build IS still allowed, and is the way out:\n" +
 				"  a PASSING verify clears this trip and you may continue.\n"
 		}
+		// The cleanup allowance is named on EVERY trip kind because it exists
+		// on every trip kind -- unlike the verify recovery above, stating it
+		// unconditionally is accurate. It is spelled as the exact commands
+		// rather than "cleanup is allowed": the second wording is the one an
+		// agent reads as "Bash is open", which is how OR-143 and OR-156 were
+		// both misled by a sentence that was technically true.
 		return Block("%s already tripped this session (%s).\n"+
 			"  Stop and hand back to the human. Do not retry, do not work around it.\n"+
-			"  Write what you learned to %s/BLOCKED.md, then COMMIT whatever compiles\n"+
-			"  and summarize. Uncommitted work described in a plan file cannot be resumed.\n"+
+			"  %s/BLOCKED.md has already been written for you; add what you were\n"+
+			"  attempting, what is done and what remains.\n"+
 			"%s"+
+			"  You may still leave the worktree tidy, %d of %d cleanup commands used:\n"+
+			"    git status, git diff, git checkout -- <path>, git restore <path>,\n"+
+			"    git add <path>, git commit\n"+
+			"  Revert what should not survive, COMMIT whatever compiles, then stop.\n"+
+			"  Uncommitted work described in a plan file cannot be resumed, and an\n"+
+			"  uncommitted change also blocks the next rebase of this branch.\n"+
+			"  Nothing else is allowed, and using these does not clear the trip.\n"+
 			"  The policy for every trip kind is docs/BREAKERS.md; it is the answer,\n"+
 			"  so do not stop to ask which recoveries exist.\n"+
 			"  To resume after review: orion reset --session %s",
-			sess.Tripped, sess.TrippedDetail, cfg.Paths.Plans, recovery, sess.ID)
+			sess.Tripped, sess.TrippedDetail, cfg.Paths.Plans, recovery,
+			sess.CleanupCalls, cleanupAllowance, sess.ID)
 	}
 
 	// Wall clock is checked before the call rather than after, so a long
 	// session stops at the next action instead of after one more.
 	if limit := time.Duration(cfg.Limits.MaxSessionMinutes) * time.Minute; sess.Elapsed() > limit {
-		trip(store, in.SessionID, "breaker/session-time",
+		trip(store, cfg, in.SessionID, "breaker/session-time",
 			fmt.Sprintf("%s elapsed, limit %s", sess.Elapsed().Round(time.Second), limit))
 		return Block("breaker: session has run %s, exceeding the %s limit.\n"+
 			"  Long sessions drift. Summarize progress, commit what works, and start fresh.",
@@ -164,6 +212,16 @@ func breakerPost(in Input, cfg config.Config, store *state.Store) Decision {
 		notes = append(notes, cfg.DegradedReason)
 	}
 
+	// A cleanup command on an already-tripped session is not re-judged.
+	//
+	// It cannot be: the counters that tripped are already over their limits,
+	// so verdict() would block every call in the allowance breakerPre just
+	// granted -- most obviously on a tool-budget trip, where ToolCalls only
+	// climbs. An allowance the next hook refuses is not an allowance.
+	if sess.Tripped != "" && in.ToolName == "Bash" && isCleanupCommand(in.Command()) {
+		return Decision{Code: ExitAllow, Notes: notes}
+	}
+
 	d := verdict(in, cfg, sess)
 	if !d.Blocked() {
 		// Warn on crossing 80% of the tool budget so the session can wind
@@ -173,7 +231,7 @@ func breakerPost(in Input, cfg config.Config, store *state.Store) Decision {
 				sess.ToolCalls, cfg.Limits.MaxToolCalls))
 		}
 	} else {
-		trip(store, in.SessionID, d.trippedKind, d.trippedDetail)
+		trip(store, cfg, in.SessionID, d.trippedKind, d.trippedDetail)
 	}
 	d.Notes = append(notes, d.Notes...)
 	return d.Decision
@@ -259,16 +317,66 @@ func verdict(in Input, cfg config.Config, sess *state.Session) tripDecision {
 	return tripDecision{Decision: Allow("")}
 }
 
-func trip(store *state.Store, sessionID, kind, detail string) {
+func trip(store *state.Store, cfg config.Config, sessionID, kind, detail string) {
 	if kind == "" {
 		return
 	}
+	first := false
 	_, _ = store.Update(sessionID, func(s *state.Session) {
 		if s.Tripped == "" {
 			s.Tripped = kind
 			s.TrippedDetail = detail
+			first = true
 		}
 	})
+	if first {
+		writeBlockedNote(cfg, sessionID, kind, detail)
+	}
+}
+
+// writeBlockedNote records the trip in BLOCKED.md as PART OF tripping.
+//
+// Ordering is the whole point (OR-194). On the OR-192 run the note existed
+// only because the agent happened to write it before the breaker closed; one
+// tool call later the next reader would have found a modified test file and
+// no explanation at all. A note the breaker writes itself cannot be lost to
+// the timing of one call.
+//
+// Appended, never overwritten. A BLOCKED.md already on the branch is
+// somebody's account of a different blockage, and destroying it to report
+// this one trades one lost explanation for another.
+//
+// Best-effort by design: a failure to write must not change the verdict. The
+// block message still tells the agent to write the note, so the worst case is
+// the behaviour that existed before this.
+func writeBlockedNote(cfg config.Config, sessionID, kind, detail string) {
+	if cfg.Root == "" || cfg.Paths.Plans == "" {
+		return // no resolved project root: nowhere to put it that a reader would look
+	}
+	dir := cfg.Paths.Plans
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(cfg.Root, dir)
+	}
+	if os.MkdirAll(dir, 0o755) != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "BLOCKED.md"),
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "\n## %s tripped\n\n"+
+		"- when: %s\n"+
+		"- session: `%s`\n"+
+		"- detail: %s\n\n"+
+		"Written by the breaker at the moment it tripped, so this record exists even\n"+
+		"if the session ends on the very next call.\n\n"+
+		"The agent should add what it was attempting, what is done and what remains.\n"+
+		"It may still run `git status`, `git diff`, `git checkout -- <path>`,\n"+
+		"`git restore`, `git add` and `git commit` to leave the worktree reportable.\n\n"+
+		"Resume after review with `orion reset --session %s`.\n",
+		kind, time.Now().UTC().Format(time.RFC3339), sessionID, detail, sessionID)
 }
 
 // actorKey identifies WHICH agent made a call: the main thread or one
@@ -308,6 +416,37 @@ func isBlockedNoteWrite(in Input, cfg config.Config) bool {
 	p := in.FilePath()
 	return p != "" && strings.HasSuffix(p, "BLOCKED.md") &&
 		strings.Contains(p, cfg.Paths.Plans)
+}
+
+// isCleanupCommand recognises the only commands a tripped session may still
+// run: the ones that leave the worktree in a reportable state.
+//
+// This is deliberately NOT "Bash, for cleanup". Widening the breaker that
+// way is the same as not tripping, because nothing distinguishes a cleanup
+// edit from another attempt at the task except intent, and intent is not
+// observable (OR-194). What IS observable is the command itself: `git
+// checkout -- x` can only revert, `git commit` cannot change a file's
+// contents, `git status` cannot change anything. So the allowance is a list
+// of forms, and everything outside it stays refused.
+//
+// The metacharacter check is load-bearing, not defensive tidiness. Without
+// it `git status; <anything>` passes a prefix test and the whole allowance
+// becomes a general reprieve with an extra step.
+func isCleanupCommand(cmd string) bool {
+	c := normalizeCmd(cmd)
+	if c == "" || strings.ContainsAny(c, ";&|`<>\n") || strings.Contains(c, "$(") {
+		return false
+	}
+	for _, form := range []string{
+		"git status", "git diff",
+		"git checkout -- ", "git restore ",
+		"git add ", "git commit",
+	} {
+		if strings.HasPrefix(c, form) {
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikeVerification(cmd string) bool {
