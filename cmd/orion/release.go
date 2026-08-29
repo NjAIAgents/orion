@@ -43,6 +43,12 @@ const releaseUsage = `orion release <command>
         What is in the milestone, what is unfinished, and whether the
         changelog fragments and the version agree in both directions.
 
+  verify <version> [--project KEY] [--base BRANCH]
+        The five promotion checks: milestone complete, fragments reconciled,
+        the integration branch green on the exact commit being promoted,
+        nothing about to land, and every commit attributable to a ticket.
+        Reports only; it does not merge, tag or publish.
+
 This manages MILESTONES in Jira. It does not build, tag or publish anything.
 `
 
@@ -63,6 +69,8 @@ func releaseAction(args []string) string {
 		return "list"
 	case "status":
 		return "status"
+	case "verify":
+		return "verify"
 	case "help", "--help", "-h":
 		return "help"
 	}
@@ -77,6 +85,8 @@ func runRelease(args []string) {
 		runReleaseList(args[1:])
 	case "status":
 		runReleaseStatus(args[1:])
+	case "verify":
+		runReleaseVerify(args[1:])
 	case "help":
 		fmt.Print(releaseUsage)
 	default:
