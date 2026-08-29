@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -156,5 +157,73 @@ func TestForceQuitSaysSoWhenNothingWasClaimed(t *testing.T) {
 	forceQuit(&out, noKill)
 	if !strings.Contains(out.String(), "nothing is left claimed") {
 		t.Fatalf("an idle forced quit did not say the tracker is clean:\n%s", out.String())
+	}
+}
+
+// TestForceQuitNamesEverySurvivingPid extends the single-survivor case: at
+// max_concurrent_tickets above 1, more than one child can outlive the grace,
+// and a report that only ever demonstrated one pid could still silently drop
+// the rest.
+func TestForceQuitNamesEverySurvivingPid(t *testing.T) {
+	quiet(t)
+	var out bytes.Buffer
+	code := forceQuit(&out, func(time.Duration) []int { return []int{111, 222, 333} })
+
+	if code == 0 {
+		t.Fatal("a forced quit with survivors must exit non-zero")
+	}
+	got := out.String()
+	for _, pid := range []string{"111", "222", "333"} {
+		if !strings.Contains(got, pid) {
+			t.Fatalf("forceQuit dropped surviving pid %s from its report:\n%s", pid, got)
+		}
+	}
+}
+
+// TestMixedSignalTypesStillForce covers the ticket's explicit claim that
+// SIGTERM counts as EITHER signal in the protocol, not just as a matched
+// pair: `kill <pid>` from another shell and a terminal ctrl-c can arrive in
+// either order and must still add up to a force, since a watcher stopped by
+// one operator tool and finished off by another is the realistic case, not
+// two identical signals.
+func TestMixedSignalTypesStillForce(t *testing.T) {
+	quiet(t)
+	out := &safeBuf{}
+	sig := make(chan os.Signal, 2)
+	exited := make(chan int, 1)
+	go handle(out, sig, func(code int) { exited <- code })
+
+	sig <- os.Interrupt
+	waitFor(t, out, "stopping after the current step")
+	sig <- syscall.SIGTERM
+	select {
+	case code := <-exited:
+		if code == 0 {
+			t.Fatal("a forced quit exited 0; SIGINT-then-SIGTERM must still force")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("SIGINT followed by SIGTERM did not force")
+	}
+}
+
+// TestFirstSignalWarningStatesTheRiskCorrectly is the positive half of
+// TestTheFirstSignalStillOnlyDrains's negative check: it is not enough that
+// the old, backwards "nothing running" text is gone, the replacement must
+// actually say an agent keeps running and spending, and that the ticket
+// stays claimed -- the two things a person forcing a second time needs to
+// know before they do it.
+func TestFirstSignalWarningStatesTheRiskCorrectly(t *testing.T) {
+	quiet(t)
+	out := &safeBuf{}
+	sig := make(chan os.Signal, 2)
+	exited := make(chan int, 1)
+	go handle(out, sig, func(code int) { exited <- code })
+
+	sig <- os.Interrupt
+	got := waitFor(t, out, "stopping after the current step")
+	for _, want := range []string{"kills the running agents now", "leaves their tickets claimed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the drain warning does not say %q:\n%s", want, got)
+		}
 	}
 }
