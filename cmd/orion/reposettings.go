@@ -87,6 +87,15 @@ func deleteOnMergeEnabled(dir, slug string) (bool, error) {
 // redundant: the gate needs no admin rights and works on any repository, but
 // it can only warn a human, who can skim the warning and merge anyway. This
 // refuses the merge.
+//
+// Whether strict is worth its cost is the OPERATOR's call, not a fact this
+// command gets to assume: the benefit (catching a genuine semantic conflict)
+// is fixed, but the cost scales with queue depth, since strict makes every
+// merge invalidate every other open pull request. So this reads
+// cfg.VCS.RequireUpToDate rather than hardcoding true, and states which
+// value it is applying and where that value came from -- see
+// config.VCSRequireUpToDateSource -- so the setting is visible here rather
+// than discovered later from a merge refusal.
 func runProtect(args []string) {
 	dir := argFlag(args, "--dir", ".")
 	dryRun := hasFlag(args, "--dry-run")
@@ -107,6 +116,10 @@ func runProtect(args []string) {
 	reviews, why := provision.RequiredReviews(dir, slug)
 	ui.Ok(os.Stdout, "reviews", "requiring %d approving review(s): %s", reviews, why)
 
+	strict := cfg.VCS.RequireUpToDate
+	ui.Ok(os.Stdout, "strict", "requiring branches to be up to date before merge: %v (%s)",
+		strict, cfg.VCSRequireUpToDateSource())
+
 	for _, b := range branches {
 		checks := observedChecks(dir, slug, b)
 		if len(checks) == 0 {
@@ -117,16 +130,59 @@ func runProtect(args []string) {
 		}
 
 		if dryRun {
+			reportStrictDryRun(dir, slug, b, strict, cfg.VCSRequireUpToDateSource())
 			continue
 		}
-		if err := applyProtection(dir, slug, b, checks, reviews); err != nil {
+		if err := applyProtection(dir, slug, b, checks, reviews, strict); err != nil {
 			ui.Warn(os.Stdout, "%s is NOT protected on the server: %v\n"+
 				"  Orion's gate hook still refuses pushes to it, but that constrains the agent only, not a human.",
 				b, err)
 			continue
 		}
-		ui.Ok(os.Stdout, "protected", "%s (up to date required, force-push and deletion refused)", b)
+		if strict {
+			ui.Ok(os.Stdout, "protected", "%s (up to date required, force-push and deletion refused)", b)
+		} else {
+			ui.Ok(os.Stdout, "protected", "%s (up to date NOT required -- vcs.require_up_to_date=false, force-push and deletion refused)", b)
+		}
 	}
+}
+
+// reportStrictDryRun compares the strict value this run would apply against
+// what the branch actually has on GitHub right now, so a dry-run cannot miss
+// that a re-run would silently revert an operator's hand-edit -- exactly
+// what happened to develop on 2026-08-29 (see the ticket this shipped
+// under, OR-179).
+func reportStrictDryRun(dir, slug, branch string, strict bool, source string) {
+	haveCurrent, current := currentRequireUpToDate(dir, slug, branch)
+	switch {
+	case !haveCurrent:
+		ui.Ok(os.Stdout, "dry-run", "%s: would set strict=%v (%s); branch has no existing required-status-checks block to compare", branch, strict, source)
+	case current == strict:
+		ui.Ok(os.Stdout, "dry-run", "%s: strict=%v already matches what's on GitHub (%s); no change", branch, strict, source)
+	default:
+		ui.Warn(os.Stdout, "dry-run %s: GitHub currently has strict=%v; this run would change it to %v (%s).\n"+
+			"  Running `orion protect` for real would revert that setting.", branch, current, strict, source)
+	}
+}
+
+// currentRequireUpToDate reads the strict value actually on the branch's
+// protection right now. haveCurrent is false when there is no protection yet
+// or no required_status_checks block to compare against -- distinct from a
+// present block whose strict happens to be false.
+func currentRequireUpToDate(dir, slug, branch string) (haveCurrent bool, strict bool) {
+	out, err := ghJSON(dir, "api", fmt.Sprintf("repos/%s/branches/%s/protection", slug, branch))
+	if err != nil {
+		return false, false
+	}
+	var v struct {
+		RequiredStatusChecks *struct {
+			Strict bool `json:"strict"`
+		} `json:"required_status_checks"`
+	}
+	if json.Unmarshal(out, &v) != nil || v.RequiredStatusChecks == nil {
+		return false, false
+	}
+	return true, v.RequiredStatusChecks.Strict
 }
 
 // applyProtection writes the ruleset for one branch.
@@ -135,10 +191,13 @@ func runProtect(args []string) {
 // work. That does mean an admin can override the gate, which makes this a
 // guard rail rather than a wall -- the honest description of any protection
 // a repository owner can edit.
-func applyProtection(dir, slug, branch string, checks []string, reviews int) error {
+//
+// strict is cfg.VCS.RequireUpToDate, not a hardcoded true: see the doc
+// comment on runProtect for why this is the operator's call.
+func applyProtection(dir, slug, branch string, checks []string, reviews int, strict bool) error {
 	rules := map[string]any{
 		"required_status_checks": map[string]any{
-			"strict":   true,
+			"strict":   strict,
 			"contexts": checks,
 		},
 		"enforce_admins":     false,
