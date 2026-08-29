@@ -255,7 +255,17 @@ func runReleaseStatus(args []string) {
 	// the moment before a release is when it is worth seeing.
 	if orphans, err := j.IssuesWithoutVersion(key); err == nil && len(orphans) > 0 {
 		ui.Warn(w, "%d open ticket(s) carry no fixVersion at all", len(orphans))
-		for _, is := range orphans {
+		// Listed, but not all of them. A backlog that has never used
+		// milestones has hundreds, and printing the lot buries the part of
+		// this report that is about the release being cut. The count is the
+		// signal; the sample is orientation.
+		const sample = 10
+		for i, is := range orphans {
+			if i == sample {
+				fmt.Fprintf(w, "          %s\n",
+					ui.Dim(w, fmt.Sprintf("... and %d more", len(orphans)-sample)))
+				break
+			}
 			fmt.Fprintf(w, "          %s\n", ui.Dim(w, is.Key+"  "+is.Summary))
 		}
 	}
