@@ -453,8 +453,12 @@ on:
   push:
     branches: [main, develop]
 
+# See the "tests" workflow's concurrency comment: github.ref alone cannot
+# collapse a push and its pull_request into one group, so this scan would
+# otherwise run twice on the same SHA whenever the branch has an open PR
+# (OR-172).
 concurrency:
-  group: secret-scan-${{ github.ref }}
+  group: secret-scan-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
