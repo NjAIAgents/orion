@@ -74,7 +74,7 @@ func TestASlackMessageNamesTheActingRole(t *testing.T) {
 	isolate(t)
 	captureOut(t)
 	var sent string
-	prev := SetSlackSender(func(_, text string) error { sent = text; return nil })
+	prev := SetSlackSender(func(_, text string, _ Level) error { sent = text; return nil })
 	t.Cleanup(func() { SetSlackSender(prev) })
 
 	Send(Event{Channel: "C1", Level: Info, Actor: events.ActorImplementer,
@@ -91,7 +91,7 @@ func TestAnUnattributedMessageIsOrionsOwn(t *testing.T) {
 	isolate(t)
 	captureOut(t)
 	var sent string
-	prev := SetSlackSender(func(_, text string) error { sent = text; return nil })
+	prev := SetSlackSender(func(_, text string, _ Level) error { sent = text; return nil })
 	t.Cleanup(func() { SetSlackSender(prev) })
 
 	Send(Event{Channel: "C1", Level: Info, Title: "FCIA-8 merged", Body: "x"})
