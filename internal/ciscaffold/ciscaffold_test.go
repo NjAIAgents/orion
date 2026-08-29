@@ -154,11 +154,15 @@ func TestTheWorkflowRunsTheScriptRatherThanItsOwnCommands(t *testing.T) {
 	}
 }
 
-// github.ref alone cannot collapse a push and its pull_request into one
-// concurrency group: push uses refs/heads/<branch>, pull_request uses
-// refs/pull/<n>/merge, so the two never cancel each other and a branch with
-// an open PR runs the whole matrix twice on the same SHA (OR-172). The
-// group must fall back to the ref only when there is no PR number.
+// The concurrency group must key on the PR number when there is one, so a
+// force-push cancels its own predecessor: push uses refs/heads/<branch> and
+// pull_request uses refs/pull/<n>/merge, so a ref-only group leaves a stale
+// run still reporting on code that is gone (OR-172).
+//
+// It does NOT stop one SHA being built twice by two different events.
+// Grouping decides which runs CANCEL each other and cannot merge two events
+// into one run; the trigger does that, and TestPromotionPullRequestIsNotBuiltTwice
+// covers it. OR-172 conflated the two and OR-175 measured the difference.
 func TestConcurrencyGroupCollapsesPushAndPullRequest(t *testing.T) {
 	for _, s := range []Stack{StackGo, StackPython, StackNode} {
 		flow := workflowFor(s)
@@ -184,6 +188,35 @@ func TestThisRepositorysOwnCIWorkflowHasTheSameFix(t *testing.T) {
 		t.Error(".github/workflows/ci.yml's concurrency group has no pull_request number fallback, " +
 			"so this repo's own push and PR checks still run the full matrix twice on the same SHA (OR-172)")
 	}
+}
+
+// The develop-to-main promotion pull request has develop as its HEAD branch,
+// so `push: [develop]` and a bare `pull_request:` both match it and the same
+// tree is built twice at the same SHA. Excluding base=main from the
+// pull_request trigger drops the duplicate and nothing else: feature pull
+// requests target develop and still build.
+//
+// Asserted on both the scaffolded template and this repository's own
+// workflow, because the scaffold is where it costs money -- a private repo
+// bills macOS at 10x and Windows at 2x, roughly 61 billable minutes per
+// release (OR-175).
+func TestPromotionPullRequestIsNotBuiltTwice(t *testing.T) {
+	check := func(name, flow string) {
+		t.Helper()
+		if !strings.Contains(flow, "branches-ignore") {
+			t.Errorf("%s still has a bare pull_request trigger, so the develop-to-main "+
+				"promotion builds a tree the push build already covered at the same SHA: %s",
+				name, flow)
+		}
+	}
+	for _, s := range []Stack{StackGo, StackPython, StackNode} {
+		check(string(s)+" workflow", workflowFor(s))
+	}
+	b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(".github/workflows/ci.yml", string(b))
 }
 
 // The secret-scan workflow scaffolded alongside "tests" has the identical

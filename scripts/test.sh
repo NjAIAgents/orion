@@ -78,11 +78,19 @@ if [ "$QUICK" = 0 ]; then
   # sessions, and internal/procsafe (OR-138) is the lock those sessions and
   # any other same-ORION_HOME process rely on to not tear each other's writes.
   #
+  # internal/watch, internal/workspace and internal/budget joined the list
+  # with OR-184: the watcher now works several tickets at once, so its job
+  # pool, the mutex serialising git against the one shared clone, and the
+  # budget reservation that admits a run are all live under concurrency. A
+  # data race in any of them is either a corrupted repository or spend that
+  # nothing accounted for.
+  #
   # -race needs cgo, so this step cannot run with CGO_ENABLED=0. CI runs it
   # on real hosts, where that's a non-issue -- don't "fix" it to match the
   # release build (Makefile), which stays CGO_ENABLED=0 on purpose for its
   # six-target cross-compile that has no local C toolchain to link against.
-  go test -race ./internal/events/ ./internal/supervisor/ ./internal/state/ ./internal/procsafe/
+  go test -race ./internal/events/ ./internal/supervisor/ ./internal/state/ \
+    ./internal/procsafe/ ./internal/watch/ ./internal/workspace/ ./internal/budget/
 fi
 
 step "coverage by package"

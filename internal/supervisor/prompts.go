@@ -284,6 +284,72 @@ func LogTriagePrompt(branch, log string) string {
 	)
 }
 
+// ExplorePathsPrefix opens the last line of every explore answer: the files
+// the answer was read out of, comma-separated, or "none".
+//
+// A literal marker rather than a reading of the prose, because the difference
+// it encodes is the one the caller has to act on. An answer with a path can be
+// opened and checked; an answer without one is the subagent's word for it, and
+// telling those two apart has to be mechanical or it will not happen (OR-183).
+const ExplorePathsPrefix = "PATHS:"
+
+// ExploreNotFound is how the subagent says the repository genuinely does not
+// contain the thing asked about, as distinct from a search that established
+// nothing. Part of the answer's contract, so the caller can tell them apart.
+const ExploreNotFound = "NOT FOUND"
+
+// ExplorePrompt asks a subagent one narrow question about the repository and
+// nothing else.
+//
+// The reading needed to answer "where is this defined" or "does this pattern
+// already exist" is unbounded, and every file opened on the way stays in the
+// asking run's context for the rest of the run -- paid for again on every
+// turn. The answer is one line. So the reading happens in a context that is
+// thrown away and only the answer crosses back (OR-183).
+//
+// Two clauses here are load-bearing and neither is obvious.
+//
+// READ ONLY, said in the prompt rather than enforced by a sandbox, because
+// this subagent shares a worktree with a run that is mid-change. There is no
+// separate checkout to isolate it into; a write from here lands inside
+// somebody else's diff.
+//
+// The not-found distinction is the risk this pattern carries that log triage
+// does not. A subagent that under-reports loses information silently, and
+// "the repository does not contain this" and "I did not find it" read
+// identically while meaning opposite things. Acting on the first when the
+// second is true means designing around an absence that is not real -- a
+// wrong architectural decision, not merely a worse fix attempt.
+func ExplorePrompt(question string) string {
+	return join(
+		"Answer this one question about the repository you are in, and nothing else:",
+		quote(question),
+		"",
+		"READ ONLY",
+		"Do not edit, create, delete, run or commit anything. Another agent is",
+		"working in this same worktree right now, and a write from you would land",
+		"in the middle of its change.",
+		"",
+		"ANSWER",
+		"A few lines. No preamble, no account of how you searched.",
+		"",
+		"SAY WHICH OF THE TWO IT IS",
+		"If you searched and the repository genuinely does not contain it, begin",
+		"with "+ExploreNotFound+" and say what you searched for.",
+		"If you looked and cannot tell, or ran out of turns, say exactly that --",
+		"do NOT report it as absent. \"It is not there\" and \"I did not find it\"",
+		"read the same and mean opposite things, and whoever asked will act on",
+		"the first by building around an absence that does not exist.",
+		"",
+		"CITE",
+		"Make the LAST line exactly:",
+		"  "+ExplorePathsPrefix+" <the file paths the answer came from, comma-separated>",
+		"Write "+ExplorePathsPrefix+" none when it came from no file. A path is what",
+		"makes the answer checkable by whoever asked; without one it is only your",
+		"word for it, and it will be treated as unproven.",
+	)
+}
+
 // TicketPrompt is the instruction for implementing one tracker issue.
 //
 // Every clause here is load-bearing, because this text is what decides how
@@ -397,6 +463,7 @@ func TicketPromptWithChildren(key, summary, description, url, repoPath string,
 		"suite you did not run is not evidence.",
 	))
 	b.WriteString(testEnv(repoPath))
+	b.WriteString(exploreOffer())
 	b.WriteString(changelogFragment(repoPath, key))
 	b.WriteString(join(
 		"",
@@ -448,6 +515,33 @@ func changelogFragment(repoPath, key string) string {
 		"of this repository -- a refactor, a test, internal tooling.",
 		"One file per ticket is the point: two tickets editing CHANGELOG.md conflict",
 		"every time regardless of what else they change.",
+	)
+}
+
+// exploreOffer tells the implementer that a narrow question about unfamiliar
+// code can be asked instead of read for.
+//
+// This clears the bar testEnv sets for a fixed prefix -- a line here is
+// re-sent on every turn for the life of the ticket -- because what it
+// replaces is the most repeated unbounded cost in a run. Finding where one
+// thing is defined can take a dozen greps and reads, and every file opened on
+// the way stays in context afterwards, re-sent every turn, to have said one
+// sentence once.
+//
+// The fallback is stated in the same breath as the command, because a
+// subagent that fails and leaves the implementer waiting for permission to
+// read a file itself would cost more than it ever saved.
+func exploreOffer() string {
+	return join(
+		"",
+		"",
+		"FINDING YOUR WAY AROUND THIS REPOSITORY",
+		"For ONE narrow question about code you have not read -- where a thing is",
+		"defined, whether a pattern already exists, what a config actually holds --",
+		"run: orion explore \"<question>\"",
+		"It answers from a subagent's own context and cites the files, so what it",
+		"read does not stay in yours. An answer citing no file is unproven: confirm",
+		"it before building on it. If the command fails, just read for yourself.",
 	)
 }
 

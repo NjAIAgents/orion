@@ -407,7 +407,15 @@ func workflowFor(s Stack) string {
 name: tests
 
 on:
+  # branches-ignore: [main] skips the develop-to-main promotion pull request,
+  # whose tree the push build on develop already tested at the same SHA.
+  # Feature pull requests target develop and still build.
+  #
+  # This matters most on a PRIVATE repository, where GitHub bills macOS at
+  # 10x and Windows at 2x: the duplicate matrix is roughly 61 billable
+  # minutes per release against a 2,000-minute monthly allowance.
   pull_request:
+    branches-ignore: [main]
   push:
     branches: [main, develop]
 
@@ -415,10 +423,15 @@ on:
 # run still reporting, and Orion would act on a verdict for code that is gone.
 #
 # github.ref alone is not enough: push uses refs/heads/<branch>, pull_request
-# uses refs/pull/<n>/merge, so the two never land in the same group and a
-# push whose branch also has an open PR runs the whole suite twice on the
-# same SHA. Keying on the PR number when one exists, falling back to the ref
-# otherwise, collapses the pair (OR-172).
+# uses refs/pull/<n>/merge, so the two never land in the same group and
+# neither cancels the other. Keying on the PR number when one exists, falling
+# back to the ref otherwise, makes a force-push cancel its own predecessor.
+#
+# What this does NOT do is stop one SHA being built twice by two different
+# events -- grouping decides which runs CANCEL each other, and cannot merge
+# two events into one run. That is the trigger's job, which is what
+# branches-ignore above is for (OR-172 claimed the group fixed it; OR-175
+# measured that it did not).
 concurrency:
   group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true

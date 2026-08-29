@@ -245,7 +245,12 @@ func Refresh(sourcePath, branch string) (string, error) {
 // any -- but "should not" is not "cannot", and discarding an agent's
 // uncommitted work to freshen a config file would be a spectacularly bad
 // trade.
+// Locked against the other git that runs in this clone. Every concurrent job
+// calls this at its start, and a fetch plus a fast-forward is exactly the kind
+// of ref write that a simultaneous `worktree add` loses to.
 func SyncSandbox(ws *Workspace, branch string) (string, error) {
+	defer LockRepo(ws)()
+
 	repo := ws.RepoDir()
 	g := func(args ...string) (string, error) {
 		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()

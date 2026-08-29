@@ -5,7 +5,28 @@ on:
   # must run there too. Triggering only on main meant every commit between
   # releases was unverified by CI.
   push: { branches: [main, develop] }
+  # branches-ignore: [main] excludes the develop-to-main PROMOTION pull
+  # request, and only that one. Feature pull requests target develop, so
+  # they still build here.
+  #
+  # Without it the promotion built the same tree twice. MEASURED on PR #68
+  # (the v0.7.10 promotion) -- both runs carry the same head SHA:
+  #
+  #   33263756146  push          76419df54  develop
+  #   33263758639  pull_request  76419df54  develop
+  #
+  # The cause is that `push: [develop]` and `pull_request:` BOTH match a
+  # pull request whose head branch is develop, which the promotion always
+  # is. It is not the concurrency grouping below: those two events land in
+  # different groups by construction, so grouping can never merge them into
+  # one run (OR-172 claimed otherwise and was wrong; the record is corrected
+  # in OR-175).
+  #
+  # The promotion's required checks stay satisfied because status checks are
+  # matched by NAME against the head commit, and the push build already
+  # reported all three names on that exact SHA.
   pull_request:
+    branches-ignore: [main]
 
 # One run per ref. Without this, a force-push leaves the superseded run
 # burning through all three OS legs while its replacement queues behind it --

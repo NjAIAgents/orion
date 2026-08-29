@@ -254,9 +254,18 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 			break
 		}
 
+		// The title must not promise a reset the provider never stated.
+		// Verdict.Parsed exists precisely so an estimate is never presented
+		// as a fact, and the BODY already honours it -- but the title is what
+		// a Slack notification and a mobile push actually show, and it said
+		// "quota reset" either way (OR-192).
+		title := fmt.Sprintf("Orion waiting %s for quota reset", v.Wait.Round(time.Second))
+		if !v.Parsed {
+			title = fmt.Sprintf("Orion backing off %s (no reset time given)", v.Wait.Round(time.Second))
+		}
 		notify.Send(notify.Event{
 			Level: notify.Warning, Workspace: ws.ID, Channel: channelFor(ws),
-			Title: fmt.Sprintf("Orion waiting %s for quota reset", v.Wait.Round(time.Second)),
+			Title: title,
 			Body:  msg + fmt.Sprintf("\nWill retry automatically (attempt %d of %d).", attempt+1, quota.MaxAttempts),
 		})
 

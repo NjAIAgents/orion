@@ -19,6 +19,7 @@
 package quota
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
@@ -59,9 +60,9 @@ const (
 	backoffCap    = 30 * time.Minute
 )
 
-// exhaustionPatterns are matched case-insensitively against combined
-// stdout and stderr. Kept as data so a new provider message is a one-line
-// addition rather than a code change.
+// exhaustionPatterns are matched case-insensitively against the ERROR
+// CHANNEL only -- see errorText. Kept as data so a new provider message is
+// a one-line addition rather than a code change.
 var exhaustionPatterns = []struct {
 	re   *regexp.Regexp
 	kind string
@@ -99,11 +100,19 @@ var (
 func Inspect(output string, attempt int, now time.Time) Verdict {
 	v := Verdict{}
 
+	// Match on the error channel only. The agent's own prose is DATA, not a
+	// signal about Orion's runtime state, and treating it as one paused a
+	// healthy run for a limit that did not exist: on 2026-08-29 the agent
+	// was working OR-184, a ticket whose text is largely about rate limits
+	// and ceilings, and the detector matched the agent quoting its own
+	// ticket back (OR-192).
+	errs := errorText(output)
+
 	for _, p := range exhaustionPatterns {
-		if loc := p.re.FindStringIndex(output); loc != nil {
+		if loc := p.re.FindStringIndex(errs); loc != nil {
 			v.Exhausted = true
 			v.Kind = p.kind
-			v.Raw = lineAround(output, loc[0])
+			v.Raw = lineAround(errs, loc[0])
 			break
 		}
 	}
@@ -111,7 +120,10 @@ func Inspect(output string, attempt int, now time.Time) Verdict {
 		return v
 	}
 
-	if reset, okParsed := parseReset(output, now); okParsed {
+	// The reset time is read from the same channel, for the same reason: a
+	// wall-clock time mentioned in the agent's prose is not the provider
+	// stating when the limit clears.
+	if reset, okParsed := parseReset(errs, now); okParsed {
 		v.ResetAt = reset
 		v.Parsed = true
 		// A small cushion past the stated reset: retrying at the exact
@@ -247,6 +259,59 @@ func (v Verdict) Message(attempt int) string {
 	}
 	if v.Raw != "" {
 		b.WriteString("\n  provider said: " + truncate(strings.TrimSpace(v.Raw), 160))
+	}
+	return b.String()
+}
+
+// errorText narrows the combined output to the lines that could legitimately
+// carry a provider error, dropping the ones that carry the AGENT'S OWN WORDS.
+//
+// The failure this prevents is not hypothetical and not rare. The stream is
+// NDJSON, and an assistant message is a line like
+//
+//	{"type":"assistant","message":{"model":"...","content":[{"type":"text",...
+//
+// whose text is whatever the agent said. On a ticket about rate limiting the
+// agent says "rate limit" constantly, and every one of those matched, parked
+// a healthy run for a minute, and then did it again with the backoff doubled
+// (OR-192).
+//
+// Tightening the patterns does not fix this. The next false positive is a
+// ticket about HTTP status codes, or a retry-after header, or a test being
+// written for this very file. The CHANNEL is wrong, not the wording, so the
+// fix is to stop looking at what the model said at all.
+//
+// What is kept:
+//
+//   - every line that is not JSON, because that is a bare stderr line and is
+//     what the patterns were originally written for;
+//   - every JSON line that is not an assistant or user message, which leaves
+//     system notices, error objects, and the final result envelope.
+//
+// A tool result (type "user") is dropped for the same reason as assistant
+// text: it is content the agent fetched, not Orion's own runtime reporting
+// a limit. An agent that curls a page mentioning "429" must not pause the run.
+func errorText(output string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "{") {
+			var probe struct {
+				Type string `json:"type"`
+			}
+			// Only a line that PARSES and self-identifies as agent-authored
+			// is dropped. Malformed JSON is kept: a truncated error object is
+			// still an error, and silently discarding it would trade a false
+			// positive for a false negative, which is the worse of the two
+			// here -- a missed limit burns the retry budget against a wall.
+			if err := json.Unmarshal([]byte(trimmed), &probe); err == nil {
+				if probe.Type == "assistant" || probe.Type == "user" {
+					continue
+				}
+			}
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
 	}
 	return b.String()
 }

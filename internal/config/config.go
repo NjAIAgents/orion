@@ -21,6 +21,46 @@ type Limits struct {
 	MaxSessionMinutes      int `json:"max_session_minutes"`
 	MaxEditsWithoutVerify  int `json:"max_edits_without_verify"`
 	MaxFilesTouched        int `json:"max_files_touched"`
+	// MaxConcurrentChildren caps how many subagents supervisor.Fan runs at
+	// once. Low by default: unbounded fan-out against a rate-limited API
+	// converts a queue into a stampede (OR-162 is what misreading this limit
+	// costs).
+	MaxConcurrentChildren int `json:"max_concurrent_children"`
+
+	// MaxConcurrentTickets caps how many tickets a watcher works at the same
+	// time. Unlike the limits above it does not bound one agent's behaviour;
+	// it bounds how many agents exist.
+	//
+	// Two by default, and never more than MaxConcurrentTicketsCeiling. Two is
+	// not caution for its own sake: every hazard concurrency introduces --
+	// concurrent git against one shared clone, a budget checkpoint sailed past
+	// by runs already in flight, N sessions hitting one rate limit, N tickets
+	// picked that all edit the same files -- is invisible at one and obvious
+	// at two, and diagnosing it at two is cheap. Prove it at two, then raise
+	// it.
+	MaxConcurrentTickets int `json:"max_concurrent_tickets"`
+}
+
+// MaxConcurrentTicketsCeiling is the highest value limits.max_concurrent_tickets
+// may ask for. A hard ceiling rather than advice: the cost of being wrong about
+// this number is paid by a queue of half-finished branches and a bill, neither
+// of which is visible until afterwards.
+const MaxConcurrentTicketsCeiling = 5
+
+// ConcurrentTickets is the cap actually enforced: the configured value,
+// clamped to [1, MaxConcurrentTicketsCeiling], with 0 meaning the default.
+//
+// Clamped here rather than at the call site so every reader gets the same
+// answer -- a watcher that read the raw field would honour a hand-edited 40.
+func (l Limits) ConcurrentTickets() int {
+	n := l.MaxConcurrentTickets
+	if n <= 0 {
+		n = Defaults().Limits.MaxConcurrentTickets
+	}
+	if n > MaxConcurrentTicketsCeiling {
+		n = MaxConcurrentTicketsCeiling
+	}
+	return n
 }
 
 // Delegation configures handoff to nj-agents skills.
@@ -349,6 +389,25 @@ type VCS struct {
 	// That is a real downside; it is chosen because "who wrote this" is
 	// harder to reconstruct later than "which commits belong together".
 	MergeStrategy string `json:"merge_strategy"`
+	// RequireUpToDate controls GitHub's own "require branches to be up to
+	// date before merging" (required_status_checks.strict), applied by
+	// `orion protect`.
+	//
+	// ON by default so an operator who never touches this setting keeps
+	// today's behaviour. It is the SERVER-SIDE twin of CI.RequireUpToDate:
+	// that gate runs one local `git merge-base --is-ancestor` and can only
+	// warn a human, who may merge anyway; this refuses the merge outright.
+	// Turning this off does not remove that gate and does not weaken it --
+	// with strict off it becomes the only signal that a branch is stale,
+	// which makes it matter MORE, not less.
+	//
+	// The cost this trades away is real: with strict on, a queue of N ready
+	// pull requests turns every merge into a rebase of the other N-1, and
+	// each rebase re-runs the full CI matrix -- a cost that scales with
+	// queue depth while the benefit (catching a genuine semantic conflict)
+	// does not. That tradeoff is the operator's to make, not `orion
+	// protect`'s to assume.
+	RequireUpToDate bool `json:"require_up_to_date"`
 }
 
 // Attribution instruments commits with whodunit (`dun`), which records what
@@ -468,6 +527,21 @@ type Config struct {
 	// so the prefix could be changed but never removed: the config said one
 	// thing and the channel was named another.
 	slackPrefixSet bool
+	// vcsRequireUpToDateSet records whether vcs.require_up_to_date was
+	// actually present in the file, so `orion protect` can say whether the
+	// value it is enforcing came from orion.json or from the shipped
+	// default -- see VCSRequireUpToDateSource.
+	vcsRequireUpToDateSet bool
+}
+
+// VCSRequireUpToDateSource describes where VCS.RequireUpToDate's value came
+// from, for `orion protect` to state at the moment it enforces the setting
+// rather than leaving it to be discovered later from a merge refusal.
+func (c Config) VCSRequireUpToDateSource() string {
+	if c.vcsRequireUpToDateSet {
+		return "orion.json (vcs.require_up_to_date)"
+	}
+	return "default; not set in orion.json"
 }
 
 // Defaults returns the shipped baseline. These are deliberately
@@ -483,6 +557,8 @@ func Defaults() Config {
 			MaxSessionMinutes:      90,
 			MaxEditsWithoutVerify:  25,
 			MaxFilesTouched:        60,
+			MaxConcurrentChildren:  2,
+			MaxConcurrentTickets:   2,
 		},
 		Gates: Gates{
 			RequirePlanBeforeEdit:          false, // opt-in: too disruptive to force on an unconfigured repo
@@ -515,6 +591,7 @@ func Defaults() Config {
 			BranchPrefix:      "orion/",
 			AgentAuthorName:   "orionbot",
 			AgentAuthorEmail:  "orionbot@users.noreply.github.com",
+			RequireUpToDate:   true,
 		},
 		Budget: Budget{PauseAtPercent: []int{50, 75, 90, 95}},
 		// On by default: Orion performs the merge, so merging on a verdict
@@ -658,6 +735,15 @@ func Load(root string) Config {
 			_, prefixSet = probe["channel_prefix"]
 		}
 	}
+	// Same probe for vcs.require_up_to_date, so "explicitly false" can be
+	// told apart from "absent" even though both unmarshal to the same bool.
+	requireUpToDateSet := false
+	if vb, ok := raw["vcs"]; ok {
+		var probe map[string]json.RawMessage
+		if json.Unmarshal(vb, &probe) == nil {
+			_, requireUpToDateSet = probe["require_up_to_date"]
+		}
+	}
 
 	clean, _ := json.Marshal(raw)
 	if err := json.Unmarshal(clean, &cfg); err != nil {
@@ -669,6 +755,7 @@ func Load(root string) Config {
 	}
 	cfg.Root = root
 	cfg.slackPrefixSet = prefixSet
+	cfg.vcsRequireUpToDateSet = requireUpToDateSet
 	normalize(&cfg)
 	return cfg
 }
@@ -698,6 +785,17 @@ func normalize(c *Config) {
 	}
 	if c.Limits.MaxFilesTouched <= 0 {
 		c.Limits.MaxFilesTouched = d.Limits.MaxFilesTouched
+	}
+	if c.Limits.MaxConcurrentChildren <= 0 {
+		c.Limits.MaxConcurrentChildren = d.Limits.MaxConcurrentChildren
+	}
+	// Clamped rather than defaulted, because too HIGH is the dangerous
+	// direction here and the ceiling has to survive a hand edit.
+	if c.Limits.MaxConcurrentTickets <= 0 {
+		c.Limits.MaxConcurrentTickets = d.Limits.MaxConcurrentTickets
+	}
+	if c.Limits.MaxConcurrentTickets > MaxConcurrentTicketsCeiling {
+		c.Limits.MaxConcurrentTickets = MaxConcurrentTicketsCeiling
 	}
 	if c.Paths.State == "" {
 		c.Paths.State = d.Paths.State
