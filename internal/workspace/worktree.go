@@ -35,7 +35,14 @@ type Job struct {
 // its retry become one indistinguishable branch -- and if the first attempt
 // is still open as a pull request, the retry silently rewrites what a
 // reviewer is looking at. A suffix costs nothing and keeps attempts separate.
+// Held under LockRepo end to end, not per git command. The fetch, the base
+// lookup, the free-name search and the worktree add are ONE decision: two jobs
+// starting at once would otherwise both be told orion/or-184 is free, and the
+// second `worktree add -b` fails on a ref lock -- or, worse, succeeds after the
+// first has moved on, and two runs share a branch.
 func AddWorktree(ws *Workspace, base, desired string) (*Job, error) {
+	defer LockRepo(ws)()
+
 	repo := filepath.Join(ws.Dir, "repo")
 	if _, err := os.Stat(repo); err != nil {
 		return nil, fmt.Errorf("no sandbox clone at %s: run orion init in the repository first", repo)
@@ -116,6 +123,8 @@ func uniqueBranch(repo, desired string) (string, error) {
 // tidied up "finished jobs" would try to delete the sandbox every project
 // depends on.
 func ListWorktrees(ws *Workspace) ([]Job, error) {
+	defer LockRepo(ws)()
+
 	repo := filepath.Join(ws.Dir, "repo")
 	out, err := git(repo, "worktree", "list", "--porcelain")
 	if err != nil {
@@ -222,7 +231,13 @@ func RemoveMergedWorktree(ws *Workspace, path string) error {
 	return removeWorktree(ws, path, false, true)
 }
 
+// Locked for the same reason AddWorktree is: the guards read the shared refs
+// (`log --not --remotes`) and the removal rewrites .git/worktrees, so a
+// removal running against a concurrent `worktree add` is two writers on one
+// registry.
 func removeWorktree(ws *Workspace, path string, force, merged bool) error {
+	defer LockRepo(ws)()
+
 	if !force {
 		if dirty, detail := Dirty(path); dirty {
 			return fmt.Errorf("%s has uncommitted work:\n%s\n"+

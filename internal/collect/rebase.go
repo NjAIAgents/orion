@@ -100,7 +100,15 @@ func behind(res Result, key string, pr PR, branch string, cfg config.Config,
 	}
 
 	dir := worktreeOrRepo(ws, branch)
-	if err := rebaseOnto(dir, base, branch, pr.Head); err != nil {
+	// A rebase in a job worktree is still git against the SHARED clone: it
+	// fetches, rewrites refs and force-pushes through the one object store
+	// every other job's worktree hangs off. With tickets running concurrently
+	// this can land while another job is creating or removing a worktree, so
+	// it takes the same lock they do (see workspace/gitlock.go).
+	unlock := workspace.LockRepo(ws)
+	err := rebaseOnto(dir, base, branch, pr.Head)
+	unlock()
+	if err != nil {
 		// Loud, and then exactly the old behaviour. The branch is unchanged,
 		// so the three commands are still the right ones to print.
 		ui.Warn(w, "%s: could not rebase %s automatically (%v)", key, branch, err)
