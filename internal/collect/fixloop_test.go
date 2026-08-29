@@ -17,13 +17,14 @@ type fixSpy struct {
 	pushed  bool
 	err     error
 	summary string
+	denied  *PolicyDenial
 	sawAll  []string
 }
 
-func (f *fixSpy) fix(_ *workspace.Workspace, _, _, failure string) (bool, string, error) {
+func (f *fixSpy) fix(_ *workspace.Workspace, _, _, failure string) (bool, string, *PolicyDenial, error) {
 	f.calls++
 	f.sawAll = append(f.sawAll, failure)
-	return f.pushed, f.summary, f.err
+	return f.pushed, f.summary, f.denied, f.err
 }
 
 // ciRepo builds a bound project with the fix loop switched on.
@@ -166,6 +167,61 @@ func TestAnAgentThatChangesNothingEndsTheLoop(t *testing.T) {
 	}
 	if !strings.Contains(out, "no change") {
 		t.Errorf("got: %s", out)
+	}
+}
+
+// The message must not say the agent doesn't know how to fix this when it
+// was never permitted to try -- OR-172 printed exactly that contradiction:
+// a root cause diagnosed correctly, reported as evidence of not knowing how.
+// The two failures need different remedies, so the message must name what
+// was blocked, and the agent's own diagnosis must survive as a hand-off
+// rather than being thrown away with the run (OR-174).
+func TestAPolicyDenialIsDistinctFromGivingUp(t *testing.T) {
+	home, wsDir := ciRepo(t, 3)
+	f := &fixSpy{pushed: false, denied: &PolicyDenial{
+		Tool: "Edit", Path: ".github/workflows/ci.yml", Rule: ".github/workflows/**",
+		HandOff: "Root cause: ci.yml's concurrency.group needs a pull_request.number fallback.",
+	}}
+
+	_, out := runFix(t, home, f, "some failure", Options{})
+
+	if strings.Contains(out, "does not know how to fix this") {
+		t.Errorf("a policy denial must not read as the agent not knowing how: %s", out)
+	}
+	if !strings.Contains(out, "blocked by policy") {
+		t.Errorf("the message must say it was blocked by policy: %s", out)
+	}
+	if !strings.Contains(out, "Edit(.github/workflows/ci.yml)") {
+		t.Errorf("the tool and path must be named: %s", out)
+	}
+	if !strings.Contains(out, ".github/workflows/**") {
+		t.Errorf("the matched rule must be named: %s", out)
+	}
+	if !strings.Contains(out, "concurrency.group needs a pull_request.number fallback") {
+		t.Errorf("the agent's own hand-off must reach the console, not be thrown away: %s", out)
+	}
+	if got := loadFixes(wsDir).States["FCIA-6"].Count(); got != 0 {
+		t.Fatalf("a policy-denied attempt must not spend the fix budget, got %d attempts recorded", got)
+	}
+}
+
+// Proven by driving it past a ceiling that would stop a counted attempt
+// after one round: a denial can never succeed by retrying (the sandbox does
+// not change its mind), but it also must never be blamed on the agent's
+// three-attempt budget, which exists to measure the agent.
+func TestAPolicyDenialNeverSpendsTheCeiling(t *testing.T) {
+	home, wsDir := ciRepo(t, 1) // a ceiling that would stop a real attempt at 1
+	f := &fixSpy{pushed: false, denied: &PolicyDenial{Tool: "Edit", Path: "orion.json", Rule: "orion.json"}}
+
+	for i := 0; i < 3; i++ {
+		runFix(t, home, f, "some failure", Options{})
+	}
+
+	if f.calls != 3 {
+		t.Fatalf("a retracted attempt must not trip the ceiling: expected 3 agent runs, got %d", f.calls)
+	}
+	if got := loadFixes(wsDir).States["FCIA-6"].Count(); got != 0 {
+		t.Fatalf("attempts recorded = %d, want 0 -- a policy denial proves nothing about the agent", got)
 	}
 }
 

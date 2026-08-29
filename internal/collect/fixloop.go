@@ -96,13 +96,23 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 			"it stops and says so._", quote(pr.Detail), link(pr.URL, "open it"), max),
 	})
 
-	pushed, summary, err := deps.Fix(ws, key, branch, pr.Detail)
+	pushed, summary, denied, err := deps.Fix(ws, key, branch, pr.Detail)
 	if err != nil {
 		giveUp(key, ws, log, w, "the fix run failed: "+err.Error())
 		res.Err = err
 		return false, res
 	}
 	if !pushed {
+		// A policy denial is not the agent failing to see the fix -- it saw
+		// it and was not permitted to apply it. Reporting it the same way as
+		// "does not know how to fix this" contradicts itself in one sentence
+		// (OR-174): a root cause named exactly right is not evidence of not
+		// knowing. It also does not spend an attempt: no attempt was ever
+		// possible, so the count just recorded is retracted below.
+		if denied != nil {
+			blockedByPolicy(key, ws, log, w, *denied)
+			return false, res
+		}
 		// Exit 0 with nothing pushed means the agent could not see what to
 		// change. Another identical attempt would produce the same nothing.
 		// The agent's own closing message says why, when it said anything --
@@ -233,4 +243,35 @@ func giveUp(key string, ws *workspace.Workspace, log *events.Log, w io.Writer, w
 	ui.Warn(w, "%s: giving up on fixing CI -- %s", key, why)
 	log.Emit(events.Event{Kind: events.KindFailed, Actor: events.ActorOrion,
 		Msg: "stopped fixing: " + why})
+}
+
+// blockedByPolicy reports a fix run refused by the sandbox, and hands the
+// agent's own diagnosis to a human rather than discarding it with the run.
+//
+// Deliberately NOT giveUp: "giving up" says the agent tried and failed, and
+// this is the opposite -- it was not permitted to try. Retrying changes
+// nothing here, which is also why the loop still stops (tryFix returns
+// false, same as giveUp), but unlike giveUp this attempt did not prove
+// anything about the agent, so it is retracted rather than counted.
+func blockedByPolicy(key string, ws *workspace.Workspace, log *events.Log, w io.Writer, denied PolicyDenial) {
+	reason := fmt.Sprintf("blocked by policy: %s(%s)", denied.Tool, denied.Path)
+	if denied.Rule != "" {
+		reason += fmt.Sprintf(" matches the protected rule %q", denied.Rule)
+	}
+	ui.Warn(w, "%s: %s -- no further attempt can fix this; a human must apply the change", key, reason)
+	log.Emit(events.Event{Kind: events.KindBlocked, Actor: events.ActorOrion,
+		Msg: "stopped fixing: " + reason})
+
+	if denied.HandOff != "" {
+		ui.Warn(w, "%s: hand-off for a human -- the agent's own diagnosis:\n%s", key, denied.HandOff)
+		log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorImplementer,
+			Msg: "hand-off for a human: " + denied.HandOff})
+	}
+
+	// This attempt proved nothing about the agent; it never had the chance
+	// to try. Retracting keeps the ceiling measuring what it is meant to
+	// measure -- attempts the agent actually got to make.
+	if err := retractAttempt(ws.Dir, key); err != nil {
+		ui.Warn(w, "%s: could not retract the denied attempt: %v", key, err)
+	}
 }

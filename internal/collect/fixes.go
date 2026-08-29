@@ -136,6 +136,48 @@ func clearFixes(wsDir, key string) error {
 	return writeFixes(wsDir, f)
 }
 
+// retractAttempt undoes the single most recent attempt for a ticket.
+//
+// recordAttempt is deliberately written BEFORE the fix run, so a crash mid-run
+// still spends the attempt. A policy denial is not a crash: the run finished
+// cleanly and reported, with certainty, that the sandbox itself refused the
+// only edit the agent tried. That proves nothing about the agent, so it must
+// not spend part of a three-attempt budget meant to measure the agent (OR-174).
+//
+// Only the LAST attempt is removed, not the whole history -- a prior genuine
+// attempt on this ticket still counts.
+func retractAttempt(wsDir, key string) error {
+	f := loadFixes(wsDir)
+	s, ok := f.States[key]
+	if !ok || len(s.Attempts) == 0 {
+		return nil
+	}
+	s.Attempts = s.Attempts[:len(s.Attempts)-1]
+	f.States[key] = s
+	return writeFixes(wsDir, f)
+}
+
+// PolicyDenial records that a fix run was refused by the sandbox itself,
+// rather than abandoned by the agent.
+//
+// The distinction is the point of OR-174: "produced no change" collapses two
+// different failures into one message -- an agent that does not know how to
+// fix something, and an agent that knew exactly what to change and was not
+// permitted to touch the file. The first calls for another attempt or a
+// human to think about it; the second calls for a human to apply the diff,
+// and no further attempt will ever succeed.
+type PolicyDenial struct {
+	// Tool, Path and Rule name what was refused and why, so the message is
+	// actionable rather than a restatement of "blocked": "Blocked by policy:
+	// Edit(.github/workflows/**)" tells a reader exactly what to go change.
+	Tool, Path, Rule string
+	// HandOff is the agent's own closing message, kept in full rather than
+	// reduced to a one-line summary. On OR-172 the agent had already written
+	// the exact one-line fix in prose; this is what carries it to the human
+	// who has to apply it, instead of throwing it away with the run.
+	HandOff string
+}
+
 func writeFixes(wsDir string, f fixFile) error {
 	p := fixPath(wsDir)
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
