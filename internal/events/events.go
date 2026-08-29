@@ -71,6 +71,7 @@ const (
 	ActorRouter      = "router"      // decides which advisor a question belongs to
 	ActorImplementer = "implementer" // works a backend ticket
 	ActorFrontend    = "frontend"    // works a UI ticket
+	ActorDocs        = "docs"        // works a documentation ticket
 	ActorArchitect   = "architect"
 	ActorPM          = "pm"
 	ActorDevOps      = "devops"    // repairs a red build
