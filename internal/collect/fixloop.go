@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/config"
@@ -75,7 +76,7 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 	// Counted BEFORE the run. A crash mid-fix must not refund the attempt --
 	// a ceiling that resets whenever the process dies is no ceiling at all,
 	// and process death is exactly what a runaway loop tends to produce.
-	state, err := recordAttempt(ws.Dir, key, branch, fp, pr.Detail)
+	state, err := recordAttempt(ws.Dir, key, branch, fp, pr.Detail, pr.Head)
 	if err != nil {
 		ui.Warn(w, "could not record the fix attempt: %v", err)
 		return false, res
@@ -96,13 +97,23 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 			"it stops and says so._", quote(pr.Detail), link(pr.URL, "open it"), max),
 	})
 
-	pushed, summary, err := deps.Fix(ws, key, branch, pr.Detail)
+	pushed, summary, denied, err := deps.Fix(ws, key, branch, pr.Detail, log)
 	if err != nil {
 		giveUp(key, ws, log, w, "the fix run failed: "+err.Error())
 		res.Err = err
 		return false, res
 	}
 	if !pushed {
+		// A policy denial is not the agent failing to see the fix -- it saw
+		// it and was not permitted to apply it. Reporting it the same way as
+		// "does not know how to fix this" contradicts itself in one sentence
+		// (OR-174): a root cause named exactly right is not evidence of not
+		// knowing. It also does not spend an attempt: no attempt was ever
+		// possible, so the count just recorded is retracted below.
+		if denied != nil {
+			blockedByPolicy(key, ws, log, w, *denied)
+			return false, res
+		}
 		// Exit 0 with nothing pushed means the agent could not see what to
 		// change. Another identical attempt would produce the same nothing.
 		// The agent's own closing message says why, when it said anything --
@@ -115,6 +126,15 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 		}
 		giveUp(key, ws, log, w, reason)
 		return false, res
+	}
+
+	// The same summary the run just stated its root cause in (OR-157) is
+	// what proposeLesson reads back at merge time -- attached to the attempt
+	// now because this is the only place it is ever known. Best-effort: a
+	// lesson field failing to write must never turn a pushed fix into a
+	// reported failure.
+	if err := recordRootCause(ws.Dir, key, summary); err != nil {
+		ui.Warn(w, "could not record the fix's root cause: %v", err)
 	}
 
 	// The one-line summary is the point of OR-129: without it this event and
@@ -136,8 +156,25 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 	return true, res
 }
 
-// proposeLesson files a lesson candidate when a branch that went red was
-// fixed and then merged.
+// lessonNotice is what recordLesson learned, held until the merge it came
+// from has been fully reported. Printing it eagerly is the OR-178 bug: a
+// retrospective bookkeeping request rendered inside the merge report reads as
+// a live problem WITH that merge.
+type lessonNotice struct {
+	key         string
+	recordErr   error // set means: announce a "could not record" warning, nothing else
+	text        string
+	signature   string
+	strikes     int
+	evidence    []string
+	anchor      string // e.g. "3f38370, 2026-08-29 06:13" -- names the run this is ABOUT
+	channel     string
+	workspaceID string
+}
+
+// recordLesson files a lesson candidate when a branch that went red was
+// fixed and then merged, and returns what should be announced once the merge
+// report has finished -- nil when there is nothing to say yet.
 //
 // This is the shape a lesson wants: a mistake with a correction attached, both
 // observed by the system rather than inferred. CI said what broke, an agent
@@ -145,22 +182,39 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 // decides the lesson is TRUE -- it only says this happened, here, on this date,
 // and files it for a human to accept or throw away.
 //
-// It proposes on every such merge; the two-strike rule inside the store is what
-// decides when a person is actually asked. A build that goes red once is a bad
-// afternoon. The same build going red the same way a second time is a rule
-// nobody has written down yet.
+// It observes on every such merge; the two-strike rule inside the store is
+// what decides when a person is actually asked. A build that goes red once is
+// a bad afternoon. The same build going red the same way a second time is a
+// rule nobody has written down yet.
+//
+// Called BEFORE the fix history is cleared -- this is the only moment both
+// halves (what broke, and that it was fixed) exist together -- so the read
+// cannot be deferred to announcement time the way the printing can.
 //
 // Best-effort throughout. The merge has already happened, and a memory-keeping
 // failure must never turn a successful merge into a reported failure.
-func proposeLesson(key string, pr PR, state FixState, source string,
-	ws *workspace.Workspace, log *events.Log, w io.Writer) {
+func recordLesson(key string, pr PR, state FixState, source string,
+	ws *workspace.Workspace, log *events.Log) *lessonNotice {
 
 	if len(state.Attempts) == 0 {
-		return // it merged without ever going red; there is no mistake to learn from
+		return nil // it merged without ever going red; there is no mistake to learn from
 	}
-	failure := firstLine(state.Attempts[0].Detail)
-	if failure == "" {
-		return // nothing grounded to say about it
+
+	first := state.Attempts[0]
+
+	// The root cause comes from the LAST attempt: the one whose fix actually
+	// stuck, since the merge proves it. Keying on it -- not the CI check name
+	// -- is the point of OR-177: a repo with one job matrix produces the same
+	// check name for every failure it will ever have, so that fallback
+	// collapses a gofmt violation, a broken build and a failing test into one
+	// lesson that only ever says "CI sometimes fails." An attempt with no
+	// stated root cause -- an older run, or a fix loop that gave up before
+	// ever stating one -- has nothing transferable to propose, so it
+	// proposes NOTHING rather than falling back to the check name. A store of
+	// vacuous lessons is worse than an empty one: a reviewer stops reading.
+	rootCause := normalizeRootCause(state.Attempts[len(state.Attempts)-1].RootCause)
+	if rootCause == "" {
+		return nil
 	}
 	// The same identifier the session hook scopes lessons by, so a lesson
 	// recorded here is one the next session in that repo actually reads.
@@ -170,14 +224,14 @@ func proposeLesson(key string, pr PR, state FixState, source string,
 	}
 	last := state.Attempts[len(state.Attempts)-1].At
 
-	// The text carries only what recurs. Attempt counts, ticket keys and PR
-	// urls differ between two occurrences of the same mistake, so putting
-	// them in the text would give every sighting its own signature and the
-	// second strike would never land. They go in the evidence instead, which
-	// is per-sighting and is what a reviewer reads to judge the proposal.
-	text := fmt.Sprintf("CI failed with %q, and the branch needed a fix before it could merge.", failure)
-	evidence := fmt.Sprintf("%s in %s on %s: %d fix attempt(s), merged %s",
-		key, project, last.Format("2006-01-02"), state.Count(), pr.URL)
+	// The text carries only the normalized root cause -- the mechanism, not
+	// the specifics of this one sighting. The CI check name, ticket key,
+	// attempt count and PR url differ between two occurrences of the same
+	// mistake, so they go in the evidence instead, which is per-sighting and
+	// is what a reviewer reads to judge the proposal.
+	text := rootCause
+	evidence := fmt.Sprintf("%s in %s on %s: CI failed with %q, %d fix attempt(s), merged %s",
+		key, project, last.Format("2006-01-02"), state.Attempts[0].Detail, state.Count(), pr.URL)
 
 	store := lessons.New(workspace.Home())
 	c, err := store.Observe(lessons.Proposal{
@@ -189,8 +243,7 @@ func proposeLesson(key string, pr PR, state FixState, source string,
 		Stack:    lessons.DetectStack(source),
 	})
 	if err != nil {
-		ui.Warn(w, "could not record a lesson proposal: %v", err)
-		return
+		return &lessonNotice{key: key, recordErr: err}
 	}
 	if log != nil {
 		log.Emitf(events.KindNote, events.ActorOrion,
@@ -200,19 +253,88 @@ func proposeLesson(key string, pr PR, state FixState, source string,
 		// Seen once. Saying nothing is deliberate: asking a person about
 		// every one-off is how an approval prompt becomes noise they dismiss
 		// without reading, which costs more than the lesson is worth.
+		return nil
+	}
+	return &lessonNotice{
+		key: key, text: text, signature: c.Signature, strikes: c.Strikes,
+		evidence: c.Evidence, anchor: anchorFor(first),
+		channel: channelOf(ws), workspaceID: ws.ID,
+	}
+}
+
+// anchorFor names the run a lesson is ABOUT: the commit that failed, and
+// when. Without this, "CI failed ... and the branch needed a fix" is a
+// past-tense clause with nothing marking it retrospective or saying which
+// run it describes -- a reader watching a live merge cannot tell it is not
+// about the merge in front of them (OR-178).
+func anchorFor(a Attempt) string {
+	when := a.At.Local().Format("2006-01-02 15:04")
+	if a.Head == "" {
+		return when
+	}
+	sha := a.Head
+	if len(sha) > 9 {
+		sha = sha[:9]
+	}
+	return fmt.Sprintf("%s, %s", sha, when)
+}
+
+// announceLesson prints and notifies about a lesson recorded earlier by
+// recordLesson. Called strictly AFTER the merge has finished being reported,
+// never between its lines: a request to review a past mistake is not a fact
+// about the merge just announced, and printing it there is what turned a
+// clean merge into something that read as a supervisor shipping over a red
+// build (OR-178).
+//
+// Given its own level -- reused from the informational one already used for
+// the matching Slack message -- rather than WARNING. Nothing is wrong and
+// nothing is at risk; a bookkeeping entry waiting for review is not a live
+// problem, and WARNING is the word this renderer uses for those.
+func announceLesson(n *lessonNotice, w io.Writer, log *events.Log) {
+	if n == nil {
 		return
 	}
-	ui.Warn(w, "a lesson is waiting for your decision: %s\n  approve it with: orion lessons approve %s", text, c.Signature)
+	if n.recordErr != nil {
+		ui.Warn(w, "could not record a lesson proposal: %v", n.recordErr)
+		return
+	}
+	ui.Ok(w, "note", "%s: from an earlier failure on this ticket (%s): %s\n"+
+		"          a lesson is waiting for your decision -- approve it with: orion lessons approve %s",
+		n.key, n.anchor, n.text, n.signature)
 	tell(w, log, notify.Event{
-		Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
+		Channel: n.channel, Level: notify.Info, Workspace: n.workspaceID,
 		Title: "A lesson is waiting for your decision",
 		Body: fmt.Sprintf("*This has now happened %d times, so it may be a pattern worth remembering.*\n\n"+
-			"%s\n\n*Where it was seen*\n%s\n\n"+
+			"From an earlier failure on this ticket (%s):\n%s\n\n*Where it was seen*\n%s\n\n"+
 			"Nothing has been recorded yet. Approve it and it is injected into every future session's "+
 			"CLAUDE.md; reject it and it is never asked about again.\n\n"+
 			"```\norion lessons approve %s\norion lessons reject %s\n```",
-			c.Strikes, quote(text), quote(strings.Join(c.Evidence, "\n")), c.Signature, c.Signature),
+			n.strikes, n.anchor, quote(n.text), quote(strings.Join(n.evidence, "\n")), n.signature, n.signature),
 	})
+}
+
+var (
+	// A branch name of the form "fix/OR-114-gofmt", matched before the file
+	// path pattern below since it would otherwise be swallowed as one.
+	rootCauseBranchRe = regexp.MustCompile(`\b[\w][\w-]*/[A-Z][A-Z0-9]{1,9}-\d+[\w-]*\b`)
+	// A path or filename with an extension, e.g. "internal/work/work_test.go"
+	// or "scripts/test.sh". Requiring the extension keeps ordinary prose like
+	// "before build/test" intact -- it has no dot, so it is not a path.
+	rootCauseFileRe = regexp.MustCompile(`\b[\w][\w./-]*\.[a-zA-Z]{1,6}\b`)
+	rootCauseKeyRe  = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-\d+\b`)
+)
+
+// normalizeRootCause strips what is unique to ONE sighting -- a file path, a
+// branch name, a ticket key -- so two occurrences of the same underlying
+// mistake collapse to the same lesson even when they hit different files on
+// different tickets. What survives is the mechanism: why the code produced
+// the failure, which is the part a future session can actually act on.
+func normalizeRootCause(s string) string {
+	s = rootCauseBranchRe.ReplaceAllString(s, "a branch")
+	s = rootCauseFileRe.ReplaceAllString(s, "a file")
+	s = rootCauseKeyRe.ReplaceAllString(s, "")
+	s = strings.Join(strings.Fields(s), " ")
+	return strings.Trim(s, " ,-")
 }
 
 // giveUp records why the loop stopped, without marking the ticket.
@@ -233,4 +355,35 @@ func giveUp(key string, ws *workspace.Workspace, log *events.Log, w io.Writer, w
 	ui.Warn(w, "%s: giving up on fixing CI -- %s", key, why)
 	log.Emit(events.Event{Kind: events.KindFailed, Actor: events.ActorOrion,
 		Msg: "stopped fixing: " + why})
+}
+
+// blockedByPolicy reports a fix run refused by the sandbox, and hands the
+// agent's own diagnosis to a human rather than discarding it with the run.
+//
+// Deliberately NOT giveUp: "giving up" says the agent tried and failed, and
+// this is the opposite -- it was not permitted to try. Retrying changes
+// nothing here, which is also why the loop still stops (tryFix returns
+// false, same as giveUp), but unlike giveUp this attempt did not prove
+// anything about the agent, so it is retracted rather than counted.
+func blockedByPolicy(key string, ws *workspace.Workspace, log *events.Log, w io.Writer, denied PolicyDenial) {
+	reason := fmt.Sprintf("blocked by policy: %s(%s)", denied.Tool, denied.Path)
+	if denied.Rule != "" {
+		reason += fmt.Sprintf(" matches the protected rule %q", denied.Rule)
+	}
+	ui.Warn(w, "%s: %s -- no further attempt can fix this; a human must apply the change", key, reason)
+	log.Emit(events.Event{Kind: events.KindBlocked, Actor: events.ActorOrion,
+		Msg: "stopped fixing: " + reason})
+
+	if denied.HandOff != "" {
+		ui.Warn(w, "%s: hand-off for a human -- the agent's own diagnosis:\n%s", key, denied.HandOff)
+		log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorImplementer,
+			Msg: "hand-off for a human: " + denied.HandOff})
+	}
+
+	// This attempt proved nothing about the agent; it never had the chance
+	// to try. Retracting keeps the ceiling measuring what it is meant to
+	// measure -- attempts the agent actually got to make.
+	if err := retractAttempt(ws.Dir, key); err != nil {
+		ui.Warn(w, "%s: could not retract the denied attempt: %v", key, err)
+	}
 }

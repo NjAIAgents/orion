@@ -12,6 +12,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
+	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -201,6 +202,47 @@ func TestQAFindingsGoToTheDeveloperAndAreReVerified(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "A person needs to look") {
 		t.Error("a cleared finding escalated to a person")
+	}
+}
+
+// OR-171. A ticket routed to a non-default actor must have its QA fix round
+// resume THAT actor, not the implementer -- otherwise a UI ticket's fix lands
+// on the backend developer's session and the run reports two different
+// authors for one branch.
+func TestQAFixLoopResumesTheRoutedActorNotTheImplementer(t *testing.T) {
+	home := project(t, qaCfg)
+	j := &fakeJira{issue: &tracker.Issue{
+		Key: "FCIA-6", Summary: "restyle the button", Labels: []string{"ui"},
+		URL: "https://x/browse/FCIA-6",
+	}}
+	f := &qaFake{t: t, qaReplies: []string{
+		"The button color is wrong.",
+		"QA CLEAN",
+	}}
+
+	var ticketActors []string
+	var out strings.Builder
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				if o.Stage == "ticket" {
+					ticketActors = append(ticketActors, o.Actor)
+				}
+				return f.run(ws, o)
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	if len(ticketActors) != 2 {
+		t.Fatalf("%d ticket-stage runs; expected the implementing run and the fix round: %v",
+			len(ticketActors), ticketActors)
+	}
+	for i, a := range ticketActors {
+		if a != events.ActorFrontend {
+			t.Errorf("ticket run %d ran as %q, want %q (the routed actor)", i, a, events.ActorFrontend)
+		}
 	}
 }
 

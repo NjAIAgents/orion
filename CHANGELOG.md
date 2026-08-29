@@ -6,6 +6,80 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.7.10
+
+The parallelism release. Two of these are the same bug in different clothes:
+the loop breaker punished fan-out, and the write primitive underneath it was
+not safe for it either. Both had to go before subagents could be used at all.
+
+### Added
+
+- The CI fix loop triages a failing job's log through a cheap subagent before
+  the fix run sees it, so the raw log no longer rides along on every turn of
+  that run: only a short report of what broke and why does. A CI log runs to
+  thousands of lines and everything in a prompt is re-sent every turn, so the
+  log was being paid for repeatedly to say one thing once. The triage run is
+  its own actor on its own pinned cheap model, attributed to the same ticket,
+  so its spend is a separate row in the cost report rather than hidden inside
+  the fix run's total. Triage failing for any reason falls back to the raw
+  log, so this can only reduce what is sent, never withhold it (OR-143).
+- Tickets are routed to the actor matching their label, component or issue
+  type instead of every ticket landing on the backend developer. A
+  `documentation` label goes to a new docs actor on sonnet; a UI label goes to
+  the frontend actor, which had been in the roster and configurable since it
+  was written and had never once worked a ticket; everything else still
+  defaults to the implementer, and the run says which actor it picked and
+  why. QA's fix loop resumes the actor that opened the branch, so a routed
+  ticket's fix is not committed under a different actor's session (OR-171).
+
+### Fixed
+
+- The loop breaker no longer trips on parallel fan-out. A subagent shares its
+  parent's session id but writes its own transcript, and the identical-call
+  counter keyed on the session, so a parent and its child each innocently
+  reading the same file summed into a false `breaker/loop` trip that killed
+  the run outright. It now keys on the transcript. This breaker was
+  penalising exactly the behaviour it was least suited to judge, and it had
+  already killed two runs (OR-170).
+- `procsafe.WriteFile` could publish a mixture of two writers inside one
+  process. The temporary file was named from the pid and the clock, and every
+  goroutine in a process shares a pid, so two starting in the same nanosecond
+  opened the same temporary file, interleaved into it, and renamed the blend
+  into place. Across processes, which is what it was written for, it was
+  always safe; within one it was not, and that is what parallel agents are
+  made of. Now uses `os.CreateTemp`, and restores the caller's file mode
+  before publishing so the visible file is never briefly 0600 (OR-180).
+- `orion collect` reads the branch a job actually used instead of recomputing
+  it by convention, so a retried ticket, whose branch takes a `-2` suffix to
+  avoid colliding with a prior attempt's open pull request, is no longer
+  looked up under a name that never existed (OR-173).
+- A ticket in `orion-ci-wait` whose pull request cannot be found is released
+  and marked for a human instead of being polled forever. One ticket sat
+  printing the same warning every two minutes for ninety minutes while its
+  work was finished, green and unmerged (OR-173).
+- The CI fix loop tells a sandbox-policy denial apart from an agent that
+  could not see the fix. When the sandbox refuses the agent's only edit, for
+  example under `.github/workflows/**`, Orion now reports "blocked by policy"
+  naming the tool, path and matched rule, hands off the agent's own diagnosis
+  in full rather than discarding it, and does not spend the denied attempt
+  against the three-attempt budget. It previously reported a correct,
+  complete diagnosis as "the agent does not know how to fix this" (OR-174).
+- The CI fix loop's activity goes through the same attributed logger as every
+  other supervised run rather than a hand-rolled callback: console lines
+  carry the ticket, actor and model, and every tool call reaches the event
+  log again. They were not being recorded at all (OR-176).
+- Lesson proposals are keyed on the fix run's stated root cause rather than
+  the CI check name, which in a repo with one job matrix is identical for
+  every failure that will ever happen and collapsed all of them into a single
+  vacuous "CI sometimes fails". The cause is normalised, so two sightings of
+  one mistake in different files still count as a repeat, and a run that
+  stated no cause proposes nothing at all (OR-177).
+- A pending lesson no longer prints between "merged on approval" and "merged
+  into the integration branch" at WARNING level in bare past tense, which
+  made a correctly merged green branch read as a merge over a red build. It
+  prints after the merge is fully reported, informationally, and names the
+  commit and time of the failure it is about (OR-178).
+
 ## v0.7.9
 
 ### Added

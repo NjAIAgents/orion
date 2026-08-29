@@ -128,17 +128,30 @@ func defaults() map[string]Actor {
 		events.ActorRouter:      {ID: events.ActorRouter, Name: "Sam", Designation: "dispatcher", Model: "haiku"},
 		events.ActorImplementer: {ID: events.ActorImplementer, Name: "Ravi", Designation: "backend developer", Model: "opus"},
 		events.ActorFrontend:    {ID: events.ActorFrontend, Name: "Kai", Designation: "frontend developer", Model: "opus"},
-		events.ActorArchitect:   {ID: events.ActorArchitect, Name: "Navjyot", Designation: "architect", Model: "opus"},
-		events.ActorPM:          {ID: events.ActorPM, Name: "Priya", Designation: "product manager", Model: "sonnet"},
-		events.ActorDevOps:      {ID: events.ActorDevOps, Name: "Arjun", Designation: "devops engineer", Model: "sonnet"},
-		events.ActorDescriber:   {ID: events.ActorDescriber, Name: "Dana", Designation: "PR writer", Model: "sonnet"},
+		// Docs writes ADRs and other prose from a codebase that already exists.
+		// Sonnet, the same argument as QA's: the source of truth is already
+		// committed, so the work is careful reading and structured writing
+		// rather than design, and opus would pay implementer prices for it.
+		events.ActorDocs:      {ID: events.ActorDocs, Name: "Iris", Designation: "docs engineer", Model: "sonnet"},
+		events.ActorArchitect: {ID: events.ActorArchitect, Name: "Navjyot", Designation: "architect", Model: "opus"},
+		events.ActorPM:        {ID: events.ActorPM, Name: "Priya", Designation: "product manager", Model: "sonnet"},
+		events.ActorDevOps:    {ID: events.ActorDevOps, Name: "Arjun", Designation: "devops engineer", Model: "sonnet"},
+		events.ActorDescriber: {ID: events.ActorDescriber, Name: "Dana", Designation: "PR writer", Model: "sonnet"},
 		// QA derives its cases from the ticket's acceptance criteria and
 		// writes tests against them. Sonnet: the specification is written
 		// down, so the work is careful reading rather than design, and opus
 		// would be paying implementer prices to author test files.
-		events.ActorQA:    {ID: events.ActorQA, Name: "Anita", Designation: "QA engineer", Model: "sonnet"},
-		events.ActorCI:    {ID: events.ActorCI, Designation: "ci"},
-		events.ActorHuman: {ID: events.ActorHuman, Designation: "you"},
+		events.ActorQA: {ID: events.ActorQA, Name: "Anita", Designation: "QA engineer", Model: "sonnet"},
+		// Log triage reads a failing CI log and reports what broke, so the fix
+		// run that follows carries that report instead of the raw log riding
+		// along on every turn (OR-143). Haiku: the reading is mechanical --
+		// find the failure in a wall of output -- not the judgement the fix
+		// itself takes, and it runs on every red build, so it is the one
+		// actor for which the model is a real cost decision besides the
+		// developer.
+		events.ActorLogTriage: {ID: events.ActorLogTriage, Name: "Milo", Designation: "log triage", Model: "haiku"},
+		events.ActorCI:        {ID: events.ActorCI, Designation: "ci"},
+		events.ActorHuman:     {ID: events.ActorHuman, Designation: "you"},
 	}
 }
 

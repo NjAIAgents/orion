@@ -55,7 +55,10 @@ const (
 	// VerdictClosed: closed without merging. A human decided against it,
 	// and Orion must not treat that as a failure to retry.
 	VerdictClosed Verdict = "closed"
-	// VerdictUnknown: no pull request found for the branch.
+	// VerdictUnknown: no pull request found for the branch. Terminal, not
+	// pending: taken out of ci-wait and left for a human rather than polled
+	// forever, because nothing about the next tick makes a missing pull
+	// request more findable than this one did (OR-173).
 	VerdictUnknown Verdict = "unknown"
 	// VerdictStale: the branch merges cleanly but its checks were produced
 	// against a base that has since moved, so they are not evidence about
@@ -107,7 +110,14 @@ type Deps struct {
 	Merge func(dir, branch, reason, strategy string) error
 	// Fix sends a CI failure back to an agent on the same branch and reports
 	// whether it pushed anything. Nil disables the fix loop.
-	Fix func(ws *workspace.Workspace, key, branch, failure string) (pushed bool, summary string, err error)
+	//
+	// denied is non-nil when nothing was pushed because the sandbox itself
+	// refused the agent's edit -- a different failure from the agent not
+	// knowing what to change, and one no further attempt can fix (OR-174).
+	//
+	// Takes the event log so the fix run's activity is attributed and recorded
+	// the same way every other supervised run's is (OR-176).
+	Fix func(ws *workspace.Workspace, key, branch, failure string, log *events.Log) (pushed bool, summary string, denied *PolicyDenial, err error)
 	// Slack reads approvals. Nil disables the approval path entirely, which
 	// is the correct behaviour when the extra OAuth scopes are not granted:
 	// Orion then reports that checks pass and waits for a human to merge.
@@ -301,7 +311,17 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	} else if msg != "" {
 		ui.Ok(w, "refresh", "%s", msg)
 	}
-	branch := branchFor(cfg.VCS.BranchPrefix, key)
+	// The branch a job actually used, not the one convention would predict.
+	// AddWorktree may have suffixed it (orion/or-156-2) to keep a retry off a
+	// prior attempt's still-open pull request, and recomputing the name here
+	// desynchronised from that the moment any ticket was ever retried --
+	// every tick after polled a branch that did not exist (OR-173).
+	// branchFor is now only the fallback for a ticket no job ever recorded,
+	// and callers are told when that happened.
+	branch, recordedBranch := workspace.BranchOf(ws, key)
+	if !recordedBranch {
+		branch = branchFor(cfg.VCS.BranchPrefix, key)
+	}
 
 	log, logErr := events.Open(events.Path(ws.Dir), events.Event{
 		Project: registry.ProjectOf(key), Key: key,
@@ -408,8 +428,47 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		return merged(res, key, pr, cfg, branch, opts, deps, ws, entry, log, w)
 	}
 
-	ui.Warn(w, "%s: no pull request found for %s.\n"+
-		"  It may have been opened by hand under another branch, or never opened at all.", key, branch)
+	return noPullRequest(res, key, branch, !recordedBranch, opts, deps, log, w)
+}
+
+// noPullRequest ends the search rather than repeating it.
+//
+// VerdictUnknown used to fall through to a bare warning and leave ci-wait in
+// place, so a ticket whose pull request could not be found was polled again
+// on the next tick, and every tick after that, forever -- no escalation, no
+// bound, work sitting finished and unmerged behind a watcher stuck warning
+// about it (OR-173). Treated like a CI failure instead: out of ci-wait,
+// orion-failed, and told which branch was searched and whether that name was
+// only a guess, so a human knows where to look next.
+func noPullRequest(res Result, key, branch string, guessed bool, opts Options,
+	deps Deps, log *events.Log, w io.Writer) Result {
+
+	detail := "no pull request found for " + branch + "."
+	if guessed {
+		detail += " That name is a guess from convention, not a recorded branch -- " +
+			"it may be suffixed if this ticket was ever retried."
+	}
+	detail += "\n  It may have been opened by hand under another branch, or never opened at all."
+
+	if opts.DryRun {
+		ui.Ok(w, "would", "%s: release it; %s", key, detail)
+		return res
+	}
+	if err := deps.Jira.SetLabels(key, []string{tracker.LabelFailed},
+		[]string{tracker.LabelCIWait}); err != nil {
+		res.Err = err
+		ui.Warn(w, "%s: could not relabel: %v", key, err)
+		return res
+	}
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorCI, detail+
+		"\n\nTaken out of ci-wait so nothing polls it forever. If the branch exists "+
+		"under a different name, find its pull request and finish it by hand; "+
+		"otherwise re-queue the ticket to start again."))
+
+	log.Emit(events.Event{Kind: events.KindFailed, Actor: events.ActorCI,
+		Msg: "no pull request found for " + branch})
+	res.Changed = true
+	ui.Warn(w, "%s: %s", key, detail)
 	return res
 }
 
@@ -507,8 +566,10 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	// A branch that went red and then merged is a mistake with its own
 	// correction attached, which is the one shape a lesson can be built from
 	// without an agent inferring anything. Read the history BEFORE it is
-	// cleared below -- this is the only moment both halves exist.
-	proposeLesson(key, pr, loadFixes(ws.Dir).States[key], entry.Source, ws, log, w)
+	// cleared below -- this is the only moment both halves exist. The
+	// resulting notice is not printed until after the merge report closes
+	// (OR-178); only the recording happens here.
+	lesson := recordLesson(key, pr, loadFixes(ws.Dir).States[key], entry.Source, ws, log)
 	// Forget the fix history, and the rebase count with it. A ticket reopened
 	// later must not start with either allowance already spent.
 	_ = clearFixes(ws.Dir, key)
@@ -532,6 +593,11 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 		Msg: "merged into the " + role + " " + mergedInto + ": " + pr.URL})
 	res.Changed = true
 	ui.Ok(w, "ok", "%s merged into the %s %s  %s", key, role, mergedInto, pr.URL)
+
+	// Only now, once the merge itself has been fully reported -- not a line
+	// earlier -- so a retrospective lesson can never be mistaken for a fact
+	// about the merge just announced (OR-178).
+	announceLesson(lesson, w, log)
 
 	// What the ticket cost, on the ticket and on the terminal, immediately
 	// after the merge is announced. Here rather than at the end of this
@@ -597,6 +663,11 @@ func lookupEntry(home, key string) (*registry.Entry, error) {
 	return registry.Lookup(home, key)
 }
 
+// branchFor guesses a ticket's branch by convention. It is only correct for
+// a ticket's FIRST attempt -- AddWorktree suffixes a retry's branch to avoid
+// colliding with a prior attempt's still-open pull request, and this has no
+// way to know a suffix was ever applied. Used only as a fallback when no job
+// has recorded a real branch for the key (OR-173); callers must say so.
 func branchFor(prefix, key string) string {
 	if prefix == "" {
 		prefix = "orion/"

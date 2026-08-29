@@ -32,6 +32,15 @@ type Attempt struct {
 	At          time.Time `json:"at"`
 	Fingerprint string    `json:"fingerprint"`
 	Detail      string    `json:"detail"`
+	// RootCause is the fix run's own diagnosis -- the first line of its
+	// closing message, which OR-157 requires it to lead with -- set only
+	// once the run actually pushed a fix. Empty for a round that never
+	// stated one: an older run, or one that gave up.
+	RootCause string `json:"root_cause,omitempty"`
+	// Head is the branch's commit at the moment this attempt failed. Carried
+	// so a lesson proposed from this history can later name what actually
+	// broke instead of a bare, unanchored past-tense clause (OR-178).
+	Head string `json:"head,omitempty"`
 }
 
 // FixState is the history for one ticket.
@@ -113,15 +122,33 @@ func loadFixes(wsDir string) fixFile {
 // leave the attempt uncounted, and the ceiling that exists to bound spending
 // would reset every time the process died -- which is exactly the condition
 // under which a runaway loop is most likely.
-func recordAttempt(wsDir, key, branch, fingerprint, detail string) (FixState, error) {
+func recordAttempt(wsDir, key, branch, fingerprint, detail, head string) (FixState, error) {
 	f := loadFixes(wsDir)
 	s := f.States[key]
 	s.Key, s.Branch = key, branch
 	s.Attempts = append(s.Attempts, Attempt{
-		At: time.Now().UTC(), Fingerprint: fingerprint, Detail: firstLine(detail),
+		At: time.Now().UTC(), Fingerprint: fingerprint, Detail: firstLine(detail), Head: head,
 	})
 	f.States[key] = s
 	return s, writeFixes(wsDir, f)
+}
+
+// recordRootCause attaches the fix run's stated diagnosis to the attempt
+// that just pushed. Attempts are written BEFORE the run starts (see
+// recordAttempt, and why), so this fills in the one field that only exists
+// once the run has finished -- and only when it actually stated one.
+func recordRootCause(wsDir, key, rootCause string) error {
+	if strings.TrimSpace(rootCause) == "" {
+		return nil
+	}
+	f := loadFixes(wsDir)
+	s, ok := f.States[key]
+	if !ok || len(s.Attempts) == 0 {
+		return nil
+	}
+	s.Attempts[len(s.Attempts)-1].RootCause = rootCause
+	f.States[key] = s
+	return writeFixes(wsDir, f)
 }
 
 // clearFixes forgets a ticket's history, once it has merged or been given up
@@ -134,6 +161,48 @@ func clearFixes(wsDir, key string) error {
 	}
 	delete(f.States, key)
 	return writeFixes(wsDir, f)
+}
+
+// retractAttempt undoes the single most recent attempt for a ticket.
+//
+// recordAttempt is deliberately written BEFORE the fix run, so a crash mid-run
+// still spends the attempt. A policy denial is not a crash: the run finished
+// cleanly and reported, with certainty, that the sandbox itself refused the
+// only edit the agent tried. That proves nothing about the agent, so it must
+// not spend part of a three-attempt budget meant to measure the agent (OR-174).
+//
+// Only the LAST attempt is removed, not the whole history -- a prior genuine
+// attempt on this ticket still counts.
+func retractAttempt(wsDir, key string) error {
+	f := loadFixes(wsDir)
+	s, ok := f.States[key]
+	if !ok || len(s.Attempts) == 0 {
+		return nil
+	}
+	s.Attempts = s.Attempts[:len(s.Attempts)-1]
+	f.States[key] = s
+	return writeFixes(wsDir, f)
+}
+
+// PolicyDenial records that a fix run was refused by the sandbox itself,
+// rather than abandoned by the agent.
+//
+// The distinction is the point of OR-174: "produced no change" collapses two
+// different failures into one message -- an agent that does not know how to
+// fix something, and an agent that knew exactly what to change and was not
+// permitted to touch the file. The first calls for another attempt or a
+// human to think about it; the second calls for a human to apply the diff,
+// and no further attempt will ever succeed.
+type PolicyDenial struct {
+	// Tool, Path and Rule name what was refused and why, so the message is
+	// actionable rather than a restatement of "blocked": "Blocked by policy:
+	// Edit(.github/workflows/**)" tells a reader exactly what to go change.
+	Tool, Path, Rule string
+	// HandOff is the agent's own closing message, kept in full rather than
+	// reduced to a one-line summary. On OR-172 the agent had already written
+	// the exact one-line fix in prose; this is what carries it to the human
+	// who has to apply it, instead of throwing it away with the run.
+	HandOff string
 }
 
 func writeFixes(wsDir string, f fixFile) error {

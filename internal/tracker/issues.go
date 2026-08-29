@@ -29,7 +29,13 @@ type Issue struct {
 	// answered for a workflow it has never seen.
 	StatusCategory string
 	Labels         []string
-	Priority       string
+	// IssueType and Components are, with Labels, what a ticket is routed on:
+	// see internal/work/route.go. Jira's own name for each ("Documentation",
+	// "frontend") rather than an Orion vocabulary, so a project sorts a
+	// ticket to an actor by naming it the way its board already does.
+	IssueType  string
+	Components []string
+	Priority   string
 	// Rank is Jira's backlog ordering field. It is what makes "work these
 	// in this order" expressible by dragging tickets, with no syntax.
 	Rank string
@@ -55,7 +61,7 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 	q := url.Values{}
 	q.Set("jql", jql)
 	q.Set("maxResults", fmt.Sprint(maxResults))
-	q.Set("fields", "summary,description,status,labels,priority,parent")
+	q.Set("fields", "summary,description,status,labels,priority,parent,issuetype,components")
 
 	code, body, err := j.do("GET", "/rest/api/3/search/jql?"+q.Encode(), nil)
 	if err != nil {
@@ -89,6 +95,12 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 				Parent struct {
 					Key string `json:"key"`
 				} `json:"parent"`
+				IssueType struct {
+					Name string `json:"name"`
+				} `json:"issuetype"`
+				Components []struct {
+					Name string `json:"name"`
+				} `json:"components"`
 			} `json:"fields"`
 		} `json:"issues"`
 	}
@@ -107,6 +119,8 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 			Labels:         i.Fields.Labels,
 			Priority:       i.Fields.Priority.Name,
 			Parent:         i.Fields.Parent.Key,
+			IssueType:      i.Fields.IssueType.Name,
+			Components:     componentNames(i.Fields.Components),
 			URL:            j.BaseURL + "/browse/" + i.Key,
 		})
 	}
@@ -116,7 +130,7 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 // GetIssue fetches one issue.
 func (j *Jira) GetIssue(key string) (*Issue, error) {
 	code, body, err := j.do("GET", "/rest/api/3/issue/"+url.PathEscape(key)+
-		"?fields=summary,description,status,labels", nil)
+		"?fields=summary,description,status,labels,issuetype,components", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -138,6 +152,12 @@ func (j *Jira) GetIssue(key string) (*Issue, error) {
 					Key string `json:"key"`
 				} `json:"statusCategory"`
 			} `json:"status"`
+			IssueType struct {
+				Name string `json:"name"`
+			} `json:"issuetype"`
+			Components []struct {
+				Name string `json:"name"`
+			} `json:"components"`
 		} `json:"fields"`
 	}
 	if err := json.Unmarshal(body, &i); err != nil {
@@ -150,8 +170,25 @@ func (j *Jira) GetIssue(key string) (*Issue, error) {
 		Status:         i.Fields.Status.Name,
 		StatusCategory: i.Fields.Status.Category.Key,
 		Labels:         i.Fields.Labels,
+		IssueType:      i.Fields.IssueType.Name,
+		Components:     componentNames(i.Fields.Components),
 		URL:            j.BaseURL + "/browse/" + i.Key,
 	}, nil
+}
+
+// componentNames flattens Jira's component objects to their names, which is
+// all Issue and the router need.
+func componentNames(cs []struct {
+	Name string `json:"name"`
+}) []string {
+	if len(cs) == 0 {
+		return nil
+	}
+	out := make([]string, len(cs))
+	for i, c := range cs {
+		out[i] = c.Name
+	}
+	return out
 }
 
 // SetLabels adds and removes labels in one request.

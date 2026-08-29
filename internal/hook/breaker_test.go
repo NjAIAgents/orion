@@ -2,7 +2,9 @@ package hook
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/orion-sdlc/orion/internal/config"
@@ -25,7 +27,7 @@ func testCfg() config.Config {
 
 func sess(mut func(*state.Session)) *state.Session {
 	s := &state.Session{
-		Repeats:      map[string]int{},
+		Repeats:      map[string]map[string]int{},
 		CmdFailures:  map[string]int{},
 		FilesTouched: map[string]int{},
 	}
@@ -33,6 +35,16 @@ func sess(mut func(*state.Session)) *state.Session {
 		mut(s)
 	}
 	return s
+}
+
+// setRepeat records a repeat count for the actor derived from in, matching
+// how breakerPost would have populated it -- so tests exercise the same
+// keying verdict() reads.
+func setRepeat(s *state.Session, in Input, n int) {
+	if s.Repeats[actorKey(in)] == nil {
+		s.Repeats[actorKey(in)] = map[string]int{}
+	}
+	s.Repeats[actorKey(in)][in.Signature()] = n
 }
 
 func input(tool, jsonInput string) Input {
@@ -62,14 +74,14 @@ func TestVerdict(t *testing.T) {
 			name: "identical call under threshold allows",
 			in:   bashLs,
 			s: sess(func(s *state.Session) {
-				s.Repeats[bashLs.Signature()] = 2
+				setRepeat(s, bashLs, 2)
 			}),
 		},
 		{
 			name: "identical call at threshold blocks as loop",
 			in:   bashLs,
 			s: sess(func(s *state.Session) {
-				s.Repeats[bashLs.Signature()] = 3
+				setRepeat(s, bashLs, 3)
 			}),
 			wantBlock: true,
 			wantKind:  "breaker/loop",
@@ -130,7 +142,7 @@ func TestVerdict(t *testing.T) {
 			name: "loop reported before budget when both tripped",
 			in:   bashLs,
 			s: sess(func(s *state.Session) {
-				s.Repeats[bashLs.Signature()] = 5
+				setRepeat(s, bashLs, 5)
 				s.ToolCalls = 99
 			}),
 			wantBlock: true,
@@ -436,5 +448,215 @@ func TestPassingVerifyIsExemptFromLoopCounter(t *testing.T) {
 	}
 	if d := run(other, pass, 2); d.Blocked() {
 		t.Errorf("a non-verify call under the threshold must not trip, got: %s", d.Msg)
+	}
+}
+
+// OR-170: a subagent shares its parent's SessionID but gets its own
+// transcript file. Two agents that each, independently, read the same file
+// twice used to sum to one shared counter and trip the loop breaker at a
+// call neither of them repeated -- a false trip from parallel fan-out, not a
+// real loop. Regression for the incident behind OR-143 and OR-156.
+func TestParallelSubagentsDoNotShareTheLoopCounter(t *testing.T) {
+	dir := t.TempDir()
+	store := state.New(dir)
+	cfg := testCfg() // MaxRepeatIdentical = 3
+
+	readSame := json.RawMessage(`{"file_path":"CONVENTIONS.md"}`)
+	call := func(transcript string) Decision {
+		return Breaker(Input{
+			HookEventName:  "PostToolUse",
+			SessionID:      "parent-session",
+			TranscriptPath: transcript,
+			ToolName:       "Read",
+			ToolInput:      readSame,
+		}, cfg, store)
+	}
+
+	// Parent and two subagents, all under the same SessionID, each read the
+	// identical file twice -- six calls total, none of them a real loop.
+	var last Decision
+	for _, transcript := range []string{
+		"main.jsonl", "subagents/agent-a.jsonl", "subagents/agent-b.jsonl",
+	} {
+		for i := 0; i < 2; i++ {
+			last = call(transcript)
+			if last.Blocked() {
+				t.Fatalf("call %d for %s falsely tripped the loop breaker: %s", i+1, transcript, last.Msg)
+			}
+		}
+	}
+
+	// The same subagent repeating its OWN identical call a third time is a
+	// real loop and must still trip -- the fix must not have gone the other
+	// way and stopped detecting loops altogether.
+	call("subagents/agent-a.jsonl")
+	if d := call("subagents/agent-a.jsonl"); !d.Blocked() {
+		t.Fatal("a single actor repeating the identical call past the threshold must still trip as a loop")
+	}
+}
+
+// A payload with no transcript_path (an older harness, or a malformed
+// input) must fall back to the old session-wide behavior rather than
+// silently disabling loop detection.
+func TestLoopCounterFallsBackToSessionWhenTranscriptPathIsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	store := state.New(dir)
+	cfg := testCfg() // MaxRepeatIdentical = 3
+
+	call := func() Decision {
+		return Breaker(Input{
+			HookEventName: "PostToolUse",
+			SessionID:     "s1",
+			ToolName:      "Read",
+			ToolInput:     json.RawMessage(`{"file_path":"a.go"}`),
+		}, cfg, store)
+	}
+
+	call()
+	call()
+	if d := call(); !d.Blocked() {
+		t.Fatal("without a transcript_path, repeats must still be counted against the session")
+	}
+}
+
+// OR-170's fix is scoped to the identical-repeat counter only. The commit
+// message is explicit that every other counter -- tool budget, consecutive
+// failures, same-command failures -- stays aggregated across the whole
+// session. If ToolCalls were accidentally scoped per actor too, a session
+// running N parallel subagents could burn N times its real tool budget
+// before the ceiling ever fired.
+func TestToolBudgetStaysAggregatedAcrossActors(t *testing.T) {
+	dir := t.TempDir()
+	store := state.New(dir)
+	cfg := testCfg() // MaxToolCalls = 10, MaxRepeatIdentical = 3
+
+	call := func(transcript, filePath string) Decision {
+		return Breaker(Input{
+			HookEventName:  "PostToolUse",
+			SessionID:      "parent-session",
+			TranscriptPath: transcript,
+			ToolName:       "Read",
+			ToolInput:      json.RawMessage(`{"file_path":"` + filePath + `"}`),
+		}, cfg, store)
+	}
+
+	// Two distinct actors, each reading a distinct file every time so the
+	// identical-repeat counter never fires -- isolating the budget check.
+	var last Decision
+	for i := 0; i < 5; i++ {
+		last = call("main.jsonl", fmt.Sprintf("main-%d.go", i))
+		if last.Blocked() {
+			t.Fatalf("main actor call %d blocked before the shared budget was exhausted: %s", i, last.Msg)
+		}
+		last = call("subagents/agent-a.jsonl", fmt.Sprintf("sub-%d.go", i))
+		if i < 4 && last.Blocked() {
+			t.Fatalf("subagent call %d blocked before the shared budget was exhausted: %s", i, last.Msg)
+		}
+	}
+	// 10 total calls across both actors must exhaust MaxToolCalls=10.
+	if !last.Blocked() {
+		t.Fatal("tool budget must still be aggregated across actors in one session, not reset per actor")
+	}
+}
+
+// The Tripped flag itself is session-wide, not per-actor (unlike Repeats):
+// once ANY actor trips the breaker, breakerPre must refuse the NEXT call
+// from every actor sharing that session, including one that never
+// repeated anything itself. A trip is a session-ending event, and scoping
+// it per-actor would let a tripped session's other agents keep working
+// unsupervised.
+func TestATripFromOneActorBlocksEveryActorInTheSession(t *testing.T) {
+	dir := t.TempDir()
+	store := state.New(dir)
+	cfg := testCfg() // MaxRepeatIdentical = 3
+
+	readSame := json.RawMessage(`{"file_path":"CONVENTIONS.md"}`)
+	post := func(transcript string) Decision {
+		return Breaker(Input{
+			HookEventName:  "PostToolUse",
+			SessionID:      "shared-session",
+			TranscriptPath: transcript,
+			ToolName:       "Read",
+			ToolInput:      readSame,
+		}, cfg, store)
+	}
+
+	// agent-a loops and trips the breaker.
+	post("subagents/agent-a.jsonl")
+	post("subagents/agent-a.jsonl")
+	if d := post("subagents/agent-a.jsonl"); !d.Blocked() {
+		t.Fatal("agent-a should have tripped the loop breaker")
+	}
+
+	// agent-b, which never repeated a call, must still be refused its next
+	// PreToolUse in the same tripped session.
+	d := breakerPre(Input{
+		HookEventName:  "PreToolUse",
+		SessionID:      "shared-session",
+		TranscriptPath: "subagents/agent-b.jsonl",
+		ToolName:       "Bash",
+		ToolInput:      json.RawMessage(`{"command":"ls"}`),
+	}, cfg, store)
+	if !d.Blocked() {
+		t.Fatal("a trip from one actor must seal the whole session, including actors that never looped")
+	}
+}
+
+// Real subagents run as concurrent goroutines/processes sharing one
+// session file. Regression-guard that the per-actor Repeats counters stay
+// correctly isolated under actual concurrency, not just the sequential
+// calls the other OR-170 tests make -- exercising the same lock path a
+// real parallel fan-out would hit.
+func TestConcurrentActorsKeepIsolatedRepeatCounters(t *testing.T) {
+	dir := t.TempDir()
+	store := state.New(dir)
+	cfg := testCfg() // MaxRepeatIdentical = 3
+
+	readSame := json.RawMessage(`{"file_path":"CONVENTIONS.md"}`)
+	actors := []string{"subagents/agent-a.jsonl", "subagents/agent-b.jsonl", "subagents/agent-c.jsonl"}
+
+	var wg sync.WaitGroup
+	for _, transcript := range actors {
+		wg.Add(1)
+		go func(transcript string) {
+			defer wg.Done()
+			// Each actor makes 2 identical calls concurrently with the
+			// others -- under the threshold of 3, so none should trip.
+			for i := 0; i < 2; i++ {
+				Breaker(Input{
+					HookEventName:  "PostToolUse",
+					SessionID:      "concurrent-session",
+					TranscriptPath: transcript,
+					ToolName:       "Read",
+					ToolInput:      readSame,
+				}, cfg, store)
+			}
+		}(transcript)
+	}
+	wg.Wait()
+
+	sig := input("Read", string(readSame)).Signature()
+	sessSnapshot := store.Read("concurrent-session")
+	for _, transcript := range actors {
+		if got := sessSnapshot.Repeats[transcript][sig]; got > 3 {
+			// Not asserting an exact count (the lock is best-effort under
+			// contention, per TestConcurrentUpdatesDoNotLoseState), only that
+			// one actor's concurrent calls did not inflate ANOTHER actor's
+			// counter past what it could have earned itself.
+			t.Errorf("actor %s counter %d looks contaminated by another actor's calls", transcript, got)
+		}
+	}
+
+	// A 4th, sequential call from a brand-new actor must still be judged
+	// purely on its own count, unaffected by the concurrent burst above.
+	d := Breaker(Input{
+		HookEventName:  "PostToolUse",
+		SessionID:      "concurrent-session",
+		TranscriptPath: "subagents/agent-d.jsonl",
+		ToolName:       "Read",
+		ToolInput:      readSame,
+	}, cfg, store)
+	if d.Blocked() {
+		t.Fatal("a fresh actor's first call must not be blocked by another actor's concurrent repeats")
 	}
 }

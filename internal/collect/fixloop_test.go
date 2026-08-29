@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/lessons"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -17,13 +18,14 @@ type fixSpy struct {
 	pushed  bool
 	err     error
 	summary string
+	denied  *PolicyDenial
 	sawAll  []string
 }
 
-func (f *fixSpy) fix(_ *workspace.Workspace, _, _, failure string) (bool, string, error) {
+func (f *fixSpy) fix(_ *workspace.Workspace, _, _, failure string, _ *events.Log) (bool, string, *PolicyDenial, error) {
 	f.calls++
 	f.sawAll = append(f.sawAll, failure)
-	return f.pushed, f.summary, f.err
+	return f.pushed, f.summary, f.denied, f.err
 }
 
 // ciRepo builds a bound project with the fix loop switched on.
@@ -169,6 +171,89 @@ func TestAnAgentThatChangesNothingEndsTheLoop(t *testing.T) {
 	}
 }
 
+// The message must not say the agent doesn't know how to fix this when it
+// was never permitted to try -- OR-172 printed exactly that contradiction:
+// a root cause diagnosed correctly, reported as evidence of not knowing how.
+// The two failures need different remedies, so the message must name what
+// was blocked, and the agent's own diagnosis must survive as a hand-off
+// rather than being thrown away with the run (OR-174).
+func TestAPolicyDenialIsDistinctFromGivingUp(t *testing.T) {
+	home, wsDir := ciRepo(t, 3)
+	f := &fixSpy{pushed: false, denied: &PolicyDenial{
+		Tool: "Edit", Path: ".github/workflows/ci.yml", Rule: ".github/workflows/**",
+		HandOff: "Root cause: ci.yml's concurrency.group needs a pull_request.number fallback.",
+	}}
+
+	_, out := runFix(t, home, f, "some failure", Options{})
+
+	if strings.Contains(out, "does not know how to fix this") {
+		t.Errorf("a policy denial must not read as the agent not knowing how: %s", out)
+	}
+	if !strings.Contains(out, "blocked by policy") {
+		t.Errorf("the message must say it was blocked by policy: %s", out)
+	}
+	if !strings.Contains(out, "Edit(.github/workflows/ci.yml)") {
+		t.Errorf("the tool and path must be named: %s", out)
+	}
+	if !strings.Contains(out, ".github/workflows/**") {
+		t.Errorf("the matched rule must be named: %s", out)
+	}
+	if !strings.Contains(out, "concurrency.group needs a pull_request.number fallback") {
+		t.Errorf("the agent's own hand-off must reach the console, not be thrown away: %s", out)
+	}
+	if got := loadFixes(wsDir).States["FCIA-6"].Count(); got != 0 {
+		t.Fatalf("a policy-denied attempt must not spend the fix budget, got %d attempts recorded", got)
+	}
+}
+
+// Proven by driving it past a ceiling that would stop a counted attempt
+// after one round: a denial can never succeed by retrying (the sandbox does
+// not change its mind), but it also must never be blamed on the agent's
+// three-attempt budget, which exists to measure the agent.
+func TestAPolicyDenialNeverSpendsTheCeiling(t *testing.T) {
+	home, wsDir := ciRepo(t, 1) // a ceiling that would stop a real attempt at 1
+	f := &fixSpy{pushed: false, denied: &PolicyDenial{Tool: "Edit", Path: "orion.json", Rule: "orion.json"}}
+
+	for i := 0; i < 3; i++ {
+		runFix(t, home, f, "some failure", Options{})
+	}
+
+	if f.calls != 3 {
+		t.Fatalf("a retracted attempt must not trip the ceiling: expected 3 agent runs, got %d", f.calls)
+	}
+	if got := loadFixes(wsDir).States["FCIA-6"].Count(); got != 0 {
+		t.Fatalf("attempts recorded = %d, want 0 -- a policy denial proves nothing about the agent", got)
+	}
+}
+
+// retractAttempt is documented to remove only the single most recent
+// attempt, not the ticket's whole history -- a prior GENUINE attempt (one
+// that actually ran and taught nothing) must still count toward the
+// three-attempt budget even after a later round on the same ticket is
+// denied by policy and retracted. Both existing denial tests start from an
+// empty history, so neither would catch retractAttempt trimming too much.
+func TestAPolicyDenialRetractsOnlyItsOwnAttemptNotPriorHistory(t *testing.T) {
+	home, wsDir := ciRepo(t, 3)
+	f := &fixSpy{pushed: false}
+
+	// Round 1: a genuine attempt that changed nothing and was not denied --
+	// spends the budget, as TestAnAgentThatChangesNothingEndsTheLoop covers.
+	runFix(t, home, f, "failure A", Options{})
+	if got := loadFixes(wsDir).States["FCIA-6"].Count(); got != 1 {
+		t.Fatalf("after a genuine no-change attempt, count = %d, want 1", got)
+	}
+
+	// Round 2: a DIFFERENT failure (so the repeat brake does not intervene),
+	// this time denied by policy.
+	f.denied = &PolicyDenial{Tool: "Edit", Path: "orion.json", Rule: "orion.json"}
+	runFix(t, home, f, "failure B", Options{})
+
+	if got := loadFixes(wsDir).States["FCIA-6"].Count(); got != 1 {
+		t.Fatalf("attempts recorded = %d, want 1 -- retracting the denied round must not "+
+			"also erase the prior genuine attempt", got)
+	}
+}
+
 func TestAFixRunThatErrorsStopsTheLoop(t *testing.T) {
 	home, _ := ciRepo(t, 3)
 	f := &fixSpy{err: errors.New("breaker tripped")}
@@ -273,9 +358,10 @@ func TestMergingClearsTheAttemptHistory(t *testing.T) {
 func TestAFixedAndMergedBuildProposesALesson(t *testing.T) {
 	home, _ := ciRepo(t, 3)
 	failure := "test_impact.py::test_delta FAILED\nassert 100 == 99"
+	rootCause := "test_delta compares against a stale fixture baseline instead of the regenerated one"
 	store := lessons.New(home)
 
-	redThenMerged(t, home, failure)
+	redThenMerged(t, home, failure, rootCause)
 
 	// Once is circumstance. Nobody should be asked about it yet.
 	pending, err := store.Pending()
@@ -294,7 +380,7 @@ func TestAFixedAndMergedBuildProposesALesson(t *testing.T) {
 	}
 
 	// Twice is a pattern.
-	redThenMerged(t, home, failure)
+	redThenMerged(t, home, failure, rootCause)
 
 	pending, err = store.Pending()
 	if err != nil {
@@ -304,8 +390,13 @@ func TestAFixedAndMergedBuildProposesALesson(t *testing.T) {
 		t.Fatalf("got %d proposals awaiting approval, want 1", len(pending))
 	}
 	c := pending[0]
-	if !strings.Contains(c.Text, "test_delta FAILED") {
-		t.Errorf("the proposal does not say what actually happened: %q", c.Text)
+	// The text is the transferable diagnosis, not a restatement of the CI
+	// check name -- that is the whole point of OR-177.
+	if !strings.Contains(c.Text, "stale fixture baseline") {
+		t.Errorf("the proposal does not carry the stated root cause: %q", c.Text)
+	}
+	if strings.Contains(c.Text, "test_delta FAILED") {
+		t.Errorf("the CI failure line belongs in the evidence, not the text: %q", c.Text)
 	}
 	if len(c.Evidence) != 2 {
 		t.Errorf("each sighting must carry its own evidence, got %v", c.Evidence)
@@ -313,6 +404,9 @@ func TestAFixedAndMergedBuildProposesALesson(t *testing.T) {
 	for _, e := range c.Evidence {
 		if !strings.Contains(e, "FCIA-6") || !strings.Contains(e, "fcia") {
 			t.Errorf("evidence must name the ticket and the project: %q", e)
+		}
+		if !strings.Contains(e, "test_delta FAILED") {
+			t.Errorf("evidence must carry the CI check/failure that was seen: %q", e)
 		}
 	}
 
@@ -323,6 +417,130 @@ func TestAFixedAndMergedBuildProposesALesson(t *testing.T) {
 	}
 	if len(records) != 0 {
 		t.Fatalf("a lesson was written without anyone approving it: %+v", records)
+	}
+}
+
+// The bug OR-177 fixes: a repo with one job matrix produces the same CI
+// check name for every failure it will ever have, so keying the lesson on
+// the check name collapses a gofmt violation in one file and a broken build
+// in another into a single vacuous "CI sometimes fails" lesson. Keying on
+// the normalized root cause instead means two occurrences of the SAME
+// mistake in DIFFERENT files still collide into one lesson -- which is the
+// two-strike rule actually working, not two unrelated failures pretending
+// to agree because they share a job name.
+func TestTwoRootCausesInDifferentFilesCollapseToOneLesson(t *testing.T) {
+	home, _ := ciRepo(t, 3)
+	store := lessons.New(home)
+
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)",
+		"internal/work/work_test.go, added by this branch's commits, wasn't "+
+			"gofmt-formatted -- scripts/test.sh's gofmt -l gate runs before build/test")
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)",
+		"internal/lessons/propose_test.go, added by this branch's commits, wasn't "+
+			"gofmt-formatted -- scripts/test.sh's gofmt -l gate runs before build/test")
+
+	pending, err := store.Pending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("two sightings of the same mechanism in different files produced %d lessons, want 1: %+v",
+			len(pending), pending)
+	}
+	if strings.Contains(pending[0].Text, "work_test.go") || strings.Contains(pending[0].Text, "propose_test.go") {
+		t.Errorf("the lesson text still names one sighting's file: %q", pending[0].Text)
+	}
+}
+
+// A run with no stated root cause -- an older run, or a fix loop that gave up
+// before ever stating one -- has nothing transferable to say. Falling back to
+// the CI check name is exactly the bug OR-177 fixes, so this must propose
+// nothing rather than that fallback.
+func TestAFixWithNoStatedRootCauseProposesNothing(t *testing.T) {
+	home, _ := ciRepo(t, 3)
+
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)", "")
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)", "")
+
+	health, err := lessons.New(home).Health()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Sightings != 0 {
+		t.Fatalf("a fix with no stated root cause filed %d proposal(s)", health.Sightings)
+	}
+}
+
+// A whitespace-only root cause is not a stated one. recordRootCause trims
+// before deciding whether to write it, so this must propose nothing rather
+// than filing a lesson whose text is blank.
+func TestAWhitespaceOnlyRootCauseProposesNothing(t *testing.T) {
+	home, _ := ciRepo(t, 3)
+
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)", "   ")
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)", "   ")
+
+	health, err := lessons.New(home).Health()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Sightings != 0 {
+		t.Fatalf("a whitespace-only root cause filed %d proposal(s)", health.Sightings)
+	}
+}
+
+// A root cause built entirely out of what normalizeRootCause strips -- a bare
+// ticket key, with no surrounding mechanism -- normalizes to the empty
+// string even though the agent did state something. This must propose
+// nothing for the same reason an actually-empty root cause does: falling
+// back to whatever text happens to survive is exactly the vacuous-lesson bug
+// OR-177 fixes, and an empty text would file a lesson nobody could read.
+func TestARootCauseThatNormalizesToNothingProposesNothing(t *testing.T) {
+	home, _ := ciRepo(t, 3)
+
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)", "OR-114")
+	redThenMerged(t, home, "go (ubuntu-latest) (failure)", "OR-114")
+
+	health, err := lessons.New(home).Health()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Sightings != 0 {
+		t.Fatalf("a root cause that normalizes to nothing filed %d proposal(s)", health.Sightings)
+	}
+}
+
+// proposeLesson reads the root cause off state.Attempts[len-1] -- the LAST
+// attempt, the one whose fix actually stuck since the merge proves it. An
+// episode can push more than one fix before it merges (the first fix didn't
+// fully work, CI failed again with a different failure, a second fix did);
+// the lesson must reflect what actually fixed it, not what the first attempt
+// guessed.
+func TestLessonReflectsTheLastAttemptsRootCauseNotAnEarlierOnes(t *testing.T) {
+	home, _ := ciRepo(t, 3)
+
+	twoAttemptEpisode := func() {
+		runFix(t, home, &fixSpy{pushed: true, summary: "an unrelated helper had a stale cache key"},
+			"failure A", Options{})
+		runFix(t, home, &fixSpy{pushed: true, summary: "the real fix: a nil check was missing on the parsed config"},
+			"failure B", Options{})
+		mergeIt(t, home)
+	}
+	twoAttemptEpisode()
+	twoAttemptEpisode()
+
+	pending, err := lessons.New(home).Pending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("got %d proposals, want 1: %+v", len(pending), pending)
+	}
+	if !strings.Contains(pending[0].Text, "nil check was missing") {
+		t.Errorf("the lesson must carry the LAST attempt's root cause, got %q", pending[0].Text)
+	}
+	if strings.Contains(pending[0].Text, "stale cache key") {
+		t.Errorf("the lesson must not carry an earlier attempt's root cause that didn't actually fix it, got %q", pending[0].Text)
 	}
 }
 
@@ -343,11 +561,12 @@ func TestAGreenMergeProposesNothing(t *testing.T) {
 	}
 }
 
-// redThenMerged drives one full episode: CI fails, an agent pushes a fix, the
-// pull request merges.
-func redThenMerged(t *testing.T, home, failure string) {
+// redThenMerged drives one full episode: CI fails, an agent pushes a fix
+// stating the given root cause as its closing message, the pull request
+// merges.
+func redThenMerged(t *testing.T, home, failure, rootCause string) {
 	t.Helper()
-	runFix(t, home, &fixSpy{pushed: true}, failure, Options{})
+	runFix(t, home, &fixSpy{pushed: true, summary: rootCause}, failure, Options{})
 	mergeIt(t, home)
 }
 
@@ -397,5 +616,61 @@ func TestFixLoopSkipsAManuallyLockedBranch(t *testing.T) {
 	}
 	if !strings.Contains(out, manualLockName) {
 		t.Errorf("the lock must be named in the output so it is discoverable:\n%s", out)
+	}
+}
+
+// normalizeRootCause must strip exactly what varies between two sightings of
+// the same mistake -- the file path, the branch, the ticket key -- and leave
+// the mechanism readable, since the result is both the dedup key and the
+// text a human reads in the approval prompt and, later, in CLAUDE.md.
+func TestNormalizeRootCause(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "strips a file path but keeps the mechanism",
+			in:   "internal/work/work_test.go wasn't gofmt-formatted before the build/test gate ran",
+			want: "a file wasn't gofmt-formatted before the build/test gate ran",
+		},
+		{
+			name: "two different files normalize to the same text",
+			in:   "internal/lessons/propose_test.go wasn't gofmt-formatted before the build/test gate ran",
+			want: "a file wasn't gofmt-formatted before the build/test gate ran",
+		},
+		{
+			name: "strips a branch name",
+			in:   "fix/OR-114-gofmt reintroduced the same missing nil check",
+			want: "a branch reintroduced the same missing nil check",
+		},
+		{
+			name: "strips a bare ticket key",
+			in:   "OR-114 regressed the same nil check",
+			want: "regressed the same nil check",
+		},
+		{
+			name: "empty input normalizes to empty",
+			in:   "",
+			want: "",
+		},
+		{
+			name: "whitespace-only input normalizes to empty",
+			in:   "   ",
+			want: "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := normalizeRootCause(c.in); got != c.want {
+				t.Errorf("normalizeRootCause(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+
+	a := normalizeRootCause("internal/work/work_test.go wasn't gofmt-formatted before the build/test gate ran")
+	b := normalizeRootCause("internal/lessons/propose_test.go wasn't gofmt-formatted before the build/test gate ran")
+	if a != b || a == "" {
+		t.Errorf("two sightings differing only by file path must normalize identically, got %q and %q", a, b)
 	}
 }

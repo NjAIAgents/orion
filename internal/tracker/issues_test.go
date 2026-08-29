@@ -175,6 +175,79 @@ func TestSearchParsesIssuesInOrder(t *testing.T) {
 	}
 }
 
+// OR-171's router reads Issue.IssueType and Issue.Components -- route_test.go
+// proves the router itself, but only by constructing tracker.Issue directly,
+// which never exercises the JSON parsing that has to populate those fields
+// from a real Jira response. A wrong field tag here would leave every ticket
+// routing to the implementer in production while every existing test stays
+// green, since nothing else feeds a real payload through this parser.
+func TestGetIssueParsesIssueTypeAndComponents(t *testing.T) {
+	j := fakeJira(t, func(method, path string, body []byte) (int, string) {
+		return 200, `{"key":"FCIA-9","fields":{"summary":"write the docs","labels":["documentation"],
+		  "status":{"name":"To Do"},
+		  "issuetype":{"name":"Documentation"},
+		  "components":[{"name":"docs-site"},{"name":"frontend"}]}}`
+	})
+	i, err := j.GetIssue("FCIA-9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i.IssueType != "Documentation" {
+		t.Errorf("IssueType = %q, want %q", i.IssueType, "Documentation")
+	}
+	if len(i.Components) != 2 || i.Components[0] != "docs-site" || i.Components[1] != "frontend" {
+		t.Errorf("Components = %v, want [docs-site frontend]", i.Components)
+	}
+}
+
+// GetIssue must not report a component or issue type that Jira did not send:
+// an empty issuetype/components block must parse to zero values, not a stale
+// or zero-valued placeholder that then matches a route by accident.
+func TestGetIssueLeavesIssueTypeAndComponentsEmptyWhenAbsent(t *testing.T) {
+	j := fakeJira(t, func(method, path string, body []byte) (int, string) {
+		return 200, `{"key":"FCIA-1","fields":{"summary":"fix the rounding bug","status":{"name":"To Do"}}}`
+	})
+	i, err := j.GetIssue("FCIA-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i.IssueType != "" {
+		t.Errorf("IssueType = %q, want empty", i.IssueType)
+	}
+	if len(i.Components) != 0 {
+		t.Errorf("Components = %v, want none", i.Components)
+	}
+}
+
+// Search feeds the same router when a ticket is picked up from the queue
+// rather than fetched by key, and it hits its own struct for the fields
+// block -- so the same parsing has to be proven here separately from GetIssue.
+func TestSearchParsesIssueTypeAndComponents(t *testing.T) {
+	j := fakeJira(t, func(method, path string, body []byte) (int, string) {
+		if !strings.Contains(path, "fields=") || !strings.Contains(path, "issuetype") ||
+			!strings.Contains(path, "components") {
+			t.Errorf("the fields query did not ask Jira for issuetype/components: %s", path)
+		}
+		return 200, `{"issues":[
+		  {"key":"FCIA-4","fields":{"summary":"restyle the button","labels":["ui"],"status":{"name":"To Do"},
+		    "issuetype":{"name":"Story"},
+		    "components":[{"name":"frontend"}]}}]}`
+	})
+	is, err := j.Search("labels = ORION", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(is) != 1 {
+		t.Fatalf("got %d issues", len(is))
+	}
+	if is[0].IssueType != "Story" {
+		t.Errorf("IssueType = %q, want %q", is[0].IssueType, "Story")
+	}
+	if len(is[0].Components) != 1 || is[0].Components[0] != "frontend" {
+		t.Errorf("Components = %v, want [frontend]", is[0].Components)
+	}
+}
+
 // fakeJira points a client at a test server. handler receives the method,
 // the request path with query, and the body, and returns a status and body.
 func fakeJira(t *testing.T, handler func(method, path string, body []byte) (int, string)) *Jira {

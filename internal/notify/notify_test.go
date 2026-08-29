@@ -22,6 +22,11 @@ func isolate(t *testing.T) {
 	t.Helper()
 	prev := SetSlackSender(func(string, string, Level) error { return nil })
 	t.Cleanup(func() { SetSlackSender(prev) })
+	// The real desktop() shells out to the host's notifier. On a headless
+	// runner that binary can exist yet fail (no display session), which
+	// would add an unrelated error to every test in this file.
+	prevDesktop := SetDesktopSender(func(Event) error { return nil })
+	t.Cleanup(func() { SetDesktopSender(prevDesktop) })
 	SetWebhookResolver(func() string { return "" })
 	t.Setenv("ORION_NOTIFY_WEBHOOK", "")
 	t.Setenv("ORION_NOTIFY_COMMAND", "")

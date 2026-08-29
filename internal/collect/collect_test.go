@@ -225,6 +225,104 @@ func TestFailingChecksMarkFailedRatherThanRequeue(t *testing.T) {
 	}
 }
 
+// A retried ticket's branch carries a suffix workspace.uniqueBranch chose to
+// keep it off a prior attempt's still-open pull request. Collect must read
+// that recorded branch rather than recomputing orion/<key> by convention --
+// the recomputed name is the one attempt this ticket did NOT use (OR-173).
+func TestCollectReadsTheRecordedBranchNotTheGuessedOne(t *testing.T) {
+	home, _ := bound(t)
+	entry, err := registry.Lookup(home, "FCIA-6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Open(entry.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.RecordBranch(ws, "FCIA-6", "orion/fcia-6-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	jira := newTracker()
+	var buf bytes.Buffer
+	var gotBranch string
+	Run(Options{Keys: []string{"FCIA-6"}, Home: home, Out: &buf}, Deps{
+		Jira: jira,
+		Status: func(dir, branch string) (PR, error) {
+			gotBranch = branch
+			return PR{Verdict: VerdictPending}, nil
+		},
+	})
+
+	if gotBranch != "orion/fcia-6-2" {
+		t.Errorf("looked up branch %q, want the recorded orion/fcia-6-2 -- "+
+			"orion/fcia-6 is the FIRST attempt's name, not this ticket's", gotBranch)
+	}
+}
+
+// The no-pull-request case used to fall through to a bare warning and leave
+// ci-wait in place, so a ticket in that state was polled again on the next
+// tick, and every tick after that, forever. It must terminate instead: out
+// of ci-wait and marked for a human (OR-173).
+func TestNoPullRequestReleasesFromCIWaitInsteadOfPollingForever(t *testing.T) {
+	home, _ := bound(t)
+	jira := newTracker()
+	res, out, _ := run(t, home, jira,
+		PR{Verdict: VerdictUnknown, Detail: "no pull requests found"}, Options{})
+
+	if res[0].Verdict != VerdictUnknown || !res[0].Changed {
+		t.Fatalf("unexpected result: %+v", res[0])
+	}
+	if got := jira.removed["FCIA-6"]; len(got) != 1 || got[0] != tracker.LabelCIWait {
+		t.Errorf("must clear ci-wait so nothing polls it again: %v", got)
+	}
+	if got := jira.added["FCIA-6"]; len(got) != 1 || got[0] != tracker.LabelFailed {
+		t.Errorf("must mark it for a human rather than leave it silently stuck: %v", got)
+	}
+	if !strings.Contains(out, "guess") {
+		t.Errorf("must say the branch name searched was only a guess: %s", out)
+	}
+}
+
+// When the branch searched was a RECORDED one, not a guess, the message must
+// not say "guess" -- that caveat is only true for the convention fallback,
+// and claiming it for a name the run actually used would send a human
+// looking for a suffix that was never applied.
+func TestNoPullRequestWithARecordedBranchDoesNotClaimItWasGuessed(t *testing.T) {
+	home, _ := bound(t)
+	entry, err := registry.Lookup(home, "FCIA-6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Open(entry.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.RecordBranch(ws, "FCIA-6", "orion/fcia-6"); err != nil {
+		t.Fatal(err)
+	}
+
+	jira := newTracker()
+	res, out, _ := run(t, home, jira,
+		PR{Verdict: VerdictUnknown, Detail: "no pull requests found"}, Options{})
+
+	if res[0].Verdict != VerdictUnknown || !res[0].Changed {
+		t.Fatalf("unexpected result: %+v", res[0])
+	}
+	if got := jira.removed["FCIA-6"]; len(got) != 1 || got[0] != tracker.LabelCIWait {
+		t.Errorf("must clear ci-wait so nothing polls it again: %v", got)
+	}
+	if got := jira.added["FCIA-6"]; len(got) != 1 || got[0] != tracker.LabelFailed {
+		t.Errorf("must mark it for a human rather than leave it silently stuck: %v", got)
+	}
+	if strings.Contains(out, "guess") {
+		t.Errorf("a recorded branch is not a guess, but the output claims it is: %s", out)
+	}
+	if !strings.Contains(out, "orion/fcia-6") {
+		t.Errorf("must still name the branch that was searched: %s", out)
+	}
+}
+
 // Closed without merging is a human decision, not a fault to retry. Release
 // it from the queue and leave the status for a person.
 func TestAClosedPullRequestIsReleasedNotFailed(t *testing.T) {
@@ -246,7 +344,7 @@ func TestAClosedPullRequestIsReleasedNotFailed(t *testing.T) {
 // Dry run is what someone reaches for before trusting this on a timer. If it
 // writes anything, it is worse than useless: it is a lie.
 func TestDryRunTouchesNothing(t *testing.T) {
-	for _, v := range []Verdict{VerdictMerged, VerdictFailing, VerdictClosed} {
+	for _, v := range []Verdict{VerdictMerged, VerdictFailing, VerdictClosed, VerdictUnknown} {
 		home, _ := bound(t)
 		jira := newTracker()
 		_, out, c := run(t, home, jira, PR{Verdict: v, URL: "u"}, Options{DryRun: true})

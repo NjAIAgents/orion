@@ -62,7 +62,7 @@ func noopDeclared(final string) (string, bool) {
 
 // alreadyMerged ends a run that never started: the pull request had merged
 // before this ticket was claimed.
-func alreadyMerged(res Result, key, prURL, branch string, cfg config.Config,
+func alreadyMerged(res Result, key, actorID, prURL, branch string, cfg config.Config,
 	opts Options, deps Deps, ws *workspace.Workspace, log *events.Log, w io.Writer) Result {
 
 	res.Outcome, res.PR, res.Branch = OutcomeNoop, prURL, branch
@@ -77,7 +77,7 @@ func alreadyMerged(res Result, key, prURL, branch string, cfg config.Config,
 	}
 	release(res.Note+".\n\nThe work is on "+cfg.VCS.WorkBranch+" already. No agent was "+
 		"started, so this run cost nothing. If that is wrong, reopen the ticket "+
-		"and requeue it.", key, cfg, deps, ws, log, w, res)
+		"and requeue it.", key, actorID, cfg, deps, ws, log, w, res)
 	return res
 }
 
@@ -117,7 +117,7 @@ func alreadyResolved(res Result, key, status string, cfg config.Config,
 }
 
 // noChange ends a run that DID start, and correctly produced no diff.
-func noChange(res Result, key, why string, cfg config.Config,
+func noChange(res Result, key, actorID, why string, cfg config.Config,
 	opts Options, deps Deps, ws *workspace.Workspace, log *events.Log, w io.Writer) Result {
 
 	res.Outcome = OutcomeNoop
@@ -125,7 +125,7 @@ func noChange(res Result, key, why string, cfg config.Config,
 	if res.Note == "" {
 		res.Note = "the agent reported there was nothing to do"
 	}
-	ui.Say(w, key, events.ActorImplementer, ui.VerbOK,
+	ui.Say(w, key, actorID, ui.VerbOK,
 		"needed no change. That is a result, not a failure.")
 	fmt.Fprintf(w, "          %s\n", ui.Dim(w, firstLine(res.Note)))
 	if opts.DryRun {
@@ -135,7 +135,7 @@ func noChange(res Result, key, why string, cfg config.Config,
 		"\n\nThe run was clean; it inspected the repository and found the work "+
 		"already present rather than inventing a diff to justify itself. This is "+
 		"NOT a failure and the ticket is not labelled as one. Reopen and requeue "+
-		"it if the work is in fact missing.", key, cfg, deps, ws, log, w, res)
+		"it if the work is in fact missing.", key, actorID, cfg, deps, ws, log, w, res)
 	return res
 }
 
@@ -150,7 +150,7 @@ func noChange(res Result, key, why string, cfg config.Config,
 // the run that is now ending; leaving it there is the state the incident
 // complained about, and a ticket in progress with no labels is one nothing
 // will ever pick up again. The comment says how to undo it.
-func release(comment, key string, cfg config.Config, deps Deps,
+func release(comment, key, actorID string, cfg config.Config, deps Deps,
 	ws *workspace.Workspace, log *events.Log, w io.Writer, res Result) {
 
 	if err := deps.Jira.SetLabels(key, nil, tracker.Managed(cfg.Tracker.QueueLabel)); err != nil {
@@ -161,11 +161,11 @@ func release(comment, key string, cfg config.Config, deps Deps,
 		ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
 			"nothing to do, but it could not be transitioned to Done: %v", err)
 	}
-	_ = deps.Jira.Comment(key, actors.Comment(events.ActorImplementer, comment))
+	_ = deps.Jira.Comment(key, actors.Comment(actorID, comment))
 	log.Emitf(events.KindNote, events.ActorOrion, "no change: %s", firstLine(res.Note))
 	title, body := msgNoop(key, res.Summary, res.Note, res.IssueURL)
 	tell(w, log, ws, notify.Event{
-		Level: notify.Info, Workspace: ws.ID, Actor: events.ActorImplementer,
+		Level: notify.Info, Workspace: ws.ID, Actor: actorID,
 		Title: title, Body: body,
 	})
 }

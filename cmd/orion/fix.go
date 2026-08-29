@@ -2,15 +2,18 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/actors"
+	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/match"
 	"github.com/orion-sdlc/orion/internal/supervisor"
-	"github.com/orion-sdlc/orion/internal/ui"
+	"github.com/orion-sdlc/orion/internal/work"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -40,6 +43,52 @@ func fixOptions(key, branch, detail string, cfg config.Config) supervisor.Option
 	}
 }
 
+// fixActivity is the ci-fix run's activity callback, separated out so a test
+// can drive it directly without standing up a workspace, a worktree or the
+// supervisor.
+//
+// Delegates to work.ActivityLogger -- the SAME logger every other supervised
+// run uses -- rather than a second implementation. A hand-rolled OnActivity
+// here once printed unattributed console lines and emitted nothing to the
+// event log at all (OR-176): the roster knew who was running, but nothing
+// downstream of the callback did.
+func fixActivity(log *events.Log, w io.Writer, key string) func(supervisor.Activity) {
+	return work.ActivityLogger(log, w, key, events.ActorDevOps)
+}
+
+// fixWatch is the ci-fix run's activity callback: the shared logger, plus
+// OR-174's watch for an edit the sandbox refused.
+//
+// It exists as a named type rather than a closure at the call site because
+// TestNoHandRolledOnActivity bans an inline OnActivity outright, and that ban
+// is the point of OR-176 -- a second, hand-rolled callback is exactly how the
+// fix loop came to print unattributed lines and log nothing. Composing here
+// keeps both behaviours on ONE activity stream, so the console line and the
+// denial can never disagree about what the agent did.
+type fixWatch struct {
+	say       func(supervisor.Activity)
+	protected []string
+	denied    *collect.PolicyDenial
+}
+
+func newFixWatch(log *events.Log, w io.Writer, key string, protected []string) *fixWatch {
+	return &fixWatch{say: fixActivity(log, w, key), protected: protected}
+}
+
+// record draws the line, writes the event, and notices a refused edit.
+//
+// First denial wins: a run refused twice was refused for the same reason, and
+// the first is the one whose context the summary explains.
+func (f *fixWatch) record(a supervisor.Activity) {
+	f.say(a)
+	if f.denied != nil || !isEditTool(a.Tool) {
+		return
+	}
+	if rule := matchedRule(f.protected, a.Detail); rule != "" {
+		f.denied = &collect.PolicyDenial{Tool: a.Tool, Path: a.Detail, Rule: rule}
+	}
+}
+
 // fixRun sends a CI failure back to an agent on the branch that caused it.
 //
 // The worktree is reused rather than recreated. The branch already has the
@@ -48,15 +97,20 @@ func fixOptions(key, branch, detail string, cfg config.Config) supervisor.Option
 // fix would be attempted by something that had never seen the reasoning.
 //
 // Returns whether anything was actually pushed. Exit 0 with no new commit
-// means the agent could not see what to change, and that is a stop condition
-// rather than an attempt to repeat -- a second identical run produces the
-// same nothing at the same price.
-func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, string, error) {
+// means the agent either could not see what to change, or saw it and was
+// refused by the sandbox -- denied distinguishes the two (OR-174), since
+// they call for different remedies: a person thinking about the first, a
+// person applying a diff for the second, and no further attempt fixes
+// either from inside the sandbox.
+//
+// Takes the event log so this run's activity is attributed and recorded the
+// same way every other supervised run's is (OR-176).
+func fixRun(ws *workspace.Workspace, key, branch, failure string, log *events.Log) (bool, string, *collect.PolicyDenial, error) {
 	w := os.Stdout
 
 	jobs, err := workspace.ListWorktrees(ws)
 	if err != nil {
-		return false, "", err
+		return false, "", nil, err
 	}
 	var dir string
 	for _, j := range jobs {
@@ -66,40 +120,48 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, string,
 		}
 	}
 	if dir == "" {
-		return false, "", fmt.Errorf("no worktree for %s.\n"+
+		return false, "", nil, fmt.Errorf("no worktree for %s.\n"+
 			"  It was pruned, so there is nowhere to apply a fix. "+
 			"Re-queue the ticket to start again", branch)
 	}
 
-	// The full log, not the summary. "test (failure)" names which check went
-	// red and nothing about why; an agent handed only that has to re-run the
-	// suite locally to discover what a log already says.
-	detail := failure
-	if full := failingLog(dir, branch); strings.TrimSpace(full) != "" {
-		detail = full
-	}
-
 	before, err := headOf(dir)
 	if err != nil {
-		return false, "", err
+		return false, "", nil, err
 	}
 
 	cfg := config.Load(ws.RepoDir())
 	jobWS := *ws
 	jobWS.RepoPath = dir
 
-	o := fixOptions(key, branch, detail, cfg)
-	o.OnActivity = func(a supervisor.Activity) {
-		if a.Kind == "tool" {
-			ui.Ok(w, "working", "%s %s", a.Tool, a.Detail)
-		}
+	// The full log, not the summary: "test (failure)" names which check went
+	// red and nothing about why, and an agent handed only that has to re-run
+	// the suite locally to discover what a log already says.
+	//
+	// But the log is TRIAGED before it is handed over, not embedded whole. A
+	// raw CI log runs to thousands of lines, and everything in the fix run's
+	// prompt rides along on every one of its turns; a subagent reads it once
+	// in its own context and returns only its answer (OR-143).
+	detail := failure
+	if full := failingLog(dir, branch); strings.TrimSpace(full) != "" {
+		detail = triageLog(&jobWS, key, branch, full)
 	}
+
+	// Caught live, off the same activity stream the console line below is
+	// built from -- not guessed at afterwards from the agent's prose. Shield
+	// (internal/hook.Shield) blocks every Edit/Write/MultiEdit/NotebookEdit
+	// that targets cfg.Paths.Protected unconditionally, so a tool call seen
+	// here against that list is proof the sandbox refused it, regardless of
+	// whether the agent said so in its closing message (OR-174).
+	watch := newFixWatch(log, w, key, cfg.Paths.Protected)
+	o := fixOptions(key, branch, detail, cfg)
+	o.OnActivity = watch.record
 	res, err := supervisor.Run(&jobWS, o)
 	if err != nil {
-		return false, "", err
+		return false, "", nil, err
 	}
 	if res.ExitCode != 0 {
-		return false, "", fmt.Errorf("the fix run exited %d: %s", res.ExitCode, res.Reason)
+		return false, "", nil, fmt.Errorf("the fix run exited %d: %s", res.ExitCode, res.Reason)
 	}
 
 	// The agent's own closing message, not re-derived: it already said what
@@ -111,16 +173,46 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, string,
 
 	after, err := headOf(dir)
 	if err != nil {
-		return false, "", err
+		return false, "", nil, err
 	}
 	if after == before {
-		return false, summary, nil
+		if watch.denied != nil {
+			// The full closing message, not the one-line summary: this is
+			// the hand-off a human applies, and OR-172's agent had already
+			// written the exact fix in prose here -- worth keeping whole.
+			watch.denied.HandOff = strings.TrimSpace(res.Final)
+			return false, summary, watch.denied, nil
+		}
+		return false, summary, nil, nil
 	}
 
 	if err := pushBranch(dir, branch); err != nil {
-		return false, "", fmt.Errorf("the fix was committed but not pushed: %w", err)
+		return false, "", nil, fmt.Errorf("the fix was committed but not pushed: %w", err)
 	}
-	return true, summary, nil
+	return true, summary, nil, nil
+}
+
+// isEditTool reports whether a tool call can modify a file -- the same set
+// Shield is wired to in PreToolUse (see writeSettings's "Edit|Write|
+// MultiEdit|NotebookEdit" matcher).
+func isEditTool(tool string) bool {
+	switch tool {
+	case "Edit", "Write", "MultiEdit", "NotebookEdit":
+		return true
+	default:
+		return false
+	}
+}
+
+// matchedRule returns the first protected-path pattern that matches path,
+// or "" when none does.
+func matchedRule(patterns []string, path string) string {
+	for _, p := range patterns {
+		if match.Match(p, path) {
+			return p
+		}
+	}
+	return ""
 }
 
 // oneLine reduces a closing message to something that fits a console line.
@@ -129,6 +221,63 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string) (bool, string,
 // mid-sentence -- an agent's summary is normally front-loaded ("Fixed the
 // off-by-one in X"), so the first line is usually the whole answer and the
 // rest is the reasoning that got there.
+// Bounds for the log-triage subagent, deliberately far tighter than the fix
+// run's own cfg.Limits: this is a mechanical read-and-report, not the work of
+// fixing anything, and a run that gets stuck hunting has stopped being cheap.
+const (
+	triageMaxMinutes = 5
+	triageMaxTurns   = 10
+)
+
+// triageOptions is what the log-triage subagent runs with, separated from
+// triageLog so the actor, model and prompt it is configured with can be
+// asserted without spawning a process -- the same reason fixOptions is split
+// from fixRun.
+func triageOptions(key, branch, log string) supervisor.Options {
+	return supervisor.Options{
+		Stage:      "log-triage",
+		Prompt:     supervisor.LogTriagePrompt(branch, log),
+		MaxMinutes: triageMaxMinutes,
+		MaxTurns:   triageMaxTurns,
+		// Its own actor and its own model, pinned cheap rather than inherited
+		// from the fix run: this is a mechanical read, not the implementer's
+		// judgement, and pinning it is what makes the split a cost win instead
+		// of a second expensive run. Attributed to the same ticket key so its
+		// spend shows up as its own row in that ticket's cost report rather
+		// than hiding inside the fix run's total (OR-143).
+		Actor: events.ActorLogTriage, Key: key,
+		Model:  actors.Model(events.ActorLogTriage),
+		Effort: actors.Effort(events.ActorLogTriage),
+	}
+}
+
+// triageLog reduces a failing job's raw log to a short report of what broke
+// and why, through a subagent that reads the log in its own context and
+// returns only its answer -- the log itself never reaches the fix run.
+//
+// Falls back to the raw log on any failure of the subagent itself. The fix run
+// still needs something to react to, and a raw log an agent has to work harder
+// to read loses less than a triage step that silently produced nothing.
+//
+// The report is written to the event log for the same reason OR-129 made the
+// fix loop record its own closing summary: what a subagent returns is all the
+// parent session ever sees of it, so an answer that is not written down is
+// gone the moment this function returns.
+func triageLog(jobWS *workspace.Workspace, key, branch, rawLog string) string {
+	res, err := supervisor.Run(jobWS, triageOptions(key, branch, rawLog))
+	if err != nil || res == nil || strings.TrimSpace(res.Final) == "" {
+		return rawLog
+	}
+	report := strings.TrimSpace(res.Final)
+
+	if l, openErr := events.Open(events.Path(jobWS.Dir), events.Event{}); openErr == nil {
+		defer func() { _ = l.Close() }()
+		l.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorLogTriage, Key: key,
+			Msg: "triaged the failing log: " + oneLine(report)})
+	}
+	return report
+}
+
 func oneLine(s string) string {
 	for _, line := range strings.Split(s, "\n") {
 		if t := strings.TrimSpace(line); t != "" {
