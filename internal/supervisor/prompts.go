@@ -254,6 +254,36 @@ func FixPrompt(key, branch, failure string) string {
 	}, "\n")
 }
 
+// LogTriagePrompt asks a subagent to reduce a raw CI log to what broke and
+// why, before that log ever reaches the fix run.
+//
+// A failing job's log can run to thousands of lines, and embedded straight
+// into FixPrompt it rides along on every turn the fix run takes -- read once
+// by a human, paid for again on every turn by the model. This subagent gets
+// its own context, reads the log once, and reports a few lines; the fix run
+// never carries the log itself, only the answer (OR-143).
+//
+// Deliberately narrow. This agent answers one question and changes nothing,
+// so none of TicketPrompt's or FixPrompt's machinery -- scope, commits, the
+// noop marker -- applies here.
+func LogTriagePrompt(branch, log string) string {
+	return join(
+		"A CI job failed on "+branch+". Read the log below and report what broke and why.",
+		"",
+		"THE LOG",
+		quote(log),
+		"",
+		"Report:",
+		"- which check failed",
+		"- the specific error, with file:line where the log names one",
+		"- your best read of the root cause, in a sentence or two",
+		"",
+		"Read only. Do not edit, run, or commit anything -- a different agent fixes",
+		"the branch next, using what you report here.",
+		"Keep the report short: a few lines, not a retelling of the log.",
+	)
+}
+
 // TicketPrompt is the instruction for implementing one tracker issue.
 //
 // Every clause here is load-bearing, because this text is what decides how
