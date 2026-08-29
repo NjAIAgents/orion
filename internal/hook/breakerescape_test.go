@@ -72,6 +72,21 @@ func TestATrippedSessionMayStillTidyTheWorktree(t *testing.T) {
 			t.Errorf("%q must stay blocked; the allowance is not a general reprieve", cmd)
 		}
 	}
+	// git commit --amend is a distinct form from git commit: it rewrites the
+	// tip commit instead of adding a new one, so it can discard or overwrite
+	// content the run already committed. The allowance's own stated invariant
+	// (breaker.go: "COMMIT whatever compiles"; residue.go: "what it committed
+	// survives untouched") is about ADDING a commit, not rewriting the last
+	// one, and "git commit" as a bare prefix does not distinguish the two.
+	for _, cmd := range []string{
+		"git commit --amend -m rewritten",
+		"git commit --amend --no-edit",
+	} {
+		if d := bash(cmd); !d.Blocked() {
+			t.Errorf("%q must stay blocked; --amend can overwrite a commit the run already made, "+
+				"not just add a new one", cmd)
+		}
+	}
 	if d := pre("Edit", `{"file_path":"internal/work/work.go"}`); !d.Blocked() {
 		t.Error("a code edit must stay blocked; nothing distinguishes a cleanup edit from another attempt")
 	}
