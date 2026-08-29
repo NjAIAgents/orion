@@ -302,6 +302,23 @@ func TestSlotsNamesEveryTermThatMovedTheNumber(t *testing.T) {
 	}
 }
 
+// TestSlotsNamesEveryTermThatMovedTheNumber proves the gap term formats
+// correctly against a hand-built slots value. It does not prove Run wires
+// --max-jobs INTO that value correctly -- a bug in that wiring (e.g. the gap
+// silently landing in "free" instead of being named) would pass the unit test
+// above while still reproducing OR-196 for anyone hitting the job limit.
+func TestAMaxJobsLimitBelowTheCapIsNamedAsTheReasonNotJustAbsorbedIntoFree(t *testing.T) {
+	s := &spy{queued: issues("OR-1", "OR-2", "OR-3"), maxSleeps: 99}
+	out := runWatch(t, s, Options{MaxJobs: 1, MaxConcurrent: 3})
+
+	if got := s.workedKeys(); len(got) != 1 {
+		t.Fatalf("started %v; --max-jobs 1 must cap starts at 1", got)
+	}
+	if !strings.Contains(out, "cap 3, 2 held back by this run's limits, 1 free; starting 1 of 3 queued") {
+		t.Errorf("the job limit's bite out of the cap must be named, not just missing from the count:\n%s", out)
+	}
+}
+
 // The cap is on agents IN FLIGHT, not on starts per tick. This is the property
 // the whole change turns on, and the only way to observe it is to hold every
 // job open and count how many are inside at once.
