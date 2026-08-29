@@ -6,6 +6,46 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.7.9
+
+### Added
+
+- QA's own tests are now proven against the commit the branch started from,
+  before they count. Every test file QA adds or changes is laid onto that
+  pre-change commit, alone, in a throwaway worktree, and this repository's
+  own suite is run against it; a test that already passes there does not
+  exercise the change and is reported as such -- on the console and in the
+  event log -- rather than silently accepted. This does not block the
+  branch: QA reports findings and does not gate on its own authority, and
+  this check carries the same authority (OR-156).
+
+### Fixed
+
+- QA's full findings now reach the event log every round, not only when the
+  round ceiling escalates to a person, so the common case (fixed in round
+  one) leaves a durable record instead of nothing. The console line shows
+  the first SUBSTANTIVE line of the findings, skipping a header like
+  "Verification done. Summary:" which previously consumed the one line that
+  survived, and says when the full text is in the event log. Findings are
+  also posted to the ticket every round, not only at the ceiling (OR-167).
+- A Slack approval request now reads differently from a status update from
+  its first word, not only its colour. `notify.Level` (info / warning /
+  blocked) was computed on every event and then dropped: `slack.Post` sent
+  only a channel and text, so "FCIA-8 needs a decision from you" and
+  "FCIA-8 is ready for review" arrived looking identical -- which matters on
+  a phone, where a push notification shows text and nothing else. A blocked
+  message now opens with "Action needed", a warning with "Heads up"; an
+  attachment colour bar reinforces the distinction on desktop and never
+  replaces it (OR-163).
+- CI no longer runs twice for a branch that also has an open pull request.
+  `github.ref` is `refs/heads/<branch>` for a push and `refs/pull/<n>/merge`
+  for a pull_request, so a concurrency group keyed on it alone put the two
+  events in different groups and neither cancelled the other -- a full
+  three-OS matrix under each. The group now keys on the pull request number
+  where there is one and falls back to the ref for a plain push. Fixed in
+  the scaffolded workflows Orion writes for adopted projects, in the
+  scaffolded secret-scan workflow, and in this repository's own (OR-172).
+
 ## v0.7.8
 
 ### Added
