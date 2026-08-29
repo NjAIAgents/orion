@@ -44,6 +44,36 @@ func TestZeroLimitsRestoreDefaults(t *testing.T) {
 	}
 }
 
+// OR-181: an unset or zero concurrency cap must fall back to a low default,
+// never to unbounded fan-out -- the same "0 restores the default, never
+// disables the control" rule every other limit here already follows.
+func TestZeroConcurrencyCapRestoresALowDefault(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "orion.json"),
+		[]byte(`{"limits":{"max_concurrent_children":0}}`), 0o644)
+	cfg := Load(dir)
+	d := Defaults()
+	if cfg.Limits.MaxConcurrentChildren != d.Limits.MaxConcurrentChildren {
+		t.Errorf("max_concurrent_children = %d, want default %d",
+			cfg.Limits.MaxConcurrentChildren, d.Limits.MaxConcurrentChildren)
+	}
+	if cfg.Limits.MaxConcurrentChildren > 3 {
+		t.Errorf("default concurrency cap is %d, want low (2 or 3) per OR-181",
+			cfg.Limits.MaxConcurrentChildren)
+	}
+}
+
+// A project that wants more (or less) concurrency can configure it -- the
+// cap is not hardcoded.
+func TestConcurrencyCapIsConfigurable(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "orion.json"),
+		[]byte(`{"limits":{"max_concurrent_children":5}}`), 0o644)
+	if cfg := Load(dir); cfg.Limits.MaxConcurrentChildren != 5 {
+		t.Errorf("max_concurrent_children = %d, want 5", cfg.Limits.MaxConcurrentChildren)
+	}
+}
+
 func TestCommentKeysAreIgnored(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "orion.json"), []byte(`{
