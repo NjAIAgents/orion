@@ -186,6 +186,64 @@ func TestPostSendsChannelAndText(t *testing.T) {
 	}
 }
 
+// OR-163: an approval request and a status update used to render
+// identically -- Post sent only a channel and text, with no way to carry
+// the level that would tell them apart.
+//
+// The marker must be WORDS at the START of the text field, because that is
+// the only part of the message a mobile push notification shows -- the
+// colour bar below is reinforcement for desktop, never the only signal.
+func TestPostLevelDiffersFromTheFirstWord(t *testing.T) {
+	var gotBlocked, gotInfo url.Values
+	c, srv := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if strings.Contains(r.PostForm.Get("text"), "needs a decision") {
+			gotBlocked = r.PostForm
+		} else {
+			gotInfo = r.PostForm
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	defer srv.Close()
+
+	if err := c.PostLevel("C123", LevelBlocked, "FCIA-8 needs a decision from you"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.PostLevel("C123", LevelInfo, "FCIA-8 is ready for review"); err != nil {
+		t.Fatal(err)
+	}
+
+	blockedFirstLine := strings.SplitN(gotBlocked.Get("text"), "\n", 2)[0]
+	infoFirstLine := strings.SplitN(gotInfo.Get("text"), "\n", 2)[0]
+	if blockedFirstLine == infoFirstLine {
+		t.Fatalf("approval and info messages have the same first line: %q", blockedFirstLine)
+	}
+	// Not merely emoji-different: the WORDS must differ, since a screen
+	// reader or a client that strips emoji must still see the distinction.
+	strip := func(s string) string {
+		for _, e := range []string{"🔴", "⚠️"} {
+			s = strings.ReplaceAll(s, e, "")
+		}
+		return strings.TrimSpace(s)
+	}
+	if strip(blockedFirstLine) == strip(infoFirstLine) {
+		t.Errorf("the two messages differ only by emoji, not by words: %q vs %q",
+			blockedFirstLine, infoFirstLine)
+	}
+	if !strings.Contains(gotBlocked.Get("text"), "Action needed") {
+		t.Errorf("an approval request must say an action is required: %q", gotBlocked.Get("text"))
+	}
+
+	// The colour bar is reinforcement, present but distinct per level -- and
+	// never the only signal, since the words above already carry it.
+	if !strings.Contains(gotBlocked.Get("attachments"), levelColor(LevelBlocked)) {
+		t.Errorf("attachments = %q; missing the blocked colour", gotBlocked.Get("attachments"))
+	}
+	if !strings.Contains(gotInfo.Get("attachments"), levelColor(LevelInfo)) {
+		t.Errorf("attachments = %q; missing the info colour", gotInfo.Get("attachments"))
+	}
+}
+
 // Arguments must travel as FORM fields, not a JSON body.
 //
 // Slack's cursor-paginated read methods ignore a JSON body and answer with
