@@ -746,3 +746,88 @@ func TestWithoutAnAdvisorItStillBlocksCleanly(t *testing.T) {
 		t.Errorf("question = %q", res[0].Question)
 	}
 }
+
+// pathWithoutDun returns a PATH entry that has git (everything else in this
+// package's flow needs it) but not dun, so EnsureSandboxDun's missing-tool
+// branch is exercised even on a machine that has dun installed.
+func pathWithoutDun(t *testing.T) string {
+	t.Helper()
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.Symlink(gitPath, filepath.Join(bin, "git")); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// The measured bug (OR-193): every agent commit landed with no attribution
+// trailer, and nothing said so. EnsureSandboxDun is called from `one` when
+// dun cannot instrument the sandbox clone, and it must surface as a warning
+// in the run's own output rather than fail silently or abort the job --
+// losing attribution is bad, losing the work is worse.
+func TestAttributionFailureWarnsButDoesNotFailTheRun(t *testing.T) {
+	home := project(t, cfg) // cfg sets nothing for attribution, so the default (enabled) applies
+	t.Setenv("PATH", pathWithoutDun(t))
+	j := &fakeJira{}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				if err := os.WriteFile(filepath.Join(ws.RepoDir(), "impl.go"), []byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, ws.RepoDir(), "add", ".")
+				git(t, ws.RepoDir(), "commit", "-q", "-m", "feat: implement")
+				return &supervisor.Result{ExitCode: 0, Reason: "completed"}, nil
+			},
+			Push:   func(dir, branch string) error { return nil },
+			OpenPR: func(dir, branch, title, body, base string) (string, error) { return "https://x/pull/1", nil },
+		})
+
+	if len(res) != 1 || res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("a missing attribution tool must not fail the run: %+v", res)
+	}
+	if !strings.Contains(out.String(), "attribution:") {
+		t.Errorf("no attribution warning in the run's own output:\n%s", out.String())
+	}
+}
+
+// The other half of the same gate: a project that has turned attribution off
+// must not even try, so it must not warn about a tool it was told to ignore.
+func TestAttributionIsSkippedWhenDisabled(t *testing.T) {
+	const noAttribution = `{"vcs":{"default_branch":"main","work_branch":"develop","branch_prefix":"orion/"},
+	              "tracker":{"enabled":true,"project_key":"FCIA","queue_label":"ORION"},
+	              "qa":{"enabled":false},
+	              "attribution":{"enabled":false}}`
+	home := project(t, noAttribution)
+	t.Setenv("PATH", pathWithoutDun(t))
+	j := &fakeJira{}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				if err := os.WriteFile(filepath.Join(ws.RepoDir(), "impl.go"), []byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, ws.RepoDir(), "add", ".")
+				git(t, ws.RepoDir(), "commit", "-q", "-m", "feat: implement")
+				return &supervisor.Result{ExitCode: 0, Reason: "completed"}, nil
+			},
+			Push:   func(dir, branch string) error { return nil },
+			OpenPR: func(dir, branch, title, body, base string) (string, error) { return "https://x/pull/1", nil },
+		})
+
+	if len(res) != 1 || res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("result = %+v", res)
+	}
+	if strings.Contains(out.String(), "attribution:") {
+		t.Errorf("attribution disabled in orion.json, but it still ran and warned:\n%s", out.String())
+	}
+}
