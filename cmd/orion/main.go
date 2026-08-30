@@ -74,6 +74,9 @@ WORKSPACES
 
 RUNNING
   orion provision <id>        create the remote repo, branches, and tracker
+  orion plan <KEY>            design a provisioned tracker project: workspace
+                              first, then the roster and cost shape
+                              (--dry-run prints it all and spends nothing)
   orion run <id> [--stage S]  supervise a sandboxed claude run in a workspace
   orion status                show this repo: branch, hooks, Jira, Slack, spend
   orion status <id>           show stage, breaker state and last run
@@ -184,6 +187,9 @@ func main() {
 	case "provision":
 		mustArg(os.Args, 2, "orion provision <id>")
 		runProvision(os.Args[2], os.Args[3:])
+	case "plan":
+		mustArg(os.Args, 2, "orion plan <KEY>")
+		runPlan(os.Args[2:])
 	case "run":
 		mustArg(os.Args, 2, "orion run <id>")
 		runSupervised(os.Args[2], os.Args[3:])
