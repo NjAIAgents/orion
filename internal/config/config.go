@@ -31,13 +31,25 @@ type Limits struct {
 	// time. Unlike the limits above it does not bound one agent's behaviour;
 	// it bounds how many agents exist.
 	//
-	// Two by default, and never more than MaxConcurrentTicketsCeiling. Two is
-	// not caution for its own sake: every hazard concurrency introduces --
+	// Four by default, and never more than MaxConcurrentTicketsCeiling.
+	//
+	// It was two first, deliberately: every hazard concurrency introduces --
 	// concurrent git against one shared clone, a budget checkpoint sailed past
 	// by runs already in flight, N sessions hitting one rate limit, N tickets
 	// picked that all edit the same files -- is invisible at one and obvious
-	// at two, and diagnosing it at two is cheap. Prove it at two, then raise
-	// it.
+	// at two, and diagnosing it at two is cheap. The rule was "prove it at
+	// two, then raise it", and two has now been proven across a full release
+	// (v0.8.0 and the v0.8.1 queue), so this is that raise rather than a
+	// change of mind about the hazards.
+	//
+	// Four and not the ceiling of five, because the ceiling has to stay
+	// reachable only by an explicit choice. A default that equals the maximum
+	// leaves nothing to opt into and hides the fact that a limit exists.
+	//
+	// Note this multiplies with MaxConcurrentChildren above rather than
+	// capping it: four tickets each fanning out to subagents is a different
+	// load than four processes. If a stampede shows up after this change,
+	// that product is the first thing to look at.
 	MaxConcurrentTickets int `json:"max_concurrent_tickets"`
 }
 
@@ -558,7 +570,7 @@ func Defaults() Config {
 			MaxEditsWithoutVerify:  25,
 			MaxFilesTouched:        60,
 			MaxConcurrentChildren:  2,
-			MaxConcurrentTickets:   2,
+			MaxConcurrentTickets:   4,
 		},
 		Gates: Gates{
 			RequirePlanBeforeEdit:          false, // opt-in: too disruptive to force on an unconfigured repo
