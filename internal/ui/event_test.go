@@ -110,17 +110,34 @@ func TestTheIconsAreDistinctPerCategory(t *testing.T) {
 // A glyph on a terminal that cannot render it is mojibake, not a status. The
 // same opt-outs as colour, plus a locale that says the terminal is not UTF-8.
 func TestTheIconsFallBackToASCII(t *testing.T) {
-	for _, env := range []struct{ name, value string }{
-		{"NO_COLOR", "1"},
-		{"TERM", "dumb"},
-		{"LC_ALL", "C"},
-	} {
-		t.Run(env.name+"="+env.value, func(t *testing.T) {
-			// UTF-8 first, so the variable under test is the only reason
-			// the icon degrades -- including when it is a locale variable
-			// of its own, which then overrides what the helper set.
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T)
+	}{
+		{"NO_COLOR=1", func(t *testing.T) {
 			setUTF8Locale(t)
-			t.Setenv(env.name, env.value)
+			t.Setenv("NO_COLOR", "1")
+		}},
+		{"TERM=dumb", func(t *testing.T) {
+			setUTF8Locale(t)
+			t.Setenv("TERM", "dumb")
+		}},
+		{"LC_ALL=C", func(t *testing.T) {
+			// UTF-8 first, so LC_ALL is the only reason the icon degrades.
+			setUTF8Locale(t)
+			t.Setenv("LC_ALL", "C")
+		}},
+		{"LC_CTYPE=C", func(t *testing.T) {
+			// LC_ALL outranks LC_CTYPE, so it must be cleared -- not merely
+			// left at the UTF-8 value setUTF8Locale would give it -- or an
+			// LC_CTYPE override could never be observed regardless of what
+			// the code under test does with it.
+			setLocale(t, "")
+			t.Setenv("LC_CTYPE", "C")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.setup(t)
 			got := render(Line{Key: "OR-125", Verb: VerbFail, Msg: "boom"})
 			if strings.Contains(got, iconFail) {
 				t.Errorf("a non-UTF-8 terminal was sent a glyph: %q", got)

@@ -1,6 +1,9 @@
 package ui
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 // A locale-sensitive test has to STATE the locale, not inherit it.
 //
@@ -32,6 +35,34 @@ func setLocale(t *testing.T, value string) {
 	t.Helper()
 	for _, v := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {
 		t.Setenv(v, value)
+	}
+}
+
+// A helper that left its locale set after the test would make every test
+// after it in the same binary silently locale-dependent again -- exactly the
+// bug this file exists to prevent, just moved one test later. t.Setenv's own
+// Cleanup is what guarantees the restore; this pins that guarantee against
+// the specific values these helpers use, so a future rewrite of setLocale
+// that swaps t.Setenv for a raw os.Setenv is caught here rather than in
+// flaky test order downstream.
+func TestLocaleHelpersDoNotLeakToTheNextTest(t *testing.T) {
+	before := map[string]string{
+		"LC_ALL":   os.Getenv("LC_ALL"),
+		"LC_CTYPE": os.Getenv("LC_CTYPE"),
+		"LANG":     os.Getenv("LANG"),
+	}
+
+	t.Run("uses the ASCII helper", func(t *testing.T) {
+		setASCIILocale(t)
+		if utf8Locale() {
+			t.Fatal("setASCIILocale did not take effect inside its own test")
+		}
+	})
+
+	for v, want := range before {
+		if got := os.Getenv(v); got != want {
+			t.Errorf("%s leaked past the subtest: got %q, want %q (the pre-test value)", v, got, want)
+		}
 	}
 }
 
