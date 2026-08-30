@@ -929,6 +929,30 @@ func TestAnUnsetIntervalTicksEveryMinute(t *testing.T) {
 	}
 }
 
+// The single-sleep test above only proves the FIRST tick used the default; it
+// would still pass if the interval were somehow recomputed and widened on
+// later ticks. Subsequent ticks matter just as much -- the queued work this
+// loop notices keeps arriving after tick one, not only before it.
+func TestSubsequentTicksAlsoUseTheMinuteDefault(t *testing.T) {
+	stopping.Store(false)
+	s := &spy{maxSleeps: 4}
+
+	var buf bytes.Buffer
+	if err := Run(Options{Out: &buf, Home: t.TempDir()}, s.deps()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := s.sleptDurations()
+	if len(got) != 4 {
+		t.Fatalf("slept %d times, want 4", len(got))
+	}
+	for i, d := range got {
+		if d != time.Minute {
+			t.Errorf("tick %d slept %v, want 1m0s", i+1, d)
+		}
+	}
+}
+
 // The default is a fallback, never an override: a caller who names an
 // interval gets exactly that one.
 func TestAnExplicitIntervalIsUsedAsGiven(t *testing.T) {
