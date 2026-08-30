@@ -844,6 +844,62 @@ func TestCaseDeriveIsSkippedWhenThereIsNothingToDeriveFrom(t *testing.T) {
 	}
 }
 
+// The mirror of TestCaseDeriveIsSkippedWhenThereIsNothingToDeriveFrom: this
+// time the criteria exist but there is no base commit to diff against, so
+// there is still nothing for the derive step to read the change out of.
+func TestCaseDeriveIsSkippedWhenThereIsNoBaseSHA(t *testing.T) {
+	repo, _ := deriveRepo(t)
+
+	var stages []string
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		stages = append(stages, o.Stage)
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+
+	var out strings.Builder
+	runQA(qaJob{Key: "FCIA-6", Summary: "round the total", Description: "AC: totals round",
+		WS: &workspace.Workspace{RepoPath: repo}},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out)
+
+	if strings.Join(stages, ",") != "qa" {
+		t.Errorf("run sequence = %v, want QA alone: there was no base commit to diff against", stages)
+	}
+}
+
+// A base commit that IS HEAD produces an empty diff -- there is nothing the
+// change touched, so the derive step has nothing to add and must not spend a
+// run finding that out.
+func TestCaseDeriveIsSkippedWhenTheDiffIsEmpty(t *testing.T) {
+	repo, _ := deriveRepo(t)
+	headSHA := git(t, repo, "rev-parse", "HEAD")
+
+	var stages []string
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		stages = append(stages, o.Stage)
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+
+	var out strings.Builder
+	runQA(qaJob{Key: "FCIA-6", Summary: "round the total", Description: "AC: totals round",
+		WS: &workspace.Workspace{RepoPath: repo}, BaseSHA: headSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out)
+
+	if strings.Join(stages, ",") != "qa" {
+		t.Errorf("run sequence = %v, want QA alone: base and HEAD are the same commit, so "+
+			"there is no diff to derive cases from", stages)
+	}
+}
+
+// countCases is the one line the console gets, so it has to count only actual
+// cases -- not blank lines the agent's formatting left in, and not a header
+// line it wrote despite being asked for none.
+func TestCountCasesSkipsBlankLinesAndHeaders(t *testing.T) {
+	cases := "Cases:\n- a negative total rounds down\n\n- a zero total stays zero\n"
+	if got := countCases(cases); got != 2 {
+		t.Errorf("countCases = %d, want 2: the header line and the blank line are not cases", got)
+	}
+}
+
 // projectWithSuite is project (work_test.go) plus a scripts/test.sh that is
 // already on the seed commit -- the one thing project deliberately leaves
 // out, and the one thing this package's own red-before-green check needs to
