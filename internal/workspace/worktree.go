@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/orion-sdlc/orion/internal/config"
 )
 
 // Per-job git worktrees.
@@ -170,33 +172,72 @@ func canonPath(p string) string {
 // Used before removing one. A killed run leaves work in progress, and that
 // is precisely the state worth preserving rather than discarding.
 func Dirty(path string) (bool, string) {
-	out, err := git(path, "status", "--porcelain")
+	// --untracked-files=all, because the default collapses a wholly untracked
+	// directory to one entry -- "?? plans/" -- and an entry naming a directory
+	// can be neither recognised as Orion's own file nor safely ignored: the
+	// same line would cover an agent's draft sitting next to it. Expanding
+	// costs a stat walk and hides nothing.
+	out, err := git(path, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return true, out // unreadable: assume dirty rather than risk deleting
 	}
-	// Ignore Orion's OWN runtime directory.
-	//
-	// Every job worktree contains a .orion/ that Orion writes itself --
-	// state, logs, breaker counters -- and git sees it as untracked. Counting
-	// it made every worktree permanently dirty, so the prune after a merge
-	// refused every single time, on the grounds that Orion might destroy
-	// Orion's own scratch files. The refusal is right about agent work and
-	// absurd about this.
-	//
-	// Being conservative is correct for a deletion guard, but only about
-	// things a person or an agent produced.
+	lines := AgentDirt(path, out)
+	return len(lines) > 0, strings.Join(lines, "\n")
+}
+
+// AgentDirt filters `git status --porcelain` output down to the lines a person
+// or an agent produced, dropping the files Orion writes into a job worktree
+// itself.
+//
+// Being conservative is correct for a deletion guard, but only about things
+// somebody else produced. Orion's own artefacts are untracked by design -- so
+// they can never be committed away -- and counting them as reasons to refuse
+// makes Orion block its own cleanup with its own output:
+//
+//	WARNING kept the worktree for orion/or-168: ... has uncommitted work:
+//	        ?? plans/BLOCKED.md
+//
+// for a ticket that had merged minutes earlier (OR-220). Every tripped run
+// then leaves a full checkout behind forever.
+//
+// The list is deliberately by NAME. Ignoring untracked files in general is the
+// rule that protects an agent's four new test files, and making these tracked
+// instead would put them in the diff and the pull request.
+func AgentDirt(worktree, porcelain string) []string {
 	var lines []string
-	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+	for _, l := range strings.Split(strings.TrimSpace(porcelain), "\n") {
 		if l = strings.TrimSpace(l); l == "" {
 			continue
 		}
+		// Status lines are "XY path"; the path is what identifies the file,
+		// and for a rename ("R  old -> new") the destination is what is on
+		// disk to lose.
 		f := strings.Fields(l)
-		if len(f) >= 2 && strings.HasPrefix(f[len(f)-1], ".orion/") {
+		if len(f) >= 2 && orionAuthored(worktree, f[0], f[len(f)-1]) {
 			continue
 		}
 		lines = append(lines, l)
 	}
-	return len(lines) > 0, strings.Join(lines, "\n")
+	return lines
+}
+
+// orionAuthored reports whether one porcelain entry names something Orion
+// wrote rather than something to protect.
+func orionAuthored(worktree, status, path string) bool {
+	// The runtime directory: state, logs, breaker counters. Ignored whatever
+	// its status, because nothing in it is ever a person's to keep.
+	if strings.HasPrefix(path, ".orion/") {
+		return true
+	}
+	// The breaker's stop-note. Untracked ONLY: the breaker creates it and
+	// nothing tracks it (OR-194), so a tracked BLOCKED.md is a file somebody
+	// deliberately committed to this repository and their edits to it are
+	// theirs, not Orion's to discard.
+	if status != "??" {
+		return false
+	}
+	plans := config.Load(worktree).Paths.Plans
+	return path == filepath.ToSlash(filepath.Join(plans, "BLOCKED.md"))
 }
 
 // DirtyTracked reports uncommitted changes to TRACKED files, as porcelain

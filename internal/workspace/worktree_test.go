@@ -347,6 +347,113 @@ func TestMergedRemoveStillRefusesUncommittedWork(t *testing.T) {
 	}
 }
 
+// The breaker's stop-note must not keep the worktree it was written in.
+//
+// OR-194 has the breaker write plans/BLOCKED.md at trip time, untracked by
+// design so it never reaches the diff -- which also means it can never be
+// committed away. The deletion guard then refused to prune the worktree
+// because a file was uncommitted, for a ticket the forge had already merged.
+// Both halves are right on their own; together they deadlock, and every
+// tripped run leaves a full checkout behind (OR-220).
+func TestBlockedNoteAloneDoesNotKeepAMergedWorktree(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/tripped")
+	writeBlockedNote(t, j.Path)
+
+	if dirty, detail := Dirty(j.Path); dirty {
+		t.Fatalf("Orion's own stop-note counted as the operator's work: %s", detail)
+	}
+	if err := RemoveMergedWorktree(ws, j.Path); err != nil {
+		t.Fatalf("kept the worktree over a note Orion wrote itself: %v", err)
+	}
+	if _, err := os.Stat(j.Path); err == nil {
+		t.Error("the worktree is still on disk after a merged prune")
+	}
+}
+
+// The other half of the rule: anything else untracked is still the operator's,
+// and the refusal must name it exactly as before.
+//
+// The agent's draft goes in plans/ NEXT TO the note, which is the case a
+// path-name check gets wrong: git reports a wholly untracked directory as one
+// "?? plans/" entry, and that single line covers both files at once.
+func TestOtherUntrackedWorkStillKeepsTheWorktree(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/tripped-with-work")
+	writeBlockedNote(t, j.Path)
+	if err := os.WriteFile(filepath.Join(j.Path, "plans", "OR-1.md"),
+		[]byte("the agent's plan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := RemoveMergedWorktree(ws, j.Path)
+	if err == nil {
+		t.Fatal("removed a worktree holding a file the agent wrote")
+	}
+	if !strings.Contains(err.Error(), "OR-1.md") {
+		t.Errorf("the refusal must name what it is protecting: %v", err)
+	}
+	if strings.Contains(err.Error(), "BLOCKED.md") {
+		t.Errorf("Orion's own note was reported as a reason to keep: %v", err)
+	}
+}
+
+// A tracked, modified BLOCKED.md is somebody's committed file, not Orion's
+// scratch. Ignoring it by name alone would discard their edits, so only the
+// untracked entry is Orion's to disregard.
+func TestTrackedBlockedNoteIsStillProtected(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/tracked-note")
+	writeBlockedNote(t, j.Path)
+	gitT(t, j.Path, "add", "-f", "plans/BLOCKED.md")
+	gitT(t, j.Path, "commit", "-q", "-m", "someone committed the note")
+	if err := os.WriteFile(filepath.Join(j.Path, "plans", "BLOCKED.md"),
+		[]byte("edited by hand\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := RemoveMergedWorktree(ws, j.Path)
+	if err == nil || !strings.Contains(err.Error(), "uncommitted") {
+		t.Fatalf("a tracked file's edits are not Orion's to discard, got: %v", err)
+	}
+}
+
+// The note is the record of why a run stopped, so it must survive until the
+// work has landed. Ignoring it for the dirty check must not weaken the
+// unpushed-commits guard, which is what keeps an unmerged blocked run -- and
+// its note -- on disk for whoever comes to read it.
+func TestBlockedNoteDoesNotUnprotectUnpushedCommits(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/tripped-unpushed")
+	if err := os.WriteFile(filepath.Join(j.Path, "half.go"), []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, j.Path, "add", ".")
+	gitT(t, j.Path, "commit", "-q", "-m", "as far as it got")
+	writeBlockedNote(t, j.Path)
+
+	err := RemoveWorktree(ws, j.Path, false)
+	if err == nil || !strings.Contains(err.Error(), "not on the remote") {
+		t.Fatalf("a blocked run that was never pushed must stay readable, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(j.Path, "plans", "BLOCKED.md")); statErr != nil {
+		t.Errorf("the account of the trip is gone: %v", statErr)
+	}
+}
+
+// writeBlockedNote writes the file the breaker writes when it trips.
+func writeBlockedNote(t *testing.T, worktree string) {
+	t.Helper()
+	dir := filepath.Join(worktree, "plans")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "BLOCKED.md"),
+		[]byte("# Blocked\n\nthe breaker tripped\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // gitT runs git in dir with a deterministic identity, failing the test on error.
 func gitT(t *testing.T, dir string, args ...string) {
 	t.Helper()
