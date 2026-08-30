@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
 
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
@@ -145,8 +146,11 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 	}
 
 	out = qaOutcome{Ran: true}
-	findings, clean := qaVerdict(tailOf(res))
-	qaSession := res.SessionID
+	findings, clean, ok, qaSession := qaReadVerdict(job, "", res, deps, log, w)
+	if !ok {
+		qaNoVerdict(job, deps, log, w)
+		return out
+	}
 
 	for max := cfg.QA.Rounds(); !clean; {
 		out.Findings = findings
@@ -237,10 +241,14 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 			qaPostRound(deps, report)
 			return out
 		}
-		if res.SessionID != "" {
-			qaSession = res.SessionID
+		findings, clean, ok, qaSession = qaReadVerdict(job, qaSession, res, deps, log, w)
+		if !ok {
+			report.Verdict = "Re-verification ended without a verdict, so whether the fix " +
+				"cleared this is unknown."
+			qaPostRound(deps, report)
+			qaNoVerdict(job, deps, log, w)
+			return out
 		}
-		findings, clean = qaVerdict(tailOf(res))
 		report.Verdict = "Re-verified: findings are still open."
 		if clean {
 			report.Verdict = "Re-verified: every case passes."
@@ -409,27 +417,165 @@ func reportRedBeforeGreen(job qaJob, preQA string, log *events.Log, w io.Writer)
 	}
 }
 
+// qaVerdictKind is what a QA run's closing message actually said.
+//
+// Three states, not two. The sentinel means clean; a message that names a
+// failure is findings; a message that does neither is not a verdict at all,
+// and that is a different thing from having found defects.
+//
+// Collapsing the third into the second is what OR-204 was: a run that
+// verified everything and wrote "All pass" as prose was routed into an opus
+// fix round, and the message it carried told the implementer to fix a defect
+// nobody had described. The cheapest way to satisfy that instruction is to
+// relax whatever assertion looks closest, and a weakened assertion makes CI
+// GREENER rather than redder -- so nothing downstream catches it, and it has
+// to not happen here.
+type qaVerdictKind int
+
+const (
+	// qaVerdictNone: neither the sentinel nor a named failure. Unknown, not
+	// failing. Never dispatched as findings; re-asked once, then a person.
+	qaVerdictNone qaVerdictKind = iota
+	qaVerdictClean
+	qaVerdictFindings
+)
+
 // qaVerdict reads the QA agent's closing message.
 //
 // Clean only on the sentinel, and only when it starts a line: an agent that
 // quotes its own instructions back ("write QA CLEAN when everything passes")
-// would otherwise declare a clean branch by describing one. Anything else is
-// findings -- including an empty message, because a QA run that says nothing
-// has not said everything passes.
-func qaVerdict(final string) (findings string, clean bool) {
+// would otherwise declare a clean branch by describing one.
+func qaVerdict(final string) (said string, kind qaVerdictKind) {
 	for _, line := range strings.Split(final, "\n") {
 		line = strings.TrimLeft(strings.TrimSpace(line), "*#->_ ")
 		if len(line) < len(supervisor.QAClean) {
 			continue
 		}
 		if strings.EqualFold(line[:len(supervisor.QAClean)], supervisor.QAClean) {
-			return "", true
+			return "", qaVerdictClean
 		}
 	}
-	if strings.TrimSpace(final) == "" {
-		return "QA finished without reporting anything, so nothing was verified.", false
+	said = strings.TrimSpace(final)
+	if said == "" {
+		// A run that said nothing has not said everything passes -- and has
+		// not described a defect either, so it is not something to hand a
+		// developer to fix.
+		return "QA finished without reporting anything, so nothing was verified.", qaVerdictNone
 	}
-	return strings.TrimSpace(final), false
+	if !namesAFailure(said) {
+		return said, qaVerdictNone
+	}
+	return said, qaVerdictFindings
+}
+
+// failureStems are what a findings report says and a passing one does not,
+// as word prefixes: "fail" covers fails, failed, failing and failure.
+//
+// This is prose, and reading prose is exactly what the sentinel exists to
+// avoid -- so note what this list is allowed to decide. It cannot make a
+// branch clean: only the sentinel does that, unchanged. It cannot turn a
+// report it does not recognise into a pass either -- that becomes NO verdict,
+// which costs one cheap re-ask and damages nothing. The only thing it decides
+// is whether Orion may skip asking, and it skips only when QA has named a
+// failure in so many words. Every way it can be wrong lands on the re-ask,
+// which is the safe side.
+var failureStems = []string{
+	"fail", "defect", "broke", "regress", "incorrect", "wrong", "missing",
+	"mismatch", "crash", "panic", "unable", "problem", "unexpected",
+}
+
+// negators are the words that deny the one after them. "No failures" and "all
+// cases pass" are the same claim, and reading the first as findings is
+// exactly the misread this file is about -- a QA run that reports its pass in
+// the negative must not be routed into a fix round for saying "failure".
+var negators = map[string]bool{
+	"no": true, "not": true, "never": true, "nothing": true, "none": true,
+	"neither": true, "without": true, "zero": true, "any": true,
+}
+
+// namesAFailure reports whether the message says something failed.
+//
+// Word by word rather than by substring, so "debug" is not a bug and
+// "passfail" is neither -- and so the word before a match can be read, which
+// is what makes the negation check possible at all.
+func namesAFailure(s string) bool {
+	prev := ""
+	for _, word := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	}) {
+		if !negators[prev] {
+			for _, stem := range failureStems {
+				if strings.HasPrefix(word, stem) {
+					return true
+				}
+			}
+		}
+		prev = word
+	}
+	return false
+}
+
+// Bounds for the verdict re-ask. One line is being asked for, from a session
+// that has already done the work, so a run that spends more than this has
+// stopped answering the question. The short cap is also what makes the claim
+// true that this is cheaper than the fix round it replaces.
+const (
+	qaVerdictMaxMinutes = 5
+	qaVerdictMaxTurns   = 5
+)
+
+// qaReadVerdict reads a QA run's closing message and, when that message gave
+// no verdict at all, asks once more for one.
+//
+// One re-ask, never a fix round: see qaVerdictKind. It runs on QA's own model
+// against QA's own session, so it costs one short turn rather than an
+// implementer round, and it cannot damage a clean branch -- the worst it can
+// do is ask a question.
+//
+// ok is false when QA still did not answer, or when the re-ask itself did not
+// finish. The caller escalates to a person; it must not guess. next is QA's
+// session to carry forward, which the re-ask may replace.
+func qaReadVerdict(job qaJob, session string, res *supervisor.Result, deps Deps,
+	log *events.Log, w io.Writer) (findings string, clean, ok bool, next string) {
+
+	next = session
+	if res.SessionID != "" {
+		next = res.SessionID
+	}
+	said, kind := qaVerdict(tailOf(res))
+	if kind != qaVerdictNone {
+		return said, kind == qaVerdictClean, true, next
+	}
+
+	// What it said instead, written down before it is asked again: the reply
+	// to the re-ask replaces it in memory, and this is the only record of the
+	// message that was ambiguous in the first place.
+	log.Emit(events.Event{Kind: events.KindQA, Actor: events.ActorQA,
+		Model: actors.Model(events.ActorQA),
+		Msg: "QA ended without " + supervisor.QAClean + " and without findings, so there is " +
+			"no verdict to act on. Asking once for one. What it said instead:\n" + said})
+	ui.Say(w, job.Key, events.ActorQA, ui.VerbWarn,
+		"ended without a verdict; asking once for one rather than dispatching a fix round")
+
+	again, err := deps.Supervise(job.WS, supervisor.Options{
+		Stage: "qa", Resume: next,
+		Prompt:     supervisor.QAVerdictMessage(),
+		Model:      actors.Model(events.ActorQA),
+		Effort:     actors.Effort(events.ActorQA),
+		MaxMinutes: qaVerdictMaxMinutes, MaxTurns: qaVerdictMaxTurns,
+		OnActivity: ActivityLogger(log, w, job.Key, events.ActorQA),
+		Actor:      events.ActorQA, Key: job.Key,
+	})
+	if !qaRan(again, err, job.Key, log, w) {
+		return "", false, false, next
+	}
+	if again.SessionID != "" {
+		next = again.SessionID
+	}
+	if said, kind = qaVerdict(tailOf(again)); kind == qaVerdictNone {
+		return "", false, false, next
+	}
+	return said, kind == qaVerdictClean, true, next
 }
 
 // firstSubstantiveLine is what the console shows: the first line that
@@ -501,6 +647,56 @@ func qaPostNothingFound(deps Deps, key string) {
 	_ = deps.Jira.Comment(key, actors.Comment(events.ActorQA,
 		"verified this change independently and found nothing: every case passes, "+
 			"and no fix rounds were needed."))
+}
+
+// qaNoVerdict ends the stage when QA never gave one -- not the sentinel, not
+// findings, and not on the second ask either.
+//
+// A person, never a fix round. This is the whole point of OR-204: an unknown
+// verdict dispatched as findings tells the implementer to fix a defect that
+// was never described, and the cheapest way to satisfy that instruction is to
+// relax whatever assertion looks closest. That makes CI greener rather than
+// redder, so the damage ships green and no later gate sees it. What the run
+// says instead is the truth -- no verdict was obtained -- which is a claim a
+// person can act on and "fixing what QA found" was not.
+//
+// The run CONTINUES, for the reason qaEscalate's does: QA does not block on
+// its own authority, and "QA could not be understood" is weaker ground to
+// strand a committed, CI-gated change on than findings would have been.
+func qaNoVerdict(job qaJob, deps Deps, log *events.Log, w io.Writer) {
+	key := job.Key
+	const why = "QA never reported a verdict: its closing message named neither " +
+		supervisor.QAClean + " nor any finding, and it did not write one when asked again"
+
+	log.Emit(events.Event{Kind: events.KindEscalate, Actor: events.ActorQA,
+		Model: actors.Model(events.ActorQA),
+		Msg:   why + "; no fix round was dispatched, because nothing was described to fix"})
+	ui.Say(w, key, events.ActorQA, ui.VerbFail,
+		"gave no verdict, even when asked for one. This change is unverified and a "+
+			"person needs to look.")
+
+	if deps.Jira != nil {
+		_ = deps.Jira.Comment(key, actors.Comment(events.ActorQA, why+
+			".\n\nSo this change is UNVERIFIED, which is not the same as failing -- and is why "+
+			"no fix round ran: there was nothing described to fix. The branch is going to "+
+			"review anyway -- QA reports, it does not block -- so read it as a change QA did "+
+			"not get through, not as one it passed."))
+	}
+
+	tell(w, log, job.WS, notify.Event{
+		Key: key, Level: notify.Blocked, Workspace: job.WS.ID, Actor: events.ActorQA,
+		Title: key + ": QA gave no verdict",
+		Body: strings.Join([]string{
+			"*" + job.Summary + "*",
+			"",
+			"QA ended without " + supervisor.QAClean + " and without findings, and did not",
+			"write a verdict when it was asked for one. Nothing was verified, and no fix",
+			"round ran -- there was no defect described to fix.",
+			"",
+			"_The pull request still opens: QA reports findings, it does not block a change._",
+			"_Read this as unverified, not as passed._",
+		}, "\n"),
+	})
 }
 
 // qaEscalate hands the open findings to a person.

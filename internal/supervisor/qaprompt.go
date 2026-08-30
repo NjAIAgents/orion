@@ -230,6 +230,30 @@ func QAFindingsMessage(findings string) string {
 	)
 }
 
+// QAVerdictMessage asks for the one line the last run owed and did not write.
+//
+// Sent when a QA run ended with neither QAClean nor a finding. That run has
+// no verdict in it, and the two things Orion could do without asking are both
+// wrong: reading the prose is how a failing branch ships, and treating it as
+// findings sends the developer to fix a defect nobody described. So it asks
+// -- once, cheaply, of the actor that already did the work (OR-204).
+func QAVerdictMessage() string {
+	return join(
+		"You ended without "+QAClean+" and without findings, so Orion has no verdict",
+		"from you. It will not guess one from your prose, and it will not send a",
+		"developer to fix something you did not describe.",
+		"",
+		"Reply with the verdict, and nothing else.",
+		"",
+		"If every case you ran passes, make "+QAClean+" the last line you write, on",
+		"its own. Otherwise end with the open findings and only those: one per line,",
+		"each naming the case, what you expected, and what happened.",
+		"",
+		"This is the conclusion you already reached, written in the form Orion reads.",
+		"Do not re-run the suite, do not write another test, and change nothing.",
+	)
+}
+
 // QAReverifyMessage asks QA to look again after a fix.
 func QAReverifyMessage() string {
 	return join(
