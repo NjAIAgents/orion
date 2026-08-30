@@ -64,9 +64,12 @@ CONFIGURATION
 ADOPT AN EXISTING REPO
   orion init [--plan-gate]    config, artifact dirs and hooks, idempotent
 
+STARTING SOMETHING NEW
+  orion new "<idea>"          interview you about the idea, then create the
+                              tracker project that orion plan designs from
+                              (interactive; creates no workspace)
+
 WORKSPACES
-  orion new "<idea>"          provision an isolated project workspace
-                              (--skip-discovery to bypass the intent conversation)
   orion answer <id>           resolve the open questions blocking a workspace
   orion ls                    list workspaces
   orion open <id>             print a workspace path (use with cd)
@@ -315,51 +318,6 @@ func runHook(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "orion: unknown hook %q\n", name)
 		os.Exit(64)
-	}
-}
-
-func runNew(idea string, rest []string) {
-	opts := workspace.NewOptions{
-		Idea:      idea,
-		Template:  argFlag(rest, "--template", ""),
-		FromRepo:  argFlag(rest, "--from", ""),
-		Container: hasFlag(rest, "--container"),
-	}
-	ws, err := workspace.New(opts)
-	exitOn(err)
-
-	// The project channel, if Slack is configured. Failure here is reported
-	// and never fatal: a workspace that exists without a channel is usable,
-	// while refusing to provision because Slack was unreachable is not.
-	if ch := createProjectChannel(ws); ch != nil {
-		ws.Task.Slack = ch
-		_ = ws.SaveTask()
-	}
-
-	fmt.Printf("workspace  %s\n", ws.ID)
-	fmt.Printf("path       %s\n", ws.Dir)
-	fmt.Printf("repo       %s\n", ws.RepoDir())
-	fmt.Printf("sandbox    %s\n", ws.SandboxMode())
-	needs, reason := discovery.NeedsDiscovery(idea)
-	switch {
-	case hasFlag(rest, "--skip-discovery"):
-		fmt.Printf("\nnext: orion run %s --stage intent\n", ws.ID)
-	case !needs:
-		fmt.Printf("\ndiscovery skipped: %s\n", reason)
-		fmt.Printf("next: orion run %s --stage intent\n", ws.ID)
-	default:
-		fmt.Printf("\nDiscovery first: %s\n\n", reason)
-		fmt.Println("The intent stage runs non-interactively, so it cannot ask you anything.")
-		fmt.Println("Have the conversation now, while changing course still means editing a")
-		fmt.Println("sentence rather than nine stages of derived work:")
-		fmt.Println()
-		fmt.Printf("  cd %s\n", ws.RepoDir())
-		fmt.Println("  claude \"/capture-intent\"")
-		fmt.Println()
-		fmt.Println("Then continue. Any question left open will block the spec stage until")
-		fmt.Printf("it is answered (orion answer %s).\n", ws.ID)
-		fmt.Println()
-		fmt.Printf("Skip this next time with: orion new \"...\" --skip-discovery\n")
 	}
 }
 
@@ -624,7 +582,10 @@ func provisionRemote(dir string, cfg config.Config, assumeYes bool) {
 				ui.Warn(os.Stdout, "no Jira account resolved to lead the project; not creating it")
 				goto slackStep
 			}
-			if _, err := j.CreateProject(plan.JiraKey, name, jiraLead); err != nil {
+			// No description: `orion init` adopts a repo that already explains
+			// itself, and inventing one from a directory name would put a worse
+			// statement of the work where `orion new` puts a real one.
+			if _, err := j.CreateProject(plan.JiraKey, name, "", jiraLead); err != nil {
 				ui.Fail(os.Stdout, "Jira project %s: %v", plan.JiraKey, err)
 				goto slackStep
 			}
