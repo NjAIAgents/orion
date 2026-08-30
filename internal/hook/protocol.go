@@ -91,6 +91,26 @@ func (in Input) FilePath() string {
 	}
 }
 
+// Background reports whether a Bash call was launched in the background,
+// either by the harness flag or by a trailing `&`. A backgrounded command is
+// one the agent will have to wait for, and waiting is the case the loop
+// breaker used to be unable to tell from looping (OR-207).
+func (in Input) Background() bool {
+	var ti struct {
+		RunInBackground bool `json:"run_in_background"`
+	}
+	if len(in.ToolInput) > 0 {
+		_ = json.Unmarshal(in.ToolInput, &ti)
+	}
+	if ti.RunInBackground {
+		return true
+	}
+	// A trailing `&&` is a conjunction, not a backgrounding: the command
+	// after it runs in the foreground and the agent waits for both.
+	c := strings.TrimSpace(in.Command())
+	return strings.HasSuffix(c, "&") && !strings.HasSuffix(c, "&&")
+}
+
 // Failed reports whether a PostToolUse response indicates failure.
 // Tool responses are not uniformly shaped, so this checks the several
 // signals that appear in practice and errs toward "not a failure" so a

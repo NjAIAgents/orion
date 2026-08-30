@@ -51,6 +51,23 @@ type Session struct {
 	// it is bounded, it survives the cold start between hook processes, and
 	// spending it never clears Tripped.
 	CleanupCalls int `json:"cleanup_calls,omitempty"`
+	// TripSnapshot records what became of the work that was uncommitted at
+	// the moment of the trip -- "committed 14 file(s)", or why it could not
+	// be. Read by the block message and by Orion's end-of-run report, so
+	// neither has to guess: a run that says "committed for you" when the
+	// commit failed is the misleading-but-technically-shaped message this
+	// codebase keeps having to unlearn (OR-143).
+	TripSnapshot string `json:"trip_snapshot,omitempty"`
+	// Awaiting holds the output paths of background commands this session
+	// launched. A read of one of these is a WAIT, not a repeat: the agent is
+	// polling a file it was told to expect output in. Without this the only
+	// available way to wait was indistinguishable from a no-progress loop,
+	// and two finished tickets died for it (OR-207).
+	Awaiting map[string]bool `json:"awaiting,omitempty"`
+	// LastPoll fingerprints the response of the previous identical poll, per
+	// actor then per call signature. A read that returns something DIFFERENT
+	// from last time observed progress, whatever its input was.
+	LastPoll map[string]map[string]string `json:"last_poll,omitempty"`
 }
 
 func newSession(id string) *Session {
