@@ -71,6 +71,14 @@ const (
 	// could not do the thing must not carry the same label, or orion-failed
 	// starts to mean "fine, actually" and stops carrying information.
 	OutcomeNoop Outcome = "no-op"
+	// OutcomeNoAuth: the CLI has no usable login, so the run never began.
+	//
+	// Distinct from failed because nothing was attempted -- no turn, no token,
+	// no branch work -- and the ticket is untouched. Labelling it orion-failed
+	// makes an operator hand-clear a label for a problem that never reached the
+	// ticket, and teaches them that the failure label sometimes means "the
+	// machine was logged out" (OR-212). See auth.go.
+	OutcomeNoAuth Outcome = "not-authenticated"
 )
 
 // Result is one job's ending.
@@ -180,6 +188,15 @@ func Run(opts Options, deps Deps) []Result {
 		// the next ticket while the reason the last one broke is still true,
 		// and a queue that keeps going after a failure produces several
 		// wrecks instead of one.
+		// The same stop, with the reason named. The heuristic below reaches its
+		// conclusion from CORRELATION -- one ticket failed, so the next probably
+		// will -- and it is right often enough to keep. When the reason is
+		// KNOWN, saying it is the difference between an operator diagnosing a
+		// queue of wrecks and an operator running one command (OR-212).
+		if r.Outcome == OutcomeNoAuth {
+			ui.Warn(opts.Out, "stopping the batch: %s", r.Note)
+			break
+		}
 		if r.Outcome == OutcomeFailed {
 			ui.Warn(opts.Out, "stopping the batch after %s failed; the next ticket would likely fail the same way", r.Key)
 			break
@@ -567,6 +584,13 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		}
 	}
 
+	// Checked BEFORE the failure path, and it has to be: the supervisor returns
+	// an error for any non-zero exit, so a run that never started for want of a
+	// login would otherwise be reported as the work failing.
+	if runRes != nil && runRes.Unauthenticated {
+		return notAuthenticated(res, key, runRes.Reason, cfg, opts, deps, ws, log, w)
+	}
+
 	if runErr != nil || (runRes != nil && runRes.ExitCode != 0) {
 		err := runErr
 		if err == nil {
@@ -660,6 +684,9 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			OnActivity: ActivityLogger(log, w, key, actorID),
 			Actor:      actorID, Key: key,
 		})
+		if runRes != nil && runRes.Unauthenticated {
+			return notAuthenticated(res, key, runRes.Reason, cfg, opts, deps, ws, log, w)
+		}
 		if runErr != nil || runRes == nil || runRes.ExitCode != 0 {
 			err := runErr
 			if err == nil {

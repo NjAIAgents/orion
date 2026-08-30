@@ -206,8 +206,16 @@ func Run(opts Options, deps Deps) error {
 		// because it frees slots, and because a finished job may carry the
 		// rate-limit verdict that decides whether anything starts at all.
 		jobsUnfinished := false
+		loggedOut := ""
 		for _, r := range p.reap() {
 			reportFinished(w, r)
+			// Neither started nor spent: the CLI had no login, so the job cost
+			// nothing and the ticket went back to the queue. Counting it against
+			// --max-jobs would charge the run for work it never did.
+			if r.Outcome == work.OutcomeNoAuth {
+				loggedOut = r.Note
+				continue
+			}
 			if r.Outcome != work.OutcomeSkipped {
 				started++
 			}
@@ -217,6 +225,23 @@ func Run(opts Options, deps Deps) error {
 			if until, paused := limitPause(w, r, deps.Now()); paused && until.After(pausedUntil) {
 				pausedUntil = until
 			}
+		}
+
+		// A missing login stops the watcher, rather than being waited out like a
+		// quota wall. There is nothing to wait FOR: every subsequent ticket
+		// fails identically until a human signs in, and continuing to claim
+		// them converts one fixable problem into a queue of released tickets
+		// and a channel full of the same message (OR-212).
+		//
+		// Between reaping and dispatching, so the deferred drain still waits for
+		// the jobs already running -- they hold claims, and this must not be the
+		// one exit that abandons them.
+		if loggedOut != "" {
+			ui.Say(w, "", events.ActorOrion, ui.VerbFail, "%s", loggedOut)
+			ui.Say(w, "", events.ActorOrion, ui.VerbWaiting,
+				"stopping: every queued ticket would fail the same way. "+
+					"Nothing was spent and nothing is labelled failed.")
+			break
 		}
 
 		// Read the pool ONCE. free and here are two halves of one sentence --
