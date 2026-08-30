@@ -44,7 +44,13 @@ func ActivityLogger(log *events.Log, w io.Writer, key, actor string) func(superv
 			// The agent's own line, carrying its ticket, its name and the
 			// model that produced it -- and its prose unedited. The
 			// metadata columns are Orion's to style; the text is not.
-			ui.SayModel(w, key, actor, a.Model, ui.VerbWorking, "%s %s", verbFor(a.Tool), a.Detail)
+			//
+			// Through ui.Trace, so it reaches the CONSOLE only under
+			// --verbose. The Emit above is unconditional and runs first:
+			// this is the transcript, it is what OR-217 measured at 60% of
+			// a screen at concurrency 4, and it is already complete in the
+			// event log for anyone reading the run back.
+			ui.Trace(w, key, actor, a.Model, ui.VerbWorking, "%s %s", verbFor(a.Tool), a.Detail)
 		case "text":
 			log.Emit(events.Event{Kind: events.KindSay, Actor: actor,
 				Model: a.Model, Msg: a.Detail})

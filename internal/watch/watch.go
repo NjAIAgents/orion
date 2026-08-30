@@ -173,6 +173,10 @@ func Run(opts Options, deps Deps) error {
 	// not interleave mid-word, which would not be.
 	w = &syncWriter{w: w}
 
+	// The count for a run of identical lines is printed when the run ends;
+	// the watcher's last one ends when the watcher does (OR-217).
+	defer ui.Flush(w)
+
 	p := newPool(opts.MaxConcurrent)
 	// Published for the signal handler, which has to name what it abandons
 	// if it is forced to quit (OR-195). Cleared on the way out so a later

@@ -10,6 +10,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/supervisor"
+	"github.com/orion-sdlc/orion/internal/ui"
 )
 
 // OR-133. The ci-fix run is attributed to the devops engineer in the event
@@ -61,6 +62,13 @@ func TestFixActivityAttributesConsoleLinesAndLogsToolEvents(t *testing.T) {
 
 	var console strings.Builder
 	activity := fixActivity(log, &console, "OR-173")
+
+	// A tool call is transcript, so the console prints it only under
+	// --verbose now (OR-217). What OR-176 is about is what the line SAYS
+	// when it is printed, so this asserts at the level that prints it -- and
+	// below, that the event log is complete at either level.
+	ui.SetVerbose(true)
+	t.Cleanup(func() { ui.SetVerbose(false) })
 
 	activity(supervisor.Activity{Kind: "tool", Tool: "Bash", Detail: "go test ./...", Model: "sonnet"})
 	log.Close()

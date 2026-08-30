@@ -84,11 +84,14 @@ RUNNING
   orion status                show this repo: branch, hooks, Jira, Slack, spend
   orion status <id>           show stage, breaker state and last run
   orion work <KEY> [KEY...]   work tickets, in the order given
+                              (--verbose adds the agent's tool-call lines;
+                              they are in the event log either way)
   orion queue                 what the watcher would pick up, in order (read-only)
   orion routes                which marker sends a ticket to which actor, and
                               which actors are reached another way (read-only)
   orion watch [PROJECT...]    run the queue by itself: work, collect, repeat
-                              (--once, --interval S, --max-jobs N, --dry-run)
+                              (--once, --interval S, --max-jobs N, --dry-run,
+                              --verbose for the full tool-call stream)
   orion collect [KEY...]      finish tickets awaiting CI: close, refresh, prune
                               (--dry-run for verdicts only, --no-prune, --no-fix)
   orion protect               require the checks CI actually runs, and that
@@ -157,6 +160,13 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(64)
 	}
+
+	// Read once, for every subcommand, before anything prints. --verbose is
+	// a property of the terminal rather than of one command: `orion work`
+	// and `orion watch` emit the same stream through the same renderer, and
+	// a flag that only one of them honoured would mean the same run reads
+	// differently depending on which one started it (OR-217).
+	ui.SetVerbose(hasFlag(os.Args[1:], "--verbose"))
 
 	// Slack resolves its token through this hook rather than importing
 	// workspace directly, which would create an import cycle via notify.

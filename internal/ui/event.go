@@ -186,10 +186,29 @@ type Line struct {
 	Model string // as recorded; empty falls back to the actor's default
 	Verb  string // one of the five above
 	Msg   string
+	// Trace marks a line as part of the agent's tool-call transcript --
+	// which file it read, which command it ran. It is printed only under
+	// --verbose, because it is already complete in the event log and the run
+	// log, and on the console it buries the lines a person has to act on
+	// (OR-217, and console.go for the whole argument).
+	//
+	// A FIELD rather than a verb or a kind, deliberately. The verb column
+	// answers "do I have to do something" and every one of its five values
+	// can be either signal or transcript; "is this worth a person's screen"
+	// is a second axis, and folding it into the first would cost the column
+	// the meaning OR-163 gave it.
+	Trace bool
 }
 
-// Render returns one formatted line, without a newline.
-func Render(w io.Writer, l Line) string {
+// Render returns one formatted line, without a newline, identity columns and
+// all. What `orion logs` renders a single event with, and what the printer
+// calls for the first line of any new identity.
+func Render(w io.Writer, l Line) string { return renderLine(w, l, true) }
+
+// renderLine is Render with the identity columns optional. Blanked, never
+// dropped: the columns still occupy their width, so a run of lines from one
+// actor stays a column layout rather than becoming a ragged left edge.
+func renderLine(w io.Writer, l Line, identity bool) string {
 	var b strings.Builder
 	at := l.At
 	if at.IsZero() {
@@ -210,20 +229,27 @@ func Render(w io.Writer, l Line) string {
 	// thing twice, and colouring them apart would read as two facts.
 	b.WriteString(paint(w, statusColor(l.Verb), iconFor(l.Verb)+pad(l.Verb, verbColumn)) + " ")
 
-	who := ""
-	if l.Actor != "" {
-		who = actors.Display(l.Actor)
-	}
-	b.WriteString(paint(w, actorColor(l.Actor), pad(who, actorWidth)) + " ")
+	if identity {
+		who := ""
+		if l.Actor != "" {
+			who = actors.Display(l.Actor)
+		}
+		b.WriteString(paint(w, actorColor(l.Actor), pad(who, actorWidth)) + " ")
 
-	model := l.Model
-	if model == "" {
-		model = actors.Model(l.Actor)
+		model := l.Model
+		if model == "" {
+			model = actors.Model(l.Actor)
+		}
+		if model == "" {
+			model = noModel
+		}
+		b.WriteString(Dim(w, pad(shortModel(model), modelWidth)) + " ")
+	} else {
+		// Unchanged from the line above, so the columns are held open and
+		// left blank. Never coloured: an escape sequence around whitespace
+		// is invisible on a terminal and line noise in a piped log.
+		b.WriteString(strings.Repeat(" ", actorWidth+1+modelWidth+1))
 	}
-	if model == "" {
-		model = noModel
-	}
-	b.WriteString(Dim(w, pad(shortModel(model), modelWidth)) + " ")
 
 	// The message is clipped, and only the message. Width comes from
 	// COLUMNS when the environment sets it; unknown width means no clipping,
@@ -232,7 +258,7 @@ func Render(w io.Writer, l Line) string {
 	msg := strings.TrimRight(l.Msg, "\n")
 	msg = strings.ReplaceAll(msg, "\n", " ")
 	if cols := columns(); cols > 0 {
-		if room := cols - metaWidth(l); room > 12 && utf8.RuneCountInString(msg) > room {
+		if room := cols - metaWidth(l, identity); room > 12 && utf8.RuneCountInString(msg) > room {
 			msg = string([]rune(msg)[:room-1]) + "…"
 		}
 	}
@@ -240,8 +266,10 @@ func Render(w io.Writer, l Line) string {
 	return b.String()
 }
 
-// Print writes one line.
-func Print(w io.Writer, l Line) { fmt.Fprintln(w, Render(w, l)) }
+// Print writes one line, subject to the console volume rules in console.go:
+// a Trace line only under --verbose, identity columns only when they change,
+// and a run of identical lines collapsed to one plus a count.
+func Print(w io.Writer, l Line) { printLine(w, l) }
 
 // Say is the terminal shorthand: who did what, on which ticket.
 func Say(w io.Writer, key, actor, verb, format string, a ...any) {
@@ -255,6 +283,13 @@ func SayModel(w io.Writer, key, actor, model, verb, format string, a ...any) {
 		Msg: fmt.Sprintf(format, a...)})
 }
 
+// Trace is Say for a line of the agent's tool-call transcript: printed only
+// under --verbose, recorded in the event log regardless. See console.go.
+func Trace(w io.Writer, key, actor, model, verb, format string, a ...any) {
+	Print(w, Line{Key: key, Actor: actor, Model: model, Verb: verb, Trace: true,
+		Msg: fmt.Sprintf(format, a...)})
+}
+
 // Banner marks the start of a ticket.
 //
 // Printed on CLAIM only -- not on resume, not per tick -- or it stops
@@ -263,6 +298,10 @@ func SayModel(w io.Writer, key, actor, model, verb, format string, a ...any) {
 // a ticket answers every question at once instead of sending the reader
 // hunting through the lines that follow.
 func Banner(w io.Writer, key, summary, actor, model, branch string) {
+	// A banner ends whatever run of lines preceded it: the first line under
+	// it states its identity in full, and a repeat count belongs above the
+	// rule rather than after it.
+	Reset(w)
 	if model == "" {
 		model = actors.Model(actor)
 	}
@@ -412,12 +451,13 @@ func pad(s string, n int) string {
 	return s
 }
 
-func metaWidth(l Line) int {
+func metaWidth(l Line, identity bool) int {
 	// Time and icon are on every line now, so both are unconditional here.
 	n := 9 + keyWidth + 1 + iconWidth + verbColumn + 1 + actorWidth + 1 + modelWidth + 1
 	// An actor or key wider than its column widens the metadata rather than
-	// being cut, so the message must be clipped that much harder.
-	if over := utf8.RuneCountInString(actors.Display(l.Actor)) - actorWidth; over > 0 {
+	// being cut, so the message must be clipped that much harder. A blanked
+	// identity column is exactly its own width and can never overflow.
+	if over := utf8.RuneCountInString(actors.Display(l.Actor)) - actorWidth; over > 0 && identity {
 		n += over
 	}
 	if over := utf8.RuneCountInString(l.Key) - keyWidth; over > 0 {
