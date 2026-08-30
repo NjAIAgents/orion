@@ -64,7 +64,7 @@ type Capability struct {
 type Tracker interface {
 	Probe() (Capability, error)
 	ProjectExists(key string) (bool, string, error)
-	CreateProject(key, name, lead string) (Binding, error)
+	CreateProject(key, name, lead, description string) (Binding, error)
 	Name() string
 }
 
@@ -317,7 +317,17 @@ func (j *Jira) ProjectExists(key string) (bool, string, error) {
 // matters: a team-managed project can be created by a wider set of accounts
 // than a company-managed one, which is the difference between this working
 // and not for most users.
-func (j *Jira) CreateProject(key, name, leadAccountID string) (Binding, error) {
+//
+// description is the elaborated idea, and it is the point of the project
+// rather than decoration. `orion new` holds the one interactive exchange in
+// the system and then has nowhere durable to put what it learned except
+// here; the later stages read the project to find out what they are building.
+// An empty description falls back to a marker so a project provisioned by a
+// path that has nothing to say is still identifiable as Orion's.
+func (j *Jira) CreateProject(key, name, leadAccountID, description string) (Binding, error) {
+	if strings.TrimSpace(description) == "" {
+		description = "Provisioned by Orion."
+	}
 	payload := map[string]any{
 		"key":                key,
 		"name":               name,
@@ -325,7 +335,7 @@ func (j *Jira) CreateProject(key, name, leadAccountID string) (Binding, error) {
 		"projectTemplateKey": "com.pyxis.greenhopper.jira:gh-simplified-agility-scrum",
 		"leadAccountId":      leadAccountID,
 		"assigneeType":       "PROJECT_LEAD",
-		"description":        "Provisioned by Orion.",
+		"description":        description,
 	}
 	code, body, err := j.do("POST", "/rest/api/3/project", payload)
 	if err != nil {
@@ -449,7 +459,7 @@ func ResolveKey(t Tracker, base string) (string, error) {
 // The degradation is the important part. A user without admin rights should
 // get working software plus a clear explanation, not a hard failure three
 // stages into a run.
-func Provision(t Tracker, slug, humanName, existingKey, leadAccountID string) (Binding, string, error) {
+func Provision(t Tracker, slug, humanName, description, existingKey, leadAccountID string) (Binding, string, error) {
 	if existingKey != "" {
 		exists, id, err := t.ProjectExists(existingKey)
 		if err != nil {
@@ -468,7 +478,7 @@ func Provision(t Tracker, slug, humanName, existingKey, leadAccountID string) (B
 	if err != nil {
 		return Binding{}, "", err
 	}
-	b, err := t.CreateProject(key, humanName, leadAccountID)
+	b, err := t.CreateProject(key, humanName, leadAccountID, description)
 	if err != nil {
 		if errors.Is(err, ErrNoPermission) {
 			return Binding{}, "", fmt.Errorf(

@@ -53,7 +53,11 @@ func TestDeriveKeyAlwaysValidForJira(t *testing.T) {
 type fake struct {
 	existing map[string]string
 	created  []string
-	perm     bool
+	// descriptions is what each created project was described with, in
+	// creation order: the elaborated idea is the reason the project exists
+	// and a caller that silently dropped it would still look successful.
+	descriptions []string
+	perm         bool
 }
 
 func (f *fake) Name() string { return "fake" }
@@ -64,12 +68,13 @@ func (f *fake) ProjectExists(key string) (bool, string, error) {
 	id, ok := f.existing[key]
 	return ok, id, nil
 }
-func (f *fake) CreateProject(key, name, lead string) (Binding, error) {
+func (f *fake) CreateProject(key, name, lead, description string) (Binding, error) {
 	if !f.perm {
 		return Binding{}, ErrNoPermission
 	}
 	f.existing[key] = "id-" + key
 	f.created = append(f.created, key)
+	f.descriptions = append(f.descriptions, description)
 	return Binding{Provider: "fake", Key: key, ProjectID: "id-" + key, Created: true}, nil
 }
 
@@ -104,7 +109,7 @@ func TestResolveKeyGivesUpWithGuidance(t *testing.T) {
 
 func TestProvisionBindsExistingKey(t *testing.T) {
 	f := &fake{existing: map[string]string{"PLAT": "77"}, perm: false}
-	b, note, err := Provision(f, "anything", "Anything", "PLAT", "lead")
+	b, note, err := Provision(f, "anything", "Anything", "", "PLAT", "lead")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +126,7 @@ func TestProvisionBindsExistingKey(t *testing.T) {
 
 func TestProvisionRejectsMissingConfiguredKey(t *testing.T) {
 	f := &fake{existing: map[string]string{}, perm: true}
-	if _, _, err := Provision(f, "x", "X", "NOPE", "lead"); err == nil {
+	if _, _, err := Provision(f, "x", "X", "", "NOPE", "lead"); err == nil {
 		t.Fatal("a configured key that does not exist must be an error, not a silent create")
 	}
 }
@@ -130,7 +135,7 @@ func TestProvisionRejectsMissingConfiguredKey(t *testing.T) {
 // route forward, not a hard stop three stages into a run.
 func TestProvisionWithoutPermissionExplainsTheFallback(t *testing.T) {
 	f := &fake{existing: map[string]string{}, perm: false}
-	_, _, err := Provision(f, "claim-status", "Claim status", "", "lead")
+	_, _, err := Provision(f, "claim-status", "Claim status", "", "", "lead")
 	if err == nil {
 		t.Fatal("expected an error without permission")
 	}
@@ -141,7 +146,7 @@ func TestProvisionWithoutPermissionExplainsTheFallback(t *testing.T) {
 
 func TestProvisionCreatesWhenPermitted(t *testing.T) {
 	f := &fake{existing: map[string]string{}, perm: true}
-	b, note, err := Provision(f, "claim-status-self-service", "Claim status self service", "", "lead")
+	b, note, err := Provision(f, "claim-status-self-service", "Claim status self service", "", "", "lead")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,6 +158,21 @@ func TestProvisionCreatesWhenPermitted(t *testing.T) {
 	}
 	if !strings.Contains(note, "created") {
 		t.Errorf("note = %q", note)
+	}
+}
+
+// The elaborated idea reaches the project it describes. `orion new` holds the
+// only interactive exchange in the system and the project description is the
+// only place its result is written down, so a caller that accepted the text
+// and quietly created a project without it would leave no trace of the loss.
+func TestProvisionCarriesTheDescriptionToTheProject(t *testing.T) {
+	f := &fake{existing: map[string]string{}, perm: true}
+	const desc = "Claims handlers answer status questions without leaving the portal."
+	if _, _, err := Provision(f, "claim-status", "Claim status", desc, "", "lead"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.descriptions) != 1 || f.descriptions[0] != desc {
+		t.Fatalf("project was created with %q, want the elaborated description", f.descriptions)
 	}
 }
 

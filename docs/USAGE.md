@@ -113,15 +113,18 @@ This is the path Orion is built for: nothing exists yet.
 orion new "customers should see claim status in the portal"
 ```
 
-You get an isolated workspace under `$ORION_HOME/projects/<slug>-<id>/` with
-its own git repo, generated sandbox settings, and `main` + `develop` already
-created. Nothing here touches your other work.
+`orion new` talks to you first: it elaborates the idea into a full project
+description, has you finalise the project name, and creates the tracker
+project with that description. Then you get an isolated workspace under
+`$ORION_HOME/projects/<slug>-<id>/` with its own git repo, generated sandbox
+settings, and `main` + `develop` already created. Nothing here touches your
+other work.
 
 ```bash
 orion run <id> --stage intent      # /capture-intent -> docs/intent/<slug>.md
 orion run <id> --stage spec        # -> specs/<slug>.spec.md
 orion run <id> --stage plan        # -> plans/<slug>.plan.md   (review this)
-orion provision <id>               # remote repo, branches, Jira project
+orion provision <id>               # remote repo and branches
 orion run <id> --stage scaffold    # /scaffold-project, OSPS baseline layout
 orion run <id> --stage decompose   # /pm-plan tree, approved before creation
 orion run <id> --stage build       # implementation + tests, on a branch
@@ -133,13 +136,25 @@ orion status <id>
 
 ### Discovery comes first
 
-`orion new` starts a conversation before anything is derived, because the
-intent stage runs through `claude -p` and **cannot ask you anything**. Without
-that conversation the agent's only options are to invent answers or write
-questions nobody reads, and one ambiguous sentence then propagates into spec,
-plan, scaffold and a tracker tree. Each stage carries a token floor of roughly
-30k, so a wrong premise costs nine floors plus the rework, against a
-conversation costing about one.
+`orion new` asks its questions before anything is derived, because every stage
+after it runs through `claude -p` and **cannot ask you anything**. Without that
+conversation the agent's only options are to invent answers or write questions
+nobody reads, and one ambiguous sentence then propagates into spec, plan,
+scaffold and a tracker tree. Each stage carries a token floor of roughly 30k,
+so a wrong premise costs nine floors plus the rework, against a conversation
+costing about one.
+
+This is the one place in Orion that holds a synchronous exchange, because it is
+the one place a human is present by definition. It asks four things — who it is
+for, the problem, what is out of scope, what success looks like — and then the
+project name, which names the Jira project, the workspace and the git repo
+alike. Enter alone leaves an answer open; it is recorded as an open question
+rather than dropped, so the gate below still sees it.
+
+The result becomes the tracker project's description, and is recorded in the
+workspace's `task.json` so it survives Jira not being configured.
+
+Then, at any point, add detail to the intent file itself:
 
 ```bash
 cd <workspace>/repo && claude "/capture-intent"
@@ -156,8 +171,10 @@ Answers go in the intent file itself, not a prompt, so every later stage reads
 them. Mark one resolved with `[x]`, `~~strikethrough~~`, or an inline
 `Answer: ...`.
 
-Orion skips discovery on its own when the idea already states constraints,
-scope or a rationale, and `--skip-discovery` bypasses it outright. A gate you
+Orion skips the four questions on its own when the idea already states
+constraints, scope or a rationale — it still asks for the name — and
+`--skip-discovery` bypasses the exchange outright. So does a non-terminal
+caller such as cron, which has nobody to ask. A gate you
 cannot skip on a typo fix is a gate people learn to route around, and one
 routed around reflexively is worse than none.
 

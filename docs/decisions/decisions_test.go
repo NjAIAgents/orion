@@ -27,6 +27,10 @@ var expectedDecisions = []string{
 	// landing, so a later "why not just turn on GitHub's merge queue?" has
 	// somewhere to land other than a re-litigation.
 	"0011-orion-owns-the-landing-queue.md",
+	// OR-148. Records which way the ticket's own open question was settled,
+	// so "why does new still make a workspace?" has somewhere to land other
+	// than a second round of the same argument.
+	"0012-new-keeps-the-workspace.md",
 }
 
 func TestEveryDecisionHasContextDecisionConsequences(t *testing.T) {
@@ -122,6 +126,13 @@ func TestDecisionContentMatchesTicket(t *testing.T) {
 		{
 			"0009-canonical-slug-one-name.md",
 			[]string{"OR-149"},
+		},
+		{
+			// Which way the open question went, and the reason, is the whole
+			// record. A file that kept the sections but lost "the tracker may
+			// not be configured" would not answer the question it exists for.
+			"0012-new-keeps-the-workspace.md",
+			[]string{"OR-148", "handoff artifact", "never required", "task.json"},
 		},
 		{
 			// Which actors are routable, and why the rest are not, is the

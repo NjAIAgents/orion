@@ -26,7 +26,12 @@ idempotent.
 
    This creates the private GitHub repository, pushes `main` and `develop`, sets
    `develop` as the repository default so pull requests target it automatically,
-   applies branch protection to both, and creates or binds the Jira project.
+   and applies branch protection to both.
+
+   The Jira project is normally already there: `orion new` creates it. This
+   command reports the existing binding and creates nothing when one is
+   recorded, and only creates or binds a project for a workspace that has
+   none.
 
 3. **Read the warnings.** Branch protection fails on free-plan private
    repositories, and that failure is reported rather than swallowed. Orion's

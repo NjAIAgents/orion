@@ -123,10 +123,12 @@ guardrails.
 
 ```bash
 orion new "customers should see claim status in the portal"
+                                     # elaborates the idea, finalises the name,
+                                     # creates the Jira project
 orion run  <id> --stage intent
 orion run  <id> --stage spec
 orion run  <id> --stage plan
-orion provision <id>                 # remote repo, branches, Jira project
+orion provision <id>                 # remote repo and branches
 orion run  <id> --stage decompose    # /pm-plan tree, approved before creation
 orion run  <id> --stage build
 orion status <id>

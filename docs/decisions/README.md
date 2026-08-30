@@ -15,3 +15,4 @@ already have been decided against, on purpose.
 - [0009](0009-canonical-slug-one-name.md) — One canonical slug names the Jira project, workspace and git repo
 - [0010](0010-routing-vocabulary-is-a-published-contract.md) — The routing vocabulary is a published contract, and five actors are routable
 - [0011](0011-orion-owns-the-landing-queue.md) — Orion owns the landing queue; GitHub's merge queue is not adopted
+- [0012](0012-new-keeps-the-workspace.md) — `orion new` creates the tracker project and keeps provisioning the workspace

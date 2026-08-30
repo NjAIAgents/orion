@@ -16,13 +16,21 @@ stage should instead be two independent entry points a user picks between.
 ## Decision
 
 `orion new` and the `plan` stage are sequential phases of one flow, not two
-front doors, with the Jira project (created at `orion provision`) as the
-handoff artifact between them.
+front doors, with the Jira project as the handoff artifact between them.
+
+Amended by OR-148: the project is created by `orion new` itself, with the
+elaborated idea as its description, rather than later at `orion provision`.
+The handoff artifact is unchanged; it now exists from the end of the
+interactive phase rather than from the middle of the async one. Whether
+`new` should therefore stop provisioning a workspace was settled in
+decision 0012 — it does not.
 
 ## Consequences
 
 - Interactive interrogation belongs in `new`, because a human is present
-  at that point to answer it.
+  at that point to answer it. OR-148 made that concrete: `new` elaborates
+  the idea, finalises the project name and creates the tracker project in
+  one synchronous exchange.
 - The `plan` stage (and the stages after it — scaffold, decompose) keeps
   the async discovery gate instead: unresolved **Open questions** in the
   intent file block those stages until answered in the file itself, because

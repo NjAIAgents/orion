@@ -65,15 +65,17 @@ ADOPT AN EXISTING REPO
   orion init [--plan-gate]    config, artifact dirs and hooks, idempotent
 
 WORKSPACES
-  orion new "<idea>"          provision an isolated project workspace
-                              (--skip-discovery to bypass the intent conversation)
+  orion new "<idea>"          elaborate the idea, finalise the name, create the
+                              tracker project, and provision the workspace
+                              (--skip-discovery to bypass the conversation)
   orion answer <id>           resolve the open questions blocking a workspace
   orion ls                    list workspaces
   orion open <id>             print a workspace path (use with cd)
   orion rm <id>               remove a workspace
 
 RUNNING
-  orion provision <id>        create the remote repo, branches, and tracker
+  orion provision <id>        create the remote repo and branches (and the
+                              tracker project, if orion new did not)
   orion run <id> [--stage S]  supervise a sandboxed claude run in a workspace
   orion status                show this repo: branch, hooks, Jira, Slack, spend
   orion status <id>           show stage, breaker state and last run
@@ -304,51 +306,6 @@ func runHook(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "orion: unknown hook %q\n", name)
 		os.Exit(64)
-	}
-}
-
-func runNew(idea string, rest []string) {
-	opts := workspace.NewOptions{
-		Idea:      idea,
-		Template:  argFlag(rest, "--template", ""),
-		FromRepo:  argFlag(rest, "--from", ""),
-		Container: hasFlag(rest, "--container"),
-	}
-	ws, err := workspace.New(opts)
-	exitOn(err)
-
-	// The project channel, if Slack is configured. Failure here is reported
-	// and never fatal: a workspace that exists without a channel is usable,
-	// while refusing to provision because Slack was unreachable is not.
-	if ch := createProjectChannel(ws); ch != nil {
-		ws.Task.Slack = ch
-		_ = ws.SaveTask()
-	}
-
-	fmt.Printf("workspace  %s\n", ws.ID)
-	fmt.Printf("path       %s\n", ws.Dir)
-	fmt.Printf("repo       %s\n", ws.RepoDir())
-	fmt.Printf("sandbox    %s\n", ws.SandboxMode())
-	needs, reason := discovery.NeedsDiscovery(idea)
-	switch {
-	case hasFlag(rest, "--skip-discovery"):
-		fmt.Printf("\nnext: orion run %s --stage intent\n", ws.ID)
-	case !needs:
-		fmt.Printf("\ndiscovery skipped: %s\n", reason)
-		fmt.Printf("next: orion run %s --stage intent\n", ws.ID)
-	default:
-		fmt.Printf("\nDiscovery first: %s\n\n", reason)
-		fmt.Println("The intent stage runs non-interactively, so it cannot ask you anything.")
-		fmt.Println("Have the conversation now, while changing course still means editing a")
-		fmt.Println("sentence rather than nine stages of derived work:")
-		fmt.Println()
-		fmt.Printf("  cd %s\n", ws.RepoDir())
-		fmt.Println("  claude \"/capture-intent\"")
-		fmt.Println()
-		fmt.Println("Then continue. Any question left open will block the spec stage until")
-		fmt.Printf("it is answered (orion answer %s).\n", ws.ID)
-		fmt.Println()
-		fmt.Printf("Skip this next time with: orion new \"...\" --skip-discovery\n")
 	}
 }
 
@@ -613,7 +570,11 @@ func provisionRemote(dir string, cfg config.Config, assumeYes bool) {
 				ui.Warn(os.Stdout, "no Jira account resolved to lead the project; not creating it")
 				goto slackStep
 			}
-			if _, err := j.CreateProject(plan.JiraKey, name, jiraLead); err != nil {
+			// No description: adoption inherits a repository that already
+			// exists and was never elaborated through `orion new`'s
+			// interview, so there is nothing to say that the repo does not
+			// already say better. CreateProject supplies its own marker.
+			if _, err := j.CreateProject(plan.JiraKey, name, jiraLead, ""); err != nil {
 				ui.Fail(os.Stdout, "Jira project %s: %v", plan.JiraKey, err)
 				goto slackStep
 			}
@@ -1646,6 +1607,19 @@ func runProvision(id string, rest []string) {
 }
 
 func runTrackerProvision(ws *workspace.Workspace, cfg config.Config, confirm func(string) bool) {
+	// `orion new` creates the project now (OR-148), and this command is one
+	// people re-run casually. Creating a second project for a workspace that
+	// already has one would resolve to a fresh key rather than fail, and a
+	// Jira project cannot be deleted without admin rights -- so the litter
+	// would be permanent and silent.
+	if len(ws.Task.Tracker) > 0 {
+		var b tracker.Binding
+		if json.Unmarshal(ws.Task.Tracker, &b) == nil && b.Key != "" {
+			fmt.Printf("tracker    %s (already bound at orion new)\n", b.Key)
+			return
+		}
+	}
+
 	j, err := tracker.NewJiraFromEnv()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "orion: skipping tracker (%v)\n", err)
@@ -1667,7 +1641,7 @@ func runTrackerProvision(ws *workspace.Workspace, cfg config.Config, confirm fun
 	}
 
 	b, note, err := tracker.Provision(j, ws.Task.Slug, ws.Task.Idea,
-		cfg.Tracker.ProjectKey, cap.AccountID)
+		ws.Task.Description, cfg.Tracker.ProjectKey, cap.AccountID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "orion: %v\n", err)
 		return

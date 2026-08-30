@@ -45,6 +45,61 @@ func TestNewProvisionsTheFullLayout(t *testing.T) {
 	}
 }
 
+// Decision 0009: one canonical slug names the Jira project, the workspace and
+// the git repo. The name a human finalised at `orion new` is that one source,
+// so a workspace slugged from the raw idea instead would put the tracker under
+// the agreed name and the directory under a different one.
+func TestTheFinalisedNameNamesTheWorkspace(t *testing.T) {
+	home(t)
+	ws, err := New(NewOptions{
+		Idea:        "customers should see claim status in the portal",
+		Name:        "Claim status portal",
+		Description: "## Who it is for\n\nClaims handlers.\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.Task.Slug != "claim-status-portal" {
+		t.Fatalf("slug = %q, want it derived from the finalised name", ws.Task.Slug)
+	}
+	if !strings.HasPrefix(ws.ID, "claim-status-portal-") {
+		t.Errorf("id = %q, want the finalised name", ws.ID)
+	}
+	// The idea as typed is provenance and must survive alongside the name.
+	if ws.Task.Idea != "customers should see claim status in the portal" {
+		t.Errorf("idea = %q, want the original wording kept", ws.Task.Idea)
+	}
+	// The tracker may not be configured at all, so the elaborated
+	// description has to be durable here or the interview leaves no trace.
+	if !strings.Contains(ws.Task.Description, "Claims handlers") {
+		t.Errorf("description = %q, want the elaborated text recorded", ws.Task.Description)
+	}
+	reopened, err := Open(ws.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Task.Name != "Claim status portal" ||
+		reopened.Task.Description != ws.Task.Description {
+		t.Errorf("name/description did not survive a round trip: %+v", reopened.Task)
+	}
+}
+
+// Without a finalised name -- an unattended caller, or a person who declined
+// the interview -- the slug still comes from the idea, as it always did.
+func TestWithoutANameTheIdeaStillNamesTheWorkspace(t *testing.T) {
+	home(t)
+	ws, err := New(NewOptions{Idea: "customers should see claim status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.Task.Slug != "customers-should-see-claim-status" {
+		t.Fatalf("slug = %q, want the idea-derived one", ws.Task.Slug)
+	}
+	if ws.Task.Name != "" {
+		t.Errorf("name = %q, want empty when nobody agreed one", ws.Task.Name)
+	}
+}
+
 func TestNewRequiresAnIdea(t *testing.T) {
 	home(t)
 	for _, idea := range []string{"", "   ", "\t\n"} {

@@ -38,15 +38,22 @@ import (
 // provenance trail: what was asked, when, by which Orion version, and
 // how far through the artifact chain it got.
 type Task struct {
-	ID        string    `json:"id"`
-	Idea      string    `json:"idea"`
-	Slug      string    `json:"slug"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Stage     string    `json:"stage"`
-	Status    string    `json:"status"`
-	Container bool      `json:"container"`
-	FromRepo  string    `json:"from_repo,omitempty"`
+	ID   string `json:"id"`
+	Idea string `json:"idea"`
+	Slug string `json:"slug"`
+	// Name is the project name a human finalised at `orion new`, and
+	// Description the elaborated idea from the same exchange. Both are
+	// omitempty because a workspace bound to an existing repository never
+	// had that conversation, and an empty string there is the truth rather
+	// than missing data.
+	Name        string    `json:"name,omitempty"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Stage       string    `json:"stage"`
+	Status      string    `json:"status"`
+	Container   bool      `json:"container"`
+	FromRepo    string    `json:"from_repo,omitempty"`
 	// SourcePath is the user's own working copy, for a workspace bound to an
 	// existing repository. Orion clones from the remote and treats this path
 	// as READ-ONLY; it is recorded so the copy can be fast-forwarded after a
@@ -187,10 +194,22 @@ func Home() string {
 func projectsDir() string { return filepath.Join(Home(), "projects") }
 
 type NewOptions struct {
-	Idea      string
-	Template  string
-	FromRepo  string
-	Container bool
+	Idea string
+	// Name is the project name a human agreed to, when one was agreed. The
+	// canonical slug derives from it rather than from Idea, so the workspace
+	// directory, the git repo and the Jira project all carry the same name
+	// (decision 0009) instead of three independent readings of the same
+	// sentence. Empty falls back to the idea, which is what an unattended
+	// caller has.
+	Name string
+	// Description is the elaborated idea: what `orion new`'s interview
+	// produced, recorded here because the tracker project it also goes to is
+	// a remote system that may not be configured. Empty means nobody
+	// elaborated anything, not that the idea was empty.
+	Description string
+	Template    string
+	FromRepo    string
+	Container   bool
 }
 
 // New provisions a workspace. It is deliberately not idempotent: two
@@ -201,7 +220,12 @@ func New(opts NewOptions) (*Workspace, error) {
 	if idea == "" {
 		return nil, errors.New("an idea is required: orion new \"what you want built\"")
 	}
-	slug := Slugify(idea)
+	name := strings.TrimSpace(opts.Name)
+	from := name
+	if from == "" {
+		from = idea
+	}
+	slug := Slugify(from)
 	id := slug + "-" + shortID()
 
 	dir := filepath.Join(projectsDir(), id)
@@ -228,6 +252,7 @@ func New(opts NewOptions) (*Workspace, error) {
 		Dir: dir,
 		Task: Task{
 			ID: id, Idea: idea, Slug: slug,
+			Name: name, Description: strings.TrimSpace(opts.Description),
 			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 			Stage: "intent", Status: "provisioned",
 			Container: opts.Container, FromRepo: opts.FromRepo,
