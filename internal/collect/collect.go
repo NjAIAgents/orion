@@ -127,11 +127,17 @@ type Deps struct {
 
 // SlackAPI is what an approval needs from Slack: post the request, offer the
 // affordances, read the answer, and name who gave it.
+//
+// MemberID is the outward direction of the same question UserName answers
+// inward. Asking needs it as much as reading does: the request has to tag the
+// approver to notify them, and slack.merge_approvers holds a username or an
+// email rather than the member id a mention is built from.
 type SlackAPI interface {
 	SlackReader
 	PostTS(channel, text string) (string, error)
 	React(channel, ts, emoji string)
 	BotID() string
+	MemberID(who string) (string, error)
 }
 
 // TrackerAPI is the slice of the tracker this package needs.

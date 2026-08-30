@@ -103,6 +103,12 @@ func branchRole(branch, release string) string {
 // who is not on the list stops waiting for their own tap to work -- and
 // linking the diff rather than merely the ticket. An approval request that
 // is easier to accept than to check is a rubber stamp with extra steps.
+//
+// approvers arrive already rendered by approverTags: a <@U...> mention for
+// everyone who could be resolved, a plain name for everyone who could not.
+// This is the only message that mentions anybody, and the mention is what
+// makes "saying who is allowed to answer" reach them rather than merely be
+// true -- Slack notifies on the id form and on nothing else.
 func msgApprovalWanted(key string, pr PR, branch string, approvers []string) (string, string) {
 	title := fmt.Sprintf("%s is ready to merge — approve?", key)
 

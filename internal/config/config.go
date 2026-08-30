@@ -130,8 +130,16 @@ type Slack struct {
 	// Orion creates a "communication medium" that no human can see, and there
 	// is no notification to tell them it happened.
 	InviteUsers []string `json:"invite_users"`
-	// MergeApprovers may approve a merge from Slack. Slack usernames or
-	// display names.
+	// MergeApprovers may approve a merge from Slack. A Slack user ID (U...),
+	// a username, a display name or an email address.
+	//
+	// The approval request MENTIONS whoever it can resolve, because that is
+	// the only form Slack notifies on -- a name in the message text is styled
+	// like any other word and reaches nobody. Resolving a name needs
+	// users:read and an email needs users:read.email, the same scope
+	// InviteUsers notes above; without them the request still sends and still
+	// names the person, and the run says the mention was lost. An ID needs no
+	// scope at all, so it is the form that always works.
 	//
 	// EMPTY MEANS NOBODY, never everybody. Being in a channel is not
 	// authority: a project room contains people with no idea what they are
