@@ -224,18 +224,23 @@ func AgentDirt(worktree, porcelain string) []string {
 // orionAuthored reports whether one porcelain entry names something Orion
 // wrote rather than something to protect.
 func orionAuthored(worktree, status, path string) bool {
-	// The runtime directory: state, logs, breaker counters. Ignored whatever
-	// its status, because nothing in it is ever a person's to keep.
-	if strings.HasPrefix(path, ".orion/") {
-		return true
-	}
-	// The breaker's stop-note. Untracked ONLY: the breaker creates it and
-	// nothing tracks it (OR-194), so a tracked BLOCKED.md is a file somebody
-	// deliberately committed to this repository and their edits to it are
-	// theirs, not Orion's to discard.
+	// UNTRACKED only, for every artefact below.
+	//
+	// Orion writes these files itself and nothing tracks them, so untracked is
+	// the state they are always in. Once one is in the index it is a file
+	// somebody deliberately committed to this repository -- git does not track
+	// a file by accident -- and an uncommitted change to it is a tracked change
+	// of exactly the kind the deletion guard exists to protect (OR-122). Being
+	// Orion's by name is not the same as being Orion's to discard.
 	if status != "??" {
 		return false
 	}
+	// The runtime directory: state, logs, breaker counters.
+	if strings.HasPrefix(path, ".orion/") {
+		return true
+	}
+	// The breaker's stop-note (OR-194), at whatever plans path this repository
+	// configures.
 	plans := config.Load(worktree).Paths.Plans
 	return path == filepath.ToSlash(filepath.Join(plans, "BLOCKED.md"))
 }
