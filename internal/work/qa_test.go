@@ -1,6 +1,7 @@
 package work
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -535,6 +536,138 @@ func TestQACommentsWhenItFoundNothing(t *testing.T) {
 	}
 	if got := qaRoundComments(j.comments); len(got) != 0 {
 		t.Errorf("a clean run reported %d fix round(s):\n%s", len(got), strings.Join(got, "\n---\n"))
+	}
+}
+
+// OR-200: a fix round that never finishes is still a round the ticket must
+// carry -- the finding that opened it is the last thing anyone knows was
+// wrong, and a version that only posted on a successful re-verify would
+// leave exactly this, the actually-unresolved case, silent.
+func TestQAPostsARoundCommentWhenTheFixRunFails(t *testing.T) {
+	home := project(t, qaCfg)
+	j := &fakeJira{}
+	var out strings.Builder
+	ticketCalls := 0
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				switch o.Stage {
+				case "qa-cases":
+					return &supervisor.Result{ExitCode: 0, Final: "- the rounding boundary"}, nil
+				case "qa":
+					if err := os.WriteFile(filepath.Join(ws.RepoDir(), "qa.go"), []byte("package x\n"), 0o644); err != nil {
+						return nil, err
+					}
+					git(t, ws.RepoDir(), "add", ".")
+					git(t, ws.RepoDir(), "commit", "-q", "-m", "qa work")
+					return &supervisor.Result{ExitCode: 0, SessionID: "qa-session",
+						Final: "The rounding case is wrong: expected 2 decimal places, got 4."}, nil
+				case "ticket":
+					ticketCalls++
+					if ticketCalls == 1 {
+						if err := os.WriteFile(filepath.Join(ws.RepoDir(), "impl.go"), []byte("package x\n"), 0o644); err != nil {
+							return nil, err
+						}
+						git(t, ws.RepoDir(), "add", ".")
+						git(t, ws.RepoDir(), "commit", "-q", "-m", "feat: implement")
+						return &supervisor.Result{ExitCode: 0, SessionID: "impl-session"}, nil
+					}
+					// The fix round: crashes before it can change anything.
+					return &supervisor.Result{ExitCode: 1, Reason: "the fix run crashed"}, nil
+				}
+				return nil, fmt.Errorf("unexpected stage %q", o.Stage)
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	if res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("outcome = %q; a fix run that crashed must not fail the ticket", res[0].Outcome)
+	}
+	round := qaRoundComments(j.comments)
+	if len(round) != 1 {
+		t.Fatalf("the fix run's failure produced %d round comment(s), want exactly 1:\n%s",
+			len(round), strings.Join(j.comments, "\n---\n"))
+	}
+	if !strings.Contains(round[0], "expected 2 decimal places, got 4") {
+		t.Errorf("the round comment lost the finding that was open when the fix run failed:\n%s", round[0])
+	}
+	if !strings.Contains(round[0], "The fix run did not finish, so this was never re-verified.") {
+		t.Errorf("the round comment does not say the fix run never finished:\n%s", round[0])
+	}
+	if !strings.Contains(out.String(), "unverified by QA") {
+		t.Errorf("nothing said the change went to review unverified:\n%s", out.String())
+	}
+}
+
+// OR-200: the mirror case -- the fix itself finished and said what it
+// changed, but the re-verification run that was supposed to confirm it never
+// came back. The ticket must still show the finding paired with the fix,
+// with a verdict that says the outcome is unknown rather than either
+// resolved or still open.
+func TestQAPostsARoundCommentWhenReVerificationFails(t *testing.T) {
+	home := project(t, qaCfg)
+	j := &fakeJira{}
+	var out strings.Builder
+	ticketCalls, qaCalls := 0, 0
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				switch o.Stage {
+				case "qa-cases":
+					return &supervisor.Result{ExitCode: 0, Final: "- the rounding boundary"}, nil
+				case "qa":
+					qaCalls++
+					if qaCalls == 1 {
+						if err := os.WriteFile(filepath.Join(ws.RepoDir(), "qa.go"), []byte("package x\n"), 0o644); err != nil {
+							return nil, err
+						}
+						git(t, ws.RepoDir(), "add", ".")
+						git(t, ws.RepoDir(), "commit", "-q", "-m", "qa work")
+						return &supervisor.Result{ExitCode: 0, SessionID: "qa-session",
+							Final: "The rounding case is wrong: expected 2 decimal places, got 4."}, nil
+					}
+					// The re-verify: crashes before it can report a verdict.
+					return &supervisor.Result{ExitCode: 1, Reason: "the re-verify run crashed"}, nil
+				case "ticket":
+					ticketCalls++
+					if ticketCalls == 1 {
+						if err := os.WriteFile(filepath.Join(ws.RepoDir(), "impl.go"), []byte("package x\n"), 0o644); err != nil {
+							return nil, err
+						}
+						git(t, ws.RepoDir(), "add", ".")
+						git(t, ws.RepoDir(), "commit", "-q", "-m", "feat: implement")
+						return &supervisor.Result{ExitCode: 0, SessionID: "impl-session"}, nil
+					}
+					return &supervisor.Result{ExitCode: 0, SessionID: "fix-session",
+						Final: "Rounded the total to 2 decimal places before formatting it."}, nil
+				}
+				return nil, fmt.Errorf("unexpected stage %q", o.Stage)
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	if res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("outcome = %q; a re-verify run that crashed must not fail the ticket", res[0].Outcome)
+	}
+	round := qaRoundComments(j.comments)
+	if len(round) != 1 {
+		t.Fatalf("the re-verify failure produced %d round comment(s), want exactly 1:\n%s",
+			len(round), strings.Join(j.comments, "\n---\n"))
+	}
+	for _, want := range []string{
+		"expected 2 decimal places, got 4",
+		"Rounded the total to 2 decimal places before formatting",
+		"The re-verification run did not finish, so whether the fix cleared this is unknown.",
+	} {
+		if !strings.Contains(round[0], want) {
+			t.Errorf("the round comment is missing %q:\n%s", want, round[0])
+		}
 	}
 }
 
