@@ -115,6 +115,28 @@ func msgNoop(key, summary, note, issueURL string) (string, string) {
 	return title, body
 }
 
+// msgNoAuth is for a run that never started because Orion could not sign in.
+//
+// The title names the machine, not the ticket, because the ticket is fine: the
+// reader's job is to log in, not to look at a branch. And the fix goes in the
+// body verbatim -- this is the one failure notification where the remedy is
+// known exactly, and burying it under a log path would waste that.
+func msgNoAuth(key, summary, reason, issueURL string) (string, string) {
+	title := "Orion stopped: claude is not authenticated"
+	body := strings.Join([]string{
+		"*" + summary + "*",
+		"",
+		quote(reason),
+		"",
+		"• ticket  " + link(issueURL, key),
+		"",
+		"_Nothing was attempted and nothing was spent. " + key + " is queued again_",
+		"_rather than marked failed. Every other ticket would fail the same way,_",
+		"_so the watcher stopped instead of draining the queue._",
+	}, "\n")
+	return title, body
+}
+
 // msgFailed is for something broken, as distinct from something undecided.
 func msgFailed(key, summary, reason, branch, issueURL, logPath string) (string, string) {
 	title := fmt.Sprintf("%s failed", key)
