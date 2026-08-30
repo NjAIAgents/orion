@@ -145,7 +145,7 @@ You must reinstall the app. Orion's error message says so when it sees
 
 ### After it works
 
-`orion new` creates `#orion-<slug>`, sets the topic to the idea, and posts an
+`orion plan` creates `#orion-<slug>`, sets the topic to the idea, and posts an
 opening message. Bear in mind:
 
 - **Channels accumulate.** A bot cannot delete them. Archive a finished

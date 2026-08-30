@@ -123,14 +123,23 @@ guardrails.
 
 ```bash
 orion new "customers should see claim status in the portal"
-orion run  <id> --stage intent
+                                     # interactive: elaborates the idea, names
+                                     # it, creates the tracker project
+orion plan <KEY>                     # workspace, roster and cost shape
 orion run  <id> --stage spec
 orion run  <id> --stage plan
-orion provision <id>                 # remote repo, branches, Jira project
+orion provision <id>                 # remote repo, branches
 orion run  <id> --stage decompose    # /pm-plan tree, approved before creation
 orion run  <id> --stage build
 orion status <id>
 ```
+
+`orion new` and `orion plan` are sequential phases of one flow, not two front
+doors: the tracker project is the handoff artifact between them
+([0006](docs/decisions/0006-new-and-plan-are-sequential-phases.md),
+[0013](docs/decisions/0013-new-creates-the-tracker-project-not-a-workspace.md)).
+`new` is the only interactive step, because it is the only one with a human
+present by definition.
 
 ## Branch model
 
@@ -188,7 +197,7 @@ breaker.
 
 ## Isolation
 
-`orion new` provisions:
+`orion plan` provisions:
 
 ```
 $ORION_HOME/projects/<slug>-<id>/
