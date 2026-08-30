@@ -294,3 +294,121 @@ func TestASecondWriterStartsItsOwnPage(t *testing.T) {
 		t.Errorf("the first line of a different writer lost its identity:\n%s", two.String())
 	}
 }
+
+// Same actor, same ticket, different model -- a mid-run model change (a
+// retry escalating to a bigger model, say) is exactly the kind of thing the
+// blanked columns must not hide.
+func TestIdentityRestatesWhenTheModelChanges(t *testing.T) {
+	atLevel(t, false)
+	var b bytes.Buffer
+
+	SayModel(&b, "OR-217", events.ActorImplementer, "sonnet", VerbOK, "first")
+	SayModel(&b, "OR-217", events.ActorImplementer, "opus", VerbOK, "second")
+	Flush(&b)
+
+	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 lines, got %d:\n%s", len(lines), b.String())
+	}
+	if !strings.Contains(lines[1], "opus") {
+		t.Errorf("a line whose model changed must restate it:\n%s", lines[1])
+	}
+}
+
+// A banner starts a ticket; whatever was on screen above it belongs to a
+// different moment, so the first line under it has to name its actor again
+// rather than assume it is a continuation.
+func TestBannerTriggersIdentityReset(t *testing.T) {
+	atLevel(t, false)
+	var b bytes.Buffer
+	who := actors.Display(events.ActorImplementer)
+
+	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "before")
+	Banner(&b, "OR-217", "Build the thing", events.ActorImplementer, "opus", "orion/or-217")
+	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "after")
+
+	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
+	last := lines[len(lines)-1]
+	if !strings.Contains(last, who) {
+		t.Errorf("the first line after a banner must state its identity again:\n%s", last)
+	}
+}
+
+// The ticket's own wording is "absolute path >= 40 characters is shortened"
+// and "< 40 is left unchanged" -- i.e. the boundary is inclusive at 40. This
+// asserts exactly that boundary. (shortenPaths's comparison is `<=
+// pathMinLen` skips shortening, so a path of exactly 40 characters is left
+// UNCHANGED by the current code -- see the QA report's open findings.)
+func TestPathLengthBoundary(t *testing.T) {
+	mk := func(n int) string {
+		// "/" plus n-1 filler characters, so the whole field is exactly n
+		// runes and still parses as a single path component.
+		return "/" + strings.Repeat("a", n-1)
+	}
+
+	if p39 := mk(39); shortenPaths("read "+p39) != "read "+p39 {
+		t.Errorf("a 39-char path was shortened, want unchanged: %q", shortenPaths("read "+p39))
+	}
+	p40 := mk(40)
+	if got40 := shortenPaths("read " + p40); got40 == "read "+p40 {
+		t.Errorf("a 40-char path was left unchanged, want shortened to its base name per the "+
+			"ticket's \">= 40 characters is shortened\": %q", got40)
+	}
+	p41 := mk(41)
+	if got41 := shortenPaths("read " + p41); got41 == "read "+p41 {
+		t.Errorf("a 41-char path was left unchanged, want shortened to its base name")
+	}
+}
+
+// A message with an embedded newline has to survive as ONE line: a second
+// physical line would either break the collapse/identity bookkeeping (which
+// counts lines, not messages) or read as a second, unattributed line with no
+// actor of its own.
+func TestEmbeddedNewlinesRenderAsOneLine(t *testing.T) {
+	atLevel(t, false)
+	var b bytes.Buffer
+
+	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "first part\nsecond part")
+	Flush(&b)
+
+	out := strings.TrimRight(b.String(), "\n")
+	if strings.Count(out, "\n") != 0 {
+		t.Errorf("an embedded newline produced more than one printed line:\n%q", out)
+	}
+	if !strings.Contains(out, "first part second part") {
+		t.Errorf("the newline was not replaced with a space:\n%q", out)
+	}
+}
+
+// A message wider than the terminal is clipped with an ellipsis, not just
+// truncated silently -- the reader has to be able to tell the line was cut.
+func TestLongMessageIsClippedWithAnEllipsis(t *testing.T) {
+	t.Setenv("COLUMNS", "80")
+	atLevel(t, false)
+	var b bytes.Buffer
+
+	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "%s", strings.Repeat("word ", 200))
+	Flush(&b)
+
+	if !strings.Contains(b.String(), "…") {
+		t.Errorf("a clipped message did not end in an ellipsis:\n%s", b.String())
+	}
+}
+
+// Failures and warnings are exactly the lines a person has to act on, so
+// they must not be dropped at the default level either.
+func TestDefaultLevelKeepsEscalationsAndFailures(t *testing.T) {
+	atLevel(t, false)
+	var b bytes.Buffer
+
+	Say(&b, "OR-217", events.ActorImplementer, VerbFail, "tests failed")
+	Say(&b, "OR-217", events.ActorImplementer, VerbWarn, "budget checkpoint")
+	Flush(&b)
+
+	got := b.String()
+	for _, want := range []string{"tests failed", "budget checkpoint"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the default level dropped %q:\n%s", want, got)
+		}
+	}
+}

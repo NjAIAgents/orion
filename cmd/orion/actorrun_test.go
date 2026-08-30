@@ -110,6 +110,51 @@ func TestFixActivityAttributesConsoleLinesAndLogsToolEvents(t *testing.T) {
 	}
 }
 
+// The console filter runs AFTER the event log Emit, so the JSONL has to be
+// complete at the QUIET level too -- OR-217's whole premise is that the
+// transcript is withheld from the console, never from the record. This is
+// TestFixActivityAttributesConsoleLinesAndLogsToolEvents's companion at the
+// level nobody explicitly asked for verbosity.
+func TestFixActivityLogsToolEventsEvenWhenTheConsoleIsQuiet(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := events.Open(logPath, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	var console strings.Builder
+	activity := fixActivity(log, &console, "OR-173")
+
+	ui.SetVerbose(false)
+	t.Cleanup(func() { ui.SetVerbose(false) })
+
+	activity(supervisor.Activity{Kind: "tool", Tool: "Bash", Detail: "go test ./...", Model: "sonnet"})
+	log.Close()
+
+	if strings.Contains(console.String(), "go test ./...") {
+		t.Errorf("the quiet console printed the tool-call transcript: %q", console.String())
+	}
+
+	logged, err := events.Read(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawTool bool
+	for _, e := range logged {
+		if e.Kind != events.KindTool {
+			continue
+		}
+		sawTool = true
+		if !strings.Contains(e.Msg, "Bash") || !strings.Contains(e.Msg, "go test ./...") {
+			t.Errorf("tool event msg = %q, want it to name the tool and its detail", e.Msg)
+		}
+	}
+	if !sawTool {
+		t.Error("no KindTool event was logged at the quiet console level -- the record must not depend on verbosity")
+	}
+}
+
 // fakeClaude puts a `claude` on PATH that records its own argv, so a test can
 // assert on exactly what the describer invoked the CLI with.
 func fakeClaude(t *testing.T) (argsFile string) {
