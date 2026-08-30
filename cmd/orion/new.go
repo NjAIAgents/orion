@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/adopt"
@@ -239,9 +240,27 @@ func ask(r *bufio.Reader, out io.Writer, question string) (string, bool) {
 	return strings.TrimSpace(line), err == nil
 }
 
-// isTerminal is confirm's own check, hoisted so the refusal happens before the
-// interview rather than at the first prompt nobody can answer.
+// isTerminal reports whether f is a real terminal, so the refusal happens
+// before the interview rather than at the first prompt nobody can answer.
+//
+// Deliberately NOT a char-device check. os.ModeCharDevice is set for
+// /dev/null as well as for a tty, and /dev/null is precisely what a command
+// with no stdin gets: cron redirects it there, CI does, and Go connects a
+// child's nil Stdin to it. Every one of those would have been classified
+// interactive and fallen through to five questions nobody is present to
+// answer, which is the opposite of what the check is for.
+//
+// stty rather than golang.org/x/term: go.mod has no dependencies and
+// internal/creds already makes this exact trade for echo suppression, calling
+// a module "a poor trade for one syscall". One exec, on one interactive
+// command, is cheaper than the first entry in go.sum.
+//
+// stty's own output goes nowhere -- an exec.Cmd's unset Stdout and Stderr are
+// already /dev/null -- so the probe stays silent either way. A machine with no
+// stty answers false and gets the refusal, which is the safe direction: the
+// message names `orion plan`, while a wrong "yes" blocks forever on a read.
 func isTerminal(f *os.File) bool {
-	fi, err := f.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	cmd := exec.Command("stty")
+	cmd.Stdin = f
+	return cmd.Run() == nil
 }

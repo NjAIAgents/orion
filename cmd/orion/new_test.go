@@ -298,3 +298,260 @@ func TestAnEmptyIdeaIsRefused(t *testing.T) {
 		t.Fatal("expected an error for an empty idea")
 	}
 }
+
+// Truly empty (not just whitespace) is the same refusal path -- a regression
+// that special-cased "   " and left "" to reach the tracker would slip past a
+// suite that only ever typed whitespace.
+func TestATrulyEmptyIdeaIsRefused(t *testing.T) {
+	f := workingTracker()
+	var buf bytes.Buffer
+	err := newRun(f, newOptions{
+		Idea: "", In: strings.NewReader(""), Out: &buf,
+		Confirm: func(string) bool { return true },
+	})
+	if err == nil {
+		t.Fatal("expected an error for an empty idea")
+	}
+	if f.creates != 0 {
+		t.Errorf("an empty idea reached project creation")
+	}
+}
+
+// Five questions, in order, each with its own specific prompt text -- not
+// just "five somethings were asked". A reordering or a swapped prompt would
+// not fail TestTheElaboratedIdeaReachesTheProjectDescription, which only
+// checks the final description, so the order has to be asserted on the
+// transcript directly.
+func TestAllFiveQuestionsAskedInOrderWithTheirOwnText(t *testing.T) {
+	f := workingTracker()
+	out, err := runNewInto(t, f, fullInterview("Claim Status"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	positions := make([]int, len(newQuestions))
+	for i, q := range newQuestions {
+		idx := strings.Index(out, q.Ask)
+		if idx < 0 {
+			t.Fatalf("question %q never appears in the transcript:\n%s", q.Ask, out)
+		}
+		positions[i] = idx
+	}
+	for i := 1; i < len(positions); i++ {
+		if positions[i] <= positions[i-1] {
+			t.Errorf("question %d (%q) did not appear after question %d (%q):\n%s",
+				i, newQuestions[i].Ask, i-1, newQuestions[i-1].Ask, out)
+		}
+	}
+}
+
+// User answers are captured EXACTLY as typed -- not trimmed of internal
+// whitespace, not case-folded, not otherwise normalised on the way into the
+// description.
+func TestAnswersAreCapturedExactlyAsTyped(t *testing.T) {
+	f := workingTracker()
+	in := answers(
+		"  Weird   Spacing  Kept  ",
+		"MixedCASE preserved",
+		"emoji ok \u2705",
+		"n/a",
+		"n/a",
+		"Claim Status",
+	)
+	if _, err := runNewInto(t, f, in, true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.createdDesc, "For: Weird   Spacing  Kept") {
+		t.Errorf("internal whitespace was not preserved verbatim:\n%s", f.createdDesc)
+	}
+	if !strings.Contains(f.createdDesc, "Problem: MixedCASE preserved") {
+		t.Errorf("case was altered:\n%s", f.createdDesc)
+	}
+	if !strings.Contains(f.createdDesc, "Success: emoji ok \u2705") {
+		t.Errorf("unicode content was not preserved:\n%s", f.createdDesc)
+	}
+}
+
+// The name prompt loops on a blank answer (bare Enter) rather than accepting
+// it -- unlike the five elaboration questions, where blank is a legitimate
+// "unstated" answer.
+func TestNamePromptLoopsPastBlankAnswersUntilNonEmpty(t *testing.T) {
+	f := workingTracker()
+	in := answers("everyone", "problem", "success", "", "", "", "  ", "Claim Status")
+	out, err := runNewInto(t, f, in, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.createdName != "Claim Status" {
+		t.Errorf("created name = %q, want %q -- the blank lines should have been re-prompted, not accepted",
+			f.createdName, "Claim Status")
+	}
+	if strings.Count(out, "Project name?") < 2 {
+		t.Errorf("the name prompt does not appear to have re-asked after a blank line:\n%s", out)
+	}
+}
+
+// No validation rules on the name: arbitrary punctuation and symbols are
+// accepted verbatim and reach the tracker unmodified. Slugify/DeriveKey still
+// run on it for the key, but the NAME itself is not filtered.
+func TestArbitraryNameTextIsAcceptedWithoutValidation(t *testing.T) {
+	f := workingTracker()
+	name := "Claims v2 (beta) #hot!!"
+	out, err := runNewInto(t, f, fullInterview(name), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.createdName != name {
+		t.Errorf("created name = %q, want the exact typed text %q", f.createdName, name)
+	}
+	if !strings.Contains(out, name) {
+		t.Errorf("the typed name is not echoed back to the user before confirmation:\n%s", out)
+	}
+}
+
+// The success message names the created key and prints a browse link built
+// from the tracker's own site -- the thing a human actually needs to go look
+// at what was just created.
+func TestSuccessMessageShowsKeyAndBrowseLink(t *testing.T) {
+	f := workingTracker()
+	out, err := runNewInto(t, f, fullInterview("Claim Status Self Service"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"CSSS", "https://example.atlassian.net/browse/CSSS"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("success output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// No workspace ID and no workspace path are ever printed -- there is no
+// workspace. A leftover message from before OR-148 would point at something
+// that was never created.
+func TestNoWorkspaceIdOrPathIsPrinted(t *testing.T) {
+	f := workingTracker()
+	out, err := runNewInto(t, f, fullInterview("Claim Status Self Service"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unwanted := range []string{"workspace id", "Workspace ID", "workspace path", "Workspace path"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("output mentions %q, but orion new provisions no workspace:\n%s", unwanted, out)
+		}
+	}
+}
+
+// A tracker that cannot be reached at all fails before the interview starts,
+// same as an explicit permission refusal -- Probe() itself is the first call
+// made, and its error is not swallowed or deferred past the five questions.
+func TestTrackerProbeErrorRefusesBeforeAnyQuestion(t *testing.T) {
+	f := &probeErrTracker{err: fmt.Errorf("dial tcp: connection refused")}
+	var buf bytes.Buffer
+	err := newRun(f, newOptions{
+		Idea:    "customers should see claim status in the portal",
+		Site:    "https://example.atlassian.net",
+		In:      strings.NewReader(fullInterview("Claim Status")),
+		Out:     &buf,
+		Confirm: func(string) bool { return true },
+	})
+	if err == nil {
+		t.Fatal("expected the unreachable tracker's error to surface")
+	}
+	if strings.Contains(buf.String(), newQuestions[0].Ask) {
+		t.Errorf("the interview started despite an unreachable tracker:\n%s", buf.String())
+	}
+}
+
+// Name identical to the idea text is not special-cased: it is asked for like
+// any other name, accepted verbatim, and slugified the same way.
+func TestNameIdenticalToIdeaIsAcceptedAndSlugified(t *testing.T) {
+	f := workingTracker()
+	idea := "Fix login bug"
+	var buf bytes.Buffer
+	err := newRun(f, newOptions{
+		Idea: idea, Site: "https://example.atlassian.net",
+		In:  strings.NewReader(answers("a", "b", "c", "d", "e", idea)),
+		Out: &buf, Confirm: func(string) bool { return true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.createdName != idea {
+		t.Errorf("created name = %q, want %q", f.createdName, idea)
+	}
+	if f.createdKey != "FLB" {
+		t.Errorf("created key = %q, want FLB derived from %q", f.createdKey, idea)
+	}
+}
+
+// Unicode in the idea itself survives into the description verbatim.
+func TestUnicodeIdeaIsPreservedInFull(t *testing.T) {
+	f := workingTracker()
+	idea := "客户应该能看到理赔状态 -- caf\u00e9 \U0001F680"
+	var buf bytes.Buffer
+	err := newRun(f, newOptions{
+		Idea: idea, Site: "https://example.atlassian.net",
+		In:  strings.NewReader(fullInterview("Claim Status")),
+		Out: &buf, Confirm: func(string) bool { return true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.createdDesc, idea) {
+		t.Errorf("the unicode idea was not preserved verbatim:\n%s", f.createdDesc)
+	}
+}
+
+// Very long idea text is preserved in full, not truncated on the way into
+// the description.
+func TestVeryLongIdeaIsPreservedInFull(t *testing.T) {
+	f := workingTracker()
+	idea := strings.TrimSpace(strings.Repeat("customers should see claim status in the portal and also ", 200))
+	var buf bytes.Buffer
+	err := newRun(f, newOptions{
+		Idea: idea, Site: "https://example.atlassian.net",
+		In:  strings.NewReader(fullInterview("Claim Status")),
+		Out: &buf, Confirm: func(string) bool { return true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.createdDesc, idea) {
+		t.Errorf("the long idea was truncated or altered on the way into the description")
+	}
+}
+
+// A name whose slug collides with an ALREADY-EXISTING project (not just one
+// created earlier in the same run) still resolves to the next free key --
+// exercising ResolveKey's collision path from a name-driven slug rather than
+// a hand-picked key string.
+func TestNameCollidingWithAnExistingProjectSlugGetsTheNextKey(t *testing.T) {
+	f := workingTracker()
+	f.existing["CS"] = "existing-project-id"
+	out, err := runNewInto(t, f, fullInterview("Claim Status"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.createdKey != "CS2" {
+		t.Errorf("created key = %q, want CS2 -- CS already belongs to another project", f.createdKey)
+	}
+	if !strings.Contains(out, "CS2") {
+		t.Errorf("the resolved key is not shown to the user:\n%s", out)
+	}
+}
+
+// probeErrTracker fails at Probe(), the very first call `newRun` makes --
+// simulating an unreachable tracker or a network error, independent of the
+// authentication/permission fields Capability would otherwise carry.
+type probeErrTracker struct{ err error }
+
+func (p *probeErrTracker) Name() string                       { return "jira" }
+func (p *probeErrTracker) Probe() (tracker.Capability, error) { return tracker.Capability{}, p.err }
+func (p *probeErrTracker) ProjectExists(key string) (bool, string, error) {
+	return false, "", fmt.Errorf("should not be reached")
+}
+func (p *probeErrTracker) Project(key string) (tracker.Project, error) {
+	return tracker.Project{}, fmt.Errorf("should not be reached")
+}
+func (p *probeErrTracker) CreateProject(key, name, description, lead string) (tracker.Binding, error) {
+	return tracker.Binding{}, fmt.Errorf("should not be reached: creation must not happen when Probe fails")
+}
