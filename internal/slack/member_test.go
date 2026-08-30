@@ -196,6 +196,43 @@ func TestAMissingEmailScopeSaysWhichScope(t *testing.T) {
 	}
 }
 
+// A username needs users:read, not users:read.email. That scope has to be
+// named specifically, or a workspace missing it gets the wrong install
+// instructions and still cannot resolve a single name.
+func TestAMissingDirectoryScopeSaysWhichScope(t *testing.T) {
+	d := &directory{fail: map[string]string{"users.list": "missing_scope"}}
+	c, srv := newFake(t, d.handler())
+	defer srv.Close()
+
+	_, err := c.MemberID("approver")
+	if err == nil {
+		t.Fatal("a missing scope must be reported")
+	}
+	if !strings.Contains(err.Error(), "users:read") || strings.Contains(err.Error(), "users:read.email") {
+		t.Errorf("the error names the wrong scope: %v", err)
+	}
+}
+
+// The value a person actually copies out of Slack carries both the mention
+// brackets and stray whitespace at once -- not one or the other. Both have to
+// come off before the lookup, or a value pasted straight from a message never
+// resolves.
+func TestDecorationAndWhitespaceTogetherAreNormalized(t *testing.T) {
+	d := &directory{pages: [][]map[string]any{{person("U012ABCDEF", "approver", "Approver")}}}
+	c, srv := newFake(t, d.handler())
+	defer srv.Close()
+
+	for _, in := range []string{"  <@U012ABCDEF>  ", "  @approver  ", "\t<@approver>\n"} {
+		got, err := c.MemberID(in)
+		if err != nil {
+			t.Fatalf("MemberID(%q): %v", in, err)
+		}
+		if got != "U012ABCDEF" {
+			t.Errorf("MemberID(%q) = %q, want U012ABCDEF", in, got)
+		}
+	}
+}
+
 // A bot's name resolving would tag something that cannot approve, and a
 // deleted account's name would tag nobody at all -- both look like a working
 // mention right up until the merge waits forever.
