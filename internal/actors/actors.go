@@ -159,8 +159,16 @@ func defaults() map[string]Actor {
 		// rather than judgement, and this is the question that recurs most
 		// often within a single run, so its model is a real cost decision.
 		events.ActorExplore: {ID: events.ActorExplore, Name: "Zoya", Designation: "code explorer", Model: "haiku"},
-		events.ActorCI:      {ID: events.ActorCI, Designation: "ci"},
-		events.ActorHuman:   {ID: events.ActorHuman, Designation: "you"},
+		// Case derivation reads the ticket's acceptance criteria and the diff
+		// and returns the list of cases QA has to cover, so that reading stops
+		// riding along on every turn of the test authoring that follows
+		// (OR-182). Haiku, the same argument as the two above: turning a
+		// written specification into a list of what to check is reading with a
+		// short answer, not the judgement of writing the tests, and QA runs on
+		// every ticket, so its model is a real cost decision.
+		events.ActorCaseDerive: {ID: events.ActorCaseDerive, Name: "Tara", Designation: "test case analyst", Model: "haiku"},
+		events.ActorCI:         {ID: events.ActorCI, Designation: "ci"},
+		events.ActorHuman:      {ID: events.ActorHuman, Designation: "you"},
 	}
 }
 

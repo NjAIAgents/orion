@@ -291,6 +291,30 @@ func TestLogTriageIsInTheRosterAndPinnedCheap(t *testing.T) {
 	t.Cleanup(func() { _ = Configure(nil) })
 }
 
+// The case-derive actor is the same bet again, on the reading QA does at the
+// start of every ticket. If it inherits QA's sonnet, the split has added a
+// second run at QA's price and saved nothing (OR-182).
+func TestCaseDeriveIsInTheRosterAndPinnedCheap(t *testing.T) {
+	a := Get(events.ActorCaseDerive)
+	if a.Name == "" || a.Designation == "" {
+		t.Errorf("case-derive renders as %q; every acting agent needs a name and a job title",
+			a.Display())
+	}
+	if a.Model != "haiku" {
+		t.Errorf("case-derive model = %q, want haiku: turning written criteria into a list "+
+			"of what to check is reading, not the judgement of writing the tests", a.Model)
+	}
+	if err := Configure(map[string]config.Agent{
+		events.ActorCaseDerive: {Model: "sonnet"},
+	}); err != nil {
+		t.Fatalf("case-derive must be configurable like any other agent: %v", err)
+	}
+	if got := Model(events.ActorCaseDerive); got != "sonnet" {
+		t.Errorf("after Configure, model = %q, want sonnet", got)
+	}
+	t.Cleanup(func() { _ = Configure(nil) })
+}
+
 // The explore actor is the same bet as log-triage, on the question that
 // recurs most often inside a single run: it must be in the roster, pinned
 // cheap, and configurable. An explore that inherits the asking run's opus is
