@@ -209,12 +209,18 @@ func Run(opts Options, deps Deps) error {
 		loggedOut := ""
 		for _, r := range p.reap() {
 			reportFinished(w, r)
-			// Neither started nor spent: the CLI had no login, so the job cost
-			// nothing and the ticket went back to the queue. Counting it against
-			// --max-jobs would charge the run for work it never did.
+			// Remembered, not acted on here: the stop belongs after the whole
+			// batch has been reaped, or a second job finishing in the same tick
+			// would go unreported.
+			//
+			// Deliberately NOT excluded from the job count below. An earlier
+			// version skipped it, reasoning that a run which spent nothing must
+			// not be charged against --max-jobs -- true, and unobservable: the
+			// loop breaks unconditionally a few lines down, so `started` is
+			// never read again. Untestable code asserting a behaviour is worse
+			// than no code, so the claim is gone rather than left to rot.
 			if r.Outcome == work.OutcomeNoAuth {
 				loggedOut = r.Note
-				continue
 			}
 			if r.Outcome != work.OutcomeSkipped {
 				started++
