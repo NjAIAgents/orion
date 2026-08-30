@@ -26,8 +26,8 @@ import (
 // That is the system prompt and tool list, and it is a floor paid on every
 // invocation: nine small stages pay it nine times before any work happens.
 func FromResultJSON(out string) (Run, bool) {
-	line := lastJSONObject(out)
-	if line == "" {
+	line, found := ResultLine(out)
+	if !found {
 		return Run{}, false
 	}
 	var d struct {
@@ -72,19 +72,61 @@ func FromResultJSON(out string) (Run, bool) {
 	return r, true
 }
 
-// lastJSONObject finds the final line that looks like a JSON object.
-// `claude -p --output-format json` prints one result object, but warnings can
-// precede it on the same stream, so scanning from the end is more robust than
-// assuming the whole output parses.
-func lastJSONObject(out string) string {
+// ResultLine finds the run's OWN closing result object in a stream capture.
+//
+// It is not "the last JSON object", which is what this used to look for, and
+// that is the whole bug: with --output-format stream-json the CLI keeps
+// talking after the result frame. A run that used background tasks ends with
+//
+//	{"type":"result",...,"num_turns":108,"total_cost_usd":13.39,"usage":{...}}
+//	{"type":"system","subtype":"background_tasks_changed",...}
+//	{"type":"system","subtype":"task_updated",...}
+//	{"type":"system","subtype":"task_notification",...}
+//
+// Every one of those trailing lines is a well-formed JSON object, so taking
+// the last one handed the parser a frame with no usage on it, which reported
+// as "this run consumed nothing". It hit the LONG runs by definition -- a run
+// long enough to spawn background work is the one with background frames
+// after its result -- so the report lost its single largest contributor while
+// short runs kept reporting correctly (OR-219). The observed OR-168 report
+// said $1.03; the implementer run it dropped had cost $13.40 on its own.
+//
+// So the result frame is identified by what it SAYS it is. Scanning from the
+// end still, because the capture is a bounded tail that may begin mid-object
+// and because warnings can precede the stream.
+//
+// The fallback covers --output-format json, whose single object predates the
+// type field: any trailing object that carries the result's own vocabulary
+// (num_turns, total_cost_usd, is_error) and claims no other type.
+func ResultLine(out string) (string, bool) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
+	var fallback string
 	for i := len(lines) - 1; i >= 0; i-- {
 		s := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}") {
-			return s
+		if !strings.HasPrefix(s, "{") || !strings.HasSuffix(s, "}") {
+			continue
+		}
+		// Pointers so "absent" and "present and zero" stay distinguishable:
+		// a genuine result reporting num_turns 0 is a result, and a system
+		// frame that happens to carry none is not.
+		var probe struct {
+			Type     string   `json:"type"`
+			NumTurns *int     `json:"num_turns"`
+			CostUSD  *float64 `json:"total_cost_usd"`
+			IsError  *bool    `json:"is_error"`
+		}
+		if json.Unmarshal([]byte(s), &probe) != nil {
+			continue
+		}
+		if probe.Type == "result" {
+			return s, true
+		}
+		if fallback == "" && probe.Type == "" &&
+			(probe.NumTurns != nil || probe.CostUSD != nil || probe.IsError != nil) {
+			fallback = s
 		}
 	}
-	return ""
+	return fallback, fallback != ""
 }
 
 // ContextPressure was removed, deliberately, rather than fixed in place.
