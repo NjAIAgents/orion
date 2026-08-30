@@ -167,9 +167,9 @@ var rules = []rule{{
 	hits: terminalFailures,
 }}
 
-// notRules records the recognisers deliberately NOT written, and why. It is
-// documentation rather than code because the risk it guards against is a
-// future change adding one of them in good faith.
+// THE RECOGNISERS DELIBERATELY NOT WRITTEN, and why. Recorded here because
+// the risk is a future change adding one of them in good faith, and
+// TestDesignedDegradationIsNotAFinding is the test that would then fail.
 //
 //   - A no-change ending. internal/work/noop.go is explicit that a run which
 //     inspected the repository and found the work already present is a
@@ -187,7 +187,6 @@ var rules = []rule{{
 //     CHANGE rather than in Orion, and a person was already told at the
 //     moment it happened -- by Slack and by a comment on the ticket. This
 //     pass exists for what nobody was told.
-var notRules struct{}
 
 // Scan applies every rule to one ticket's events and returns what fired,
 // newest evidence last within a finding and rule order between them.

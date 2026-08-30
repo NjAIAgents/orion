@@ -109,6 +109,12 @@ var otherPaths = []OtherPath{
 	{events.ActorLogTriage, "reads the failing CI log that the repair run then carries"},
 	{events.ActorDescriber, "writes the pull request body, on every ticket"},
 	{events.ActorExplore, "answers one question about the repository, inside a run"},
+	// Deliberately not routable, and not automatic either. It reads a
+	// FINISHED run's event log, so there is no ticket to route to it: a
+	// person or a cron runs `orion aiops <KEY>` afterwards. Making it a route
+	// would spend money judging every ticket, and the whole design of that
+	// pass is that most runs need no agent at all (OR-168).
+	{events.ActorAIOps, "reads a finished run's event log when `orion aiops` is run, after the fact"},
 }
 
 // OtherPaths lists the actors that are not routable, and why not.
