@@ -389,6 +389,10 @@ func TestPlanRejectsAProjectWithNoName(t *testing.T) {
 // show up renamed in the one place a run is judged before it costs anything.
 func TestPlanRosterUsesConfiguredActorNames(t *testing.T) {
 	home := planHome(t)
+	// The shipped default, read back rather than typed literally: actors.go is
+	// the one file allowed to name a default, and TestNoDefaultNameAppearsOutsideTheRegistry
+	// enforces that no other file may -- including this one.
+	shipped := actors.Display(events.ActorArchitect)
 	custom := "Beeblebrox"
 	if err := actors.Configure(map[string]config.Agent{
 		events.ActorArchitect: {Name: &custom},
@@ -404,7 +408,7 @@ func TestPlanRosterUsesConfiguredActorNames(t *testing.T) {
 	if !strings.Contains(out, custom) {
 		t.Errorf("roster does not show the configured actor name %q:\n%s", custom, out)
 	}
-	if strings.Contains(out, "Navjyot") {
+	if strings.Contains(out, shipped) {
 		t.Errorf("roster shows the shipped default name instead of the configured one:\n%s", out)
 	}
 }
