@@ -39,6 +39,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/advise"
 	"github.com/orion-sdlc/orion/internal/budget"
+	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
@@ -749,6 +750,15 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		ui.Stage(w, log, ui.Handoff{Key: key, From: "qa", To: "push",
 			By: events.ActorQA, Next: events.ActorOrion, Detail: qa.Verdict()})
 	}
+
+	// Last thing before the branch leaves the machine: put it on top of what
+	// the base is NOW (OR-227). The base moved while the agent was running --
+	// at concurrency 4 it usually does -- and a branch pushed at the base it
+	// started from triggers a full CI run against a base that no longer
+	// exists, only for the landing pass to rebase it and trigger a second.
+	// This never refuses the push: a conflict, a locked worktree or an
+	// unreachable remote all end with the branch pushed as it stands.
+	collect.RebaseBeforePush(key, job.Path, job.Branch, cfg, ws, log, w)
 
 	if err := deps.Push(job.Path, job.Branch); err != nil {
 		return failAndTell(res, fmt.Errorf("pushing %s: %w", job.Branch, err), key, ws, log, w, deps)
