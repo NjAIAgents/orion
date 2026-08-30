@@ -182,50 +182,66 @@ func msgAnswered(key string, a advise.Answer, question string) (string, string) 
 	return title, body
 }
 
-// msgTripResidue reports a run that ended with its breaker tripped and its
-// worktree dirty.
+// msgResidue reports a run that ended with its worktree dirty.
 //
 // Sent even though Orion has already fixed it, because the interesting part
 // is not the tidy-up. It is that a run stopped somewhere it could not clean
 // up after itself, and that the branch was one collect tick away from a
 // rebase that would have refused with no explanation attached to it.
-func msgTripResidue(key, summary, kind, detail, branch, dirty, issueURL, outcome string,
+//
+// A trip, where one is on record, names itself; where none is, the message
+// still goes. What paged the operator on OR-217 was the dirty worktree, and
+// the breaker flag had already self-cleared by the time anyone looked.
+func msgResidue(key, summary, kind, detail, branch, dirty, issueURL, outcome string,
 	unresolved bool) (string, string) {
 
-	title := fmt.Sprintf("%s tripped the breaker and left the worktree dirty", key)
+	title := fmt.Sprintf("%s left the worktree dirty", key)
+	if kind != "" {
+		title = fmt.Sprintf("%s tripped the breaker and left the worktree dirty", key)
+	}
 	lines := []string{
 		"*" + summary + "*",
 		"",
-		"*What tripped*",
-		quote(kind + " — " + detail),
-		"",
+	}
+	if kind != "" {
+		lines = append(lines, "*What tripped*", quote(kind+" — "+detail), "")
+	} else {
+		lines = append(lines, "*What tripped*", quote("nothing on record — the run ended holding work"), "")
+	}
+	lines = append(lines,
 		"*What it left uncommitted*",
 		quote(dirty),
 		"",
-	}
+	)
 	if unresolved {
 		lines = append(lines,
 			"Orion could *not* preserve it:",
 			quote(outcome),
 			"",
 			"Work may have been lost, and until the worktree is clean `orion collect`",
-			"cannot rebase `"+branch+"`. Open the worktree before you assume this was",
-			"an ordinary failure.",
+			"cannot rebase `"+branch+"`. Settle it with `orion settle "+key+"` — that",
+			"reports what is blocking and commits it — and open the worktree before you",
+			"assume this was an ordinary failure.",
 		)
 	} else {
+		verified := "Nothing in it has been verified"
+		if kind != "" {
+			verified = "Nothing in it has been verified — the session was stopped for not making progress"
+		}
 		lines = append(lines,
-			"Orion "+outcome+". Nothing in it has been verified — the session was stopped",
-			"for not making progress — but a branch with commits can be read and resumed,",
-			"and left uncommitted it would have blocked the next rebase of `"+branch+"`.",
-			"Anything the run committed itself is untouched.",
+			"Orion "+outcome+". "+verified+" — but a branch with commits",
+			"can be read and resumed, and left uncommitted it would have blocked the next",
+			"rebase of `"+branch+"`. Anything the run committed itself is untouched.",
 		)
 	}
 	lines = append(lines,
 		"",
 		"• branch  `"+branch+"`",
 		"• ticket  "+link(issueURL, key),
-		"• the trip is described in `plans/BLOCKED.md` on that branch",
 	)
+	if kind != "" {
+		lines = append(lines, "• the trip is described in `plans/BLOCKED.md` on that branch")
+	}
 	return title, strings.Join(lines, "\n")
 }
 
