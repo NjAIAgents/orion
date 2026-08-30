@@ -58,6 +58,7 @@ type check struct {
 func Run(w io.Writer, path string, autoFix bool) int {
 	checks := []check{
 		checkClaude(),
+		checkClaudeAuth(),
 		checkGit(),
 		checkGH(),
 		checkGHScopes(),
@@ -160,6 +161,59 @@ func checkClaude() check {
 			"The binary may be a broken install or a shim."}
 	}
 	return check{"claude CLI", ok, strings.TrimSpace(string(out)), ""}
+}
+
+// checkClaudeAuth asks the question checkClaude cannot: is the CLI SIGNED IN?
+//
+// A present-but-logged-out CLI passes every check above -- it is on PATH and
+// --version answers -- and then fails every run within five seconds, reported
+// as an exit code that names neither the cause nor the fix (OR-212). The same
+// standard OR-11 set for Jira: name which credential failed, not "auth failed".
+//
+// `claude auth status --json` is free and spends nothing, unlike a probe
+// prompt, which is what makes this affordable on every doctor run.
+func checkClaudeAuth() check {
+	p, err := exec.LookPath("claude")
+	if err != nil {
+		// checkClaude already FAILs on this; a second blocking line about the
+		// same missing binary would just be noise.
+		return check{"claude auth", warn, "claude not on PATH", ""}
+	}
+	out, err := exec.Command(p, "auth", "status", "--json").Output()
+	return claudeAuthVerdict(out, err)
+}
+
+// claudeAuthVerdict grades the CLI's own answer. Split out because the grading
+// is the part worth testing and exec is the part that is not.
+func claudeAuthVerdict(out []byte, err error) check {
+	// A CLI too old to answer, or one that errored for its own reasons, is a
+	// check that could not be made -- not a logged-out CLI. Degrade rather than
+	// block: reporting FAIL here would stop a working machine over a question
+	// nobody could answer.
+	var s struct {
+		LoggedIn   *bool  `json:"loggedIn"`
+		AuthMethod string `json:"authMethod"`
+		Email      string `json:"email"`
+	}
+	if err != nil || json.Unmarshal(out, &s) != nil || s.LoggedIn == nil {
+		return check{"claude auth", warn, "could not determine whether the CLI is signed in",
+			"`claude auth status --json` did not answer. Orion cannot tell a signed-in\n" +
+				"CLI from an expired one here; a run will say so within five seconds."}
+	}
+	if !*s.LoggedIn {
+		return check{"claude auth", fail, "the CLI is not signed in",
+			"Every run will fail immediately: the CLI is installed and has no usable\n" +
+				"login, which the binary check above cannot see.\n" +
+				"Run: claude, sign in, then re-run orion doctor."}
+	}
+	detail := "signed in"
+	if s.Email != "" {
+		detail += " as " + s.Email
+	}
+	if s.AuthMethod != "" {
+		detail += " (" + s.AuthMethod + ")"
+	}
+	return check{"claude auth", ok, detail, ""}
 }
 
 func checkGit() check {
