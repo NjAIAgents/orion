@@ -191,11 +191,32 @@ type NewOptions struct {
 	Template  string
 	FromRepo  string
 	Container bool
+	// Slug, when set, is the canonical slug that already names this work's
+	// tracker project and git repo (docs/decisions/0009), and it becomes the
+	// workspace id verbatim. Sanitised through Slugify regardless: this value
+	// arrives from a tracker project's free-text name and ends up as a path
+	// component. See New for what setting it changes.
+	Slug string
 }
 
-// New provisions a workspace. It is deliberately not idempotent: two
-// identical ideas get two workspaces, because conflating them would let
-// one task's failed state contaminate another's fresh attempt.
+// New provisions a workspace.
+//
+// WITHOUT a Slug it is deliberately not idempotent: two identical ideas get
+// two workspaces, because conflating them would let one task's failed state
+// contaminate another's fresh attempt.
+//
+// WITH one, the id IS that slug -- no random suffix -- so a given project
+// always resolves to the same workspace, and a second call for it fails on
+// the collision below rather than creating a twin. That rationale does not
+// survive the rename, and should not: an idea is free text, and two typings
+// of it are honestly two attempts. A canonical slug is derived from a tracker
+// project that is globally unique and, in Jira, cannot be deleted. Two
+// workspaces claiming one project would leave every later stage asking which
+// of them owns it and getting two answers, and would need a suffix on the
+// second -- which is the one name across tracker, filesystem and GitHub that
+// 0009 exists to keep. So the collision is refused and starting over is an
+// explicit `orion rm <id>`, which is a decision rather than an accident.
+// Recorded as docs/decisions/0012.
 func New(opts NewOptions) (*Workspace, error) {
 	idea := strings.TrimSpace(opts.Idea)
 	if idea == "" {
@@ -203,10 +224,15 @@ func New(opts NewOptions) (*Workspace, error) {
 	}
 	slug := Slugify(idea)
 	id := slug + "-" + shortID()
+	if strings.TrimSpace(opts.Slug) != "" {
+		slug = Slugify(opts.Slug)
+		id = slug
+	}
 
 	dir := filepath.Join(projectsDir(), id)
 	if _, err := os.Stat(dir); err == nil {
-		return nil, fmt.Errorf("workspace %s already exists", id)
+		return nil, fmt.Errorf("workspace %s already exists at %s.\n"+
+			"  Continue in it, or remove it and start over: orion rm %s", id, dir, id)
 	}
 
 	if _, err := EnsureHome(); err != nil {
