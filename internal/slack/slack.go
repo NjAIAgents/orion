@@ -42,6 +42,13 @@ type Client struct {
 	// botID caches this token's own user id. Looked up lazily because most
 	// commands never need it, and it costs an API call.
 	botID string
+	// members caches approver -> member id, and directory the workspace-wide
+	// name index a username lookup needs. Both lazy, both kept for the life of
+	// the client: approvers change rarely, and without them resolving a
+	// mention costs an API call per approver per message. See member.go.
+	members      map[string]memberLookup
+	directory    map[string]string
+	directoryErr error
 }
 
 // FromEnv builds a client from ORION_SLACK_TOKEN.
