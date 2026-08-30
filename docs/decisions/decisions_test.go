@@ -23,6 +23,10 @@ var expectedDecisions = []string{
 	"0008-parallelism-level-ordering.md",
 	"0009-canonical-slug-one-name.md",
 	"0010-routing-vocabulary-is-a-published-contract.md",
+	// OR-206. Load-bearing in the same way 0001 is: it decides who sequences
+	// landing, so a later "why not just turn on GitHub's merge queue?" has
+	// somewhere to land other than a re-litigation.
+	"0011-orion-owns-the-landing-queue.md",
 }
 
 func TestEveryDecisionHasContextDecisionConsequences(t *testing.T) {
@@ -101,8 +105,19 @@ func TestDecisionContentMatchesTicket(t *testing.T) {
 			[]string{"OR-134", "prompt-cache"},
 		},
 		{
+			// The amendment is the substance now: the gate FIRED, and a file
+			// that still reads as "waiting for evidence" would send the next
+			// reader looking for evidence that has already arrived (OR-206).
 			"0008-parallelism-level-ordering.md",
-			[]string{"OR-143", "OR-144", "OR-145", "auto-rebase"},
+			[]string{"OR-143", "OR-144", "OR-145", "auto-rebase", "OR-206", "landing queue"},
+		},
+		{
+			// Which option was taken and which were declined is the whole
+			// point of OR-206's record. A file that kept the sections but
+			// lost "why not GitHub's merge queue" would invite the question
+			// again on the next incident.
+			"0011-orion-owns-the-landing-queue.md",
+			[]string{"OR-206", "OR-202", "merge queue", "maxAutoRebases", "require_up_to_date"},
 		},
 		{
 			"0009-canonical-slug-one-name.md",

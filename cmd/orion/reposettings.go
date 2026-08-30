@@ -91,7 +91,12 @@ func deleteOnMergeEnabled(dir, slug string) (bool, error) {
 // Whether strict is worth its cost is the OPERATOR's call, not a fact this
 // command gets to assume: the benefit (catching a genuine semantic conflict)
 // is fixed, but the cost scales with queue depth, since strict makes every
-// merge invalidate every other open pull request. So this reads
+// merge invalidate every other open pull request. That cost is now LINEAR in
+// the depth rather than quadratic -- collect holds a landing queue and rebases
+// one branch per pass instead of all of them (OR-206,
+// docs/decisions/0011-orion-owns-the-landing-queue.md) -- but it is still a
+// cost, and turning strict off for the work branch is still a legitimate way
+// to decline it. So this reads
 // cfg.VCS.RequireUpToDate rather than hardcoding true, and states which
 // value it is applying and where that value came from -- see
 // config.VCSRequireUpToDateSource -- so the setting is visible here rather
