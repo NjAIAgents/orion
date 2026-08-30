@@ -36,6 +36,12 @@ const releaseUsage = `orion release <command>
         Create an unreleased Jira version (a milestone). Safe to re-run:
         a version that already exists is reported, not an error.
 
+  close <version> [--project KEY] [--date YYYY-MM-DD] [--force]
+        Mark a milestone released -- the last step of a release. Dates it
+        from the matching tag's commit unless --date says otherwise, and
+        refuses a milestone with unfinished tickets unless --force. Safe to
+        re-run: an already-released version is reported, not an error.
+
   list [--project KEY]
         Every version on the project, and whether it is released.
 
@@ -65,6 +71,11 @@ func releaseAction(args []string) string {
 	switch args[0] {
 	case "create":
 		return "create"
+	// `close`, not `publish`/`cut`/`ship`: those stay reserved for whatever
+	// wraps scripts/release.sh, and must not be spent on the Jira-side verb
+	// (OR-209).
+	case "close":
+		return "close"
 	case "list", "ls":
 		return "list"
 	case "status":
@@ -81,6 +92,8 @@ func runRelease(args []string) {
 	switch releaseAction(args) {
 	case "create":
 		runReleaseCreate(args[1:])
+	case "close":
+		runReleaseClose(args[1:])
 	case "list":
 		runReleaseList(args[1:])
 	case "status":
