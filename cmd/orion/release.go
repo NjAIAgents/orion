@@ -265,12 +265,14 @@ func runReleaseStatus(args []string) {
 	exitOn(err)
 	fragments, err := changelog.Load(root)
 	exitOn(err)
+	collated, err := changelog.LoadCollated(root, version)
+	exitOn(err)
 
 	tickets := make([]changelog.Ticket, 0, len(issues))
 	for _, is := range issues {
 		tickets = append(tickets, changelog.Ticket{Key: is.Key, Done: is.Resolved()})
 	}
-	r := changelog.Reconcile(version, fragments, tickets)
+	r := changelog.Reconcile(version, fragments, tickets, collated)
 
 	w := os.Stdout
 	ui.Ok(w, version, "%d ticket(s): %d done, %d not done",
@@ -281,6 +283,10 @@ func runReleaseStatus(args []string) {
 	}
 	for _, k := range r.TicketsWithoutFragment {
 		ui.Warn(w, "%s is done but has no changelog fragment; it would ship unmentioned", k)
+	}
+	for _, k := range r.TicketsNotNamedInChangelog {
+		ui.Warn(w, "%s is done and %s is already collated, but the section does not name it; "+
+			"its note may be folded into another entry", k, version)
 	}
 	for _, k := range r.FragmentsWithoutTicket {
 		ui.Warn(w, "fragment %s is not in %s; either it ships elsewhere or the ticket "+
@@ -309,6 +315,10 @@ func runReleaseStatus(args []string) {
 
 	if !r.Clean() {
 		os.Exit(1)
+	}
+	if r.Collated {
+		ui.Ok(w, "reconciled", "%s is collated into CHANGELOG.md; every done ticket has a note", version)
+		return
 	}
 	ui.Ok(w, "reconciled", "every done ticket has a fragment and every fragment has a ticket")
 }
