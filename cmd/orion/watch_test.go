@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/tracker"
+	"github.com/orion-sdlc/orion/internal/watch"
 )
 
 // OR-128: `orion watch` printed nothing at all for minutes -- no banner, no
@@ -101,6 +102,42 @@ func TestTheBannerIsPrintedBeforeAnyNetworkCall(t *testing.T) {
 				"  Anything that can block must come after the banner, or a stall in it "+
 				"prints nothing at all and looks exactly like a healthy idle watcher (OR-128).",
 				later)
+		}
+	}
+}
+
+// `orion watch` with no --interval ticks every minute (OR-218), and the
+// banner has to print that same number: the interval the banner names is the
+// operator's only statement of how long a green CI run or a merged PR waits
+// before anything acts on it.
+//
+// Zero and below mean "unset" here exactly as they do in the loop, so the
+// two can never disagree about what the watcher is doing.
+func TestTheWatchIntervalDefaultsToAMinuteAndTheBannerSaysSo(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want time.Duration
+	}{
+		{"unset", []string{"fcia"}, time.Minute},
+		{"explicit", []string{"--interval", "300", "fcia"}, 5 * time.Minute},
+		{"zero", []string{"--interval", "0"}, time.Minute},
+		{"negative", []string{"--interval", "-30"}, time.Minute},
+	} {
+		got := watchInterval(tc.args)
+		if got != tc.want {
+			t.Errorf("watchInterval(%v) = %v, want %v", tc.args, got, tc.want)
+		}
+		if got != watch.DefaultInterval && tc.want == time.Minute {
+			t.Errorf("watchInterval(%v) = %v, which is not the loop's own default %v",
+				tc.args, got, watch.DefaultInterval)
+		}
+
+		var buf bytes.Buffer
+		watchBanner(&buf, nil, got, 0, 1, "default", false)
+		if want := "interval  " + got.String(); !strings.Contains(buf.String(), want) {
+			t.Errorf("%s: the banner does not print the interval in use (%q):\n%s",
+				tc.name, want, buf.String())
 		}
 	}
 }
