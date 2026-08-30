@@ -226,6 +226,47 @@ func TestProtectionFailureNamesTheFreeOption(t *testing.T) {
 	}
 }
 
+// `orion sandbox prune` is the command that sweeps the worktrees a tripped run
+// left behind, so its own dirt check has to agree with the deletion guard --
+// otherwise it keeps a merged checkout over a note Orion wrote itself (OR-220)
+// and the backlog of stale worktrees only grows.
+func TestSandboxPruneIgnoresOrionsOwnStopNote(t *testing.T) {
+	dir := t.TempDir()
+	gitT(t, dir, "init", "--initial-branch=main")
+	gitT(t, dir, "config", "user.email", "test@example.com")
+	gitT(t, dir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, dir, "add", ".")
+	gitT(t, dir, "commit", "-m", "base")
+
+	write := func(rel, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("plans/BLOCKED.md", "the breaker tripped\n")
+	write(".orion/state/run.json", "{}\n")
+	if dirty, lines := agentDirt(dir); dirty {
+		t.Fatalf("Orion's own files counted as somebody's work: %v", lines)
+	}
+
+	write("plans/OR-1.md", "the agent's plan\n")
+	dirty, lines := agentDirt(dir)
+	if !dirty {
+		t.Fatal("a file the agent wrote was not reported")
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "OR-1.md") {
+		t.Errorf("expected only the agent's file, got %v", lines)
+	}
+}
+
 func TestBranchListIsDeduplicated(t *testing.T) {
 	// The common single-branch repo: default and work branch are both main,
 	// and protection should be applied once, not twice.
