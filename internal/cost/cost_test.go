@@ -171,7 +171,8 @@ func TestRenderStatesEveryThingTheReportPromises(t *testing.T) {
 	out := Render(Aggregate(ReadAll(ticket(t)), "OR-9"))
 
 	for _, want := range []string{
-		"Cost report — OR-9",
+		"cost report OR-9",   // named on the opening rule
+		"end of cost report", // and again on the closing one
 		"cache w", "cache r", // the pair, reported separately
 		"1,208,554", // grouped so a seven-figure count is readable
 		"$4.50",     // the total, as reported by the runner
