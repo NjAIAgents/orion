@@ -217,6 +217,60 @@ func DirtyTracked(path string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// CommitAll commits everything the worktree holds -- modified tracked files
+// AND new untracked ones -- minus the excluded pathspecs, and reports how
+// many files went in. Zero files means there was nothing to commit and no
+// commit was made.
+//
+// It exists because the alternative to committing a stopped run's work is
+// losing it. OR-189 and OR-191 both finished their implementation, both had
+// it green, and both ended with every line uncommitted: 258 and 439 lines,
+// recovered by hand. Untracked files are included deliberately -- both of
+// those runs had four NEW files each, and `git commit -a` would have left
+// exactly the new tests behind.
+//
+// The exclusions are pathspecs rather than a post-hoc `git reset`, so a file
+// that must not be committed is never staged in the first place. The caller
+// passes plans/BLOCKED.md: that note is the breaker's account of the trip,
+// written for whoever opens the worktree next, and it does not belong in the
+// branch's history.
+func CommitAll(path, message string, exclude ...string) (int, error) {
+	// Commit HERE or nowhere. git resolves a repository by walking upwards,
+	// so `git -C <dir> add -A` in a directory that is not itself a checkout
+	// stages files in whatever repository happens to be above it. The caller
+	// is a breaker hook holding a path it was handed; that is not a mistake
+	// to discover from the commit it made in somebody else's tree.
+	top, err := git(path, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return 0, fmt.Errorf("%s is not a git worktree: %w", path, err)
+	}
+	if canonPath(strings.TrimSpace(top)) != canonPath(path) {
+		return 0, fmt.Errorf("%s is not the root of its worktree (%s is)", path, strings.TrimSpace(top))
+	}
+	args := []string{"add", "-A", "--", "."}
+	for _, e := range exclude {
+		if e != "" {
+			args = append(args, ":(exclude)"+e)
+		}
+	}
+	if _, err := git(path, args...); err != nil {
+		return 0, fmt.Errorf("staging the work in %s: %w", path, err)
+	}
+	staged, err := git(path, "diff", "--cached", "--name-only")
+	if err != nil {
+		return 0, fmt.Errorf("reading the staged set in %s: %w", path, err)
+	}
+	staged = strings.TrimSpace(staged)
+	if staged == "" {
+		return 0, nil
+	}
+	n := len(strings.Split(staged, "\n"))
+	if _, err := git(path, "commit", "-q", "-m", message); err != nil {
+		return 0, fmt.Errorf("committing %d file(s) in %s: %w", n, path, err)
+	}
+	return n, nil
+}
+
 // RevertTracked discards uncommitted changes to tracked files, staged or not.
 //
 // `git checkout -- .` is not enough: a change that was staged and never
