@@ -152,6 +152,38 @@ func TestRunStartSaysNoMCPServersRatherThanStayingSilent(t *testing.T) {
 	}
 }
 
+// An unreported toolset (an older CLI that never sends "tools" on its init
+// frame) must read as "not reported", never as "no MCP servers": those are
+// two different facts, and the latter is a claim this code has no evidence
+// for when Tools is zero because nothing was said, not because nothing was
+// given.
+func TestRunStartWithNoToolsetReportedDoesNotClaimNoMCPServers(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := events.Open(logPath, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var console strings.Builder
+	ActivityLogger(log, &console, "OR-213", events.ActorImplementer)(
+		supervisor.Activity{Kind: "start", Model: "opus"}) // Tools left zero: unreported
+	log.Close()
+
+	logged, err := events.Read(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logged) != 1 {
+		t.Fatalf("events = %+v, want one", logged)
+	}
+	if strings.Contains(logged[0].Msg, "no MCP servers") {
+		t.Errorf("msg = %q, an unreported toolset must not be rendered as a claim of no MCP servers", logged[0].Msg)
+	}
+	if !strings.Contains(logged[0].Msg, "not reported") {
+		t.Errorf("msg = %q, want it to say the toolset was not reported", logged[0].Msg)
+	}
+}
+
 func TestActivityLoggerEmitsSayOnText(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "events.jsonl")
 	log, err := events.Open(logPath, events.Event{})
