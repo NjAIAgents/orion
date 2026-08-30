@@ -61,6 +61,46 @@ Three things this is not:
 - **Not a shell.** `git status; anything` is refused, along with every other
   compound command.
 
+## Waiting for a long command is not looping
+
+A read of a file you are **waiting on** is not counted by the identical-repeat
+breaker. Three things make a call a wait rather than a repeat:
+
+- asking a background task for its output;
+- reading a file a background command of yours was told to write, even while
+  it is still empty;
+- a read that returns something **different** from the last identical one.
+
+Everything else still counts. Re-reading a file nothing is writing is the loop
+this breaker exists to catch, and the exemption does not touch it.
+
+This is OR-124's precedent applied again: a passing verify was exempted
+because the normal working cycle was being counted as a loop. OR-189 and
+OR-191 hit the same shape from the other side — the suite took nine minutes,
+the only way to wait was to re-read its output file, and from the breaker's
+side that is the *same action* as looping. Both runs finished their work, had
+it green, and died with every line uncommitted.
+
+**Still prefer the foreground.** One Bash call that waits several minutes is
+one tool call, and waiting is free. The exemption exists so that a wait is not
+punished, not because polling is the better shape.
+
+## The work you were holding is committed for you
+
+When a breaker with no way out trips, whatever the worktree holds —
+modified files and new ones — is committed on the spot, as a `wip:` snapshot,
+before you get another turn. `plans/BLOCKED.md` is excluded: it is the account
+of the trip, not part of the change.
+
+The commit message says the work is unverified, because it is: the session was
+stopped for not making progress. It is preserved for a person to read, not
+blessed. Nothing in the allowance is spent on it, and the block message tells
+you what actually happened to it — including when the commit failed.
+
+`breaker/unverified-edits` does **not** snapshot. It is the one trip with a
+designed way out, and a `wip:` commit in the middle of a run that then
+succeeds is noise in somebody's pull request.
+
 ## The stop-note is written for you
 
 `plans/BLOCKED.md` is now appended **by the breaker, at the moment it trips**.
@@ -87,12 +127,20 @@ killed on the turn ceiling, or one whose last act was the call that tripped,
 has no such moment — and OR-192 was rescued only because a later stage
 happened to exist and happened to read the note.
 
-So when a **run** ends with a breaker tripped and the worktree holding
-uncommitted **tracked** changes, Orion reverts them and says so, in the run
-output and to the operator's channel. Commits are untouched; untracked files
-are left alone, matching what `orion collect` tolerates before a rebase.
-Silently leaving the residue is the one option that is not available: the
-next thing to touch that branch is a rebase that refuses on a dirty tree.
+So when a **run** ends with a breaker tripped and the worktree still holding
+uncommitted changes, Orion commits them as the same `wip:` snapshot — and
+says so in the run output, **on the ticket**, and to the operator's channel.
+Only if that commit fails does it revert, and it says that too, in those
+words: a dirty worktree makes the next rebase of the branch refuse, so
+leaving the residue is the one option that helps nobody.
+
+Reverting used to be unconditional, on the reasoning that a trip's residue is
+unverified. True, and it cost OR-189 and OR-191 258 and 439 lines of finished,
+green work between them. Unverified work on a branch can be read, resumed or
+dropped by a person; reverted work cannot be anything.
+
+The ticket carries it because both of those runs "looked like ordinary
+failures until someone opened the worktree".
 
 ## What a human should do
 
