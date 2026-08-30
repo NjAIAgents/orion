@@ -6,6 +6,211 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.8.2
+
+### Added
+
+- `orion plan <KEY>` takes a tracker project that has already been provisioned
+  and sets up the design phase around it. It reads the project's name and
+  description back from the tracker rather than re-deriving them from the
+  original idea, provisions the workspace as its first action — so nothing
+  downstream has to write anywhere but an isolated tree — and only then
+  announces the four stages it would run, who runs each, and what the chain is
+  expected to cost. It stops there: this release dispatches nothing.
+- The workspace, the git repo and the tracker project now share one name.
+  `orion plan` derives a single canonical slug from the project's finalised
+  name and uses it for the workspace directory and the repo; the Jira key keeps
+  its own derivation, because Jira's key charset could not hold the slug
+  anyway. A person moving between the tracker, the filesystem and GitHub sees
+  the same name in all three instead of needing a mapping between them.
+- `orion plan --dry-run` prints the project, the workspace it would create, the
+  roster and the cost shape, and creates nothing — not a workspace, not a
+  branch, not an agent call.
+- The per-run cost estimate is measured from the runs actually recorded in the
+  rolling seven-day window. With no history it says there is nothing to
+  estimate from rather than showing a figure derived from no data.
+
+- `orion aiops <KEY>` reads a **finished** run's event log and reports what is
+  worth filing, as a triage report plus draft tickets. It proposes; it never
+  creates anything. Most detection is rules over typed events — an exhausted
+  fix loop, QA finishing without a verdict, a rate-limit status this build does
+  not recognise, a question the log never answers, a run that failed and stayed
+  failed — so it costs nothing and cannot invent a problem. A subagent is
+  started only for the leftovers no rule recognised, and not at all when there
+  are none. Findings already tracked by an open ticket are not proposed again,
+  and the report says plainly when the dedupe was incomplete. Pass `--no-agent`
+  for rules only.
+- A new agent in the roster, the AIOps engineer, configurable through
+  `orion config agents` like every other actor.
+
+- `orion collect` now holds a landing queue. When several branches are behind
+  their base at once — which is what one merge into a strict base does to every
+  other open pull request — exactly one is rebased per pass and the rest hold,
+  costing them no force-push, no CI re-run and none of their rebase allowance.
+  The turn goes to whichever branch has been behind longest, so waiting earns a
+  branch its place instead of costing it one.
+
+- A way to wait. The ticket prompt now states how to sit out a long command —
+  run the suite in the foreground with a generous timeout, do not background it
+  and re-read its output file — because the two runs lost to that reached for
+  polling only because nothing had ever told them another option existed.
+- Work the run was holding when a breaker tripped is committed on the spot, as
+  a `wip:` snapshot marked unverified, before the agent gets another turn.
+  Modified files and new ones both, since a run's new test files are exactly
+  what `git commit -a` would leave behind. `plans/BLOCKED.md` is excluded: it is
+  the account of the trip, not part of the change.
+
+- `orion release close <version>` marks a milestone released, which was the one
+  step of a release that had to be done outside Orion — by hand, against the
+  Jira REST API, with the operator's own credentials. It is named `close` rather
+  than `publish` because `publish`, `cut` and `ship` stay reserved for the verb
+  that would cut a binary. Safe to re-run: an already-released version is
+  reported, not an error.
+- The milestone is dated from the matching tag's commit rather than from the day
+  you got round to closing it, so a version closed the morning after it shipped
+  is not stamped with a day on which nothing was released. `--date YYYY-MM-DD`
+  overrides.
+- Closing a milestone that still holds unfinished tickets is refused, and the
+  tickets are named. `--force` closes it anyway and says which ones it went past.
+
+### Changed
+
+- `orion new "<idea>"` is now the interactive front half of the flow: it
+  interviews you about the idea — who it is for, what is wrong today, what
+  success looks like, what is out of scope, what constrains it — has you
+  finalise the project name, and creates the tracker project carrying that
+  elaborated description. `orion plan <KEY>` then reads that description back
+  as the statement of the work. A question you leave blank is recorded in the
+  description as unstated rather than dropped, so a later stage can tell
+  "nobody decided this" from "this does not apply".
+- Creating the project goes through the same describe-then-confirm gate
+  `orion init` uses, which says that a Jira project cannot be deleted without
+  admin rights before it asks.
+- A tracker project's description is now the one you wrote. It was previously
+  the fixed string "Provisioned by Orion.", which is what `orion plan` was
+  designing from.
+
+- A tracker project now maps to exactly one workspace. A second `orion plan` on
+  the same key refuses and names the existing workspace, rather than reusing it
+  (which would carry a failed attempt's state into a fresh one) or creating a
+  suffixed twin (which would mean two filesystem names for one project). To
+  start over, remove the workspace explicitly with `orion rm <id>`. This changes
+  nothing for `orion new "<idea>"`: two identical ideas still get two
+  workspaces, because two typings of an idea are honestly two attempts.
+- An unacknowledged budget checkpoint stops `orion plan` before it hands off to
+  any dispatch, and says so. The workspace is still provisioned first, since
+  creating a directory spends nothing — so acknowledging the checkpoint and
+  re-running picks up where it stopped.
+
+- The identical-repeat breaker no longer counts a wait as a loop. A read of a
+  file a background command of yours is writing — even while it is still empty
+  — an ask for a background task's output, and a read that returns something
+  different from last time are all exempt. Re-reading a file nothing is writing
+  still trips, unchanged: the fix makes the correct behaviour available rather
+  than weakening the trip.
+- A run that ends with its breaker tripped and uncommitted work now says so on
+  the **ticket**, not only in the run output and the operator's channel, naming
+  how many files it was holding and what became of them. Two tickets that ended
+  this way read as ordinary failures until someone opened the worktree.
+- Orion commits a tripped run's leftover changes instead of reverting them, and
+  reverts only if the commit fails. Unverified work on a branch can be read,
+  resumed or dropped by a person; reverted work cannot be anything.
+
+- `orion watch` now ticks every 1 minute by default instead of every 2. The
+  tick is what Orion waits on for anything it notices rather than causes — a
+  green CI run, a merged PR, an approval, a newly queued ticket — so those now
+  wait an average of 30 seconds rather than a minute. A tick is one tracker
+  query and one PR status check: it starts no agent and spends no tokens, so
+  this costs cheap polling and nothing else. `--interval S` is unchanged, and
+  `--interval 0` (or a negative value) still means the default.
+
+- The cost report is rendered as one visually bounded block, with an opening
+  and closing rule that names it in plain words, so it can be told apart from
+  the line-by-line output around it in a concurrent log. Both rules degrade to
+  ASCII under `NO_COLOR` and on a non-UTF-8 locale, and carry no colour at all
+  — the same report text goes to the terminal and to the tracker comment.
+
+### Removed
+
+- `orion new` no longer provisions a workspace, and no longer runs the intent
+  conversation. `orion plan <KEY>` provisions the one workspace a tracker
+  project gets, and now creates its Slack channel too. Recorded as
+  `docs/decisions/0013`.
+- `orion new --from`, `--template` and `--container` shaped that workspace and
+  are now refused rather than silently ignored. Cloning an existing repository
+  into a workspace has no front door until `orion plan` grows one; adopting
+  Orion inside a checkout with `orion init` is unaffected.
+
+### Fixed
+
+- A QA run that verified everything and said so in prose is no longer sent
+  back to the developer as findings. The `QA CLEAN` sentinel still decides a
+  pass, unchanged — but a closing message that names neither the sentinel nor
+  a failure is now an unknown verdict rather than a defect report, and Orion
+  asks QA once more for a verdict line instead of dispatching a fix round on
+  a verdict it does not have. The re-ask is one short turn on QA's own model
+  and resumes its session, so it cannot damage a clean branch.
+- When the re-ask still produces no verdict, the run escalates to a person and
+  says the verdict was never obtained. It previously reported findings — the
+  implementer was told to fix a defect nobody had described, and the cheapest
+  way to satisfy that instruction is to weaken the nearest assertion, which
+  makes CI greener rather than redder.
+
+- Concurrent tickets no longer starve the longest-open branches. Rebasing every
+  behind branch on the same pass grew with the square of the queue depth, and at
+  `max_concurrent_tickets = 2` that was already enough to exhaust
+  `collect.auto_rebase`'s two-rebase allowance on the two branches that had been
+  open longest and hand them to a person. `maxAutoRebases` is unchanged and
+  still bounds a runaway loop; a branch whose checks are green and whose base
+  has not moved still lands immediately.
+- A branch handed to a person is announced once rather than on every poll. The
+  staleness warning and its three rebase commands were reprinted in full every
+  couple of minutes for branches nobody had touched; now later polls say only
+  that the branch is still behind and still theirs, and speak up again as soon
+  as it moves.
+
+- The locale-sensitive UI tests now state the locale instead of inheriting it.
+  Three of them set only `LANG`, but `utf8Locale` reads `LC_ALL`, then
+  `LC_CTYPE`, then `LANG` in POSIX precedence order and returns on the first
+  one that is SET, so on a runner exporting a higher-precedence variable the
+  test's own setting never reached the decision. They passed by luck rather
+  than by construction. The identical mistake in the stage renderer's
+  ASCII-degradation test failed only on macOS, where the runner exports
+  `LC_CTYPE`, after passing locally and on Linux. All four now set the whole
+  locale, so the test decides the result rather than the machine it runs on.
+
+- The cost report no longer loses the usage of long runs. With
+  `--output-format stream-json` the runner keeps emitting background-task
+  frames after its own result frame, and the parser took the last JSON object
+  on the stream rather than the result — so any run long enough to spawn
+  background work reported zero turns and zero cost while short runs reported
+  correctly. The report for OR-168 said $1.03 across six runs; the single
+  implementer run it had dropped cost $13.40 on its own. The same
+  mis-selection was silently taking a **subagent's** session id as the run's,
+  which would have resumed the wrong conversation.
+- A run that never started is now counted apart from a run that failed. An
+  expired login makes the runner exit in seconds having opened no session and
+  spent nothing; it used to appear as an ordinary failed run, inflating both
+  the run count and the failure count, and it tripped the missing-usage floor
+  warning over a run whose true cost is known to be zero.
+
+- Pruning a worktree no longer refuses over `plans/BLOCKED.md`. The breaker
+  writes that note when it trips, and it is untracked by design, so the
+  deletion guard counted it as the operator's uncommitted work and kept the
+  checkout of every tripped run — forever, since a file that is never tracked
+  can never be committed away. Orion now recognises its own artefacts by name
+  (`plans/BLOCKED.md` and `.orion/`) and does not count them as a reason to
+  keep a merged worktree. Anything else untracked, and any change to a tracked
+  file, still keeps the worktree exactly as before.
+- `orion sandbox` reports uncommitted work using the same rule the deletion
+  guard applies, so a worktree it lists as clean is one prune can actually
+  remove. Both now ask git for untracked FILES rather than directories: a
+  wholly untracked `plans/` was reported as a single `?? plans/` entry, which
+  can be neither recognised as Orion's own nor safely ignored.
+- Worktrees already stranded by this are swept with `orion sandbox prune`
+  (`--dry-run` first to see the verdicts); the fix prevents new ones but
+  removes nothing on its own.
+
 ## v0.8.1
 
 ### Added
