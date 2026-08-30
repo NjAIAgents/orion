@@ -1495,6 +1495,197 @@ func TestQACommitsATestThatIsStillFailingAtTheRoundCeiling(t *testing.T) {
 	}
 }
 
+// A QA run that wrote nothing has nothing for the pull request to carry, and
+// commitQAWork must not manufacture an empty commit to mark that it ran.
+func TestQAWithNoTestFilesMakesNoCommit(t *testing.T) {
+	repo, baseSHA := qaRepo(t, "#!/bin/sh\nexit 0\n")
+	ws := &workspace.Workspace{RepoPath: repo}
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+
+	var out strings.Builder
+	outcome := runQA(qaJob{Key: "FCIA-6", WS: ws, BaseSHA: baseSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out)
+	if !outcome.Clean {
+		t.Fatalf("outcome = %+v", outcome)
+	}
+	if head := git(t, repo, "rev-parse", "HEAD"); head != baseSHA {
+		t.Errorf("HEAD moved with nothing for QA to commit: %s -> %s", baseSHA, head)
+	}
+	if strings.Contains(out.String(), "committed") {
+		t.Errorf("claimed a commit when nothing was written:\n%s", out.String())
+	}
+}
+
+// Distinct from a brand-new untracked file: an edit to a file the branch
+// already tracks (QA correcting its own earlier test, say) must also reach
+// the commit, since `git add -A` covers modified tracked files as much as
+// new ones.
+func TestQAsEditToAnAlreadyTrackedTestFileIsCommitted(t *testing.T) {
+	repo, baseSHA := qaRepo(t, "#!/bin/sh\nexit 0\n")
+	writeExec(t, repo, "existing_test.go", "package fake\n// v1\n")
+	git(t, repo, "add", "existing_test.go")
+	git(t, repo, "commit", "-q", "-m", "seed an existing test")
+	baseSHA = git(t, repo, "rev-parse", "HEAD")
+
+	ws := &workspace.Workspace{RepoPath: repo}
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		writeExec(t, w.RepoDir(), "existing_test.go", "package fake\n// v2\n")
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+
+	var out strings.Builder
+	runQA(qaJob{Key: "FCIA-6", WS: ws, BaseSHA: baseSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out)
+
+	content := git(t, repo, "show", "HEAD:existing_test.go")
+	if !strings.Contains(content, "v2") {
+		t.Errorf("the edit to an already-tracked test file was not committed, HEAD holds:\n%s", content)
+	}
+	if dirty := git(t, repo, "status", "--porcelain"); dirty != "" {
+		t.Errorf("the worktree is dirty after committing a tracked edit:\n%s", dirty)
+	}
+}
+
+// commitQAWork's own comment is explicit that a failure here is a warning,
+// never a failed run -- the change QA verified is still good even when the
+// record of QA's own work could not be written (e.g. permission denied).
+func TestCommitFailureIsLoggedAsAWarningNotAFailedRun(t *testing.T) {
+	repo, baseSHA := qaRepo(t, "#!/bin/sh\nexit 0\n")
+	ws := &workspace.Workspace{RepoPath: repo}
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		writeExec(t, w.RepoDir(), "blocked_test.go", "package fake\n")
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+
+	gitDir := filepath.Join(repo, ".git")
+	if err := os.Chmod(gitDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(gitDir, 0o755)
+
+	var out strings.Builder
+	outcome := runQA(qaJob{Key: "FCIA-6", WS: ws, BaseSHA: baseSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out)
+
+	if !outcome.Clean {
+		t.Fatalf("a commit failure must not turn a clean QA run into a failed one: %+v", outcome)
+	}
+	if !strings.Contains(out.String(), "could not commit") {
+		t.Errorf("the commit failure was not reported on the console:\n%s", out.String())
+	}
+}
+
+// Everything after the QA stage reads commits, so QA's commit has to sit
+// directly on the HEAD that existed before the stage started -- not behind
+// other history the stage happened to pick up, and not squashed away.
+func TestQACommitIsADirectChildOfThePreQAHead(t *testing.T) {
+	repo, baseSHA := qaRepo(t, "#!/bin/sh\nexit 0\n")
+	ws := &workspace.Workspace{RepoPath: repo}
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		writeExec(t, w.RepoDir(), "child_test.go", "package fake\n")
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+	var out strings.Builder
+	runQA(qaJob{Key: "FCIA-6", WS: ws, BaseSHA: baseSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out)
+
+	if parent := git(t, repo, "rev-parse", "HEAD^"); parent != baseSHA {
+		t.Errorf("QA's commit parent = %s, want the pre-QA HEAD %s", parent, baseSHA)
+	}
+	if n := git(t, repo, "rev-list", "--count", baseSHA+"..HEAD"); n != "1" {
+		t.Errorf("expected exactly one commit ahead of the pre-QA HEAD, got %s", n)
+	}
+}
+
+// The message is what a reviewer reading `git log` sees, and it has to
+// answer the question that commit raises on sight: who wrote this, and is a
+// red test here a broken branch or the correct outcome.
+func TestQACommitMessageNamesTheTicketAndOrionAndWarnsOfFailure(t *testing.T) {
+	repo, baseSHA := qaRepo(t, "#!/bin/sh\nexit 0\n")
+	ws := &workspace.Workspace{RepoPath: repo}
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		writeExec(t, w.RepoDir(), "msg_test.go", "package fake\n")
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+	var out strings.Builder
+	runQA(qaJob{Key: "OR-234", WS: ws, BaseSHA: baseSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out)
+
+	msg := git(t, repo, "log", "-1", "--format=%B")
+	if !strings.Contains(msg, "OR-234") {
+		t.Errorf("the commit message does not name the ticket:\n%s", msg)
+	}
+	if !strings.Contains(msg, "Orion") {
+		t.Errorf("the commit message does not say Orion made the commit, not QA:\n%s", msg)
+	}
+	if !strings.Contains(strings.ToLower(msg), "fail") {
+		t.Errorf("the commit message does not warn the tests inside may be failing:\n%s", msg)
+	}
+}
+
+// QA's files often land in more than one package. The pull request and
+// red-before-green both read commits, not directories, so files from
+// different directories in the same round must still land in the one commit.
+func TestQAsTestsAcrossMultipleDirectoriesAreCommittedTogether(t *testing.T) {
+	repo, baseSHA := qaRepo(t, "#!/bin/sh\nexit 0\n")
+	ws := &workspace.Workspace{RepoPath: repo}
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		writeExec(t, w.RepoDir(), "pkg/a/a_test.go", "package a\n")
+		writeExec(t, w.RepoDir(), "pkg/b/b_test.go", "package b\n")
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+	var out strings.Builder
+	runQA(qaJob{Key: "FCIA-6", WS: ws, BaseSHA: baseSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out)
+
+	tracked := committedAtHEAD(t, repo)
+	for _, f := range []string{"pkg/a/a_test.go", "pkg/b/b_test.go"} {
+		if !strings.Contains(tracked, f) {
+			t.Errorf("%s is not committed; HEAD holds:\n%s", f, tracked)
+		}
+	}
+	if n := git(t, repo, "rev-list", "--count", baseSHA+"..HEAD"); n != "1" {
+		t.Errorf("expected the two directories' files in one commit, got %s commits", n)
+	}
+}
+
+// A test QA wrote in round 1 must not be lost by the time round 2 ends
+// clean -- the commit happens once, after every round, over everything the
+// worktree still holds.
+func TestFilesFromAnEarlierRoundSurviveALaterRound(t *testing.T) {
+	repo, baseSHA := qaRepo(t, "#!/bin/sh\nexit 0\n")
+	ws := &workspace.Workspace{RepoPath: repo}
+	round := 0
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		if o.Stage != "qa" {
+			return &supervisor.Result{ExitCode: 0, SessionID: "impl-1"}, nil
+		}
+		round++
+		if round == 1 {
+			writeExec(t, w.RepoDir(), "round1_test.go", "package fake\n")
+			return &supervisor.Result{ExitCode: 0, SessionID: "qa-1",
+				Final: "case X fails."}, nil
+		}
+		writeExec(t, w.RepoDir(), "round2_test.go", "package fake\n")
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+
+	var out strings.Builder
+	outcome := runQA(qaJob{Key: "FCIA-6", WS: ws, BaseSHA: baseSHA},
+		config.Config{QA: config.QA{MaxRounds: 2}}, Options{}, Deps{Supervise: sup}, nil, &out)
+	if !outcome.Clean {
+		t.Fatalf("outcome = %+v", outcome)
+	}
+	tracked := committedAtHEAD(t, repo)
+	for _, f := range []string{"round1_test.go", "round2_test.go"} {
+		if !strings.Contains(tracked, f) {
+			t.Errorf("%s from an earlier round is missing once QA went clean; HEAD holds:\n%s", f, tracked)
+		}
+	}
+}
+
 // The sentinel decides the verdict, and only when it starts a line. An agent
 // that quotes its own instructions must not declare a clean branch by
 // describing one.
