@@ -227,7 +227,50 @@ func behind(res Result, key string, pass []string, pr PR, branch string, cfg con
 // push that landed in between then aborts the push instead of being destroyed
 // by it, which is the entire reason the lease is here.
 func rebaseOnto(dir, base, branch, head string) error {
-	if dir == "" || base == "" || branch == "" || head == "" {
+	if head == "" {
+		return errors.New("not enough is known about the branch to rebase it")
+	}
+	if err := rebaseLocal(dir, base, branch); err != nil {
+		return err
+	}
+
+	lease := "--force-with-lease=refs/heads/" + branch + ":" + head
+	if err := gitQuiet(dir, "push", lease, "origin", "HEAD:refs/heads/"+branch); err != nil {
+		// The lease held somebody else's push, or the push failed for its own
+		// reasons. Either way the remote is untouched, so put the local branch
+		// back too -- a half-applied rebase that only exists locally is a
+		// worse thing to leave behind than the staleness this was fixing.
+		_ = gitQuiet(dir, "reset", "--hard", "ORIG_HEAD")
+		return fmt.Errorf("pushing the rebased %s (the lease on %s may have been broken "+
+			"by a push that landed in between): %w", branch, head[:min(len(head), 8)], err)
+	}
+	return nil
+}
+
+// errRebaseConflict marks the one failure a person has to resolve.
+//
+// Every other way rebaseLocal can refuse -- an unreachable remote, a dirty
+// worktree, the wrong branch checked out -- is a circumstance, and the caller
+// carries on without the rebase. A conflict is a decision, and the caller has
+// to say so and print the commands. The two are told apart here rather than by
+// matching on the error text, which would break the first time git reworded
+// itself.
+var errRebaseConflict = errors.New("the rebase does not apply cleanly")
+
+// rebaseLocal replays branch onto the fetched tip of its base, touching
+// nothing on the remote, or changes nothing at all.
+//
+// The local half of rebaseOnto, split out so the pre-push path (OR-227) can
+// replay a branch that has never been pushed and therefore has no lease to
+// push under. One rebase, two callers: a second implementation would be a
+// second set of refusals to keep in step.
+//
+// Every step is refused rather than forced when its precondition does not
+// hold. A dirty worktree means somebody is working in it; a branch that is
+// not the one checked out means this is not the directory that owns it; a
+// rebase that stops is aborted, restoring the branch exactly.
+func rebaseLocal(dir, base, branch string) error {
+	if dir == "" || base == "" || branch == "" {
 		return errors.New("not enough is known about the branch to rebase it")
 	}
 	if err := gitQuiet(dir, "fetch", "--quiet", "origin"); err != nil {
@@ -252,24 +295,21 @@ func rebaseOnto(dir, base, branch, head string) error {
 	if dirty != "" {
 		return fmt.Errorf("%s has uncommitted changes", dir)
 	}
+	// Proved before the rebase is attempted so that a base git cannot resolve
+	// reports itself as what it is. Without this, "invalid upstream" comes
+	// back through the same door as a real overlap and a person is told to
+	// resolve a conflict that does not exist.
+	if err := gitQuiet(dir, "rev-parse", "--verify", "--quiet", "origin/"+base); err != nil {
+		return fmt.Errorf("origin/%s is not a branch this clone knows", base)
+	}
 
 	if err := gitQuiet(dir, "rebase", "origin/"+base); err != nil {
 		// A stopped rebase leaves the worktree mid-operation, which is the
 		// one state a person must never be handed by a tool that was trying
 		// to help. Abort puts the branch back exactly where it was.
 		_ = gitQuiet(dir, "rebase", "--abort")
-		return fmt.Errorf("replaying %s onto origin/%s: %w", branch, base, err)
-	}
-
-	lease := "--force-with-lease=refs/heads/" + branch + ":" + head
-	if err := gitQuiet(dir, "push", lease, "origin", "HEAD:refs/heads/"+branch); err != nil {
-		// The lease held somebody else's push, or the push failed for its own
-		// reasons. Either way the remote is untouched, so put the local branch
-		// back too -- a half-applied rebase that only exists locally is a
-		// worse thing to leave behind than the staleness this was fixing.
-		_ = gitQuiet(dir, "reset", "--hard", "ORIG_HEAD")
-		return fmt.Errorf("pushing the rebased %s (the lease on %s may have been broken "+
-			"by a push that landed in between): %w", branch, head[:min(len(head), 8)], err)
+		return fmt.Errorf("replaying %s onto origin/%s: %w: %v",
+			branch, base, errRebaseConflict, err)
 	}
 	return nil
 }
