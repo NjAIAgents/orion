@@ -464,7 +464,11 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// breaker stops the agent from looping and, by the time it fires, from
 	// acting at all, so the tidy-up cannot be the agent's job (OR-194).
 	defer func() {
-		revertTripResidue(job.Path, job.Branch, key, issue.Summary, issue.URL, cfg, ws, log, w)
+		failed := res.Outcome == OutcomeFailed || res.Outcome == OutcomeBlocked
+		settleTripResidue(job.Path, job.Branch, key, issue.Summary, issue.URL, failed, cfg, ws,
+			func(body string) error {
+				return deps.Jira.Comment(key, actors.Comment(events.ActorOrion, body))
+			}, log, w)
 	}()
 
 	log.Emitf(events.KindBranch, events.ActorOrion, "branch %s from %s", job.Branch, cfg.VCS.WorkBranch)
