@@ -228,6 +228,59 @@ func TestPipedListingHasNoEscapeCodesAndIsStillUnambiguous(t *testing.T) {
 	}
 }
 
+// NO_COLOR is the cross-tool convention this listing has to honour like
+// every other ui surface -- and, per enabled()'s own doc comment, it wins
+// even over an explicit CLICOLOR_FORCE. A regression that swapped ui.Dim /
+// ui.Identity for a raw escape code in listAgents would slip past every
+// other test in this file, because they all disable colour with
+// CLICOLOR_FORCE=0 rather than NO_COLOR.
+func TestNoColorSuppressesColourInTheRosterEvenOverAnExplicitForce(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("CLICOLOR_FORCE", "1")
+	got := listed(t, nil)
+
+	if strings.Contains(got, "\x1b[") {
+		t.Fatalf("NO_COLOR did not suppress colour in the roster listing, even though "+
+			"CLICOLOR_FORCE=1 was also set:\n%q", got)
+	}
+}
+
+// Only the id and name columns are painted, from the non-semantic palette.
+// A row where designation/model/effort/overridden pick up ANY escape code --
+// not just a semantic one -- has drifted from "two identity columns,
+// nothing else" even if it never collides with green/red/yellow.
+func TestOnlyTheIdentityColumnsCarryColour(t *testing.T) {
+	t.Setenv("CLICOLOR_FORCE", "1")
+	got := listed(t, nil)
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatal("CLICOLOR_FORCE produced no colour at all, so the rest of this test proves nothing")
+	}
+
+	// rosterLine assumes an uncoloured line start, which does not hold once
+	// CLICOLOR_FORCE paints the id cell -- so find the row by the pair only
+	// this actor has: the id must lead the first painted cell and the name
+	// must lead the second.
+	name := shipped(t, events.ActorImplementer).Name
+	var row string
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "m"+events.ActorImplementer+"\x1b") && strings.Contains(line, name) {
+			row = line
+			break
+		}
+	}
+	if row == "" {
+		t.Fatalf("no row for %q in:\n%s", events.ActorImplementer, got)
+	}
+	parts := strings.SplitN(row, "\x1b[0m", 3)
+	if len(parts) < 3 {
+		t.Fatalf("implementer row has fewer than two painted cells (id, name): %q", row)
+	}
+	rest := parts[2]
+	if strings.Contains(rest, "\x1b[") {
+		t.Errorf("implementer row paints something past the id and name columns:\n%q", row)
+	}
+}
+
 // Green, red and yellow mean outcome everywhere else in this output. An
 // agent name in red reads as broken and a model in red reads as failing,
 // whatever the column header claims -- so identities are painted from the
