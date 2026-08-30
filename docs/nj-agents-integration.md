@@ -65,6 +65,29 @@ Running the deep pass on every change would be safer and would also make
 Orion too expensive to use, which ends with people turning it off. Tiering is
 the honest compromise.
 
+## How the skills reach the agent
+
+Not by the agent inheriting whoever is running Orion. A supervised run gets a
+config directory Orion builds at `$ORION_HOME/agent-config`, populated with
+the nj-agents skills and agents from the discovered checkout and nothing else,
+and pointed at with `CLAUDE_CONFIG_DIR`. `--strict-mcp-config` is passed with
+no `--mcp-config` beside it, so the run gets no MCP servers at all.
+
+Before this, a run inherited the operator's whole Claude Code configuration —
+179 tools on a measured run, 148 of them MCP tools with write access to
+whatever accounts were connected that day. `docs/decisions/0014` has the
+reasoning, including why the tracker's own MCP is not in the curated set.
+
+Two things follow for anyone extending the integration:
+
+- A skill Orion invokes has to be in the nj-agents checkout `orion doctor`
+  finds. Installing it into your own `~/.claude` no longer makes it visible to
+  a run.
+- `delegation.inherit_operator_config` in `orion.json` lists stages or actors
+  that get your own configuration instead, plugins and MCP servers included.
+  Empty by default, and the event log names the opt-in on any run that uses
+  one.
+
 ## The contract conflict, resolved
 
 nj-agents' founding rule is that **the human decides what gets committed**.

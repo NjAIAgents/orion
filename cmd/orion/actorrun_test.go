@@ -169,7 +169,31 @@ func fakeClaude(t *testing.T) (argsFile string) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// The describer builds its own curated config directory under ORION_HOME
+	// (OR-213), and reads the operator's home to discover nj-agents. Both are
+	// redirected so a unit test writes nothing into the real one and asserts
+	// nothing about whatever the developer happens to have installed.
+	t.Setenv("ORION_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	return argsFile
+}
+
+// The describer builds its own argv rather than going through
+// internal/supervisor, so it needs the same curation -- and would otherwise
+// keep the write handle to the tracker that OR-213 exists to remove.
+func TestTheDescriberGetsNoMCPServers(t *testing.T) {
+	argsFile := fakeClaude(t)
+
+	if _, err := describeRunner(t.TempDir(), "", "", "describe it"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "--strict-mcp-config") {
+		t.Errorf("describe invocation missing --strict-mcp-config, got: %q", got)
+	}
 }
 
 func TestTheDescriberPassesItsModelAndEffortToClaude(t *testing.T) {

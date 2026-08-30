@@ -208,3 +208,38 @@ func TestNoUsageMeansNoClaim(t *testing.T) {
 		t.Errorf("peak=%d window=%d; both must stay zero when nothing was reported", peak, window)
 	}
 }
+
+// What a run was GIVEN is read off the CLI's own init frame, never inferred
+// from the flags Orion passed. The flags are a request; this line is the
+// answer, and it is the only honest way to check that curating the config
+// directory did what it claims (OR-213).
+func TestTheInitFrameReportsTheToolsetTheRunWasGiven(t *testing.T) {
+	got := collect(t, "/repo",
+		`{"type":"system","subtype":"init","session_id":"s1","model":"opus",`+
+			`"tools":["Read","Edit","Bash"],`+
+			`"mcp_servers":[{"name":"atlassian","status":"connected"}]}`)
+
+	if len(got) != 1 || got[0].Kind != "start" {
+		t.Fatalf("want one start activity, got %+v", got)
+	}
+	if got[0].Tools != 3 {
+		t.Errorf("Tools = %d, want 3", got[0].Tools)
+	}
+	if len(got[0].MCPServers) != 1 || got[0].MCPServers[0] != "atlassian" {
+		t.Errorf("MCPServers = %v, want [atlassian]", got[0].MCPServers)
+	}
+}
+
+// A CLI that does not report either must leave both empty rather than have
+// its silence recorded as "no MCP servers": the whole point of measuring is
+// that nothing is asserted.
+func TestAnInitFrameWithoutAToolsetClaimsNothing(t *testing.T) {
+	got := collect(t, "/repo", initLine)
+
+	if len(got) != 1 {
+		t.Fatalf("want one start activity, got %+v", got)
+	}
+	if got[0].MCPServers != nil {
+		t.Errorf("MCPServers = %v, want nil when the frame says nothing", got[0].MCPServers)
+	}
+}

@@ -102,6 +102,24 @@ type Delegation struct {
 	DeepSecurityReviewWhen string `json:"deep_security_review_when"`
 	// HighRiskPaths mark a change as high risk regardless of size.
 	HighRiskPaths []string `json:"high_risk_paths"`
+	// InheritOperatorConfig names the stages or actors whose runs get the
+	// OPERATOR's own Claude Code configuration -- their plugins, their MCP
+	// servers, their subagents -- instead of the curated directory Orion
+	// builds (see internal/agentcfg). An entry matches either a stage name
+	// or an actor id.
+	//
+	// EMPTY BY DEFAULT, and that is the whole point: what a run can do is
+	// Orion's decision, and an operator who genuinely wants a plugin in the
+	// loop says so here, once, where the choice is visible and recorded in
+	// the event log at run start.
+	//
+	// Here rather than in the global agents.json, which decisions/0005 makes
+	// the default home for actor-level settings, because this is not only an
+	// actor-level setting: it names STAGES too, and which capabilities a
+	// stage needs is a property of the repository being worked -- a
+	// design-heavy frontend repo wanting a Figma MCP in its build stage says
+	// nothing about the next repository on the same machine.
+	InheritOperatorConfig []string `json:"inherit_operator_config,omitempty"`
 }
 
 // Slack configures the per-project channel.

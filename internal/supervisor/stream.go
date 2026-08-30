@@ -31,6 +31,14 @@ type Activity struct {
 	// a capacity error is exactly the case where knowing what actually ran
 	// matters most.
 	Model string
+	// Tools and MCPServers are what the run was actually GIVEN, set on the
+	// "start" activity only. Read off the CLI's own init frame rather than
+	// derived from what Orion passed, for the same reason Model is: the
+	// flags are a request, and the init line is the answer. It is also the
+	// only honest way to verify that curating the config directory worked --
+	// asserting the toolset is what let 179 tools go unnoticed (OR-213).
+	Tools      int
+	MCPServers []string
 }
 
 // activityWriter turns the NDJSON stream into Activity callbacks.
@@ -186,6 +194,15 @@ func (w *activityWriter) emit(line []byte) {
 		Type    string `json:"type"`
 		Subtype string `json:"subtype"`
 		Model   string `json:"model"` // system/init carries it at the top level
+		// system/init also lists what the session was given. Both are
+		// tolerant of absence: an older CLI that does not emit them yields
+		// zero and nil, which the caller renders as "not reported" rather
+		// than as "none".
+		Tools      []string `json:"tools"`
+		MCPServers []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"mcp_servers"`
 		Message struct {
 			Model   string `json:"model"` // every assistant message carries it
 			Content []struct {
@@ -254,7 +271,12 @@ func (w *activityWriter) emit(line []byte) {
 		if m.Subtype == "init" {
 			w.model = m.Model
 			if w.on != nil {
-				w.on(Activity{Kind: "start", Detail: "session open", Model: w.model})
+				var servers []string
+				for _, s := range m.MCPServers {
+					servers = append(servers, s.Name)
+				}
+				w.on(Activity{Kind: "start", Detail: "session open", Model: w.model,
+					Tools: len(m.Tools), MCPServers: servers})
 			}
 		}
 	case "assistant":

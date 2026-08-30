@@ -91,6 +91,67 @@ func TestToolCallsArePrintedOnlyWhenVerboseAndLoggedAlways(t *testing.T) {
 	}
 }
 
+// The run-start line must state what the run was GIVEN. Until OR-213 the
+// only way to learn a run's toolset was to read its raw transcript, which is
+// how 179 tools -- 148 of them MCP tools against the operator's own live
+// accounts -- went unnoticed for the whole life of the project.
+func TestRunStartRecordsTheToolsetAndTheMCPServers(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := events.Open(logPath, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var console strings.Builder
+	activity := ActivityLogger(log, &console, "OR-213", events.ActorImplementer)
+	activity(supervisor.Activity{Kind: "start", Model: "opus", Tools: 31,
+		MCPServers: []string{"atlassian"}})
+	log.Close()
+
+	logged, err := events.Read(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logged) != 1 {
+		t.Fatalf("events = %+v, want one", logged)
+	}
+	if !strings.Contains(logged[0].Msg, "31 tools") || !strings.Contains(logged[0].Msg, "atlassian") {
+		t.Errorf("msg = %q, must name the tool count and the MCP servers", logged[0].Msg)
+	}
+	// Machine-readable too: "which runs had a write path to the tracker" is a
+	// query, and prose cannot be filtered.
+	if got := logged[0].Detail["tools"]; got != float64(31) {
+		t.Errorf("detail.tools = %v, want 31", got)
+	}
+	servers, _ := logged[0].Detail["mcp_servers"].([]any)
+	if len(servers) != 1 || servers[0] != "atlassian" {
+		t.Errorf("detail.mcp_servers = %v, want [atlassian]", logged[0].Detail["mcp_servers"])
+	}
+}
+
+// The curated case is the one that has to read unambiguously: no MCP servers
+// is a fact worth stating, and it must not be confused with not knowing.
+func TestRunStartSaysNoMCPServersRatherThanStayingSilent(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := events.Open(logPath, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var console strings.Builder
+	ActivityLogger(log, &console, "OR-213", events.ActorImplementer)(
+		supervisor.Activity{Kind: "start", Model: "opus", Tools: 18})
+	log.Close()
+
+	logged, err := events.Read(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0].Msg, "no MCP servers") {
+		t.Errorf("msg = %q, want it to state that the run got no MCP servers", logged[0].Msg)
+	}
+}
+
 func TestActivityLoggerEmitsSayOnText(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "events.jsonl")
 	log, err := events.Open(logPath, events.Event{})
