@@ -51,7 +51,7 @@ func spend(t *testing.T, home, key string) {
 func costComments(jira *fakeTracker, key string) []string {
 	var out []string
 	for _, c := range jira.comments[key] {
-		if strings.Contains(c, "Cost report") {
+		if strings.Contains(c, "cost report") {
 			out = append(out, c)
 		}
 	}
@@ -71,7 +71,7 @@ func TestAMergedTicketReportsItsCostToBothSinks(t *testing.T) {
 	if len(posted) != 1 {
 		t.Fatalf("posted %d cost comments, want 1: %v", len(posted), jira.comments["FCIA-6"])
 	}
-	if !strings.Contains(out, "Cost report — FCIA-6") {
+	if !strings.Contains(out, "cost report FCIA-6") {
 		t.Errorf("the console said nothing about what the ticket cost:\n%s", out)
 	}
 
