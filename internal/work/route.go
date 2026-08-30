@@ -104,6 +104,7 @@ type OtherPath struct {
 var otherPaths = []OtherPath{
 	{events.ActorRouter, "routes the free-text question an implementer stops on, inside a run"},
 	{events.ActorQA, "runs after every implementation, on whatever actor worked the ticket"},
+	{events.ActorCaseDerive, "derives QA's cases from the ticket, inside the QA stage"},
 	{events.ActorDevOps, "repairs a red build, from the CI verdict"},
 	{events.ActorLogTriage, "reads the failing CI log that the repair run then carries"},
 	{events.ActorDescriber, "writes the pull request body, on every ticket"},
