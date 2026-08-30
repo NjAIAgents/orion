@@ -221,19 +221,8 @@ func Configure(agents map[string]config.Agent) error {
 			return fmt.Errorf("agents.%s is not configurable: %s is %s, and naming it "+
 				"would imply a judgement it does not make", id, id, notConfigurableWhy(id))
 		}
-		if over.Name != nil {
-			base.Name = strings.TrimSpace(*over.Name)
-		}
-		if s := strings.TrimSpace(over.Designation); s != "" {
-			base.Designation = s
-		}
-		if s := strings.TrimSpace(over.Model); s != "" {
-			base.Model = s
-		}
-		if s := strings.TrimSpace(over.Effort); s != "" {
-			base.Effort = s
-		}
-		next[id] = base
+		merged, _ := overlay(base, over)
+		next[id] = merged
 	}
 	if err := noDuplicateNames(next); err != nil {
 		return err
@@ -242,6 +231,111 @@ func Configure(agents map[string]config.Agent) error {
 	defer mu.Unlock()
 	current = next
 	return nil
+}
+
+// overlay applies one override onto a shipped default, field by field, and
+// reports which fields the override decided.
+//
+// Field by field, so overriding one name does not silently reset a model.
+// A Name of "" is a real decision and not an absence -- it clears the
+// persona, which is why config.Agent.Name is a pointer -- while an empty
+// designation, model or effort means the override said nothing about that
+// field and the shipped value stands.
+//
+// Configure and Roster share this deliberately. A listing that resolved
+// values by its own rules would eventually disagree with what actually
+// runs, and a roster that disagrees with the run is worse than no roster:
+// it is read precisely when somebody is trying to find out what a run will
+// cost before starting it.
+func overlay(base Actor, over config.Agent) (Actor, Overridden) {
+	var set Overridden
+	if over.Name != nil {
+		base.Name = strings.TrimSpace(*over.Name)
+		set.Name = true
+	}
+	if s := strings.TrimSpace(over.Designation); s != "" {
+		base.Designation = s
+		set.Designation = true
+	}
+	if s := strings.TrimSpace(over.Model); s != "" {
+		base.Model = s
+		set.Model = true
+	}
+	if s := strings.TrimSpace(over.Effort); s != "" {
+		base.Effort = s
+		set.Effort = true
+	}
+	return base, set
+}
+
+// Overridden records which of an actor's fields the roster file decided,
+// rather than the build.
+//
+// Per field rather than per actor, because that is the granularity the
+// overlay works at: an operator who set only an effort still gets the
+// shipped model, and a listing that said "overridden" for the whole row
+// would misreport three of four columns.
+type Overridden struct {
+	Name        bool
+	Designation bool
+	Model       bool
+	Effort      bool
+}
+
+// Fields names the overridden fields in column order, or nothing at all
+// when the actor is entirely shipped defaults.
+func (o Overridden) Fields() []string {
+	var out []string
+	for _, f := range []struct {
+		set  bool
+		name string
+	}{
+		{o.Name, "name"},
+		{o.Designation, "designation"},
+		{o.Model, "model"},
+		{o.Effort, "effort"},
+	} {
+		if f.set {
+			out = append(out, f.name)
+		}
+	}
+	return out
+}
+
+// RosterEntry is one actor as a run will actually see it, plus where each
+// of its fields came from.
+type RosterEntry struct {
+	Actor
+	Overridden Overridden
+}
+
+// Roster resolves the whole configurable roster against an overrides map,
+// sorted by identifier.
+//
+// This is what makes the roster answerable without reading two files. The
+// override file holds only overrides -- most actors are absent from it
+// entirely -- so it cannot say what the explorer or the router runs on.
+// Only the shipped defaults with the overrides applied can, and only this
+// package holds both.
+//
+// The set is exactly ConfigurableIDs, which is what `orion config agents`
+// walks, so the read-only listing and the wizard can never show different
+// rosters. ci and human are in neither: one is a machine and one is the
+// person reading the output, and neither runs on a model or costs
+// anything.
+//
+// Takes the overrides rather than reading current, so a caller gets
+// provenance whether or not Configure has run -- and so the listing is a
+// pure function of the file, testable without global state.
+func Roster(agents map[string]config.Agent) []RosterEntry {
+	base := defaults()
+	ids := ConfigurableIDs()
+	out := make([]RosterEntry, 0, len(ids))
+	for _, id := range ids {
+		a, set := overlay(base[id], agents[id])
+		out = append(out, RosterEntry{Actor: a, Overridden: set})
+	}
+	return out
 }
 
 func notConfigurableWhy(id string) string {
