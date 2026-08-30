@@ -90,3 +90,31 @@ func TestAnOptedInStageKeepsTheOperatorsConfiguration(t *testing.T) {
 		t.Errorf("an opted-in run must keep the operator's config dir, got env: %q", env)
 	}
 }
+
+// The opt-in list is matched against the stage OR the actor (agentcfg.optIn
+// is proven directly for that), but Run must actually PASS opts.Actor
+// through to agentcfg.For -- a wiring bug (the wrong argument, or the actor
+// silently dropped) would not show up in any agentcfg-package test, only
+// here where the two arguments cross a package boundary in a real call.
+func TestAnOptedInActorKeepsTheOperatorsConfigurationThroughASupervisedRun(t *testing.T) {
+	operator := filepath.Join(t.TempDir(), "operators-own")
+	w := ws(t, `{"delegation":{"inherit_operator_config":["qa"]}}`)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", operator)
+	argsFile, envFile := fakeClaudeRecordingArgsAndEnv(t)
+
+	// The stage itself ("verify") is NOT on the opt-in list -- only the actor
+	// is. If Run silently dropped the actor and matched on stage alone, this
+	// run would come back curated instead of inherited.
+	if _, err := Run(w, Options{Stage: "verify", Actor: "qa", Prompt: "do a thing",
+		MaxMinutes: 1, MaxTurns: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := read(t, argsFile); strings.Contains(got, "--strict-mcp-config") {
+		t.Errorf("an actor opted in asked for their own MCP servers, got: %q", got)
+	}
+	if env := read(t, envFile); !strings.Contains(env, "CLAUDE_CONFIG_DIR="+operator) {
+		t.Errorf("an actor opted in must keep the operator's config dir, got env: %q", env)
+	}
+}

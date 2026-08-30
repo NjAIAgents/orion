@@ -230,3 +230,53 @@ func TestTheDescriberPassesNoFlagForAnUnsetModelOrEffort(t *testing.T) {
 		t.Errorf("an unset model or effort must add no flag, got: %q", got)
 	}
 }
+
+// changelogRunner builds its own argv exactly like describeRunner, and the
+// same OR-213 curation has to apply to it: a generator with write access to
+// CHANGELOG.md is not the write handle this ticket is about, but it still
+// runs with the operator's whole plugin surface and 148 unused MCP tool
+// definitions re-sent on every turn unless it goes through agentcfg too.
+func TestTheChangelogRunnerGetsNoMCPServersAndACuratedConfigDir(t *testing.T) {
+	argsFile := fakeClaude(t)
+	operator := filepath.Join(t.TempDir(), "operators-own")
+	if err := os.MkdirAll(operator, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", operator)
+
+	envFile := filepath.Join(filepath.Dir(argsFile), "env.txt")
+	// fakeClaude's script only records argv; extend it here to also capture
+	// the child's environment, which is where CLAUDE_CONFIG_DIR shows up.
+	bin := filepath.Join(filepath.Dir(argsFile), "claude")
+	script := "#!/bin/sh\n" +
+		`echo "$@" > ` + argsFile + "\n" +
+		"env > " + envFile + "\n" +
+		`echo '{"result":"did the changelog","is_error":false}'` + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := changelogRunner(t.TempDir(), ""); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "--strict-mcp-config") {
+		t.Errorf("changelog invocation missing --strict-mcp-config, got: %q", got)
+	}
+
+	env, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(env), "operators-own") {
+		t.Error("the operator's own config directory reached the changelog run")
+	}
+	if !strings.Contains(string(env), "CLAUDE_CONFIG_DIR="+filepath.Join(os.Getenv("ORION_HOME"), "agent-config")) {
+		t.Errorf("changelog run must get the curated CLAUDE_CONFIG_DIR, got env: %q", env)
+	}
+}
