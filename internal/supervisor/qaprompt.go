@@ -52,8 +52,62 @@ func (t QATools) Path() string {
 	return "this repository's own test tooling"
 }
 
+// QACasesPrompt asks a subagent to turn the ticket's acceptance criteria and
+// the diff into the list of cases QA has to cover, and nothing else.
+//
+// Deriving the cases is wide reading with a short answer; writing the tests
+// is the work. Done in one context they are paid for together: the criteria
+// and the diff stay in the prompt for every turn of the authoring that
+// follows, re-sent to say once what a dozen lines of case list say (OR-182).
+//
+// READ ONLY is load-bearing here for the reason it is in ExplorePrompt: this
+// subagent shares a worktree with a QA run that is about to write test files
+// into it, and there is no separate checkout to isolate it into.
+//
+// The cases have to be self-contained, because the run that receives them
+// does not receive the criteria they came from -- that omission is the whole
+// saving. A case that says "as described in the ticket" arrives at a reader
+// who cannot follow the pointer.
+func QACasesPrompt(key, summary, description, diff string) string {
+	return join(
+		"Work out what a QA engineer has to test about this change. Do not test it.",
+		"",
+		key+": "+summary,
+		"",
+		"THE ACCEPTANCE CRITERIA",
+		quote(description),
+		"",
+		"THE DIFF",
+		quote(diff),
+		"",
+		"WHAT TO RETURN",
+		"The list of cases to cover, one per line, and nothing else. No preamble,",
+		"no account of how you read it, no test code.",
+		"Derive them from the criteria -- what SHOULD be true of this change --",
+		"and use the diff only to see what the change actually touches. A case",
+		"read off the implementation only re-states what it already does.",
+		"Include the ones an implementer skips: boundaries, negative paths, error",
+		"branches, authorisation.",
+		"",
+		"Write each case so it stands on its own. Whoever writes the tests gets",
+		"this list and NOT the ticket text above, so a case that points back at",
+		"the criteria points at something they cannot read.",
+		"",
+		"READ ONLY",
+		"Do not edit, create, delete, run or commit anything. Another agent is",
+		"about to write test files into this same worktree, and a write from you",
+		"would land in the middle of its change.",
+	)
+}
+
 // QAPrompt asks for the cases, the tests, and the run.
-func QAPrompt(key, summary, description string, tools QATools) string {
+//
+// cases is the derived case list from QACasesPrompt, or empty when that step
+// did not run or did not produce one. Empty is today's behaviour: QA reads
+// the criteria and derives the cases itself, inside its own run. A derive
+// step that silently produced nothing must never be the reason a ticket has
+// no tests (OR-182).
+func QAPrompt(key, summary, description, cases string, tools QATools) string {
 	var b strings.Builder
 	b.WriteString(join(
 		"You are the QA engineer on this change. The implementation is already",
@@ -62,14 +116,27 @@ func QAPrompt(key, summary, description string, tools QATools) string {
 		key+": "+summary,
 		"",
 	))
-	if strings.TrimSpace(description) != "" {
+	derived := strings.TrimSpace(cases) != ""
+	switch {
+	case derived:
+		b.WriteString(join(
+			"These cases were derived from the ticket's acceptance criteria and the",
+			"diff, by an analyst who did not write the code:",
+			quote(cases), "", ""))
+	case strings.TrimSpace(description) != "":
 		b.WriteString(join("The issue says:", quote(description), "", ""))
+	}
+	step1 := "1. Derive the test cases from the ticket's acceptance criteria -- what SHOULD\n" +
+		"   be true of this change, read from the ticket rather than from the diff.\n" +
+		"   Deriving them from the implementation only re-states what it already does."
+	if derived {
+		step1 = "1. Cover the cases above. They are the specification you are verifying\n" +
+			"   against; add any the list missed, and say so if one of them turns out\n" +
+			"   not to be testable as written."
 	}
 	b.WriteString(join(
 		"WHAT TO DO",
-		"1. Derive the test cases from the ticket's acceptance criteria -- what SHOULD",
-		"   be true of this change, read from the ticket rather than from the diff.",
-		"   Deriving them from the implementation only re-states what it already does.",
+		step1,
 		"2. Read what the implementer already tested, and write the cases it missed:",
 		"   boundaries, negative paths, error branches, authorisation.",
 		"3. Run the suite and report the result per case.",

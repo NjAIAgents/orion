@@ -103,11 +103,12 @@ const (
 	ActorDocs        = "docs"        // works a documentation ticket
 	ActorArchitect   = "architect"
 	ActorPM          = "pm"
-	ActorDevOps      = "devops"     // repairs a red build
-	ActorQA          = "qa"         // derives test cases, writes the tests, runs them
-	ActorDescriber   = "describer"  // writes the pull request description
-	ActorLogTriage   = "log-triage" // reads a failing CI log, reports what broke and why
-	ActorExplore     = "explore"    // answers one question about the repository, citing the paths
+	ActorDevOps      = "devops"      // repairs a red build
+	ActorQA          = "qa"          // derives test cases, writes the tests, runs them
+	ActorDescriber   = "describer"   // writes the pull request description
+	ActorLogTriage   = "log-triage"  // reads a failing CI log, reports what broke and why
+	ActorExplore     = "explore"     // answers one question about the repository, citing the paths
+	ActorCaseDerive  = "case-derive" // reads the acceptance criteria and the diff, lists the cases to cover
 	ActorHuman       = "human"
 	ActorCI          = "ci"
 )

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/njagents"
@@ -186,19 +187,22 @@ func TestQAFindingsGoToTheDeveloperAndAreReVerified(t *testing.T) {
 	if c := strings.Join(j.comments, "\n"); strings.Contains(c, "still open") {
 		t.Errorf("a finding that was fixed was reported as open:\n%s", c)
 	}
-	// implement, verify, fix, re-verify. Any other order means the findings
-	// were not actually carried back to the developer between the two QA runs.
-	if got := f.sequence(); got != "ticket,qa,ticket,qa" {
-		t.Fatalf("run sequence = %q, want ticket,qa,ticket,qa", got)
+	// implement, derive the cases, verify, fix, re-verify. Any other order
+	// means the findings were not actually carried back to the developer
+	// between the two QA runs. The derive step runs once, before the first
+	// verification only: a re-verify runs the cases that already exist
+	// (OR-182).
+	if got := f.sequence(); got != "ticket,qa-cases,qa,ticket,qa" {
+		t.Fatalf("run sequence = %q, want ticket,qa-cases,qa,ticket,qa", got)
 	}
 	// The findings themselves must reach the developer. A round that sends
 	// "QA found something" spends a run and tells it nothing.
-	if !strings.Contains(f.prompts[2], "2 decimal places") {
-		t.Errorf("the findings did not reach the developer:\n%s", f.prompts[2])
+	if !strings.Contains(f.prompts[3], "2 decimal places") {
+		t.Errorf("the findings did not reach the developer:\n%s", f.prompts[3])
 	}
 	// And QA must be asked to look again rather than told it passed.
-	if !strings.Contains(strings.ToLower(f.prompts[3]), "re-run") {
-		t.Errorf("QA was not asked to re-verify:\n%s", f.prompts[3])
+	if !strings.Contains(strings.ToLower(f.prompts[4]), "re-run") {
+		t.Errorf("QA was not asked to re-verify:\n%s", f.prompts[4])
 	}
 	if strings.Contains(out.String(), "A person needs to look") {
 		t.Error("a cleared finding escalated to a person")
@@ -455,8 +459,9 @@ func TestQAEscalatesToAPersonWhenTheRoundsRunOut(t *testing.T) {
 			},
 		})
 
-	// One fix round, then stop: implement, verify, fix, re-verify.
-	if got := f.sequence(); got != "ticket,qa,ticket,qa" {
+	// One fix round, then stop: implement, derive the cases, verify, fix,
+	// re-verify.
+	if got := f.sequence(); got != "ticket,qa-cases,qa,ticket,qa" {
 		t.Fatalf("run sequence = %q; the round ceiling did not hold", got)
 	}
 	if !opened || res[0].Outcome != OutcomeCIWait {
@@ -492,6 +497,9 @@ func TestAQARunThatFailsDoesNotFailTheTicket(t *testing.T) {
 				if o.Stage == "qa" {
 					return &supervisor.Result{ExitCode: 1, Reason: "the breaker tripped"}, nil
 				}
+				if o.Stage == "qa-cases" {
+					return &supervisor.Result{ExitCode: 0, Final: "- the rounding boundary"}, nil
+				}
 				if err := os.WriteFile(filepath.Join(ws.RepoDir(), "impl.go"), []byte("package x\n"), 0o644); err != nil {
 					return nil, err
 				}
@@ -506,7 +514,7 @@ func TestAQARunThatFailsDoesNotFailTheTicket(t *testing.T) {
 	if res[0].Outcome != OutcomeCIWait || !pushed {
 		t.Fatalf("a failed QA run stopped the ticket: outcome=%q pushed=%v", res[0].Outcome, pushed)
 	}
-	if strings.Join(stages, ",") != "ticket,qa" {
+	if strings.Join(stages, ",") != "ticket,qa-cases,qa" {
 		t.Errorf("run sequence = %v", stages)
 	}
 	// And it must say so: a change that went to review unverified reads
@@ -532,19 +540,19 @@ func TestQADegradesToTheRepositorysOwnToolingAndSaysSo(t *testing.T) {
 			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
 		})
 
-	if got := f.sequence(); got != "ticket,qa" {
+	if got := f.sequence(); got != "ticket,qa-cases,qa" {
 		t.Fatalf("run sequence = %q; QA must still run without the skills", got)
 	}
-	if !strings.Contains(f.prompts[1], "nj-agents is not installed here") {
-		t.Errorf("the prompt did not tell QA the skills are absent:\n%s", f.prompts[1])
+	if !strings.Contains(f.prompts[2], "nj-agents is not installed here") {
+		t.Errorf("the prompt did not tell QA the skills are absent:\n%s", f.prompts[2])
 	}
 	if !strings.Contains(out.String(), "this repository's own test tooling") {
 		t.Errorf("the run did not say which path it took:\n%s", out.String())
 	}
 	// No non-prod target is configured, so an e2e run must be off the table
 	// rather than pointed at whatever the agent can find.
-	if !strings.Contains(f.prompts[1], "No non-production target is configured") {
-		t.Errorf("the prompt did not rule out an e2e run:\n%s", f.prompts[1])
+	if !strings.Contains(f.prompts[2], "No non-production target is configured") {
+		t.Errorf("the prompt did not rule out an e2e run:\n%s", f.prompts[2])
 	}
 }
 
@@ -673,6 +681,166 @@ func TestReportRedBeforeGreenWritesBothToTheEventLog(t *testing.T) {
 	}
 	if !sawUnproven {
 		t.Errorf("the event log never named the unproven test file:\n%+v", logged)
+	}
+}
+
+// deriveRepo is a branch with one committed change on it: a seed commit to
+// use as the base, and an implementation commit for the derive step to read
+// a diff out of.
+func deriveRepo(t *testing.T) (repo, baseSHA string) {
+	t.Helper()
+	repo = t.TempDir()
+	git(t, repo, "init", "-q", "-b", "main")
+	writeExec(t, repo, "scripts/test.sh", "#!/bin/sh\nexit 0\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "seed")
+	baseSHA = git(t, repo, "rev-parse", "HEAD")
+
+	if err := os.WriteFile(filepath.Join(repo, "total.go"),
+		[]byte("package x\n\nfunc round(v float64) float64 { return v }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "feat: round the total")
+	return repo, baseSHA
+}
+
+// OR-182. The deriving is wide reading with a short answer, so it happens in
+// a context that is thrown away: its own actor on its own pinned model, with
+// the criteria and the diff in ITS prompt and only the case list in QA's. A
+// derive run that inherited QA's model, or whose answer never reached QA,
+// would be a second run that saved nothing.
+func TestCaseDeriveRunsAsItsOwnCheapActorAndItsListReachesQA(t *testing.T) {
+	repo, baseSHA := deriveRepo(t)
+	const cases = "- a total of 1.005 rounds to 1.01\n- a negative total rounds the same way"
+	const criteria = "AC: totals are rounded to 2 decimal places"
+
+	var deriveOpts, qaOpts supervisor.Options
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		switch o.Stage {
+		case "qa-cases":
+			deriveOpts = o
+			return &supervisor.Result{ExitCode: 0, Final: cases}, nil
+		default:
+			qaOpts = o
+			return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+		}
+	}
+
+	logPath := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := events.Open(logPath, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	var out strings.Builder
+	runQA(qaJob{Key: "FCIA-6", Summary: "round the total", Description: criteria,
+		WS: &workspace.Workspace{RepoPath: repo}, BaseSHA: baseSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, log, &out)
+
+	if deriveOpts.Actor != events.ActorCaseDerive || deriveOpts.Key != "FCIA-6" {
+		t.Errorf("derive ran as actor %q on key %q, want %q on the ticket so its spend is "+
+			"its own row in that ticket's cost report",
+			deriveOpts.Actor, deriveOpts.Key, events.ActorCaseDerive)
+	}
+	if want := actors.Model(events.ActorCaseDerive); deriveOpts.Model != want {
+		t.Errorf("derive model = %q, want the roster's %q -- pinning it cheap is the cost win",
+			deriveOpts.Model, want)
+	}
+	if deriveOpts.MaxMinutes != caseDeriveMaxMinutes || deriveOpts.MaxTurns != caseDeriveMaxTurns {
+		t.Errorf("derive bounds = %d min / %d turns, want the tight %d/%d",
+			deriveOpts.MaxMinutes, deriveOpts.MaxTurns, caseDeriveMaxMinutes, caseDeriveMaxTurns)
+	}
+	if !strings.Contains(deriveOpts.Prompt, criteria) || !strings.Contains(deriveOpts.Prompt, "func round") {
+		t.Errorf("the derive prompt did not carry the criteria and the diff:\n%s", deriveOpts.Prompt)
+	}
+
+	if !strings.Contains(qaOpts.Prompt, "1.005 rounds to 1.01") {
+		t.Errorf("the derived cases never reached the QA run:\n%s", qaOpts.Prompt)
+	}
+	if strings.Contains(qaOpts.Prompt, criteria) {
+		t.Errorf("QA carried the criteria as well as the cases, which is the reading this "+
+			"split exists to stop paying for on every turn:\n%s", qaOpts.Prompt)
+	}
+
+	log.Close()
+	logged, err := events.Read(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saw bool
+	for _, e := range logged {
+		if e.Actor == events.ActorCaseDerive && strings.Contains(e.Msg, "1.005 rounds to 1.01") {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("the case list was never written to the event log; what a subagent returns "+
+			"is all the parent ever sees of it, so an unrecorded answer is lost (OR-129):\n%+v",
+			logged)
+	}
+}
+
+// The fallback, which matters more than the saving: a derive step that
+// produced nothing must never be the reason a ticket has no tests. QA runs
+// anyway, with the criteria, exactly as it did before this step existed.
+func TestQAStillRunsWhenTheCaseDeriveFails(t *testing.T) {
+	repo, baseSHA := deriveRepo(t)
+	const criteria = "AC: totals are rounded to 2 decimal places"
+
+	var stages []string
+	var qaPrompt string
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		stages = append(stages, o.Stage)
+		if o.Stage == "qa-cases" {
+			return &supervisor.Result{ExitCode: 1, Reason: "the breaker tripped"}, nil
+		}
+		qaPrompt = o.Prompt
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+
+	var out strings.Builder
+	outcome := runQA(qaJob{Key: "FCIA-6", Summary: "round the total", Description: criteria,
+		WS: &workspace.Workspace{RepoPath: repo}, BaseSHA: baseSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out)
+
+	if !outcome.Ran || !outcome.Clean {
+		t.Fatalf("a failed derive stopped QA: %+v", outcome)
+	}
+	if strings.Join(stages, ",") != "qa-cases,qa" {
+		t.Fatalf("run sequence = %v, want the derive attempt and then QA anyway", stages)
+	}
+	if !strings.Contains(qaPrompt, criteria) {
+		t.Errorf("QA fell back without the criteria, so it has nothing to derive from:\n%s", qaPrompt)
+	}
+	// Said out loud, for the reason the tooling path is: a run that quietly
+	// took the more expensive path reads exactly like one that did not.
+	if !strings.Contains(out.String(), "could not derive the cases") {
+		t.Errorf("nothing said the derive step had failed:\n%s", out.String())
+	}
+}
+
+// A ticket with no description has no criteria to derive from, and a diff
+// alone would only re-state what the implementation already does. Spending a
+// run to be told that is the "small job is pure overhead" case OR-143's bar
+// rules out, so the step does not run at all.
+func TestCaseDeriveIsSkippedWhenThereIsNothingToDeriveFrom(t *testing.T) {
+	repo, baseSHA := deriveRepo(t)
+
+	var stages []string
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		stages = append(stages, o.Stage)
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+
+	var out strings.Builder
+	runQA(qaJob{Key: "FCIA-6", Summary: "round the total",
+		WS: &workspace.Workspace{RepoPath: repo}, BaseSHA: baseSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out)
+
+	if strings.Join(stages, ",") != "qa" {
+		t.Errorf("run sequence = %v, want QA alone: there were no criteria to derive from", stages)
 	}
 }
 

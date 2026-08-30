@@ -101,6 +101,8 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 		}
 	}()
 
+	cases := deriveCases(job, deps, log, w)
+
 	tools := qaTools(cfg, opts.Home)
 	// Which path it took, said out loud. A stage that silently degraded to
 	// half its coverage reads exactly like one that did not, and the
@@ -112,7 +114,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 
 	res, err := deps.Supervise(job.WS, supervisor.Options{
 		Stage:  "qa",
-		Prompt: supervisor.QAPrompt(key, job.Summary, job.Description, tools),
+		Prompt: supervisor.QAPrompt(key, job.Summary, job.Description, cases, tools),
 		Model:  actors.Model(events.ActorQA),
 		Effort: actors.Effort(events.ActorQA),
 		// The implementer's allowance, not a smaller one. QA reads the
@@ -206,6 +208,95 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 		Msg:   fmt.Sprintf("verified the change; every case passes (%d fix round(s))", out.Rounds)})
 	ui.Say(w, key, events.ActorQA, ui.VerbOK, "every case passes")
 	return out
+}
+
+// Bounds for the case-derive subagent, deliberately far tighter than the QA
+// run's own: the criteria and the diff are already in its prompt, so this is
+// a read-and-list with nothing to search for, and a run that gets stuck
+// hunting has stopped being cheap. Same reasoning as the log-triage bounds in
+// cmd/orion/fix.go.
+const (
+	caseDeriveMaxMinutes = 5
+	caseDeriveMaxTurns   = 10
+)
+
+// caseDeriveOptions is what the case-derive subagent runs with, separated
+// from deriveCases so the actor, model and prompt it is configured with can
+// be asserted without spawning anything -- the same reason triageOptions is
+// split from triageLog.
+func caseDeriveOptions(job qaJob, diff string) supervisor.Options {
+	return supervisor.Options{
+		Stage:      "qa-cases",
+		Prompt:     supervisor.QACasesPrompt(job.Key, job.Summary, job.Description, diff),
+		MaxMinutes: caseDeriveMaxMinutes,
+		MaxTurns:   caseDeriveMaxTurns,
+		// Its own actor on its own pinned model, not QA's: this is reading a
+		// specification and listing what follows from it, not the judgement of
+		// writing the tests, and pinning it is what makes the split a saving
+		// rather than a second run at QA's price. Attributed to the same ticket
+		// so its spend is its own row in that ticket's cost report instead of
+		// hiding inside QA's total (OR-182, following OR-143).
+		Actor: events.ActorCaseDerive, Key: job.Key,
+		Model:  actors.Model(events.ActorCaseDerive),
+		Effort: actors.Effort(events.ActorCaseDerive),
+	}
+}
+
+// deriveCases reduces the ticket's acceptance criteria and the branch's diff
+// to the list of cases QA has to cover, through a subagent that reads both in
+// its own context and returns only the list.
+//
+// Returns "" on any failure, which is today's behaviour: QA derives the cases
+// inside its own run from the description it is given. QA must still run --
+// a triage step that silently produced nothing must never be the reason a
+// ticket has no tests.
+//
+// The list is written to the event log for the reason OR-129 made the fix
+// loop record its closing summary: what a subagent returns is all the parent
+// ever sees of it, so an answer that is not written down is gone the moment
+// this function returns.
+func deriveCases(job qaJob, deps Deps, log *events.Log, w io.Writer) string {
+	if strings.TrimSpace(job.Description) == "" || job.BaseSHA == "" {
+		return ""
+	}
+	// The diff of the whole slice, base to HEAD. A failure here is not worth
+	// a warning: it means the subagent has nothing to read the change out of,
+	// so the stage takes the path it took before this step existed.
+	diff, err := runGit(job.WS.RepoDir(), "diff", job.BaseSHA, "HEAD")
+	if err != nil || strings.TrimSpace(diff) == "" {
+		return ""
+	}
+
+	res, sErr := deps.Supervise(job.WS, caseDeriveOptions(job, diff))
+	if sErr != nil || res == nil || res.ExitCode != 0 || strings.TrimSpace(res.Final) == "" {
+		ui.Say(w, job.Key, events.ActorCaseDerive, ui.VerbWarn,
+			"could not derive the cases, so QA reads the ticket itself")
+		log.Emitf(events.KindNote, events.ActorCaseDerive,
+			"case derivation produced nothing; QA derives its own cases from the ticket")
+		return ""
+	}
+
+	cases := strings.TrimSpace(res.Final)
+	log.Emit(events.Event{Kind: events.KindQA, Actor: events.ActorCaseDerive,
+		Model: actors.Model(events.ActorCaseDerive),
+		Msg:   "derived the cases to cover:\n" + cases})
+	ui.Say(w, job.Key, events.ActorCaseDerive, ui.VerbOK,
+		"derived %d case(s) from the acceptance criteria and the diff", countCases(cases))
+	return cases
+}
+
+// countCases is how many lines of the list actually name a case, for the one
+// line the console gets. A blank line is not a case, and neither is a header
+// the agent wrote above its list despite being asked for none.
+func countCases(cases string) int {
+	n := 0
+	for _, line := range strings.Split(cases, "\n") {
+		t := strings.TrimSpace(line)
+		if t != "" && !strings.HasSuffix(t, ":") {
+			n++
+		}
+	}
+	return n
 }
 
 // qaRan reports whether a QA run produced a usable result, warning when it
