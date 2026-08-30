@@ -1334,6 +1334,167 @@ func TestRedBeforeGreenIsWiredThroughARealRun(t *testing.T) {
 	}
 }
 
+// qaRepo is a branch ready for the QA stage: a seed commit to use as the
+// base, this repository's one test entry point, and nothing else.
+func qaRepo(t *testing.T, suite string) (repo, baseSHA string) {
+	t.Helper()
+	repo = t.TempDir()
+	git(t, repo, "init", "-q", "-b", "main")
+	writeExec(t, repo, "scripts/test.sh", suite)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "seed")
+	return repo, git(t, repo, "rev-parse", "HEAD")
+}
+
+// committedAtHEAD lists what the branch actually carries, which is the only
+// thing the push, the pull request and the red-before-green check can see.
+func committedAtHEAD(t *testing.T, repo string) string {
+	t.Helper()
+	return git(t, repo, "ls-tree", "-r", "--name-only", "HEAD")
+}
+
+// OR-234. QAPrompt asks QA to commit the tests it writes and QA does not
+// reliably do it -- OR-217 left them STAGED, OR-213 UNSTAGED, fifteen minutes
+// apart. Both, so a fix that handled only the state that happened to be
+// easier to see would still fail here.
+//
+// The clean worktree at the end is the other half and not a tidiness point:
+// collect's rebaseOnto refuses a tree with uncommitted tracked changes, so QA
+// leaving one disables the automation that keeps the branch current. OR-233
+// settles that residue whatever leaves it and stays necessary as a backstop;
+// this is about QA not being the thing that leaves it.
+func TestQAsTestsAreCommittedWhenTheAgentLeavesThemInTheWorktree(t *testing.T) {
+	repo, baseSHA := qaRepo(t, "#!/bin/sh\nexit 0\n")
+	ws := &workspace.Workspace{RepoPath: repo}
+
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		writeExec(t, w.RepoDir(), "staged_test.go", "package fake\n")
+		writeExec(t, w.RepoDir(), "unstaged_test.go", "package fake\n")
+		git(t, w.RepoDir(), "add", "staged_test.go")
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+
+	var out strings.Builder
+	if outcome := runQA(qaJob{Key: "FCIA-6", WS: ws, BaseSHA: baseSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out); !outcome.Clean {
+		t.Fatalf("outcome = %+v", outcome)
+	}
+
+	tracked := committedAtHEAD(t, repo)
+	for _, f := range []string{"staged_test.go", "unstaged_test.go"} {
+		if !strings.Contains(tracked, f) {
+			t.Errorf("%s is not committed on the branch, so the pull request would not carry it; "+
+				"HEAD holds:\n%s", f, tracked)
+		}
+	}
+	if dirty := git(t, repo, "status", "--porcelain"); dirty != "" {
+		t.Errorf("the QA stage ended with a dirty worktree, which is what refuses the next rebase:\n%s", dirty)
+	}
+	if !strings.Contains(out.String(), "committed 2 file(s) QA left uncommitted") {
+		t.Errorf("nothing said the commit was Orion's rather than QA's:\n%s", out.String())
+	}
+}
+
+// The false negative OR-234 is really about. On OR-217 the check reported "QA
+// did not add or change a test file" while the test that caught the defect sat
+// in the worktree -- it inspects COMMITS, and QA had made none. So the control
+// that proves a test would have caught the change failed silently in exactly
+// the case where a test WAS written.
+//
+// The suite here fails when the test file is present without the implementer's
+// change, so a correctly-wired check must report it PROVEN red -- not merely
+// stop saying nothing was written.
+func TestRedBeforeGreenSeesTheTestsQADidNotCommit(t *testing.T) {
+	repo, baseSHA := qaRepo(t, "#!/bin/sh\n"+
+		"if [ -f sound_test.go ] && [ ! -f feature.flag ]; then\n"+
+		"  exit 1\n"+
+		"fi\n"+
+		"exit 0\n")
+
+	// The implementer's slice, committed before QA starts, as it always is.
+	writeExec(t, repo, "feature.flag", "ENABLED\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "feat: add the feature")
+
+	ws := &workspace.Workspace{RepoPath: repo}
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		writeExec(t, w.RepoDir(), "sound_test.go", "package fake\n")
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+
+	// The false negative was a LOG line -- "red-before-green not checked: QA
+	// did not add or change a test file" -- so the log is where it has to be
+	// shown absent, not only the console.
+	logPath := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := events.Open(logPath, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	var out strings.Builder
+	runQA(qaJob{Key: "FCIA-6", WS: ws, BaseSHA: baseSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, log, &out)
+	log.Close()
+
+	logged, err := events.Read(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var falseNegative, proven bool
+	for _, e := range logged {
+		if strings.Contains(e.Msg, "did not add or change a test file") {
+			falseNegative = true
+		}
+		if strings.Contains(e.Msg, "proved red before green") && strings.Contains(e.Msg, "sound_test.go") {
+			proven = true
+		}
+	}
+	if falseNegative {
+		t.Fatalf("red-before-green reported the OR-217 false negative with the test right there:\n%+v", logged)
+	}
+	if !proven {
+		t.Errorf("the test QA wrote was never proven red:\n%+v\n%s", logged, out.String())
+	}
+}
+
+// A red pull request is the CORRECT outcome for a change QA found a defect in,
+// and it must not be avoided by omission. On OR-217 the branch was pushed and
+// CI went green because the commit did not contain the failing test -- a green
+// mergeable pull request carrying the bug, one approval from develop.
+//
+// So the commit happens on every exit from the stage, including the round
+// ceiling with findings still open.
+func TestQACommitsATestThatIsStillFailingAtTheRoundCeiling(t *testing.T) {
+	repo, baseSHA := qaRepo(t, "#!/bin/sh\nexit 0\n")
+	ws := &workspace.Workspace{RepoPath: repo}
+
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		if o.Stage != "qa" {
+			// The fix round: the implementer changes nothing that clears it.
+			return &supervisor.Result{ExitCode: 0, SessionID: "impl-1"}, nil
+		}
+		writeExec(t, w.RepoDir(), "boundary_test.go", "package fake\n")
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1",
+			Final: "The boundary case fails: a path of exactly 255 bytes is rejected."}, nil
+	}
+
+	var out strings.Builder
+	outcome := runQA(qaJob{Key: "FCIA-6", WS: ws, BaseSHA: baseSHA},
+		config.Config{QA: config.QA{MaxRounds: 1}}, Options{}, Deps{Supervise: sup}, nil, &out)
+
+	if outcome.Clean || outcome.Findings == "" {
+		t.Fatalf("outcome = %+v; expected findings still open", outcome)
+	}
+	if tracked := committedAtHEAD(t, repo); !strings.Contains(tracked, "boundary_test.go") {
+		t.Errorf("the failing test was left off the branch, so the pull request goes green without it; "+
+			"HEAD holds:\n%s", tracked)
+	}
+	if dirty := git(t, repo, "status", "--porcelain"); dirty != "" {
+		t.Errorf("the stage ended dirty even though it escalated:\n%s", dirty)
+	}
+}
+
 // The sentinel decides the verdict, and only when it starts a line. An agent
 // that quotes its own instructions must not declare a clean branch by
 // describing one.
