@@ -81,7 +81,11 @@ func runNew(idea string, rest []string) {
 // also the case under cron and in a test. Both fall back to the idea as typed
 // and a name derived from it, because a command that blocked on a read that
 // will never return would be worse than one that guessed the name.
-func elaborate(idea string, rest []string) discovery.Intake {
+//
+// The second return says whether the questions were actually put, which is
+// not the same as whether any were answered: nobody should be told they left
+// four questions open when nobody asked them.
+func elaborate(idea string, rest []string) (discovery.Intake, bool) {
 	proposed := discovery.NameFromSlug(workspace.Slugify(idea))
 	flat := discovery.Intake{Idea: idea, Name: proposed}
 
@@ -89,10 +93,10 @@ func elaborate(idea string, rest []string) discovery.Intake {
 	switch {
 	case hasFlag(rest, "--skip-discovery"):
 		fmt.Printf("discovery skipped: --skip-discovery\n\n")
-		return flat
+		return flat, false
 	case !creds.Interactive():
 		fmt.Printf("discovery skipped: not a terminal, so there is nobody to ask\n\n")
-		return flat
+		return flat, false
 	case needs:
 		fmt.Printf("Discovery first: %s\n\n", reason)
 	default:
@@ -102,7 +106,7 @@ func elaborate(idea string, rest []string) discovery.Intake {
 	// constraints has had this conversation somewhere else, and asking again
 	// is friction for no gain. The name is asked for either way -- a
 	// detailed idea still arrives without a name anyone agreed to.
-	return discovery.Interview(os.Stdin, os.Stdout, idea, proposed, needs)
+	return discovery.Interview(os.Stdin, os.Stdout, idea, proposed, needs), needs
 }
 
 // provisionTracker creates the project the plan phase will consume.
