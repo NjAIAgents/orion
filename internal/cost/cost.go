@@ -49,6 +49,10 @@ const (
 	keyReason   = "reason"
 	keyHaveUse  = "usage_reported"
 	keyEffort   = "effort"
+	// Written in the NEGATIVE, deliberately. A "started" key absent from every
+	// event recorded before this existed would read back as false, and the
+	// whole history would relabel itself as never having run.
+	keyNeverRun = "never_started"
 )
 
 // Run is one agent invocation's consumption, as recorded.
@@ -69,6 +73,16 @@ type Run struct {
 	// Such a run contributes a row's run count and nothing to its totals,
 	// which is exactly why the report has to say so.
 	HaveUsage bool
+	// NeverStarted marks a run the CLI abandoned before it opened a session --
+	// an expired login, a bad flag, a binary that could not launch (OR-212).
+	//
+	// It is NOT a failed run, and the distinction is the point. A failed run
+	// sent context and got some of the way through the work; a run that never
+	// started sent nothing and did none. Counting the two together overstates
+	// how often the agents fail AND makes the missing-usage floor warning fire
+	// over a run whose true usage is known to be zero, which is the one case
+	// where nothing is actually missing.
+	NeverStarted bool
 
 	// Model and Effort are what this run was DISPATCHED with, captured at the
 	// call site rather than resolved from the roster afterwards.
@@ -131,6 +145,7 @@ func Record(log *events.Log, home, actor, key string, r Run) error {
 				keyCostUSD: r.CostUSD, keySeconds: r.Seconds,
 				keyExitCode: boolInt(r.Failed), keyReason: r.Reason,
 				keyHaveUse: r.HaveUsage, keyEffort: r.Effort,
+				keyNeverRun: r.NeverStarted,
 			},
 		})
 	}
@@ -161,6 +176,8 @@ func FromBudgetRun(b budget.Run, ok bool, failed bool, reason string, d time.Dur
 
 func msgFor(r Run) string {
 	switch {
+	case r.NeverStarted:
+		return "run never started"
 	case !r.HaveUsage:
 		return "run ended without reporting usage"
 	case r.Failed:
@@ -184,16 +201,23 @@ type Row struct {
 	Actor  string
 	Runs   int
 	Failed int
-	// Missing counts runs that reported no usage. Those runs are in Runs and
-	// contribute nothing to the token or cost columns.
+	// Missing counts runs that STARTED and then reported no usage. Those runs
+	// are in Runs and contribute nothing to the token or cost columns, which
+	// is what makes the totals a floor.
+	//
+	// A never-started run is deliberately excluded: its usage is not missing,
+	// it is known to be nothing.
 	Missing int
-	Turns   int
-	Prompt  int
-	Output  int
-	CacheW  int
-	CacheR  int
-	CostUSD float64
-	Seconds float64
+	// NeverStarted counts runs the CLI abandoned before opening a session.
+	// Kept apart from Failed so neither number lies about the other.
+	NeverStarted int
+	Turns        int
+	Prompt       int
+	Output       int
+	CacheW       int
+	CacheR       int
+	CostUSD      float64
+	Seconds      float64
 }
 
 // Report is a ticket's whole lifecycle, ready to render.
@@ -250,11 +274,20 @@ func Aggregate(evs []events.Event, key string) Report {
 
 func (r *Row) add(run Run) {
 	r.Runs++
-	if run.Failed {
-		r.Failed++
-	}
-	if !run.HaveUsage {
-		r.Missing++
+	// One bucket per run, never two. A run that never started exits non-zero
+	// and reports no usage, so without this it would be counted a third time
+	// -- once as a fault, once as a failure, once as a hole in the total --
+	// and each of the three would read as a separate problem.
+	switch {
+	case run.NeverStarted:
+		r.NeverStarted++
+	default:
+		if run.Failed {
+			r.Failed++
+		}
+		if !run.HaveUsage {
+			r.Missing++
+		}
 	}
 	r.Turns += run.Turns
 	r.Prompt += run.Prompt
@@ -278,8 +311,13 @@ func runFrom(e events.Event) Run {
 		Failed:    intOf(e.Detail, keyExitCode) != 0,
 		Reason:    stringOf(e.Detail, keyReason),
 		HaveUsage: boolOf(e.Detail, keyHaveUse),
-		Model:     e.Model,
-		Effort:    stringOf(e.Detail, keyEffort),
+		// Absent on every event written before OR-219, which reads back false
+		// -- "this run started" -- and that is the right default: those runs
+		// were recorded by a build that could not tell, so claiming otherwise
+		// would be inventing a fault.
+		NeverStarted: boolOf(e.Detail, keyNeverRun),
+		Model:        e.Model,
+		Effort:       stringOf(e.Detail, keyEffort),
 	}
 }
 

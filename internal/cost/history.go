@@ -80,6 +80,10 @@ type HistoryRow struct {
 	Exit       int     `json:"exit"`
 	Reason     string  `json:"reason,omitempty"`
 	UsageKnown bool    `json:"usage_reported"`
+	// NeverStarted separates an environmental fault from a failed run, and is
+	// omitted when false so the overwhelmingly common case adds no column and
+	// rows written before OR-219 stay byte-comparable with rows written after.
+	NeverStarted bool `json:"never_started,omitempty"`
 }
 
 func historyRow(actor, key string, r Run) HistoryRow {
@@ -91,6 +95,7 @@ func historyRow(actor, key string, r Run) HistoryRow {
 		CacheW: r.CacheW, CacheR: r.CacheR,
 		CostUSD: r.CostUSD, Seconds: r.Seconds,
 		Exit: boolInt(r.Failed), Reason: r.Reason, UsageKnown: r.HaveUsage,
+		NeverStarted: r.NeverStarted,
 	}
 }
 
