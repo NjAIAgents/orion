@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -360,6 +362,50 @@ func TestPlanNeedsAKey(t *testing.T) {
 	}
 	if len(f.asked) != 0 {
 		t.Errorf("the tracker was called with %v before the key was validated", f.asked)
+	}
+}
+
+// A project with no NAME has nothing to derive a slug from -- rejected
+// before a workspace is touched, with an instruction the operator can act on.
+func TestPlanRejectsAProjectWithNoName(t *testing.T) {
+	home := planHome(t)
+	f := &fakeProjects{projects: map[string]tracker.Project{
+		"NONAME": {ID: "1", Key: "NONAME", Name: "", Description: "something"},
+	}}
+	_, err := runPlanInto(t, f, config.Config{}, planOptions{Key: "NONAME", Home: home})
+	if err == nil {
+		t.Fatal("a project with no name was accepted")
+	}
+	if !strings.Contains(err.Error(), "no name") {
+		t.Errorf("refusal does not say the project has no name: %v", err)
+	}
+	if entries, readErr := os.ReadDir(filepath.Join(home, "projects")); readErr == nil && len(entries) > 0 {
+		t.Error("a workspace was provisioned for a project with no name")
+	}
+}
+
+// The roster names actors by whatever the operator configured them as
+// (docs/decisions/0005), not the shipped default -- a renamed agent has to
+// show up renamed in the one place a run is judged before it costs anything.
+func TestPlanRosterUsesConfiguredActorNames(t *testing.T) {
+	home := planHome(t)
+	custom := "Beeblebrox"
+	if err := actors.Configure(map[string]config.Agent{
+		events.ActorArchitect: {Name: &custom},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = actors.Configure(nil) })
+
+	out, err := runPlanInto(t, orpay(), config.Config{}, planOptions{Key: "ORPAY", Home: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, custom) {
+		t.Errorf("roster does not show the configured actor name %q:\n%s", custom, out)
+	}
+	if strings.Contains(out, "Navjyot") {
+		t.Errorf("roster shows the shipped default name instead of the configured one:\n%s", out)
 	}
 }
 
