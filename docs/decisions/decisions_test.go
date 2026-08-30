@@ -27,6 +27,10 @@ var expectedDecisions = []string{
 	// landing, so a later "why not just turn on GitHub's merge queue?" has
 	// somewhere to land other than a re-litigation.
 	"0011-orion-owns-the-landing-queue.md",
+	// OR-149. Settles the question 0009 left open, and it is load-bearing in
+	// the same way: without it, "just let a re-run reuse the workspace" is a
+	// one-line change nobody would think to argue with.
+	"0012-one-workspace-per-tracker-project.md",
 }
 
 func TestEveryDecisionHasContextDecisionConsequences(t *testing.T) {
