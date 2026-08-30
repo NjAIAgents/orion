@@ -367,6 +367,73 @@ func ExplorePrompt(question string) string {
 	)
 }
 
+// AIOpsNonePrefix is how the triage subagent says the leftover events are
+// all explainable and nothing should be filed.
+//
+// A literal marker rather than a reading of the prose, for the same reason
+// ExploreNotFound is one: "nothing here is worth reporting" is the answer
+// this agent should give most nights, and an answer that has to be inferred
+// from prose is one a parser will eventually read as a proposal.
+const AIOpsNonePrefix = "NOTHING TO REPORT"
+
+// AIOpsProposePrefix opens each proposed finding, one per line.
+const AIOpsProposePrefix = "PROPOSE:"
+
+// AIOpsPrompt asks a subagent whether any leftover event in a finished run is
+// worth filing a ticket about.
+//
+// It is handed ONLY the concerning events that no rule recognised. The rules
+// are pure functions over typed events -- they cannot hallucinate and they
+// cost nothing -- so everything they can already explain is settled before
+// this agent is started, and what is left is the far smaller and more honest
+// question of whether an unrecognised pattern matters (OR-168).
+//
+// Two clauses carry the whole prompt.
+//
+// SAYING NOTHING IS THE EXPECTED ANSWER. Orion degrades on purpose in many
+// places: a lock timeout proceeds unlocked, a QA failure is a warning, an
+// absent optional tool is fine. An agent that reads "blocked" or "failed" and
+// proposes a ticket is filing against behaviour that is working correctly,
+// and the backlog is already hard to scan. So the default is stated as the
+// default, not as a permitted exception.
+//
+// IT PROPOSES; IT DOES NOT FILE. Said here as well as enforced by the type
+// the caller uses, because an agent told it may create tickets will look for
+// a way to, and the tracker credentials are in the environment it runs in.
+func AIOpsPrompt(key, lines string) string {
+	return join(
+		"A run working "+key+" has FINISHED. Below are the events from its log that",
+		"went wrong and that Orion's own rules did not already recognise.",
+		"",
+		"THE UNRECOGNISED EVENTS",
+		quote(lines),
+		"",
+		"ONE QUESTION: is any of this worth a person filing a ticket about?",
+		"",
+		"ALMOST ALWAYS THE ANSWER IS NO, AND THAT IS THE RIGHT ANSWER",
+		"Orion degrades on purpose. A lock timeout proceeds unlocked and says so.",
+		"A QA failure is a warning, not a block. A missing optional tool is a",
+		"supported configuration. A run that found the work already present and",
+		"changed nothing is a correct outcome. None of those is a defect, and a",
+		"ticket filed against one teaches everybody that these tickets mean",
+		"nothing. Propose something only when you can say what is BROKEN, not",
+		"merely what looks alarming.",
+		"",
+		"DO NOT CREATE ANYTHING",
+		"Do not open a ticket, comment on one, or run any command that would.",
+		"A person decides what gets created. You are writing a suggestion.",
+		"",
+		"ANSWER",
+		"If nothing is worth reporting, reply with exactly:",
+		"  "+AIOpsNonePrefix,
+		"Otherwise write one line per finding, and nothing else:",
+		"  "+AIOpsProposePrefix+" <one-line title> | <why this is broken rather than",
+		"  degrading on purpose, in a sentence>",
+		"At most three. If you have more than three, you are pattern-matching on",
+		"the word \"failed\" rather than judging, and none of them will be read.",
+	)
+}
+
 // TicketPrompt is the instruction for implementing one tracker issue.
 //
 // Every clause here is load-bearing, because this text is what decides how

@@ -124,6 +124,9 @@ MONITORING
   orion logs <KEY> [-f]       what Orion is doing, live (FCIA or FCIA-6)
   orion logs <KEY> --actor implementer   only that role's lines
   orion logs <KEY> --transcript   the raw agent output instead
+  orion aiops <KEY>           read a FINISHED run's event log and report what is
+                              worth filing, with draft tickets. Proposes only --
+                              it never creates anything (--no-agent for rules only)
 
 BUDGET (rolling 7 days, your limit, not your plan's)
   orion budget status         spend, tokens and the next checkpoint
@@ -244,6 +247,8 @@ func main() {
 		runBudget(os.Args[2:])
 	case "lessons":
 		runLessons(os.Args[2:])
+	case "aiops":
+		runAIOps(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Printf("orion %s\n", Version)
 	case "help", "--help", "-h":
