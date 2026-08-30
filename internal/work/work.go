@@ -311,7 +311,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// rule in internal/events asks for. As a note it was indistinguishable
 	// from the ninety-odd other things worth seeing, which is the same as not
 	// having been recorded (OR-201).
-	actorID, routeWhy := route(*issue)
+	actorID, routeWhy := Route(*issue)
 	log.Emitf(events.KindDecision, events.ActorOrion, "routed to the %s: %s", actorID, routeWhy)
 	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "routed to %s: %s", actors.Display(actorID), routeWhy)
 

@@ -238,6 +238,28 @@ first, leaving it on means hitting a wall on the first edit, and people
 disable Orion entirely rather than change one setting. Turn it on with
 `orion init --plan-gate`, or flip it in `orion.json` when the habit is there.
 
+### 4c. Which actor works a ticket
+
+Orion picks the actor from the ticket's **issue type, components and labels**
+— a deterministic lookup, never a model call, and never inferred from the
+summary. `orion routes` prints the whole table: each routable actor, the
+exact keywords it accepts, and the actors that are deliberately unroutable
+because something else already invokes them.
+
+```bash
+orion routes
+```
+
+Matching is by **equality**, case-insensitive. A component named
+`docsite-infra` is not a documentation ticket, so containment would route it
+to the wrong actor.
+
+**Set the marker when the ticket is created.** Routing reads what planning
+wrote; a ticket carrying no marker goes to the backend developer, which is
+right for backend work and silently wrong for everything else. `orion queue`
+prints the routing split of the work in front of it, so an all-default queue
+is visible before the run rather than after the bill.
+
 ---
 
 ## 5. Tuning the guardrails
