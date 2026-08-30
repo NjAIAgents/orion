@@ -38,6 +38,10 @@ func fakeClaudeTree(t *testing.T, script string) {
 // `go test`, `npm`, a dev server) and then hangs past MaxMinutes must leave
 // no grandchild behind once Run returns.
 func TestRunKillsGrandchildrenOnWallClockTimeout(t *testing.T) {
+	// A real minute plus a real eight-second grace proved nothing this
+	// sub-second budget does not: same ctx.Done() branch, same terminate(),
+	// same group sweep (OR-202).
+	shrinkWallClock(t, 500*time.Millisecond, 200*time.Millisecond)
 	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
 	fakeClaudeTree(t, "sleep 300 & echo $! > "+pidFile+"\nwait\n")
 
@@ -50,7 +54,9 @@ func TestRunKillsGrandchildrenOnWallClockTimeout(t *testing.T) {
 	if res == nil || !res.Killed {
 		t.Fatalf("expected a killed result after the wall clock elapsed, got %+v", res)
 	}
-	if time.Since(start) > 90*time.Second {
+	// Run must return on its OWN deadline, not on the child's. The child
+	// sleeps 300s; anything near that means the timeout branch waited for it.
+	if time.Since(start) > 10*time.Second {
 		t.Fatalf("Run took too long to return after its own timeout: %s", time.Since(start))
 	}
 
