@@ -101,6 +101,13 @@ func TestABoundaryDegradesToASCIIWithTheTransitionLegible(t *testing.T) {
 	h := Handoff{Key: "OR-183", From: "implementing", To: "qa",
 		By: events.ActorImplementer, Next: events.ActorQA}
 
+	// All three, in POSIX precedence order. utf8Locale reads LC_ALL, then
+	// LC_CTYPE, then LANG, and returns on the FIRST one that is set, so
+	// setting only LANG leaves the result at the mercy of the runner's
+	// environment. A macOS CI runner exports LC_CTYPE, which made this
+	// pass locally and on Linux while failing there.
+	t.Setenv("LC_ALL", "C")
+	t.Setenv("LC_CTYPE", "C")
 	t.Setenv("LANG", "C")
 	ascii := renderStage(h)
 	if strings.ContainsAny(ascii, stageRuleGlyph+stageArrowGlyph) {
@@ -115,6 +122,8 @@ func TestABoundaryDegradesToASCIIWithTheTransitionLegible(t *testing.T) {
 		}
 	}
 
+	t.Setenv("LC_ALL", "en_GB.UTF-8")
+	t.Setenv("LC_CTYPE", "en_GB.UTF-8")
 	t.Setenv("LANG", "en_GB.UTF-8")
 	glyph := renderStage(h)
 	// The same facts, in the same words. Only the punctuation changes.
