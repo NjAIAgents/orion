@@ -79,6 +79,8 @@ RUNNING
   orion status <id>           show stage, breaker state and last run
   orion work <KEY> [KEY...]   work tickets, in the order given
   orion queue                 what the watcher would pick up, in order (read-only)
+  orion routes                which marker sends a ticket to which actor, and
+                              which actors are reached another way (read-only)
   orion watch [PROJECT...]    run the queue by itself: work, collect, repeat
                               (--once, --interval S, --max-jobs N, --dry-run)
   orion collect [KEY...]      finish tickets awaiting CI: close, refresh, prune
@@ -199,6 +201,8 @@ func main() {
 		runWork(os.Args[2:])
 	case "queue":
 		runQueue(os.Args[2:])
+	case "routes":
+		runRoutes()
 	case "repos":
 		runRepos(os.Args[2:])
 	case "sandbox":
@@ -1157,6 +1161,14 @@ func runQueue(args []string) {
 
 	fmt.Fprintf(w, "\n  %d working, %d awaiting CI, %d queued, %d failed.\n",
 		counts["working"], counts["ci-wait"], counts["queued"], counts["failed"])
+
+	// Where this work would go, before any of it runs. See routingSummary.
+	if summary, hint := routingSummary(issues); summary != "" {
+		fmt.Fprintf(w, "  %s\n", summary)
+		if hint != "" {
+			fmt.Fprintf(w, "  %s\n", ui.Dim(w, hint))
+		}
+	}
 	if counts["failed"] > 0 {
 		fmt.Fprintf(w, "  A failed ticket is not retried: remove %s and add %s to requeue it.\n",
 			tracker.LabelFailed, cfg.Tracker.QueueLabel)
@@ -1170,6 +1182,36 @@ func runQueue(args []string) {
 			strings.Join(stale, ", "), tracker.LabelWorking)
 	}
 	fmt.Fprintln(w, "  Nothing has been started: this command only reads.")
+}
+
+// routingSummary says which actor each queued ticket would reach, and adds a
+// hint when every one of them takes the default.
+//
+// Printed here because here is BEFORE the money is spent. A queue that is
+// entirely default is either correct -- these really are backend tickets --
+// or a planning failure in which nothing wrote a marker, and the two are
+// indistinguishable until the split is on screen. The hint is not a warning:
+// all-default is the right answer often enough that flagging it as a problem
+// would train the reader to ignore the line (OR-191).
+func routingSummary(issues []tracker.Issue) (summary, hint string) {
+	dist := work.Distribution(issues)
+	if len(dist) == 0 {
+		return "", ""
+	}
+	parts := make([]string, 0, len(dist))
+	for _, t := range dist {
+		part := fmt.Sprintf("%d %s", t.N, actors.Display(t.Actor))
+		if t.Actor == work.DefaultActor {
+			part += " (default)"
+		}
+		parts = append(parts, part)
+	}
+	summary = "routing: " + strings.Join(parts, ", ") + "."
+	if len(dist) == 1 && dist[0].Actor == work.DefaultActor {
+		hint = "Every ticket takes the default. `orion routes` prints the markers that " +
+			"change that; they are set when the ticket is created, not here."
+	}
+	return summary, hint
 }
 
 // queueJQL builds the query from config, scoped to the bound project so a
@@ -1641,7 +1683,11 @@ func runTrackerProvision(ws *workspace.Workspace, cfg config.Config, confirm fun
 	// a shared tracker cannot.
 	fmt.Println("\nNext, decompose the plan into issues. The whole tree is previewed")
 	fmt.Println("for one approval before anything is created:")
-	fmt.Printf("  claude -p \"Use /pm-plan to decompose plans/*.plan.md into %s. Preview the full tree and wait for approval.\"\n", b.Key)
+	// `orion routes` in the prompt, not the table itself: a copy of the
+	// vocabulary pasted here is a copy that drifts from the one routing
+	// actually reads (OR-191).
+	fmt.Printf("  claude -p \"Run 'orion routes' first and set the marker it names on every item. "+
+		"Then use /pm-plan to decompose plans/*.plan.md into %s. Preview the full tree and wait for approval.\"\n", b.Key)
 }
 
 // runReport prints the digest, and optionally sends it.

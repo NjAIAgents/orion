@@ -22,6 +22,7 @@ var expectedDecisions = []string{
 	"0007-auto-effort-standing-preference.md",
 	"0008-parallelism-level-ordering.md",
 	"0009-canonical-slug-one-name.md",
+	"0010-routing-vocabulary-is-a-published-contract.md",
 }
 
 func TestEveryDecisionHasContextDecisionConsequences(t *testing.T) {
@@ -106,6 +107,13 @@ func TestDecisionContentMatchesTicket(t *testing.T) {
 		{
 			"0009-canonical-slug-one-name.md",
 			[]string{"OR-149"},
+		},
+		{
+			// Which actors are routable, and why the rest are not, is the
+			// substance of OR-191 -- a file that kept the sections but lost
+			// the roster decision would document nothing.
+			"0010-routing-vocabulary-is-a-published-contract.md",
+			[]string{"OR-171", "OR-176", "OR-191", "orion routes", "docsite-infra"},
 		},
 	}
 

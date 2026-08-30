@@ -102,6 +102,23 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 			"by other people and cannot be cleanly withdrawn.",
 			"",
 			"Search the tracker first and reconcile, so a re-run never double-creates.",
+			"",
+			// Routing reads a marker off the created ticket. Nothing that
+			// created a ticket knew the vocabulary existed, so the metadata
+			// was set by luck and in practice never -- every ticket defaulted
+			// to the implementer while the log correctly announced the
+			// default on every run (OR-191).
+			//
+			// The vocabulary is NOT restated here. `orion routes` prints it,
+			// and a prompt carrying its own copy is a second copy that drifts
+			// from the table the moment either changes. Orion owns the
+			// contract; the skill applies it (CLAUDE.md's precedence rule).
+			"Run `orion routes` before you write the tree, and set the marker it names on",
+			"every item you create -- as the issue type, a component, or a label. A ticket",
+			"with no marker goes to the backend developer, which is correct for backend work",
+			"and wrong for everything else. Routing reads what you write here and infers",
+			"nothing from the summary, so an unmarked docs ticket is worked by the wrong",
+			"actor and nothing anywhere reports a mistake.",
 		), nil
 
 	case "build", "implement":
