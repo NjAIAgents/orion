@@ -180,6 +180,11 @@ func Run(opts Options, deps Deps) []Result {
 		opts.Home = workspace.Home()
 	}
 
+	// A run of identical lines is held back to be printed once with its
+	// count, so the last such run needs somewhere to land. Without this the
+	// count for whatever a ticket ended on is never printed at all (OR-217).
+	defer ui.Flush(opts.Out)
+
 	var results []Result
 	for _, key := range opts.Keys {
 		r := one(strings.ToUpper(strings.TrimSpace(key)), opts, deps)
