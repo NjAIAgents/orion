@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -45,7 +46,18 @@ type Issue struct {
 	// both use the same field -- so one query and one field cover both
 	// hierarchies without Orion knowing which shape a project uses.
 	Parent string
+	// FixVersions are the milestone names this ticket carries, by Jira's own
+	// name for each. A LIST because Jira allows several, and the plural
+	// matters: `release add` has to tell "this ticket is on no milestone"
+	// from "this ticket is on a DIFFERENT one", which is a move and a
+	// different sentence (OR-222).
+	FixVersions []string
 }
+
+// ErrIssueNotFound is what GetIssue returns for a 404, so a caller resolving
+// a list of keys can report "that ticket does not exist" separately from "the
+// tracker is unreachable" rather than treating every failure as absence.
+var ErrIssueNotFound = errors.New("no such issue")
 
 // Search runs JQL and returns issues in the order Jira gave them, which is
 // the order the caller asked for.
@@ -61,7 +73,7 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 	q := url.Values{}
 	q.Set("jql", jql)
 	q.Set("maxResults", fmt.Sprint(maxResults))
-	q.Set("fields", "summary,description,status,labels,priority,parent,issuetype,components")
+	q.Set("fields", "summary,description,status,labels,priority,parent,issuetype,components,fixVersions")
 
 	code, body, err := j.do("GET", "/rest/api/3/search/jql?"+q.Encode(), nil)
 	if err != nil {
@@ -101,6 +113,9 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 				Components []struct {
 					Name string `json:"name"`
 				} `json:"components"`
+				FixVersions []struct {
+					Name string `json:"name"`
+				} `json:"fixVersions"`
 			} `json:"fields"`
 		} `json:"issues"`
 	}
@@ -120,7 +135,8 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 			Priority:       i.Fields.Priority.Name,
 			Parent:         i.Fields.Parent.Key,
 			IssueType:      i.Fields.IssueType.Name,
-			Components:     componentNames(i.Fields.Components),
+			Components:     namesOf(i.Fields.Components),
+			FixVersions:    namesOf(i.Fields.FixVersions),
 			URL:            j.BaseURL + "/browse/" + i.Key,
 		})
 	}
@@ -130,12 +146,12 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 // GetIssue fetches one issue.
 func (j *Jira) GetIssue(key string) (*Issue, error) {
 	code, body, err := j.do("GET", "/rest/api/3/issue/"+url.PathEscape(key)+
-		"?fields=summary,description,status,labels,issuetype,components", nil)
+		"?fields=summary,description,status,labels,issuetype,components,fixVersions", nil)
 	if err != nil {
 		return nil, err
 	}
 	if code == 404 {
-		return nil, fmt.Errorf("issue %s not found on %s", key, j.BaseURL)
+		return nil, fmt.Errorf("%w: %s on %s", ErrIssueNotFound, key, j.BaseURL)
 	}
 	if code >= 400 {
 		return nil, fmt.Errorf("fetching %s: %d %s", key, code, snippet(body))
@@ -158,6 +174,9 @@ func (j *Jira) GetIssue(key string) (*Issue, error) {
 			Components []struct {
 				Name string `json:"name"`
 			} `json:"components"`
+			FixVersions []struct {
+				Name string `json:"name"`
+			} `json:"fixVersions"`
 		} `json:"fields"`
 	}
 	if err := json.Unmarshal(body, &i); err != nil {
@@ -171,14 +190,16 @@ func (j *Jira) GetIssue(key string) (*Issue, error) {
 		StatusCategory: i.Fields.Status.Category.Key,
 		Labels:         i.Fields.Labels,
 		IssueType:      i.Fields.IssueType.Name,
-		Components:     componentNames(i.Fields.Components),
+		Components:     namesOf(i.Fields.Components),
+		FixVersions:    namesOf(i.Fields.FixVersions),
 		URL:            j.BaseURL + "/browse/" + i.Key,
 	}, nil
 }
 
-// componentNames flattens Jira's component objects to their names, which is
-// all Issue and the router need.
-func componentNames(cs []struct {
+// namesOf flattens one of Jira's {"name": ...} object lists to its names,
+// which is all Issue, the router and the milestone plan need. Components and
+// fixVersions are the same shape, so they share it.
+func namesOf(cs []struct {
 	Name string `json:"name"`
 }) []string {
 	if len(cs) == 0 {
