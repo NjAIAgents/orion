@@ -112,6 +112,9 @@ GUARDRAILS
                               --fix fetches nj-agents if it is missing
   orion reset --session <id>  clear a tripped breaker after human review
   orion fix start|end         mark a bug fix, protecting the failing test
+  orion settle <KEY>          unstick a ticket's worktree: report what is
+                              blocking its branch and commit it, so collect can
+                              rebase again (--dry-run to look first)
 
 FOR AN AGENT INSIDE A RUN
   orion explore "<question>"  answer one question about this repository in a
@@ -245,6 +248,8 @@ func main() {
 		runConflict(os.Args[2:])
 	case "reset":
 		runReset(os.Args[2:])
+	case "settle":
+		runSettle(os.Args[2:])
 	case "fix":
 		mustArg(os.Args, 2, "orion fix start|end")
 		runFix(os.Args[2])
