@@ -211,7 +211,7 @@ func shortenPaths(msg string) string {
 		// "left /a/b/c behind:" must keep its colon.
 		trimmed := strings.TrimRight(f, ".,;:)")
 		tail := f[len(trimmed):]
-		if !strings.HasPrefix(trimmed, "/") || len(trimmed) <= pathMinLen {
+		if !strings.HasPrefix(trimmed, "/") || len(trimmed) < pathMinLen {
 			continue
 		}
 		if base := path.Base(trimmed); base != "" && base != "/" {
