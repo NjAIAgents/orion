@@ -1369,6 +1369,67 @@ func TestQAVerdictReadsTheSentinelAndNotThePraise(t *testing.T) {
 	}
 }
 
+// Every stem namesAFailure is supposed to catch, each in a natural sentence
+// that is not the sentinel -- so a QA report using any of these words for its
+// defect is read as findings and not silently treated as no verdict, which
+// would cost a real defect a cheap re-ask instead of a fix round.
+func TestQAVerdictRecognizesEveryFailureStem(t *testing.T) {
+	sentences := map[string]string{
+		"fail":       "Case 3 fails on the boundary value.",
+		"defect":     "Found a defect in the rounding path.",
+		"broke":      "The refactor broke the discount calculation.",
+		"regress":    "This regressed the totals for negative amounts.",
+		"incorrect":  "The tax total is incorrect for zero-quantity orders.",
+		"wrong":      "The rounding is wrong: expected 2 decimal places, got 4.",
+		"missing":    "Authorisation check is missing on the delete endpoint.",
+		"mismatch":   "There is a type mismatch between the two totals.",
+		"crash":      "The handler crashes on an empty payload.",
+		"panic":      "The parser panics on malformed input.",
+		"unable":     "The client is unable to reach the retry path.",
+		"problem":    "There is a problem with the pagination cursor.",
+		"unexpected": "Got an unexpected status code for the same request.",
+	}
+	for stem, s := range sentences {
+		if _, kind := qaVerdict(s); kind != qaVerdictFindings {
+			t.Errorf("qaVerdict(%q) [stem %q] kind = %v, want qaVerdictFindings", s, stem, kind)
+		}
+	}
+}
+
+// Words that look like a failure stem but are not one, and are not preceded
+// by a negator either -- the two ways this list could misfire in opposite
+// directions. A prompt or report using ordinary engineering vocabulary must
+// not be read as a defect report.
+func TestQAVerdictAvoidsFalsePositiveFailureWords(t *testing.T) {
+	sentences := []string{
+		"Ran with debug logging enabled for the whole suite.",
+		"The passfail summary printed at the end of the run.",
+		"Coverage looks complete for every case in the list.",
+	}
+	for _, s := range sentences {
+		if _, kind := qaVerdict(s); kind != qaVerdictNone {
+			t.Errorf("qaVerdict(%q) kind = %v, want qaVerdictNone (no failure word present)", s, kind)
+		}
+	}
+}
+
+// A report of a pass stated in the negative is a pass, not a defect: "no
+// failures" and "nothing broke" name a failure word but deny it, and reading
+// past the negation is exactly the misread namesAFailure exists to avoid.
+// Neither is the sentinel, so both fall out as no verdict -- a re-ask, never
+// a fix round.
+func TestQAVerdictReadsNegatedFailureWordsAsNoVerdict(t *testing.T) {
+	sentences := []string{
+		"Ran every case; no failures.",
+		"Nothing broke after the change.",
+	}
+	for _, s := range sentences {
+		if _, kind := qaVerdict(s); kind != qaVerdictNone {
+			t.Errorf("qaVerdict(%q) kind = %v, want qaVerdictNone (negated failure word)", s, kind)
+		}
+	}
+}
+
 // OR-204. A QA run that verified everything but wrote its conclusion as prose
 // must not be routed into a fix round: the implementer would be told to fix a
 // defect nobody described, and the cheapest way to obey that is to weaken the
