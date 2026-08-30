@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/actors"
+	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/advise"
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
@@ -304,8 +305,14 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// Said out loud on every ticket, including the default: a route that
 	// falls through in silence is how the frontend actor went unreached for
 	// as long as it did (OR-171).
-	actorID, routeWhy := route(*issue)
-	log.Emitf(events.KindNote, events.ActorOrion, "routed to the %s: %s", actorID, routeWhy)
+	//
+	// A DECISION, not a note. Another actor could have worked this ticket and
+	// the reason it did not is right there in the same line -- both halves the
+	// rule in internal/events asks for. As a note it was indistinguishable
+	// from the ninety-odd other things worth seeing, which is the same as not
+	// having been recorded (OR-201).
+	actorID, routeWhy := Route(*issue)
+	log.Emitf(events.KindDecision, events.ActorOrion, "routed to the %s: %s", actorID, routeWhy)
 	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "routed to %s: %s", actors.Display(actorID), routeWhy)
 
 	// Is it already finished? The queue query excludes resolved tickets, but
@@ -431,6 +438,19 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if err != nil {
 		return fail(res, err)
 	}
+	// Attribution hooks live in the sandbox CLONE, not in the worktree and
+	// not in the user's checkout. Before this, the clone was never
+	// instrumented, so every commit an agent made carried no AI-Attribution
+	// trailer at all -- the most agent-written code in the repository was the
+	// part with no record that an agent wrote it (OR-193).
+	//
+	// Best-effort and reported: a missing trailer is a worse record, not a
+	// reason to throw away the run that would have produced one.
+	if cfg.Attribution.Enabled {
+		if err := adopt.EnsureSandboxDun(ws.CloneDir()); err != nil {
+			ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "attribution: %v", err)
+		}
+	}
 	res.Branch = job.Branch
 	// Record the ACTUAL branch now, while it is known -- AddWorktree may have
 	// suffixed it. Best-effort: a write failure here must not lose an agent
@@ -439,6 +459,14 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if err := workspace.RecordBranch(ws, key, job.Branch); err != nil {
 		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not record the branch for collect: %v", err)
 	}
+	// Registered here, before anything can run in the worktree, so it fires
+	// however this run ends -- pushed, blocked, failed, or killed. A tripped
+	// breaker stops the agent from looping and, by the time it fires, from
+	// acting at all, so the tidy-up cannot be the agent's job (OR-194).
+	defer func() {
+		revertTripResidue(job.Path, job.Branch, key, issue.Summary, issue.URL, cfg, ws, log, w)
+	}()
+
 	log.Emitf(events.KindBranch, events.ActorOrion, "branch %s from %s", job.Branch, cfg.VCS.WorkBranch)
 	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "branch %s", job.Branch)
 	fmt.Fprintf(w, "          %s\n", ui.Dim(w, job.Path))
@@ -485,10 +513,16 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	ui.Banner(w, key, issue.Summary, actorID,
 		actors.Model(actorID), job.Branch)
 
+	// Boundary one: Orion has finished deciding and an agent starts spending.
+	// Marked here rather than at the routing decision above, because routing
+	// picks the actor and this is the moment it actually takes the run.
+	ui.Stage(w, log, ui.Handoff{Key: key, From: "routing", To: "implementing",
+		By: events.ActorOrion, Next: actorID, Detail: "on " + job.Branch})
+
 	log.Emitf(events.KindRunStart, actorID, "implementing %s", key)
 	stTitle, stBody := msgStarted(key, issue.Summary, job.Branch, issue.URL)
 	tell(w, log, ws, notify.Event{
-		Level: notify.Info, Workspace: ws.ID, Actor: actorID,
+		Key: key, Level: notify.Info, Workspace: ws.ID, Actor: actorID,
 		Title: stTitle, Body: stBody,
 	})
 
@@ -584,12 +618,18 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			return failAndTell(res, cErr, key, ws, log, w, deps)
 		}
 		rel, _ := filepath.Rel(job.Path, path)
-		log.Emitf(events.KindDecision, events.ActorOrion, "recorded %s", rel)
+		// What was chosen and what it was derived from, not just which file
+		// now holds it. "recorded docs/decisions/OR-1-1.md" is the same empty
+		// line as "the advisor responded": it says a decision happened and
+		// leaves the decision out of it (OR-201). The path stays on the end
+		// because the record is on the branch and a reader will want it.
+		log.Emitf(events.KindDecision, events.ActorOrion, "%s -- grounded in %s; recorded in %s",
+			ans.Decision, ans.Grounding, rel)
 		ui.Say(w, key, events.ActorOrion, ui.VerbOK, "recorded %s", rel)
 
 		anTitle, anBody := msgAnswered(key, ans, question)
 		tell(w, log, ws, notify.Event{
-			Level: notify.Info, Workspace: ws.ID, Actor: actorFor(ans.Role),
+			Key: key, Level: notify.Info, Workspace: ws.ID, Actor: actorFor(ans.Role),
 			Title: anTitle, Body: anBody,
 		})
 
@@ -654,19 +694,35 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		_ = deps.Jira.Comment(key, actors.Comment(actorID, body))
 		blTitle, blBody := msgBlocked(key, issue.Summary, res.Question, issue.URL, res.Advice)
 		tell(w, log, ws, notify.Event{
-			Level: notify.Blocked, Workspace: ws.ID, Actor: actorID,
+			Key: key, Level: notify.Blocked, Workspace: ws.ID, Actor: actorID,
 			Title: blTitle, Body: blBody,
 		})
 		return res
 	}
 	log.Emitf(events.KindCommit, actorID, "%d commit(s) on %s", commits, job.Branch)
-	ui.Say(w, key, actorID, ui.VerbOK, "%d commit(s) on %s", commits, job.Branch)
+
+	// Boundary two: implementation is over. The commit count is DETAIL on
+	// this line rather than a line of its own -- it used to be the last thing
+	// printed before QA started, so it stood in for a handoff it never
+	// described, and answered "how many commits" when the reader was asking
+	// what stage the run had reached (OR-189).
+	//
+	// Named for where the run actually goes. With QA switched off there is no
+	// QA stage to enter, and a boundary announcing one would be a handoff to
+	// an actor that never runs.
+	nextStage, nextActor := "qa", events.ActorQA
+	if !cfg.QA.On() {
+		nextStage, nextActor = "push", events.ActorOrion
+	}
+	ui.Stage(w, log, ui.Handoff{Key: key, From: "implementing", To: nextStage,
+		By: actorID, Next: nextActor,
+		Detail: fmt.Sprintf("%d commit(s) on %s", commits, job.Branch)})
 
 	// QA, before the branch is pushed. The tests QA writes and any fix its
 	// findings force belong in the same pull request as the change they are
 	// about; verifying after the pull request opened would leave the reviewer
 	// reading the code without its evidence. See qa.go.
-	runQA(qaJob{
+	qa := runQA(qaJob{
 		Key: key, Summary: issue.Summary, Description: issue.Description,
 		ImplSession: runRes.SessionID, Actor: actorID, WS: &jobWS,
 		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
@@ -681,11 +737,25 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		commits = n
 	}
 
+	// Boundary three: QA is over and the branch leaves the machine. Only when
+	// QA actually ran -- the boundary above already handed straight to push
+	// otherwise, and announcing a stage nobody entered is the same lie in
+	// reverse.
+	if qa.Ran {
+		ui.Stage(w, log, ui.Handoff{Key: key, From: "qa", To: "push",
+			By: events.ActorQA, Next: events.ActorOrion, Detail: qa.Verdict()})
+	}
+
 	if err := deps.Push(job.Path, job.Branch); err != nil {
 		return failAndTell(res, fmt.Errorf("pushing %s: %w", job.Branch, err), key, ws, log, w, deps)
 	}
 	log.Emitf(events.KindPush, events.ActorOrion, "pushed %s", job.Branch)
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "pushed %s", job.Branch)
+
+	// Boundary four: the branch is on the remote and a pull request is next.
+	// Orion holds both sides, so it says it continues rather than handing to
+	// itself. The pushed branch is the detail.
+	ui.Stage(w, log, ui.Handoff{Key: key, From: "push", To: "pull request",
+		By: events.ActorOrion, Next: events.ActorOrion, Detail: "pushed " + job.Branch})
 
 	title := key + ": " + issue.Summary
 	body := prBody(key, issue.URL, commits)
@@ -705,7 +775,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}
 	res.PR = url
 	log.Emitf(events.KindPR, events.ActorOrion, "opened %s", url)
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "opened %s, awaiting CI", url)
+	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "opened %s", url)
 
 	// Hand the ticket to the CI-wait state and release the job slot. The
 	// state lives on the ticket so a crash here does not lose the fact that
@@ -721,10 +791,18 @@ func one(key string, opts Options, deps Deps) (res Result) {
 
 	ciTitle, ciBody := msgCIWait(key, issue.Summary, job.Branch, url, issue.URL, commits)
 	tell(w, log, ws, notify.Event{
-		Level: notify.Info, Workspace: ws.ID,
+		Key: key, Level: notify.Info, Workspace: ws.ID,
 		Title: ciTitle, Body: ciBody,
 	})
-	ui.Say(w, key, events.ActorOrion, ui.VerbWaiting, "awaiting CI; the job slot is free")
+
+	// Boundary five, and the one most easily got wrong. The next party here
+	// is CI: a machine, running no agent and spending nothing. Naming devops
+	// -- the agent that only appears if the build goes RED -- would have the
+	// operator watching an agent apparently work for the length of the CI
+	// run, which is the same defect this line exists to fix, pointed the
+	// other way (OR-189). ui.Handoff says "no agent is running" for it.
+	ui.Stage(w, log, ui.Handoff{Key: key, From: "pull request", To: "ci",
+		By: events.ActorOrion, Next: events.ActorCI, Detail: "the job slot is free"})
 	res.Outcome = OutcomeCIWait
 	return res
 }
@@ -821,7 +899,7 @@ func failAndTell(res Result, err error, key string, ws *workspace.Workspace,
 	}
 	title, body := msgFailed(key, summary, err.Error(), res.Branch, res.IssueURL, res.LogPath)
 	tell(w, log, ws, notify.Event{
-		Level: notify.Blocked, Workspace: ws.ID,
+		Key: key, Level: notify.Blocked, Workspace: ws.ID,
 		Title: title, Body: body,
 	})
 	return fail(res, err)
@@ -1010,8 +1088,18 @@ const maxQuestions = 5
 // The retry exists because routing is a guess. A product question sent to the
 // architect comes back as "escalate", and forwarding it costs one more cheap
 // call -- far better than declaring the run blocked over a misclassification.
+//
+// EVERY PATH OUT OF HERE CLOSES THE ASK, with an answer or a refuse. The two
+// advisor-unreachable returns below used to leave without emitting either, so
+// the log recorded a question and never what became of it -- and the reply the
+// implementer then acted on was gone (OR-201).
 func consult(deps Deps, key, actorID, dir, question string, log *events.Log, w io.Writer) (advise.Answer, bool) {
-	log.Emitf(events.KindAsk, actorID, "%s", firstLine(question))
+	// The whole question, like the whole answer below. Six of the six asks
+	// ever recorded were the agent's closing message, and the last of them
+	// ends "...worth having on record:" -- cut mid-sentence, one line into
+	// the thing it was about to put on record (OR-201). The terminal takes
+	// the first line; the log takes what was said.
+	log.Emitf(events.KindAsk, actorID, "%s", question)
 	ui.Say(w, key, actorID, ui.VerbWorking, "asking: %s", firstLine(question))
 
 	role := advise.Route(deps.Advise, dir, question)
@@ -1022,9 +1110,7 @@ func consult(deps Deps, key, actorID, dir, question string, log *events.Log, w i
 		Model: advise.ModelRouter, Msg: "routed to the " + string(role)})
 	ans, err := advise.Ask(deps.Advise, dir, role, question, advise.Artifacts(dir, role))
 	if err != nil {
-		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not reach the %s: %v", role, err)
-		return advise.Answer{Role: role, Verdict: advise.VerdictRefused,
-			Reason: "the advisor could not be reached: " + err.Error()}, false
+		return unreachable(log, w, key, role, err), false
 	}
 
 	if ans.Verdict == advise.VerdictEscalate {
@@ -1038,26 +1124,47 @@ func consult(deps Deps, key, actorID, dir, question string, log *events.Log, w i
 		ui.Say(w, key, actorFor(role), ui.VerbWarn, "this is for the %s", other)
 		ans, err = advise.Ask(deps.Advise, dir, other, question, advise.Artifacts(dir, other))
 		if err != nil {
-			return advise.Answer{Role: other, Verdict: advise.VerdictRefused,
-				Reason: "the advisor could not be reached: " + err.Error()}, false
+			return unreachable(log, w, key, other, err), false
 		}
 	}
 
 	if ans.Answered() {
+		// The decision UNEDITED, the way KindSay records the agent's own
+		// prose. A first line is a headline, and an answer reduced to its
+		// headline cannot explain what the implementer did next -- the
+		// terminal below is the place to be brief, not the record.
 		log.Emit(events.Event{Kind: events.KindAnswer, Actor: string(ans.Role),
 			Model:  ans.Model,
-			Msg:    firstLine(ans.Decision),
+			Msg:    ans.Decision,
 			Detail: map[string]any{"grounding": ans.Grounding}})
 		ui.SayModel(w, key, actorFor(ans.Role), ans.Model, ui.VerbOK, "%s", firstLine(ans.Decision))
 		fmt.Fprintf(w, "          %s\n", ui.Dim(w, ans.Grounding))
 		return ans, true
 	}
 
+	// The whole reason, for the same reason: "the artifacts are silent" is
+	// the beginning of a refusal, and what it goes on to say is which
+	// document a person now has to amend.
 	log.Emit(events.Event{Kind: events.KindRefuse, Actor: string(ans.Role),
-		Model: ans.Model, Msg: firstLine(ans.Reason)})
+		Model: ans.Model, Msg: ans.Reason})
 	ui.SayModel(w, key, actorFor(ans.Role), ans.Model, ui.VerbWarn,
 		"could not decide this: %s", firstLine(ans.Reason))
 	return ans, true
+}
+
+// unreachable closes an ask that never reached an advisor.
+//
+// A transport failure is a refusal like any other -- the question is
+// unanswered and a person has to decide -- and it is recorded as one so that
+// the ask it closes is not left dangling. Attributed to the role that was
+// being asked, matching the Answer this returns, because "the architect could
+// not be reached" is the fact; who failed to reach it is Orion either way.
+func unreachable(log *events.Log, w io.Writer, key string, role advise.Role, err error) advise.Answer {
+	ans := advise.Answer{Role: role, Verdict: advise.VerdictRefused,
+		Reason: "the advisor could not be reached: " + err.Error()}
+	log.Emit(events.Event{Kind: events.KindRefuse, Actor: string(role), Msg: ans.Reason})
+	ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not reach the %s: %v", role, err)
+	return ans
 }
 
 // actorFor maps an advisor's role to its actor identifier.

@@ -157,6 +157,18 @@ func TestRepoPathOverridesRepoDir(t *testing.T) {
 	}
 }
 
+// Git hooks belong to the clone, not to a run. CloneDir following RepoPath
+// would point attribution setup at a worktree, whose .git is a file with no
+// hooks directory -- so `dun init` would land somewhere git never reads and
+// the commits would stay untrailered while everything reported success
+// (OR-193).
+func TestCloneDirIgnoresTheJobWorktree(t *testing.T) {
+	job := Workspace{ID: "t", Dir: "/tmp/ws", RepoPath: "/tmp/ws/worktrees/orion-or-193"}
+	if got := job.CloneDir(); got != filepath.Join("/tmp/ws", "repo") {
+		t.Errorf("CloneDir = %q, want the shared clone regardless of RepoPath", got)
+	}
+}
+
 // Branching from a stale base produces a pull request full of other people's
 // changes, so the sandbox fetches first.
 func TestWorktreeBranchesFromTheRemoteTip(t *testing.T) {

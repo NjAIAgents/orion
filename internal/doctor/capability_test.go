@@ -3,12 +3,14 @@ package doctor
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/creds"
+	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
 // The failure this guards against is not a wrong verdict but a wrong REMEDY.
@@ -202,6 +204,132 @@ func TestCheckHooksCatchesCommandsThatDoNotResolve(t *testing.T) {
 	  {"type":"command","command":"` + realOrion + ` hook gate"}]}]}}`)
 	if c := checkHooks(dir); c.grade != ok {
 		t.Errorf("a resolvable hook graded %v: %+v", c.grade, c)
+	}
+}
+
+// Attribution is a check because it went wrong silently: the sandbox clone
+// carried no dun hooks for months and nothing in `orion doctor` said so. A
+// missing dun must degrade, not pass (OR-193).
+func TestCheckAttributionDegradesWithoutDun(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	c := checkAttribution(t.TempDir(), false)
+	if c.grade == ok {
+		t.Fatalf("reported OK with no dun on PATH: %+v", c)
+	}
+	if !strings.Contains(c.fix, "attribution trailer") {
+		t.Errorf("fix does not say what is lost: %q", c.fix)
+	}
+}
+
+// A project that has turned attribution off is not degraded, it is
+// configured. Warning there is how a check gets ignored everywhere else.
+func TestCheckAttributionRespectsTheDisabledFlag(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	root := t.TempDir()
+	cfg := []byte(`{"version":1,"attribution":{"enabled":false}}`)
+	if err := os.WriteFile(filepath.Join(root, "orion.json"), cfg, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c := checkAttribution(root, false); c.grade != ok {
+		t.Fatalf("graded %v with attribution disabled: %+v", c.grade, c)
+	}
+}
+
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// bound sets up a source checkout AND the sandbox clone Orion binds it to, so
+// checkAttribution's "two targets, not one" path has something to find.
+func bound(t *testing.T) (source string) {
+	t.Helper()
+	t.Setenv("ORION_HOME", t.TempDir())
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	source = filepath.Join(root, "work")
+	gitIn(t, root, "init", "-q", "--bare", "-b", "main", origin)
+	gitIn(t, root, "clone", "-q", origin, source)
+	if err := os.WriteFile(filepath.Join(source, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, source, "add", ".")
+	gitIn(t, source, "commit", "-q", "-m", "seed")
+	gitIn(t, source, "push", "-q", "origin", "main")
+	if _, err := workspace.Bind(workspace.BindOptions{
+		SourcePath: source, DefaultBranch: "main", WorkBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return source
+}
+
+// fakeDun plants a `dun` on PATH whose `verify` exits with cloneExit for the
+// sandbox clone (basename "repo") and 0 for everything else, so a test can
+// tell whether checkAttribution actually reached the clone rather than only
+// the checkout it was called with.
+func fakeDun(t *testing.T, cloneExit int) {
+	t.Helper()
+	bin := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"case \"$1\" in\n" +
+		"  version) echo v-test; exit 0 ;;\n" +
+		"  verify)\n" +
+		"    case \"${3##*/}\" in\n" +
+		"      repo) exit " + itoa(cloneExit) + " ;;\n" +
+		"      *) exit 0 ;;\n" +
+		"    esac\n" +
+		"    ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(bin, "dun"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	return "1"
+}
+
+// The bug this check exists to catch: attribution was fine on the checkout
+// and silently absent on the sandbox clone, where every agent commit is made.
+// checkAttribution must reach the clone, not stop at the checkout.
+func TestCheckAttributionReachesTheSandboxCloneNotJustTheCheckout(t *testing.T) {
+	source := bound(t)
+	fakeDun(t, 1) // clone fails verify; checkout passes
+
+	c := checkAttribution(source, false)
+	if c.grade == ok {
+		t.Fatalf("clone fails dun verify but the check passed: %+v", c)
+	}
+	if !strings.Contains(c.detail, "sandbox clone") {
+		t.Errorf("detail does not name the sandbox clone as the problem: %q", c.detail)
+	}
+}
+
+// dun verify passing for both repositories is the actual acceptance state
+// this ticket is chasing, so it has to grade OK and say so for both.
+func TestCheckAttributionPassesWhenBothRepositoriesVerify(t *testing.T) {
+	source := bound(t)
+	fakeDun(t, 0)
+
+	c := checkAttribution(source, false)
+	if c.grade != ok {
+		t.Fatalf("graded %v with both repositories passing dun verify: %+v", c.grade, c)
+	}
+	if !strings.Contains(c.detail, "checkout") || !strings.Contains(c.detail, "sandbox clone") {
+		t.Errorf("detail should name both repositories checked: %q", c.detail)
 	}
 }
 

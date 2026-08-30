@@ -173,7 +173,7 @@ func stale(res Result, key string, pr PR, branch string, cfg config.Config,
 
 	if ch := channelOf(ws); ch != "" {
 		tell(w, log, notify.Event{
-			Channel: ch, Level: notify.Blocked, Workspace: ws.ID,
+			Key: key, Channel: ch, Level: notify.Blocked, Workspace: ws.ID,
 			Title: key + " needs a rebase before it can merge",
 			Body: fmt.Sprintf("`%s` is behind `%s`.\n\nIts checks are green, and they "+
 				"describe a base that has moved. Git would merge this; nothing has tested "+

@@ -12,8 +12,8 @@
     "max_edits_without_verify": 25,
     "max_files_touched": 60,
 
-    "_comment_max_concurrent_tickets": "How many tickets `orion watch` works at once. Two by default, five is the hard ceiling, and a larger number is clamped rather than honoured. Two is not caution for its own sake: every hazard concurrency introduces -- git against the one shared clone, a budget checkpoint sailed past by runs already in flight, one rate limit reached by several sessions at once, tickets picked that all edit the same files -- is invisible at 1 and obvious at 2. Prove it at 2, then raise it. Note that approvals do not parallelise: N tickets finishing means N approvals waiting on one person.",
-    "max_concurrent_tickets": 2
+    "_comment_max_concurrent_tickets": "How many tickets `orion watch` works at once. Four by default, five is the hard ceiling, and a larger number is clamped rather than honoured. It was two first, and not out of caution for its own sake: every hazard concurrency introduces -- git against the one shared clone, a budget checkpoint sailed past by runs already in flight, one rate limit reached by several sessions at once, tickets picked that all edit the same files -- is invisible at 1 and obvious at 2. The rule was prove it at 2 then raise it; 2 has been proven across a full release and 4 is that raise. It stops short of the ceiling so that 5 stays an explicit choice. Note that approvals do not parallelise: N tickets finishing means N approvals waiting on one person.",
+    "max_concurrent_tickets": 4
   },
 
   "_comment_gates": "Kado, Tate and the plan gate. Turning any of these off removes a control, not a nag.",

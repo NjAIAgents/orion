@@ -48,6 +48,7 @@ const (
 	keyExitCode = "exit"
 	keyReason   = "reason"
 	keyHaveUse  = "usage_reported"
+	keyEffort   = "effort"
 )
 
 // Run is one agent invocation's consumption, as recorded.
@@ -68,39 +69,93 @@ type Run struct {
 	// Such a run contributes a row's run count and nothing to its totals,
 	// which is exactly why the report has to say so.
 	HaveUsage bool
+
+	// Model and Effort are what this run was DISPATCHED with, captured at the
+	// call site rather than resolved from the roster afterwards.
+	//
+	// The event carries the actor id deliberately -- a renamed agent still
+	// attributes correctly because the id is what is persisted. But the roster
+	// is mutable: agents.json sets model and effort per actor and can change
+	// at any time (OR-197), so moving the implementer from opus to sonnet
+	// would make every historical row ambiguous unless the run said which
+	// model produced it. Reading them back later is not a storage problem
+	// with a storage fix; it is a lookup that would answer for today.
+	//
+	// Empty means the run took the CLI's own default, the same convention
+	// actors.Actor uses.
+	Model  string
+	Effort string
+	// Project, Stage and Session are what make a history row relatable:
+	// the project column is why one global file beats a glob and a merge,
+	// and the session id joins a row to its transcript.
+	Project string
+	Stage   string
+	Session string
+	// StartedAt and EndedAt bound the run in wall time. Seconds already says
+	// how long it took; these say WHEN, which is what a benchmark needs to
+	// compare a period before a roster change with the period after it.
+	StartedAt time.Time
+	EndedAt   time.Time
 }
 
-// Record writes one run's consumption to the event log.
+// Record writes one run's consumption to BOTH sinks: the workspace event
+// log, which is the run's narrative and what Aggregate reads back, and the
+// never-rotated usage history under home, which is the durable record.
+//
+// One function on purpose. The two sinks hold the same fact under two
+// retention policies -- the event log is bounded and recent, the history is
+// append-only and keeps the oldest rows a benchmark needs most -- and a
+// second call site for the second copy is how two records of one fact start
+// to diverge. See history.go.
 //
 // Called by the supervisor for every run it finishes, successful or not, and
 // once per quota-retry attempt: an attempt that hit a wall still paid for the
 // context it sent before it did.
-func Record(log *events.Log, actor, key string, r Run) {
-	if log == nil {
-		return
+//
+// An empty home writes the event only. That is for callers with no
+// ORION_HOME to speak of; the supervisor always passes one. The returned
+// error reports a history write that failed or ran without the cross-process
+// lock -- a caller reports it and carries on, because losing an accounting
+// row must not lose the work.
+func Record(log *events.Log, home, actor, key string, r Run) error {
+	if log != nil {
+		log.Emit(events.Event{
+			Kind: events.KindUsage, Actor: actor, Key: key,
+			// Model rides the event's own field rather than a detail key: it
+			// already exists for exactly this, and every renderer reads it.
+			Model: r.Model,
+			Msg:   msgFor(r),
+			Detail: map[string]any{
+				keyTurns: r.Turns, keyPrompt: r.Prompt, keyOutput: r.Output,
+				keyCacheW: r.CacheW, keyCacheR: r.CacheR,
+				keyCostUSD: r.CostUSD, keySeconds: r.Seconds,
+				keyExitCode: boolInt(r.Failed), keyReason: r.Reason,
+				keyHaveUse: r.HaveUsage, keyEffort: r.Effort,
+			},
+		})
 	}
-	log.Emit(events.Event{
-		Kind: events.KindUsage, Actor: actor, Key: key,
-		Msg: msgFor(r),
-		Detail: map[string]any{
-			keyTurns: r.Turns, keyPrompt: r.Prompt, keyOutput: r.Output,
-			keyCacheW: r.CacheW, keyCacheR: r.CacheR,
-			keyCostUSD: r.CostUSD, keySeconds: r.Seconds,
-			keyExitCode: boolInt(r.Failed), keyReason: r.Reason,
-			keyHaveUse: r.HaveUsage,
-		},
-	})
+	if home == "" {
+		return nil
+	}
+	return appendHistory(home, historyRow(actor, key, r))
 }
 
 // FromBudgetRun converts what the result JSON reported into a recordable run.
 // Keeping the conversion here means the supervisor does not have to know the
 // detail-key vocabulary.
+//
+// The caller fills in Model, Effort, Project, Stage and Session afterwards:
+// those come from the dispatch, not from the result JSON.
 func FromBudgetRun(b budget.Run, ok bool, failed bool, reason string, d time.Duration) Run {
+	ended := time.Now().UTC()
 	return Run{
 		Turns: b.Turns, Prompt: b.PromptTokens, Output: b.OutputTokens,
 		CacheW: b.CacheCreateTokens, CacheR: b.CacheReadTokens,
 		CostUSD: b.CostUSD, Seconds: d.Seconds(),
 		Failed: failed, Reason: reason, HaveUsage: ok,
+		// Recorded the moment the run returns, so ended is now and started is
+		// now minus the measured duration.
+		StartedAt: ended.Add(-d), EndedAt: ended,
 	}
 }
 
@@ -223,6 +278,8 @@ func runFrom(e events.Event) Run {
 		Failed:    intOf(e.Detail, keyExitCode) != 0,
 		Reason:    stringOf(e.Detail, keyReason),
 		HaveUsage: boolOf(e.Detail, keyHaveUse),
+		Model:     e.Model,
+		Effort:    stringOf(e.Detail, keyEffort),
 	}
 }
 

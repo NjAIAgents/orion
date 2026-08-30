@@ -37,6 +37,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/procsafe"
 	"github.com/orion-sdlc/orion/internal/quota"
+	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -121,14 +122,29 @@ type Result struct {
 const (
 	defaultMaxMinutes = 30
 	defaultMaxTurns   = 120
-	// graceTimeout is how long a killed process gets to exit on SIGINT
-	// before it is killed outright. Claude Code flushes its transcript on
-	// interrupt, and losing that transcript loses the diagnosis.
-	graceTimeout = 8 * time.Second
 	// captureBytes bounds the output kept in memory for quota inspection.
 	// The full stream still goes to the log; this is only the tail that
 	// gets pattern-matched.
 	captureBytes = 96 * 1024
+)
+
+// The two clocks a timed-out run actually sleeps through: the wall-clock
+// budget, and the grace a killed process gets before SIGKILL.
+//
+// Variables rather than constants so a test can shrink them instead of
+// waiting them out -- the same move OR-9 made for the event log's rotation
+// limits (see internal/events, MaxBytes/MaxFiles). The property the
+// process-group tests prove is "when the deadline passes, is the group
+// dead", and that takes the identical code path at 200ms as at a minute.
+// Waiting the real 68 seconds proved nothing further and, run three times
+// per pass of scripts/test.sh, was most of CI's wall time.
+var (
+	// wallClockUnit is the unit Options.MaxMinutes is counted in.
+	wallClockUnit = time.Minute
+	// graceTimeout is how long a killed process gets to exit on SIGINT
+	// before it is killed outright. Claude Code flushes its transcript on
+	// interrupt, and losing that transcript loses the diagnosis.
+	graceTimeout = 8 * time.Second
 )
 
 // Run executes one supervised stage, retrying across quota resets.
@@ -427,9 +443,16 @@ func recordUsage(ws *workspace.Workspace, stage, out string) {
 // sent, and a report that silently omits it presents a lowball total as
 // complete.
 //
-// Every failure here is silent by design. Losing an accounting line must not
-// lose the work, and the log is opened per run rather than held open because
-// the supervisor has no lifecycle to hang it on.
+// Failure to OPEN the log is silent by design. Losing an accounting line must
+// not lose the work, and the log is opened per run rather than held open
+// because the supervisor has no lifecycle to hang it on. A failure to append
+// the durable history row is reported to stderr rather than swallowed: that
+// file is the whole record, and a gap in it that nobody is told about is
+// exactly the silent loss it exists to prevent.
+//
+// Model and effort are taken from opts -- what this run was DISPATCHED with.
+// Looking them up in the roster afterwards would read today's agents.json and
+// relabel every past run the day somebody moves an actor to another model.
 func recordTicketCost(ws *workspace.Workspace, opts Options, res *Result, out string) {
 	if res == nil || opts.DryRun || opts.Actor == "" || opts.Key == "" {
 		return
@@ -440,8 +463,17 @@ func recordTicketCost(ws *workspace.Workspace, opts Options, res *Result, out st
 	}
 	defer func() { _ = log.Close() }()
 	run, ok := budget.FromResultJSON(out)
-	cost.Record(log, opts.Actor, opts.Key,
-		cost.FromBudgetRun(run, ok, res.ExitCode != 0, res.Reason, res.Duration))
+	r := cost.FromBudgetRun(run, ok, res.ExitCode != 0, res.Reason, res.Duration)
+	r.Model, r.Effort, r.Stage = opts.Model, opts.Effort, opts.Stage
+	r.Project, r.Session = registry.ProjectOf(opts.Key), res.SessionID
+	if err := cost.Record(log, workspace.Home(), opts.Actor, opts.Key, r); err != nil {
+		if errors.Is(err, procsafe.ErrLockTimeout) {
+			fmt.Fprintf(os.Stderr,
+				"orion: appended the usage history without the lock (%v)\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "orion: could not append the usage history: %v\n", err)
+		}
+	}
 }
 
 func humanTokens(n int) string {
@@ -504,7 +536,7 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	activity := newActivityWriter(ws.RepoDir(), opts.OnActivity)
 
 	ctx, cancel := context.WithTimeout(context.Background(),
-		time.Duration(opts.MaxMinutes)*time.Minute)
+		time.Duration(opts.MaxMinutes)*wallClockUnit)
 	defer cancel()
 
 	cmd := exec.Command(bin, args...)
@@ -532,8 +564,16 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 		return &Result{ExitCode: 1, Reason: "starting claude: " + err.Error(), LogPath: logPath}, ""
 	}
 
+	// Registered while it runs so a caller outside this goroutine can kill
+	// the group -- the watcher's force-quit path, which never reaches any of
+	// the exits below because the process is going away (OR-195).
+	live := track(cmd)
 	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		live.done()
+		done <- err
+	}()
 
 	res := &Result{LogPath: logPath}
 	select {

@@ -4,4 +4,5 @@ dist/
 evals/results/
 *.log
 coverage.out
+coverage.raw.out
 .claude/*.orion-*.bak

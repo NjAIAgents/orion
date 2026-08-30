@@ -6,6 +6,254 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.8.1
+
+### Added
+
+- The QA stage now derives its test cases through a cheap subagent before the
+  verification run starts, so the ticket's acceptance criteria and the
+  branch's diff no longer ride along on every turn of the test authoring that
+  follows: only the derived list of cases does. The deriving is wide reading
+  with a short answer, and everything in a prompt is re-sent on every turn, so
+  the criteria were being paid for repeatedly to say once what a dozen lines
+  of case list say. The derive run is attributed to its own `case-derive`
+  actor (haiku by default, configurable like any other agent through
+  `orion config agents`) and its spend appears as its own row in the ticket's
+  cost report rather than hiding inside QA's total. The list it returns is
+  written to the event log, and if the step fails for any reason QA runs
+  exactly as before — reading the criteria and deriving its own cases — so
+  this can never be the reason a ticket has no tests (OR-182).
+
+- Stage boundaries in the run log. Every crossing a ticket makes — routed to
+  implementing, implementing to QA, QA to a fix round and back, QA to push,
+  push to pull request, pull request to CI, CI to human approval, a red build
+  to devops, approval to merge — now prints its own line naming both sides,
+  so a reader no longer has to know which actor holds which role and infer the
+  handoff from the names changing. The commit count rides on the boundary out
+  of implementation rather than standing in for one.
+- A `stage` event kind in `.orion/events.jsonl`, carrying the two stage names
+  and the actor identifier on each side. "How long did this run spend in QA"
+  and "how long did it sit waiting for a human" are answerable from the log
+  for the first time.
+
+- `orion routes` prints the ticket-routing table: every routable actor with the
+  exact issue-type, component and label keywords it accepts, plus the actors
+  that are deliberately unroutable and the path that reaches each of them
+  instead. The vocabulary is now a published contract rather than a private
+  constant, so whatever creates a ticket can set the marker instead of keeping
+  its own copy that drifts.
+- `orion queue` reports the routing distribution of the work it is about to
+  show, before any of it runs. A queue in which every ticket takes the default
+  is now visible as such, with a pointer to `orion routes`.
+
+- `orion doctor` runs `dun verify` and prints its verdict for both the checkout
+  and the sandbox clone, rather than only reporting whether hooks exist.
+  `orion doctor --fix` additionally runs `dun replay --apply`, retrying failed
+  determinations against a journal that has since learned more. Git history is
+  not rewritten; only the replay log gains the corrected outcome.
+
+- A tripped breaker now leaves an escape path. A session whose breaker has
+  fired may still run six commands — `git status`, `git diff`,
+  `git checkout -- <path>`, `git restore`, `git add`, `git commit` — enough to
+  revert what it touched and commit what compiles, and nothing else. Compound
+  commands and `git commit --amend` are refused, the allowance does not
+  refill, and spending it never clears the trip. Full rules in
+  `docs/BREAKERS.md`.
+- `plans/BLOCKED.md` is now written by the breaker itself, as part of
+  tripping, so the record of why a run stopped no longer depends on the agent
+  getting one more tool call. An existing note is appended to, never replaced.
+
+- `orion config agents --list` prints the whole agent roster as a table: every
+  actor's id, name, designation, model and effort as a run will actually resolve
+  them, plus which of those fields `~/.orion/agents.json` overrides. The override
+  file holds only overrides, so most actors are absent from it and their
+  effective model was previously only readable in Go source — this is the one
+  table that shows what an unattended run will cost before you start it. The
+  flag never prompts and works with stdout redirected; piped output carries no
+  escape codes and reads the same as the coloured form.
+
+- `orion config limits` shows every circuit breaker with the value actually in
+  force and where it came from — this project's `orion.json` or the shipped
+  default — and ends with the concurrency line `orion watch` prints in its own
+  banner, taken from the watcher's own resolver rather than computed a second
+  time. Until now `max_concurrent_tickets` could only be changed by opening
+  `orion.json` in an editor, and an adopted repository's `limits` block does
+  not usually contain the key at all, so the setting an operator was told to
+  change was not there to find.
+- `orion config limits KEY N` sets one limit without an editor —
+  `orion config limits max_concurrent_tickets 3`. The key is **written when it
+  is absent**, not only updated when present, which is the common case. The
+  whole `limits` block is covered, so `max_session_minutes`, `max_tool_calls`
+  and `max_files_touched` are reachable too rather than needing their own
+  setter later.
+- A value above the ceiling is **refused, naming the ceiling, and nothing is
+  written**. `max_concurrent_tickets` is clamped to 5 when it is read, so
+  storing 40 would leave the file saying 40 while the watcher ran 5.
+- The write goes to the file the watcher reads — the registered project's
+  working copy, resolved through the registry — so the change takes effect on
+  the next start with no commit or push, even when the command is run from
+  inside a sandbox clone. Every set says that a watcher already running keeps
+  the value it started with and has to be restarted.
+
+Edits are made as text, so the `_comment_*` keys stay next to the settings
+they explain and no other key in the block is touched.
+
+- Every supervised run now also appends one row to `~/.orion/usage-history.jsonl`
+  — a global, append-only usage history that is never rotated or truncated. The
+  usage event still goes to the workspace event log (`orion cost` reads it there
+  and nothing about that changes), but that log is capped at 2 MiB across five
+  generations, so the oldest rows — the ones a benchmark wants most — used to
+  disappear silently. Both copies are written from one function, so they cannot
+  drift. Each row carries the ticket key, project, actor, model, effort, stage,
+  session id, start and end timestamps, and the existing turn, token and cost
+  fields, so it joins to the tracker and to the event log. JSONL, not a
+  database: `grep`, `jq` and DuckDB read it in place.
+- The usage event and the history row now record the **model and effort the run
+  was dispatched with**. Reading them back from the roster later would answer
+  for today's `agents.json` — so moving an actor from opus to sonnet used to make
+  every earlier run ambiguous about which model produced it.
+
+- The QA stage now puts what it found, and how it was resolved, on the
+  ticket. Each fix round leaves exactly one comment carrying three facts —
+  what QA found, what the implementer changed in response (one line, in their
+  own words), and whether the re-verification passed — attributed to QA and
+  naming the actor that made the change. A run where QA found nothing leaves
+  one line saying so, because silence on a ticket cannot be told apart from a
+  run where QA never happened. When the round ceiling is reached with findings
+  still open, the ticket says that too, which was the case most likely to be
+  lost. The comment count is bounded by the existing round cap, so it is at
+  most two exchanges plus a verdict per ticket. Previously a CI failure
+  reached the ticket and a QA failure did not, so the entire exchange existed
+  only in the run log and the terminal — and the ticket is the artifact anyone
+  revisits weeks later. Comments only: no run log is ever attached, because a
+  raw log is hundreds of kilobytes against a 2 GB quota, cannot be grepped
+  once uploaded, and carries everything the agent read and wrote (OR-200).
+
+### Changed
+
+- A boundary whose next party is CI or a person says so and says no agent is
+  running, rather than naming an agent that is neither running nor costing
+  anything.
+- The terminal echo of a notification now renders in the same columns as every
+  other line — timestamp, ticket key, and its level in the status column —
+  instead of the bare `[orion:<level>] <title>` that broke the alignment
+  wherever it landed. It is still title-only; the formatted body still goes to
+  Slack.
+- Boundaries degrade to ASCII on a non-UTF-8 terminal with the transition
+  intact, the same way the status icons already did. The status vocabulary is
+  unchanged: a handoff is still `ok`, and is told apart by its layout.
+
+- The routing table reaches five actors instead of three. The architect and the
+  product manager are now routable (`architecture`, `architect`, `adr`;
+  `product`, `pm`, `requirements`), alongside the existing docs and frontend
+  rules and the backend developer as the default. Matching is still equality
+  rather than containment, and precedence is still the written order.
+- The decompose stage now tells the planner to run `orion routes` and set the
+  marker on every item it creates. Without this, routing metadata was set by
+  luck and in practice never.
+- A ticket with no routing marker now reports "defaulting to the implementer;
+  no routing marker on this ticket" rather than "no issue type, component or
+  label matched a route". The announcement is unchanged in substance; it no
+  longer phrases the normal outcome as a miss.
+
+- The test suite no longer sleeps through most of its own runtime. Two
+  supervisor tests proved the wall-clock deadline kills a process group by
+  waiting out a real sixty seconds each, and `scripts/test.sh` ran them three
+  times over — plain, coverage and race — so roughly 410 seconds of every CI
+  job was spent deliberately idle. The deadline is now injectable, so those
+  tests assert the same property against a sub-second budget, and coverage is
+  measured during the test pass rather than in a second run of the whole
+  suite. Neither test was weakened or skipped: they still assert that no child
+  survives, which is the OR-141 process-group kill they exist to cover. CI
+  wall time drops from roughly nine minutes to under three and a half.
+
+- `limits.max_concurrent_tickets` now defaults to **4**, raised from 2. The
+  original 2 was a deliberate starting point rather than a permanent setting:
+  every hazard concurrency introduces — git against the one shared clone, a
+  budget checkpoint crossed by runs already in flight, one rate limit reached
+  by several sessions, tickets picked that all edit the same files — is
+  invisible at 1 and obvious at 2, so the rule was "prove it at 2, then raise
+  it". Two has now been proven across a full release, and this is that raise.
+  It stops short of the hard ceiling of 5 so that reaching the maximum stays
+  an explicit choice. Repos with an explicit value in `orion.json` are
+  unaffected; `orion init` writes 4 for new ones.
+
+### Fixed
+
+- Agent commits made in a job worktree now carry an AI-Attribution trailer.
+  `orion init` only ran `dun init` against the checkout you typed; the sandbox
+  clone under `~/.orion/projects/<id>/repo` is a separate git repository and
+  was never instrumented, so every commit an agent made had no attribution
+  trailer at all. Each job now instruments the clone before it starts, which
+  covers all of its worktrees at once. Note that those commits will still read
+  `unmatched` until whodunit's Claude Code adapter is fixed: it maps `/` to `-`
+  when locating transcripts but not `.`, while Claude Code maps both, so no
+  transcript is ever found for a sandbox under `~/.orion`. See the note in
+  `internal/adopt/attribution.go`.
+- `orion status` no longer reports "NOT instrumented" from inside a worktree.
+  It read `<dir>/.git/hooks`, and in a worktree `.git` is a file, so the answer
+  was wrong in the one place every agent commit is made. It now asks git where
+  the hooks actually are, honouring `core.hooksPath`.
+
+- A run that ends with its breaker tripped no longer abandons a dirty
+  worktree. Orion reverts uncommitted **tracked** changes, leaves commits and
+  untracked files alone, and reports it in the run output and to the
+  operator's Slack channel. Left in place, that residue blocks the automatic
+  rebase of the branch on the next `orion collect`, which is a slow and
+  indirect way to discover that a run needed a person.
+
+- Forcing `orion watch` to quit (a second ctrl-c, or a second `kill`) now kills
+  the agents it started instead of only itself. The second signal used to be
+  handed back to the default disposition, which terminated the watcher and left
+  every `claude -p` running — reparented to init, still holding a worktree and
+  still spending, killable only by pid once somebody noticed. The watcher now
+  SIGKILLs each agent's whole process group, names any pid that survived, and
+  exits 130. SIGTERM behaves the same as ctrl-c throughout.
+- The force warning said forcing "risks leaving a ticket claimed with nothing
+  running", which was the opposite of what happened. It now says what forcing
+  does, and the force path names the tickets left claimed rather than going
+  silent — their agents are dead, but `orion-working` stays on them until it is
+  removed in the tracker.
+
+- `orion watch` now prints the slot arithmetic behind every dispatch, so a run
+  at less than full capacity is visible instead of having to be inferred —
+  `cap 2, 1 claimed elsewhere (OR-192), 1 free; starting 1 of 5 queued`. A
+  claim held by another watcher was subtracted from the free slots correctly,
+  but the reduction was only *reported* when it reached zero, so a cap of 2
+  with one stale claim ran one ticket at a time and said nothing about it. The
+  holders are named rather than counted, because "1 claimed elsewhere" is a
+  fact and "OR-192" is something you can go and look at. Terms that trim the
+  number further — `--max-jobs`, a rate-limit pause — are named too, so the
+  sum always adds up.
+- The line is printed even when nothing is claimed elsewhere, so "2 free,
+  starting 2", "2 free, starting 1 because only 1 is queued" and a slot lost
+  to a stale claim are now three distinguishable outcomes rather than three
+  identical-looking ones.
+- Where a claim is held outside this watcher, the terminal now says what to do
+  about it: a ticket finished outside Orion's own close path keeps its
+  `orion-working` label, and removing that label is what releases the slot.
+  Previously the operator had to know the fix involved a label they were never
+  shown.
+
+- The event log now records the reasoning, not just the mechanics. Two of its
+  22 kinds had never fired once in the life of the project: `answer` (what an
+  advisor replied to a question the implementer stopped on) and `decision`
+  (a choice, and why). `orion logs` could tell you an agent ran
+  `sed -n 460,560p supervisor.go` and never why it changed approach.
+  - An advisor that could not be reached used to return a refusal to the caller
+    and emit nothing, so the log recorded a question and never what became of
+    it. Every `ask` is now closed by an `answer` or a `refuse` on every path.
+  - `ask`, `answer` and `refuse` carry the whole text rather than its first
+    line, the way `say` already carries the agent's own prose. The last ask ever
+    recorded ends `...worth having on record:` — cut one line into the thing it
+    was about to put on record.
+  - Which actor a ticket routed to, and why, is a `decision` rather than a
+    `note`; the decision recorded on the branch says what was chosen and what
+    it was grounded in, rather than only naming the file it was written to.
+  - What separates a `decision` from a `note` — an alternative not taken, and
+    the reason — is written next to the constants, so the distinction survives
+    the next person choosing a kind.
+
 ## v0.8.0
 
 ### Added

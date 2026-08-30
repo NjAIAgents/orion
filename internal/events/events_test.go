@@ -291,3 +291,42 @@ func TestFollowSurvivesRotation(t *testing.T) {
 		}
 	}
 }
+
+// OR-201. "decision" and "note" are one keystroke apart and note is the
+// catch-all, so a decision with no rule to test it against drifts into a note
+// and the reasoning leaves the log -- which is how KindDecision came to be
+// defined, documented and never once emitted while note ran to 98 entries.
+//
+// Testing a comment looks odd until you notice what the alternative is: the
+// rule lives ONLY here, in the file the next person reads when choosing a
+// kind, and a rule that an unrelated tidy-up can delete without anything
+// failing is a rule that will be deleted.
+func TestTheDecisionVersusNoteRuleIsDocumentedNextToTheConstants(t *testing.T) {
+	b, err := os.ReadFile("events.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+
+	// Next to the constants, not in a document nobody opens: after the last
+	// kind and before the Event type those kinds are a field of.
+	after := strings.Index(src, `KindNote     = "note"`)
+	before := strings.Index(src, "// Event is one line of the log.")
+	if after < 0 || before < 0 || after > before {
+		t.Fatal("the kind constants or the Event type moved; the rule's home moved with them")
+	}
+	rule := src[after:before]
+
+	// Both halves, or it does not tell a decision from a note.
+	for _, half := range []string{"alternative", "reason"} {
+		if !strings.Contains(rule, half) {
+			t.Errorf("the rule beside the constants does not state the %q half of a decision", half)
+		}
+	}
+	// And the pair, so the next person emitting an ask knows it must be closed.
+	for _, phrase := range []string{"ask", "answer", "refuse"} {
+		if !strings.Contains(rule, phrase) {
+			t.Errorf("the rule beside the constants never mentions %q", phrase)
+		}
+	}
+}

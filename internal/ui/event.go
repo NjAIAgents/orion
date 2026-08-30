@@ -79,6 +79,11 @@ func VerbFor(kind string) string {
 	}
 	// answer, decision, commit, push, pr, merge, refresh, run-end, usage:
 	// something happened and it worked.
+	//
+	// KindStage is here too, and on purpose. A handoff asks nothing of the
+	// operator, so its category is `ok` -- spending a sixth verb on it would
+	// re-open the decision this comment records. What a boundary needs is a
+	// different LAYOUT, not a different word: see stage.go.
 	return VerbOK
 }
 
@@ -366,6 +371,20 @@ func ticketColor(key string) string {
 	ticketColors[key] = c
 	return c
 }
+
+// Identity paints a string in the colour this actor already carries in the
+// run log, so a roster listing and a log agree about which agent is which.
+//
+// Exported because identities are now rendered on more than one surface:
+// the event stream renders them inline, `orion config agents --list`
+// renders them in a table. Both draw from the non-semantic palette, so an
+// agent name can never read as an outcome -- a name in red says "broken"
+// to anyone scanning the output, whatever the column header claims.
+//
+// Colour only ever accelerates here. The caller must render text that is
+// complete without it, because enabled reports false the moment output is
+// piped, which is how anybody captures a roster to share it.
+func Identity(w io.Writer, id, s string) string { return paint(w, actorColor(id), s) }
 
 // actorColor is deterministic per actor, and drawn from the same
 // non-semantic set for the same reason: an agent is not a status.

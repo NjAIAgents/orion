@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/adopt"
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/creds"
 	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/slack"
@@ -209,6 +211,84 @@ func checkJira(enabled bool) check {
 // meant to enforce them pointed at a deleted directory. A hook that cannot
 // execute does not announce itself as a missing guardrail, so the breaker,
 // the shield and the push gate all read as enabled and none of them ran.
+// checkAttribution surfaces dun's OWN verdict rather than Orion's paraphrase
+// of it, for both repositories that matter.
+//
+// Two, not one. `orion init` instruments the checkout the user typed; agents
+// commit in worktrees of the SANDBOX CLONE, which is a separate git repository
+// with separate hooks. Checking only the checkout is what let the clone sit
+// uninstrumented while every report said attribution was fine -- and the clone
+// is where the agent-written commits are (OR-193).
+//
+// dun verify is authoritative and names what to fix, so its output is printed
+// verbatim instead of parsed. A parse is one more thing that can drift from
+// the truth without anyone noticing, which is the failure mode of this whole
+// area.
+//
+// autoFix runs `dun replay --apply`: determinations that failed are retried
+// against a journal that has since learned more. Git history is not rewritten
+// and the original trailer stands; only the replay log gains the corrected
+// outcome. Opt-in because it writes.
+func checkAttribution(root string, autoFix bool) check {
+	if !config.Load(root).Attribution.Enabled {
+		return check{"attribution", ok, "disabled in orion.json", ""}
+	}
+
+	targets := []struct{ label, dir string }{{"checkout", root}}
+	if ws := workspace.FindBySource(root); ws != nil {
+		if clone := ws.CloneDir(); dirExists(clone) {
+			targets = append(targets, struct{ label, dir string }{"sandbox clone", clone})
+		}
+	}
+
+	var problems, report []string
+	for _, t := range targets {
+		out, verified, err := adopt.DunVerify(t.dir)
+		if err != nil {
+			return check{"attribution", warn, err.Error(),
+				"Commits carry no attribution trailer, and `undetermined` reads\n" +
+					"downstream as \"no AI was used\" rather than \"the tool is missing\".\n" +
+					"Install it:  brew install navjyotnishant/tap/dun"}
+		}
+		if verified {
+			continue
+		}
+		problems = append(problems, t.label)
+		report = append(report, "dun verify ("+t.label+"  "+t.dir+"):", out)
+	}
+
+	if len(problems) == 0 {
+		return check{"attribution", ok,
+			"dun verify passes for " + strings.Join(labels(targets), " and "), ""}
+	}
+
+	fix := strings.Join(report, "\n")
+	if autoFix {
+		if out, err := adopt.DunReplay(root); err != nil {
+			fix += "\n\ndun replay --apply: " + err.Error()
+		} else {
+			fix += "\n\ndun replay --apply:\n" + out
+		}
+	} else {
+		fix += "\n\nRetry the failed determinations:  orion doctor --fix"
+	}
+	return check{"attribution", warn,
+		"dun verify reports problems in the " + strings.Join(problems, " and "), fix}
+}
+
+func labels(targets []struct{ label, dir string }) []string {
+	out := make([]string, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, t.label)
+	}
+	return out
+}
+
+func dirExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
+}
+
 func checkHooks(dir string) check {
 	p := filepath.Join(dir, ".claude", "settings.json")
 	b, err := os.ReadFile(p)

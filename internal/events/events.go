@@ -36,10 +36,10 @@ const (
 	KindRunStart = "run-start" // an agent was launched
 	KindRunEnd   = "run-end"   // it exited, with a code
 	KindAsk      = "ask"       // the implementer asked a question
-	KindAnswer   = "answer"    // an advisor answered it
+	KindAnswer   = "answer"    // an advisor answered it, in the advisor's own words
 	KindRefuse   = "refuse"    // an advisor could not ground an answer
 	KindEscalate = "escalate"  // it went to a human
-	KindDecision = "decision"  // a decision record was written
+	KindDecision = "decision"  // a choice between alternatives, and why -- see below
 	KindCommit   = "commit"    // commits were produced
 	KindPush     = "push"      // a branch reached the remote
 	KindPR       = "pr"        // a pull request was opened
@@ -53,8 +53,54 @@ const (
 	KindUsage    = "usage"     // what one agent run consumed, per actor
 	KindTool     = "tool"      // an agent used a tool, as it used it
 	KindSay      = "say"       // an agent said what it was doing
+	KindStage    = "stage"     // the run crossed from one stage into the next
 	KindNote     = "note"      // anything else worth seeing
 )
+
+// STAGE IS A BOUNDARY, NOT AN ACTION. Every other kind reports something that
+// happened inside a stage; this one reports the moment between two of them,
+// and it is the only kind whose two consecutive occurrences are a DURATION.
+//
+// That is what it is for. "How long did this run spend in QA" and "how long
+// did it sit waiting for a human" are the two questions the log could not
+// answer, because a handoff left no trace at all -- the reader had to know
+// which actor holds which role and infer the crossing from the names
+// changing between two ordinary status lines (OR-189).
+//
+// Its Detail carries the two stage names and the ACTOR IDENTIFIERS on each
+// side, never their display names: the identifiers are what this file
+// promises never to change, and internal/actors resolves them to names at
+// render time. A boundary whose next side is ci or human is a boundary where
+// NO AGENT IS RUNNING, and internal/ui renders it saying so.
+
+// ASK AND ANSWER ARE A PAIR. Every ask is closed by an answer or a refuse,
+// on the same ticket, before the path that raised it returns. An ask with
+// neither leaves the log saying a question was raised and never saying what
+// became of it -- and whatever the implementer then did on the strength of
+// the reply is unexplainable afterwards (OR-201).
+//
+// The answer carries WHAT WAS SAID, the way KindSay carries the agent's own
+// prose. "the advisor responded" is worth nothing: the text is the point,
+// and it is the only copy outside a transcript nobody reads.
+//
+// DECISION VERSUS NOTE. These two are one keystroke apart and note is the
+// catch-all, so without a rule every decision drifts into a note and the
+// reasoning leaves the log. That is exactly how "decision" came to be
+// defined, documented and never once emitted (OR-201).
+//
+// A decision needs BOTH halves:
+//
+//	an alternative that was available and not taken, and
+//	the reason it was not.
+//
+// "routed to the frontend developer: matched the ui label" is a decision --
+// another actor could have had the ticket, and the label says why this one
+// did. "asked for merge approval in Slack" is a note: it reports what
+// happened and nothing was chosen. Missing either half makes it a note.
+//
+// Rejecting the borderline case is the right default. A decision stream that
+// admits everything is a second note stream, and the only reason filtering on
+// "decision" is worth anything is that it stays the short list.
 
 // Actor is who did it. "orion" is the supervisor itself; the rest are the
 // roles it spawns or defers to.
@@ -74,11 +120,12 @@ const (
 	ActorDocs        = "docs"        // works a documentation ticket
 	ActorArchitect   = "architect"
 	ActorPM          = "pm"
-	ActorDevOps      = "devops"     // repairs a red build
-	ActorQA          = "qa"         // derives test cases, writes the tests, runs them
-	ActorDescriber   = "describer"  // writes the pull request description
-	ActorLogTriage   = "log-triage" // reads a failing CI log, reports what broke and why
-	ActorExplore     = "explore"    // answers one question about the repository, citing the paths
+	ActorDevOps      = "devops"      // repairs a red build
+	ActorQA          = "qa"          // derives test cases, writes the tests, runs them
+	ActorDescriber   = "describer"   // writes the pull request description
+	ActorLogTriage   = "log-triage"  // reads a failing CI log, reports what broke and why
+	ActorExplore     = "explore"     // answers one question about the repository, citing the paths
+	ActorCaseDerive  = "case-derive" // reads the acceptance criteria and the diff, lists the cases to cover
 	ActorHuman       = "human"
 	ActorCI          = "ci"
 )

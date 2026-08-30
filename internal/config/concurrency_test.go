@@ -13,7 +13,11 @@ func TestAnAbsentConcurrencyCapDefaultsRatherThanUnbounding(t *testing.T) {
 	if got := (Limits{}).ConcurrentTickets(); got != Defaults().Limits.MaxConcurrentTickets {
 		t.Fatalf("ConcurrentTickets() = %d with nothing set, want the shipped default", got)
 	}
-	if got := (Limits{MaxConcurrentTickets: -3}).ConcurrentTickets(); got != 2 {
+	// Against Defaults() rather than a literal: this assertion is about a
+	// negative value falling back to whatever the shipped default IS, not
+	// about what that number happens to be. Hardcoding it means raising the
+	// default fails a test that was never testing the default's value.
+	if got := (Limits{MaxConcurrentTickets: -3}).ConcurrentTickets(); got != Defaults().Limits.MaxConcurrentTickets {
 		t.Fatalf("ConcurrentTickets() = %d for a negative value, want the default", got)
 	}
 }

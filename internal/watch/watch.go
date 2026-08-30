@@ -45,6 +45,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,6 +56,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/registry"
+	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/work"
@@ -158,6 +160,11 @@ func Run(opts Options, deps Deps) error {
 	w = &syncWriter{w: w}
 
 	p := newPool(opts.MaxConcurrent)
+	// Published for the signal handler, which has to name what it abandons
+	// if it is forced to quit (OR-195). Cleared on the way out so a later
+	// run does not report a pool that finished.
+	running.Store(p)
+	defer running.Store(nil)
 	// Nothing exits while an agent is still running. Killing one leaves a
 	// ticket claimed with a half-written branch and no process to finish it,
 	// which is the state an unattended tool must never create -- and that is
@@ -198,17 +205,22 @@ func Run(opts Options, deps Deps) error {
 			}
 		}
 
-		free := p.free()
+		// Read the pool ONCE. free and here are two halves of one sentence --
+		// "cap 2, 1 running here, 1 free" -- and reading the pool twice lets a
+		// job finish between the two, so the terms stop adding up. An
+		// unexplained gap in that line is the very thing OR-196 is about.
+		s := slots{cap: opts.MaxConcurrent, here: p.len()}
+		s.free = s.cap - s.here
 		if opts.MaxJobs > 0 {
-			if room := opts.MaxJobs - started - p.len(); room < free {
-				free = room
+			if room := opts.MaxJobs - started - s.here; room < s.free {
+				s.free = room
 			}
 		}
-		if free > 0 && deps.Now().Before(pausedUntil) {
-			free = 0
+		if s.free > 0 && deps.Now().Before(pausedUntil) {
+			s.free = 0
 		}
 
-		unfinished, err := oneTick(opts, deps, w, free, p)
+		unfinished, err := oneTick(opts, deps, w, s, p)
 		unfinished = unfinished || jobsUnfinished || p.len() > 0
 		if err != nil {
 			// A misconfiguration will NEVER fix itself, so retrying it every
@@ -296,7 +308,7 @@ func permanent(err error) bool {
 // The unfinished flag is what lets the loop know it must not exit yet. A
 // ticket that has been pushed and is awaiting CI is Orion's responsibility
 // until it merges or fails, and nothing else in the system will pick it up.
-func oneTick(opts Options, deps Deps, w io.Writer, free int, p *pool) (unfinished bool, err error) {
+func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished bool, err error) {
 	// 1. Finish what is already in flight. Cheap, and it can free the job
 	// slot this tick is about to look for.
 	//
@@ -333,17 +345,20 @@ func oneTick(opts Options, deps Deps, w io.Writer, free int, p *pool) (unfinishe
 		if err != nil {
 			return unfinished, err
 		}
-		if elsewhere := claimedElsewhere(keys, p.keys()); len(elsewhere) > 0 {
-			free -= len(elsewhere)
-			if free <= 0 && !opts.DryRun {
-				ui.Say(w, elsewhere[0], events.ActorOrion, ui.VerbWorking,
-					"still running; not starting anything else (%d claimed, cap %d)",
-					len(elsewhere)+p.len(), opts.MaxConcurrent)
-			}
-		}
+		s.elsewhere = claimedElsewhere(keys, p.keys())
+		s.free -= len(s.elsewhere)
 	}
 
-	if free <= 0 && !opts.DryRun {
+	if s.free <= 0 && !opts.DryRun {
+		// Worth a line only when a claim held elsewhere is WHY. A rate-limit
+		// pause and the job limit both announce themselves already, and a tick
+		// with nothing to do has to stay silent or a watcher left running
+		// overnight buries the one line that matters.
+		if len(s.elsewhere) > 0 {
+			ui.Say(w, s.elsewhere[0], events.ActorOrion, ui.VerbWorking,
+				"%s; starting nothing else", s)
+			ui.Say(w, s.elsewhere[0], events.ActorOrion, ui.VerbWarn, residueHint)
+		}
 		return unfinished, nil
 	}
 
@@ -361,13 +376,83 @@ func oneTick(opts Options, deps Deps, w io.Writer, free int, p *pool) (unfinishe
 		return unfinished, nil
 	}
 
-	next := pick(queued, free)
+	next := pick(queued, s.free)
+	// Said on EVERY dispatch, not only when a slot was lost. The operator can
+	// see the cap in the banner and can see what started, and until OR-196
+	// nothing joined the two: "cap 2, 1 free" because a claim is held
+	// elsewhere, "2 free, starting 1" because only one ticket is queued, and
+	// "2 free, starting 2" all looked identical from outside, so a run at half
+	// capacity read as parallelism being broken.
+	ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
+		"%s; starting %d of %d queued", s, len(next), len(queued))
+	if len(s.elsewhere) > 0 {
+		ui.Say(w, s.elsewhere[0], events.ActorOrion, ui.VerbWarn, residueHint)
+	}
 	for _, key := range next {
-		ui.Say(w, key, events.ActorOrion, ui.VerbWorking, "claimed (%d queued)", len(queued))
+		ui.Say(w, key, events.ActorOrion, ui.VerbWorking, "claimed")
 		p.dispatch(deps, opts, w, key)
 	}
 	return unfinished, nil
 }
+
+// slots is one tick's slot arithmetic: the cap, everything that took a slot,
+// and what is left for this tick to start.
+type slots struct {
+	cap int
+	// here is what this watcher itself dispatched and has not yet reaped.
+	here int
+	// elsewhere is the claims held by another watcher -- or by nobody, when
+	// the label outlived the work that set it.
+	elsewhere []string
+	free      int
+}
+
+// String names every term that moved the number, and names the HOLDERS with
+// it.
+//
+// The arithmetic was already right; only the reporting was missing. A claim
+// held elsewhere is subtracted because the label is the lock and it lives on
+// the ticket, so a second watcher or a restarted one reaches the same answer
+// -- that is the design working. What was missing is a line the operator can
+// check the banner against: "1 claimed elsewhere" is a fact, "OR-192" is
+// something a person can go and look at.
+func (s slots) String() string {
+	free := s.free
+	if free < 0 {
+		free = 0
+	}
+	terms := []string{fmt.Sprintf("cap %d", s.cap)}
+	if s.here > 0 {
+		terms = append(terms, fmt.Sprintf("%d running here", s.here))
+	}
+	if len(s.elsewhere) > 0 {
+		terms = append(terms, fmt.Sprintf("%d claimed elsewhere (%s)",
+			len(s.elsewhere), strings.Join(s.elsewhere, ", ")))
+	}
+	// Whatever --max-jobs or a rate-limit pause took, so the terms add up. A
+	// gap with no name is the same defect in a different place.
+	if gap := s.cap - s.here - len(s.elsewhere) - free; gap > 0 {
+		terms = append(terms, fmt.Sprintf("%d held back by this run's limits", gap))
+	}
+	return strings.Join(terms, ", ") + fmt.Sprintf(", %d free", free)
+}
+
+// residueHint is what to do about a claim that is not work.
+//
+// The label is the lock, and the operator cannot see it from the terminal, so
+// naming the condition without naming the fix leaves them to work out that the
+// answer is removing a label they were never shown. OR-192 was completed by
+// hand, so it never took Orion's own close path and never had its claim
+// cleared; anything touched outside the normal flow can leave one, which means
+// this recurs rather than being cleaned up once.
+//
+// Offered rather than asserted: a claim held elsewhere is just as likely to be
+// a second watcher doing real work, and this cannot tell the two apart. The
+// staleness check in InFlight can, and clears it -- but only where the tracker
+// categorises the status as Done, which the OR project's own workflow
+// currently does not.
+const residueHint = "if one of those has actually finished, its " +
+	tracker.LabelWorking + " label is residue: remove it to release the slot"
 
 // reportFinished says how a dispatched job ended, for the endings that are not
 // already reported by the job itself.
@@ -731,10 +816,9 @@ type LockAPI interface {
 // what makes a restarted watcher resume rather than double-start. It also
 // outlives the WORK, though, and nothing but the watch-driven close path
 // ever cleared it. A ticket fixed and transitioned to Done by hand kept
-// orion-working forever, and every later tick reported a ticket that
-// finished hours ago as "still running; not starting anything else" --
-// indistinguishable from a genuinely stuck job without opening Jira
-// (OR-125).
+// orion-working forever, and every later tick counted a ticket that finished
+// hours ago as a live claim -- indistinguishable from a genuinely stuck job
+// without opening Jira (OR-125).
 //
 // So a resolved ticket is not in flight, whatever its labels say. The lock
 // is stripped here rather than merely ignored, because ignoring it would
@@ -768,7 +852,8 @@ func InFlight(j LockAPI, home string, projects []string, w io.Writer) ([]string,
 		// failing the tick over.
 		if err := j.SetLabels(i.Key, nil, []string{tracker.LabelWorking}); err != nil {
 			ui.Say(w, i.Key, events.ActorOrion, ui.VerbWarn,
-				"is %s but still holds the %s lock, and it could not be cleared: %v",
+				"is %s but still holds the %s lock, and it could not be cleared: %v"+
+					" -- remove the label by hand or it keeps a slot",
 				i.Status, tracker.LabelWorking, err)
 			continue
 		}
@@ -869,20 +954,94 @@ func scope(home string, projects []string) ([]string, error) {
 // arrives, the current job finishes, and the loop stops before the next one.
 var stopping atomic.Bool
 
+// running is the pool the signal handler reaches for, so the force path can
+// name the tickets it is abandoning. Package-level because Listen installs
+// the handler before Run builds the pool.
+var running atomic.Pointer[pool]
+
+// forceGrace is how long the force path waits for a killed process group to
+// actually die before it names the pid and leaves. Short on purpose: forcing
+// has to be faster than draining, and SIGKILL cannot be ignored, so anything
+// still here after this is a problem no further waiting will solve.
+const forceGrace = 3 * time.Second
+
+// forceExit is what the process exits with when it was forced. Non-zero, so
+// a supervisor or a script can tell "the operator gave up on it" from "the
+// queue drained"; 130 is the shell's own convention for death by SIGINT.
+const forceExit = 130
+
 // Listen installs the signal handler. Separate from Run so a caller can
 // install it before any long-running work begins.
-func Listen(w io.Writer) {
-	sig := make(chan os.Signal, 1)
+func Listen(w io.Writer) { listen(w, os.Exit) }
+
+// listen is Listen with its exit seam exposed, and returns a function that
+// unregisters the handler. Tests use both; nothing else needs them.
+func listen(w io.Writer, exit func(int)) (stop func()) {
+	// Room for both signals: the handler is busy printing after the first,
+	// and an unbuffered send from the runtime is dropped, not queued.
+	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sig
-		stopping.Store(true)
-		fmt.Fprintln(w, "\nstopping after the current step. Press ctrl-c again to force,\n"+
-			"which risks leaving a ticket claimed with nothing running.")
-		// A second signal restores the default behaviour, so a genuinely
-		// stuck process can still be killed without finding its pid.
-		signal.Stop(sig)
-	}()
+	go handle(w, sig, exit)
+	return func() { signal.Stop(sig) }
+}
+
+// handle is the two-signal protocol: the first drains, the second forces.
+//
+// The second signal used to be handed back to the default disposition
+// (signal.Stop), reasoning that a genuinely stuck watcher must still be
+// killable without hunting for a pid. It is -- but the default disposition
+// for SIGINT terminates THE WATCHER and nothing else. Every agent it started
+// is in its own process group (setNewProcessGroup), which is exactly why
+// ctrl-c never reaches them, so that escape hatch left `claude -p` running
+// with its parent gone: reparented to init, holding a worktree, spending for
+// as long as it took somebody to notice (OR-195). At a concurrency cap of
+// five it left five of them.
+//
+// So the watcher owns the force path: kill the groups, say what could not be
+// killed and what is left claimed, and exit non-zero.
+//
+// SIGTERM counts as either signal. `kill <watcher-pid>` from another shell
+// has the same shape as ctrl-c, and an unattended watcher is more likely to
+// be stopped that way than interactively.
+func handle(w io.Writer, sig <-chan os.Signal, exit func(int)) {
+	<-sig
+	stopping.Store(true)
+	fmt.Fprintln(w, "\nstopping after the current step. Press ctrl-c again to force,\n"+
+		"which kills the running agents now and leaves their tickets claimed.")
+	<-sig
+	exit(forceQuit(w, supervisor.KillAll))
+}
+
+// forceQuit kills every agent this watcher started and reports what it left
+// behind, returning the code the process should exit with.
+//
+// The claim is NOT released here, and says so rather than going quiet. The
+// alternative is a tracker write per ticket from inside a signal handler,
+// which is a network call with no timeout on the one path whose whole point
+// is to be immediate -- a hung Jira would hang the force, and the next
+// ctrl-c would have nothing left to fall back to. Killing is local and
+// always works; naming the ticket is what a person needs to finish the job.
+func forceQuit(w io.Writer, kill func(time.Duration) []int) int {
+	var keys []string
+	if p := running.Load(); p != nil {
+		keys = p.keys()
+		sort.Strings(keys)
+	}
+
+	fmt.Fprintln(w, "\nforcing: killing the agent process group(s) this watcher started.")
+	for _, pid := range kill(forceGrace) {
+		fmt.Fprintf(w, "  pid %d did not die, and is still running now: "+
+			"ps -o pid,ppid,etime,command -p %d\n", pid, pid)
+	}
+	if len(keys) == 0 {
+		fmt.Fprintln(w, "  no ticket was in flight; nothing is left claimed.")
+		return forceExit
+	}
+	fmt.Fprintf(w, "  still claimed and NOT released: %s\n"+
+		"  Their agents are dead, but the %s label is still on them, so no\n"+
+		"  watcher will pick them up until it is removed in the tracker.\n",
+		strings.Join(keys, ", "), tracker.LabelWorking)
+	return forceExit
 }
 
 func sleepInterruptible(d time.Duration) bool {

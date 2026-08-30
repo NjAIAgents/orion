@@ -1,12 +1,15 @@
 package work
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/njagents"
@@ -76,9 +79,14 @@ type qaFake struct {
 	// the end repeats the last one, which is what a QA agent that keeps
 	// finding the same thing looks like.
 	qaReplies []string
-	stages    []string // "ticket" or "qa", in call order
-	prompts   []string
-	qaCalls   int
+	// fixReplies are the implementer's closing messages on a FIX round, in
+	// order -- what it says it changed in response to QA. Nil leaves Final
+	// unset, which is what every test predating OR-200 assumes.
+	fixReplies []string
+	stages     []string // "ticket" or "qa", in call order
+	prompts    []string
+	qaCalls    int
+	fixCalls   int
 }
 
 func (f *qaFake) run(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
@@ -104,6 +112,16 @@ func (f *qaFake) run(ws *workspace.Workspace, o supervisor.Options) (*supervisor
 		}
 		f.qaCalls++
 		res.Final = reply
+	}
+	// A fix round is the implementer resumed, which is the only "ticket" run
+	// that carries a session to resume.
+	if o.Stage == "ticket" && o.Resume != "" && len(f.fixReplies) > 0 {
+		i := f.fixCalls
+		if i >= len(f.fixReplies) {
+			i = len(f.fixReplies) - 1
+		}
+		f.fixCalls++
+		res.Final = f.fixReplies[i]
 	}
 	return res, nil
 }
@@ -186,19 +204,22 @@ func TestQAFindingsGoToTheDeveloperAndAreReVerified(t *testing.T) {
 	if c := strings.Join(j.comments, "\n"); strings.Contains(c, "still open") {
 		t.Errorf("a finding that was fixed was reported as open:\n%s", c)
 	}
-	// implement, verify, fix, re-verify. Any other order means the findings
-	// were not actually carried back to the developer between the two QA runs.
-	if got := f.sequence(); got != "ticket,qa,ticket,qa" {
-		t.Fatalf("run sequence = %q, want ticket,qa,ticket,qa", got)
+	// implement, derive the cases, verify, fix, re-verify. Any other order
+	// means the findings were not actually carried back to the developer
+	// between the two QA runs. The derive step runs once, before the first
+	// verification only: a re-verify runs the cases that already exist
+	// (OR-182).
+	if got := f.sequence(); got != "ticket,qa-cases,qa,ticket,qa" {
+		t.Fatalf("run sequence = %q, want ticket,qa-cases,qa,ticket,qa", got)
 	}
 	// The findings themselves must reach the developer. A round that sends
 	// "QA found something" spends a run and tells it nothing.
-	if !strings.Contains(f.prompts[2], "2 decimal places") {
-		t.Errorf("the findings did not reach the developer:\n%s", f.prompts[2])
+	if !strings.Contains(f.prompts[3], "2 decimal places") {
+		t.Errorf("the findings did not reach the developer:\n%s", f.prompts[3])
 	}
 	// And QA must be asked to look again rather than told it passed.
-	if !strings.Contains(strings.ToLower(f.prompts[3]), "re-run") {
-		t.Errorf("QA was not asked to re-verify:\n%s", f.prompts[3])
+	if !strings.Contains(strings.ToLower(f.prompts[4]), "re-run") {
+		t.Errorf("QA was not asked to re-verify:\n%s", f.prompts[4])
 	}
 	if strings.Contains(out.String(), "A person needs to look") {
 		t.Error("a cleared finding escalated to a person")
@@ -386,12 +407,301 @@ func TestQAPostsEachRoundsDistinctFindingsToTheTicket(t *testing.T) {
 	}
 }
 
-// qaPostFindings itself must not reach for a nil deps.Jira -- runQA is
-// reachable directly (unlike the outer Run, which already dereferences
-// deps.Jira unconditionally before QA is ever claimed), and its own guard
-// is the only thing standing between a nil tracker and a panic here.
-func TestQAPostFindingsDoesNotPanicWithoutATracker(t *testing.T) {
-	qaPostFindings(Deps{Jira: nil}, "FCIA-6", 1, "the rounding case is wrong")
+// Neither comment path may reach for a nil deps.Jira -- runQA is reachable
+// directly (unlike the outer Run, which already dereferences deps.Jira
+// unconditionally before QA is ever claimed), and their own guards are the
+// only thing standing between a nil tracker and a panic here.
+func TestQACommentsDoNotPanicWithoutATracker(t *testing.T) {
+	qaPostRound(Deps{Jira: nil}, qaRoundReport{Key: "FCIA-6", Round: 1,
+		Findings: "the rounding case is wrong", FixActor: events.ActorImplementer})
+	qaPostNothingFound(Deps{Jira: nil}, "FCIA-6")
+}
+
+// OR-200: one round leaves ONE comment, and that comment carries all three
+// facts a reviewer wants -- what QA found, what changed in response, and
+// whether re-verification passed. A version that posted the finding alone
+// (the OR-167 behaviour) leaves the ticket saying a problem was raised and
+// never saying it was resolved, which reads worse than saying nothing.
+func TestQACommentsTheFindingAndItsResolutionInOneComment(t *testing.T) {
+	home := project(t, qaCfg)
+	j := &fakeJira{}
+	f := &qaFake{t: t,
+		qaReplies:  []string{"The rounding case is wrong: expected 2 decimal places, got 4.", "QA CLEAN"},
+		fixReplies: []string{"Rounded the total to 2 decimal places before formatting it."},
+	}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j, Supervise: f.run,
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+	if res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("outcome = %q", res[0].Outcome)
+	}
+
+	round := qaRoundComments(j.comments)
+	if len(round) != 1 {
+		t.Fatalf("one QA round produced %d round comment(s), want exactly 1:\n%s",
+			len(round), strings.Join(j.comments, "\n---\n"))
+	}
+	for _, want := range []string{
+		"expected 2 decimal places, got 4",                        // the finding
+		"Rounded the total to 2 decimal places before formatting", // the resolution
+		"Re-verified: every case passes.",                         // the re-verification
+	} {
+		if !strings.Contains(round[0], want) {
+			t.Errorf("the round comment is missing %q:\n%s", want, round[0])
+		}
+	}
+	// The exchange itself is noise. Only the fix's closing line belongs here.
+	if strings.Contains(round[0], "QA round 2") {
+		t.Errorf("a second round was reported though only one ran:\n%s", round[0])
+	}
+	// A clean end after a fix round is already said by that round's comment.
+	if strings.Contains(strings.Join(j.comments, "\n"), "no fix rounds were needed") {
+		t.Errorf("the nothing-found line was posted for a run that did have findings:\n%s",
+			strings.Join(j.comments, "\n---\n"))
+	}
+}
+
+// OR-200: two rounds produce two comments -- one per exchange, never one
+// merged summary and never a per-turn stream. The round cap (qa.go's max) is
+// what bounds this, so the count is the cap and cannot become a flood.
+func TestQACommentsOncePerRound(t *testing.T) {
+	home := project(t, `{"vcs":{"default_branch":"main","work_branch":"develop","branch_prefix":"orion/"},
+	                     "tracker":{"enabled":true,"project_key":"FCIA","queue_label":"ORION"},
+	                     "qa":{"max_rounds":2}}`)
+	j := &fakeJira{}
+	f := &qaFake{t: t,
+		qaReplies: []string{
+			"Round one problem: the discount is applied twice.",
+			"Round two problem: the refund path still double-charges.",
+			"QA CLEAN",
+		},
+		fixReplies: []string{
+			"Applied the discount once, in the pricing step only.",
+			"Made the refund path idempotent per transaction id.",
+		},
+	}
+	var out strings.Builder
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j, Supervise: f.run,
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	round := qaRoundComments(j.comments)
+	if len(round) != 2 {
+		t.Fatalf("two QA rounds produced %d round comment(s), want exactly 2:\n%s",
+			len(round), strings.Join(j.comments, "\n---\n"))
+	}
+	if !strings.Contains(round[0], "discount is applied twice") ||
+		!strings.Contains(round[0], "Applied the discount once") {
+		t.Errorf("round one's comment does not pair its finding with its fix:\n%s", round[0])
+	}
+	if !strings.Contains(round[1], "refund path still double-charges") ||
+		!strings.Contains(round[1], "idempotent per transaction id") {
+		t.Errorf("round two's comment does not pair its finding with its fix:\n%s", round[1])
+	}
+}
+
+// OR-200: QA finding nothing has to be SAID. Silence on the ticket is
+// currently ambiguous between "QA verified this and found nothing" and "QA
+// never ran", and after OR-156's proved-red requirement those are very
+// different claims about a change.
+func TestQACommentsWhenItFoundNothing(t *testing.T) {
+	home := project(t, qaCfg)
+	j := &fakeJira{}
+	f := &qaFake{t: t, qaReplies: []string{"QA CLEAN"}}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j, Supervise: f.run,
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+	if res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("outcome = %q", res[0].Outcome)
+	}
+
+	comments := strings.Join(j.comments, "\n---\n")
+	if !strings.Contains(comments, "found nothing") {
+		t.Fatalf("a clean QA run left nothing on the ticket, so it cannot be told apart "+
+			"from a run where QA never happened:\n%s", comments)
+	}
+	if got := qaRoundComments(j.comments); len(got) != 0 {
+		t.Errorf("a clean run reported %d fix round(s):\n%s", len(got), strings.Join(got, "\n---\n"))
+	}
+}
+
+// OR-200: a fix round that never finishes is still a round the ticket must
+// carry -- the finding that opened it is the last thing anyone knows was
+// wrong, and a version that only posted on a successful re-verify would
+// leave exactly this, the actually-unresolved case, silent.
+func TestQAPostsARoundCommentWhenTheFixRunFails(t *testing.T) {
+	home := project(t, qaCfg)
+	j := &fakeJira{}
+	var out strings.Builder
+	ticketCalls := 0
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				switch o.Stage {
+				case "qa-cases":
+					return &supervisor.Result{ExitCode: 0, Final: "- the rounding boundary"}, nil
+				case "qa":
+					if err := os.WriteFile(filepath.Join(ws.RepoDir(), "qa.go"), []byte("package x\n"), 0o644); err != nil {
+						return nil, err
+					}
+					git(t, ws.RepoDir(), "add", ".")
+					git(t, ws.RepoDir(), "commit", "-q", "-m", "qa work")
+					return &supervisor.Result{ExitCode: 0, SessionID: "qa-session",
+						Final: "The rounding case is wrong: expected 2 decimal places, got 4."}, nil
+				case "ticket":
+					ticketCalls++
+					if ticketCalls == 1 {
+						if err := os.WriteFile(filepath.Join(ws.RepoDir(), "impl.go"), []byte("package x\n"), 0o644); err != nil {
+							return nil, err
+						}
+						git(t, ws.RepoDir(), "add", ".")
+						git(t, ws.RepoDir(), "commit", "-q", "-m", "feat: implement")
+						return &supervisor.Result{ExitCode: 0, SessionID: "impl-session"}, nil
+					}
+					// The fix round: crashes before it can change anything.
+					return &supervisor.Result{ExitCode: 1, Reason: "the fix run crashed"}, nil
+				}
+				return nil, fmt.Errorf("unexpected stage %q", o.Stage)
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	if res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("outcome = %q; a fix run that crashed must not fail the ticket", res[0].Outcome)
+	}
+	round := qaRoundComments(j.comments)
+	if len(round) != 1 {
+		t.Fatalf("the fix run's failure produced %d round comment(s), want exactly 1:\n%s",
+			len(round), strings.Join(j.comments, "\n---\n"))
+	}
+	if !strings.Contains(round[0], "expected 2 decimal places, got 4") {
+		t.Errorf("the round comment lost the finding that was open when the fix run failed:\n%s", round[0])
+	}
+	if !strings.Contains(round[0], "The fix run did not finish, so this was never re-verified.") {
+		t.Errorf("the round comment does not say the fix run never finished:\n%s", round[0])
+	}
+	if !strings.Contains(out.String(), "unverified by QA") {
+		t.Errorf("nothing said the change went to review unverified:\n%s", out.String())
+	}
+}
+
+// OR-200: the mirror case -- the fix itself finished and said what it
+// changed, but the re-verification run that was supposed to confirm it never
+// came back. The ticket must still show the finding paired with the fix,
+// with a verdict that says the outcome is unknown rather than either
+// resolved or still open.
+func TestQAPostsARoundCommentWhenReVerificationFails(t *testing.T) {
+	home := project(t, qaCfg)
+	j := &fakeJira{}
+	var out strings.Builder
+	ticketCalls, qaCalls := 0, 0
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				switch o.Stage {
+				case "qa-cases":
+					return &supervisor.Result{ExitCode: 0, Final: "- the rounding boundary"}, nil
+				case "qa":
+					qaCalls++
+					if qaCalls == 1 {
+						if err := os.WriteFile(filepath.Join(ws.RepoDir(), "qa.go"), []byte("package x\n"), 0o644); err != nil {
+							return nil, err
+						}
+						git(t, ws.RepoDir(), "add", ".")
+						git(t, ws.RepoDir(), "commit", "-q", "-m", "qa work")
+						return &supervisor.Result{ExitCode: 0, SessionID: "qa-session",
+							Final: "The rounding case is wrong: expected 2 decimal places, got 4."}, nil
+					}
+					// The re-verify: crashes before it can report a verdict.
+					return &supervisor.Result{ExitCode: 1, Reason: "the re-verify run crashed"}, nil
+				case "ticket":
+					ticketCalls++
+					if ticketCalls == 1 {
+						if err := os.WriteFile(filepath.Join(ws.RepoDir(), "impl.go"), []byte("package x\n"), 0o644); err != nil {
+							return nil, err
+						}
+						git(t, ws.RepoDir(), "add", ".")
+						git(t, ws.RepoDir(), "commit", "-q", "-m", "feat: implement")
+						return &supervisor.Result{ExitCode: 0, SessionID: "impl-session"}, nil
+					}
+					return &supervisor.Result{ExitCode: 0, SessionID: "fix-session",
+						Final: "Rounded the total to 2 decimal places before formatting it."}, nil
+				}
+				return nil, fmt.Errorf("unexpected stage %q", o.Stage)
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	if res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("outcome = %q; a re-verify run that crashed must not fail the ticket", res[0].Outcome)
+	}
+	round := qaRoundComments(j.comments)
+	if len(round) != 1 {
+		t.Fatalf("the re-verify failure produced %d round comment(s), want exactly 1:\n%s",
+			len(round), strings.Join(j.comments, "\n---\n"))
+	}
+	for _, want := range []string{
+		"expected 2 decimal places, got 4",
+		"Rounded the total to 2 decimal places before formatting",
+		"The re-verification run did not finish, so whether the fix cleared this is unknown.",
+	} {
+		if !strings.Contains(round[0], want) {
+			t.Errorf("the round comment is missing %q:\n%s", want, round[0])
+		}
+	}
+}
+
+// OR-200: no comment path may upload a file. A raw run log is hundreds of
+// kilobytes against a 2 GB free-tier quota, cannot be grepped once uploaded,
+// and carries everything the agent read and wrote -- on OR-105 that included
+// a live-format access key that push protection caught and an attachment
+// would have published past it. The structural guarantee is that the tracker
+// interface this package holds has no way to send a file at all, so this
+// asserts the interface rather than any one call site.
+func TestTheTrackerInterfaceCannotUploadAFile(t *testing.T) {
+	iface := reflect.TypeOf((*TrackerAPI)(nil)).Elem()
+	for i := 0; i < iface.NumMethod(); i++ {
+		name := strings.ToLower(iface.Method(i).Name)
+		for _, banned := range []string{"attach", "upload", "file", "artifact"} {
+			if strings.Contains(name, banned) {
+				t.Errorf("TrackerAPI.%s can put a file on a ticket; run logs must stay local "+
+					"(OR-200)", iface.Method(i).Name)
+			}
+		}
+	}
+}
+
+// qaRoundComments picks out the per-round comments, which are the ones this
+// ticket's count claims are about -- the escalation comment and the
+// nothing-found line are separate statements and are asserted separately.
+func qaRoundComments(comments []string) []string {
+	var out []string
+	for _, c := range comments {
+		if strings.Contains(c, "QA round ") && strings.Contains(c, " found:") {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // OR-167: the console note "(full text in the event log)" only makes sense
@@ -455,8 +765,9 @@ func TestQAEscalatesToAPersonWhenTheRoundsRunOut(t *testing.T) {
 			},
 		})
 
-	// One fix round, then stop: implement, verify, fix, re-verify.
-	if got := f.sequence(); got != "ticket,qa,ticket,qa" {
+	// One fix round, then stop: implement, derive the cases, verify, fix,
+	// re-verify.
+	if got := f.sequence(); got != "ticket,qa-cases,qa,ticket,qa" {
 		t.Fatalf("run sequence = %q; the round ceiling did not hold", got)
 	}
 	if !opened || res[0].Outcome != OutcomeCIWait {
@@ -468,6 +779,12 @@ func TestQAEscalatesToAPersonWhenTheRoundsRunOut(t *testing.T) {
 	}
 	if !strings.Contains(comments, "QA engineer") {
 		t.Errorf("the findings do not say who reported them:\n%s", comments)
+	}
+	// OR-200: the unresolved case is the one most likely to be lost, so the
+	// ticket must say in as many words that the rounds ran out with findings
+	// still open -- not merely carry the last round's exchange.
+	if !strings.Contains(comments, "still open after 1 fix round(s)") {
+		t.Errorf("the ticket never says the rounds ran out with findings still open:\n%s", comments)
 	}
 	if !strings.Contains(out.String(), "A person needs to look") {
 		t.Errorf("nothing told the operator the findings are still open:\n%s", out.String())
@@ -492,6 +809,9 @@ func TestAQARunThatFailsDoesNotFailTheTicket(t *testing.T) {
 				if o.Stage == "qa" {
 					return &supervisor.Result{ExitCode: 1, Reason: "the breaker tripped"}, nil
 				}
+				if o.Stage == "qa-cases" {
+					return &supervisor.Result{ExitCode: 0, Final: "- the rounding boundary"}, nil
+				}
 				if err := os.WriteFile(filepath.Join(ws.RepoDir(), "impl.go"), []byte("package x\n"), 0o644); err != nil {
 					return nil, err
 				}
@@ -506,7 +826,7 @@ func TestAQARunThatFailsDoesNotFailTheTicket(t *testing.T) {
 	if res[0].Outcome != OutcomeCIWait || !pushed {
 		t.Fatalf("a failed QA run stopped the ticket: outcome=%q pushed=%v", res[0].Outcome, pushed)
 	}
-	if strings.Join(stages, ",") != "ticket,qa" {
+	if strings.Join(stages, ",") != "ticket,qa-cases,qa" {
 		t.Errorf("run sequence = %v", stages)
 	}
 	// And it must say so: a change that went to review unverified reads
@@ -532,19 +852,19 @@ func TestQADegradesToTheRepositorysOwnToolingAndSaysSo(t *testing.T) {
 			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
 		})
 
-	if got := f.sequence(); got != "ticket,qa" {
+	if got := f.sequence(); got != "ticket,qa-cases,qa" {
 		t.Fatalf("run sequence = %q; QA must still run without the skills", got)
 	}
-	if !strings.Contains(f.prompts[1], "nj-agents is not installed here") {
-		t.Errorf("the prompt did not tell QA the skills are absent:\n%s", f.prompts[1])
+	if !strings.Contains(f.prompts[2], "nj-agents is not installed here") {
+		t.Errorf("the prompt did not tell QA the skills are absent:\n%s", f.prompts[2])
 	}
 	if !strings.Contains(out.String(), "this repository's own test tooling") {
 		t.Errorf("the run did not say which path it took:\n%s", out.String())
 	}
 	// No non-prod target is configured, so an e2e run must be off the table
 	// rather than pointed at whatever the agent can find.
-	if !strings.Contains(f.prompts[1], "No non-production target is configured") {
-		t.Errorf("the prompt did not rule out an e2e run:\n%s", f.prompts[1])
+	if !strings.Contains(f.prompts[2], "No non-production target is configured") {
+		t.Errorf("the prompt did not rule out an e2e run:\n%s", f.prompts[2])
 	}
 }
 
@@ -673,6 +993,222 @@ func TestReportRedBeforeGreenWritesBothToTheEventLog(t *testing.T) {
 	}
 	if !sawUnproven {
 		t.Errorf("the event log never named the unproven test file:\n%+v", logged)
+	}
+}
+
+// deriveRepo is a branch with one committed change on it: a seed commit to
+// use as the base, and an implementation commit for the derive step to read
+// a diff out of.
+func deriveRepo(t *testing.T) (repo, baseSHA string) {
+	t.Helper()
+	repo = t.TempDir()
+	git(t, repo, "init", "-q", "-b", "main")
+	writeExec(t, repo, "scripts/test.sh", "#!/bin/sh\nexit 0\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "seed")
+	baseSHA = git(t, repo, "rev-parse", "HEAD")
+
+	if err := os.WriteFile(filepath.Join(repo, "total.go"),
+		[]byte("package x\n\nfunc round(v float64) float64 { return v }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "feat: round the total")
+	return repo, baseSHA
+}
+
+// OR-182. The deriving is wide reading with a short answer, so it happens in
+// a context that is thrown away: its own actor on its own pinned model, with
+// the criteria and the diff in ITS prompt and only the case list in QA's. A
+// derive run that inherited QA's model, or whose answer never reached QA,
+// would be a second run that saved nothing.
+func TestCaseDeriveRunsAsItsOwnCheapActorAndItsListReachesQA(t *testing.T) {
+	repo, baseSHA := deriveRepo(t)
+	const cases = "- a total of 1.005 rounds to 1.01\n- a negative total rounds the same way"
+	const criteria = "AC: totals are rounded to 2 decimal places"
+
+	var deriveOpts, qaOpts supervisor.Options
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		switch o.Stage {
+		case "qa-cases":
+			deriveOpts = o
+			return &supervisor.Result{ExitCode: 0, Final: cases}, nil
+		default:
+			qaOpts = o
+			return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+		}
+	}
+
+	logPath := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := events.Open(logPath, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	var out strings.Builder
+	runQA(qaJob{Key: "FCIA-6", Summary: "round the total", Description: criteria,
+		WS: &workspace.Workspace{RepoPath: repo}, BaseSHA: baseSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, log, &out)
+
+	if deriveOpts.Actor != events.ActorCaseDerive || deriveOpts.Key != "FCIA-6" {
+		t.Errorf("derive ran as actor %q on key %q, want %q on the ticket so its spend is "+
+			"its own row in that ticket's cost report",
+			deriveOpts.Actor, deriveOpts.Key, events.ActorCaseDerive)
+	}
+	if want := actors.Model(events.ActorCaseDerive); deriveOpts.Model != want {
+		t.Errorf("derive model = %q, want the roster's %q -- pinning it cheap is the cost win",
+			deriveOpts.Model, want)
+	}
+	if deriveOpts.MaxMinutes != caseDeriveMaxMinutes || deriveOpts.MaxTurns != caseDeriveMaxTurns {
+		t.Errorf("derive bounds = %d min / %d turns, want the tight %d/%d",
+			deriveOpts.MaxMinutes, deriveOpts.MaxTurns, caseDeriveMaxMinutes, caseDeriveMaxTurns)
+	}
+	if !strings.Contains(deriveOpts.Prompt, criteria) || !strings.Contains(deriveOpts.Prompt, "func round") {
+		t.Errorf("the derive prompt did not carry the criteria and the diff:\n%s", deriveOpts.Prompt)
+	}
+
+	if !strings.Contains(qaOpts.Prompt, "1.005 rounds to 1.01") {
+		t.Errorf("the derived cases never reached the QA run:\n%s", qaOpts.Prompt)
+	}
+	if strings.Contains(qaOpts.Prompt, criteria) {
+		t.Errorf("QA carried the criteria as well as the cases, which is the reading this "+
+			"split exists to stop paying for on every turn:\n%s", qaOpts.Prompt)
+	}
+
+	log.Close()
+	logged, err := events.Read(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saw bool
+	for _, e := range logged {
+		if e.Actor == events.ActorCaseDerive && strings.Contains(e.Msg, "1.005 rounds to 1.01") {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("the case list was never written to the event log; what a subagent returns "+
+			"is all the parent ever sees of it, so an unrecorded answer is lost (OR-129):\n%+v",
+			logged)
+	}
+}
+
+// The fallback, which matters more than the saving: a derive step that
+// produced nothing must never be the reason a ticket has no tests. QA runs
+// anyway, with the criteria, exactly as it did before this step existed.
+func TestQAStillRunsWhenTheCaseDeriveFails(t *testing.T) {
+	repo, baseSHA := deriveRepo(t)
+	const criteria = "AC: totals are rounded to 2 decimal places"
+
+	var stages []string
+	var qaPrompt string
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		stages = append(stages, o.Stage)
+		if o.Stage == "qa-cases" {
+			return &supervisor.Result{ExitCode: 1, Reason: "the breaker tripped"}, nil
+		}
+		qaPrompt = o.Prompt
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+
+	var out strings.Builder
+	outcome := runQA(qaJob{Key: "FCIA-6", Summary: "round the total", Description: criteria,
+		WS: &workspace.Workspace{RepoPath: repo}, BaseSHA: baseSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out)
+
+	if !outcome.Ran || !outcome.Clean {
+		t.Fatalf("a failed derive stopped QA: %+v", outcome)
+	}
+	if strings.Join(stages, ",") != "qa-cases,qa" {
+		t.Fatalf("run sequence = %v, want the derive attempt and then QA anyway", stages)
+	}
+	if !strings.Contains(qaPrompt, criteria) {
+		t.Errorf("QA fell back without the criteria, so it has nothing to derive from:\n%s", qaPrompt)
+	}
+	// Said out loud, for the reason the tooling path is: a run that quietly
+	// took the more expensive path reads exactly like one that did not.
+	if !strings.Contains(out.String(), "could not derive the cases") {
+		t.Errorf("nothing said the derive step had failed:\n%s", out.String())
+	}
+}
+
+// A ticket with no description has no criteria to derive from, and a diff
+// alone would only re-state what the implementation already does. Spending a
+// run to be told that is the "small job is pure overhead" case OR-143's bar
+// rules out, so the step does not run at all.
+func TestCaseDeriveIsSkippedWhenThereIsNothingToDeriveFrom(t *testing.T) {
+	repo, baseSHA := deriveRepo(t)
+
+	var stages []string
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		stages = append(stages, o.Stage)
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+
+	var out strings.Builder
+	runQA(qaJob{Key: "FCIA-6", Summary: "round the total",
+		WS: &workspace.Workspace{RepoPath: repo}, BaseSHA: baseSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out)
+
+	if strings.Join(stages, ",") != "qa" {
+		t.Errorf("run sequence = %v, want QA alone: there were no criteria to derive from", stages)
+	}
+}
+
+// The mirror of TestCaseDeriveIsSkippedWhenThereIsNothingToDeriveFrom: this
+// time the criteria exist but there is no base commit to diff against, so
+// there is still nothing for the derive step to read the change out of.
+func TestCaseDeriveIsSkippedWhenThereIsNoBaseSHA(t *testing.T) {
+	repo, _ := deriveRepo(t)
+
+	var stages []string
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		stages = append(stages, o.Stage)
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+
+	var out strings.Builder
+	runQA(qaJob{Key: "FCIA-6", Summary: "round the total", Description: "AC: totals round",
+		WS: &workspace.Workspace{RepoPath: repo}},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out)
+
+	if strings.Join(stages, ",") != "qa" {
+		t.Errorf("run sequence = %v, want QA alone: there was no base commit to diff against", stages)
+	}
+}
+
+// A base commit that IS HEAD produces an empty diff -- there is nothing the
+// change touched, so the derive step has nothing to add and must not spend a
+// run finding that out.
+func TestCaseDeriveIsSkippedWhenTheDiffIsEmpty(t *testing.T) {
+	repo, _ := deriveRepo(t)
+	headSHA := git(t, repo, "rev-parse", "HEAD")
+
+	var stages []string
+	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+		stages = append(stages, o.Stage)
+		return &supervisor.Result{ExitCode: 0, SessionID: "qa-1", Final: supervisor.QAClean}, nil
+	}
+
+	var out strings.Builder
+	runQA(qaJob{Key: "FCIA-6", Summary: "round the total", Description: "AC: totals round",
+		WS: &workspace.Workspace{RepoPath: repo}, BaseSHA: headSHA},
+		config.Config{}, Options{}, Deps{Supervise: sup}, nil, &out)
+
+	if strings.Join(stages, ",") != "qa" {
+		t.Errorf("run sequence = %v, want QA alone: base and HEAD are the same commit, so "+
+			"there is no diff to derive cases from", stages)
+	}
+}
+
+// countCases is the one line the console gets, so it has to count only actual
+// cases -- not blank lines the agent's formatting left in, and not a header
+// line it wrote despite being asked for none.
+func TestCountCasesSkipsBlankLinesAndHeaders(t *testing.T) {
+	cases := "Cases:\n- a negative total rounds down\n\n- a zero total stays zero\n"
+	if got := countCases(cases); got != 2 {
+		t.Errorf("countCases = %d, want 2: the header line and the blank line are not cases", got)
 	}
 }
 

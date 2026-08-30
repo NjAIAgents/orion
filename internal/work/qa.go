@@ -47,6 +47,22 @@ type qaOutcome struct {
 	Findings string // open findings, when it ended without them being cleared
 }
 
+// Verdict is what the stage is worth saying on the boundary out of it: the
+// result, not the fact that it ran. "verified clean" and "findings still
+// open" are different enough to change what a reader does next, and a
+// boundary that said only "qa -> push" would hide which one happened.
+func (o qaOutcome) Verdict() string {
+	switch {
+	case o.Clean && o.Rounds > 0:
+		return fmt.Sprintf("verified clean after %d fix round(s)", o.Rounds)
+	case o.Clean:
+		return "verified clean"
+	case o.Findings != "":
+		return fmt.Sprintf("findings still open after %d fix round(s)", o.Rounds)
+	}
+	return "unverified"
+}
+
 // qaJob is what one stage run needs. A struct rather than eleven parameters
 // because the caller already holds all of it and threading it positionally is
 // how the wrong worktree gets passed.
@@ -101,6 +117,8 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 		}
 	}()
 
+	cases := deriveCases(job, deps, log, w)
+
 	tools := qaTools(cfg, opts.Home)
 	// Which path it took, said out loud. A stage that silently degraded to
 	// half its coverage reads exactly like one that did not, and the
@@ -112,7 +130,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 
 	res, err := deps.Supervise(job.WS, supervisor.Options{
 		Stage:  "qa",
-		Prompt: supervisor.QAPrompt(key, job.Summary, job.Description, tools),
+		Prompt: supervisor.QAPrompt(key, job.Summary, job.Description, cases, tools),
 		Model:  actors.Model(events.ActorQA),
 		Effort: actors.Effort(events.ActorQA),
 		// The implementer's allowance, not a smaller one. QA reads the
@@ -145,7 +163,6 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 			ui.Say(w, key, events.ActorQA, ui.VerbWarn,
 				"findings: %s (full text in the event log)", line)
 		}
-		qaPostFindings(deps, key, out.Rounds+1, findings)
 
 		if out.Rounds >= max {
 			// The ceiling. Two agents can disagree about a test for as long
@@ -155,9 +172,20 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 			return out
 		}
 		out.Rounds++
+		// The round this exchange is about, and what QA found to open it.
+		// Both are read again after the loop has moved on to the next
+		// round's findings, so they are taken now (OR-200).
+		report := qaRoundReport{Key: key, Round: out.Rounds,
+			Findings: findings, FixActor: job.Actor}
 
-		ui.Say(w, key, job.Actor, ui.VerbWorking,
-			"fixing what QA found (round %d of %d)", out.Rounds, max)
+		// QA found something and hands the run back to whoever wrote the
+		// branch. Both sides named: two adjacent lines with different names
+		// leave the reader to work out that the developer is now holding it
+		// again, which is exactly what was wrong before (OR-189).
+		ui.Stage(w, log, ui.Handoff{Key: key, From: "qa",
+			To: fmt.Sprintf("fix round %d", out.Rounds),
+			By: events.ActorQA, Next: job.Actor,
+			Detail: fmt.Sprintf("round %d of %d", out.Rounds, max)})
 		fix, fixErr := deps.Supervise(job.WS, supervisor.Options{
 			Stage: "ticket", Resume: job.ImplSession,
 			Prompt: supervisor.QAFindingsMessage(findings),
@@ -174,14 +202,26 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 			Actor:      job.Actor, Key: key,
 		})
 		if fixErr != nil || fix == nil || fix.ExitCode != 0 {
+			report.Verdict = "The fix run did not finish, so this was never re-verified."
+			qaPostRound(deps, report)
 			qaGiveUp(key, "the developer's fix run did not finish", log, w)
 			return out
 		}
 		if fix.SessionID != "" {
 			job.ImplSession = fix.SessionID
 		}
+		// The resolution, in the implementer's own words -- one line of it.
+		// The whole exchange is in the run log; what a reviewer wants on the
+		// ticket is what changed (OR-200).
+		report.Fix = firstSubstantiveLine(tailOf(fix))
 
-		ui.Say(w, key, events.ActorQA, ui.VerbWorking, "re-verifying")
+		// And back again. The return leg is a boundary too, and it has to be
+		// marked or the log shows a run entering a fix round and never
+		// leaving it -- which breaks the duration the event log exists to
+		// make queryable as surely as an unmarked departure does.
+		ui.Stage(w, log, ui.Handoff{Key: key,
+			From: fmt.Sprintf("fix round %d", out.Rounds), To: "qa",
+			By: job.Actor, Next: events.ActorQA, Detail: "re-verifying"})
 		res, err = deps.Supervise(job.WS, supervisor.Options{
 			Stage: "qa", Resume: qaSession,
 			Prompt:     supervisor.QAReverifyMessage(),
@@ -192,20 +232,123 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 			Actor:      events.ActorQA, Key: key,
 		})
 		if !qaRan(res, err, key, log, w) {
+			report.Verdict = "The re-verification run did not finish, so whether the fix cleared " +
+				"this is unknown."
+			qaPostRound(deps, report)
 			return out
 		}
 		if res.SessionID != "" {
 			qaSession = res.SessionID
 		}
 		findings, clean = qaVerdict(tailOf(res))
+		report.Verdict = "Re-verified: findings are still open."
+		if clean {
+			report.Verdict = "Re-verified: every case passes."
+		}
+		qaPostRound(deps, report)
 	}
 
+	if out.Rounds == 0 {
+		// QA ran and found nothing. Said out loud on the ticket, because a
+		// ticket with no QA comment cannot be told apart from one QA never
+		// verified -- and after OR-156 that difference is the whole point.
+		qaPostNothingFound(deps, key)
+	}
 	out.Clean, out.Findings = true, ""
 	log.Emit(events.Event{Kind: events.KindQA, Actor: events.ActorQA,
 		Model: actors.Model(events.ActorQA),
 		Msg:   fmt.Sprintf("verified the change; every case passes (%d fix round(s))", out.Rounds)})
 	ui.Say(w, key, events.ActorQA, ui.VerbOK, "every case passes")
 	return out
+}
+
+// Bounds for the case-derive subagent, deliberately far tighter than the QA
+// run's own: the criteria and the diff are already in its prompt, so this is
+// a read-and-list with nothing to search for, and a run that gets stuck
+// hunting has stopped being cheap. Same reasoning as the log-triage bounds in
+// cmd/orion/fix.go.
+const (
+	caseDeriveMaxMinutes = 5
+	caseDeriveMaxTurns   = 10
+)
+
+// caseDeriveOptions is what the case-derive subagent runs with, separated
+// from deriveCases so the actor, model and prompt it is configured with can
+// be asserted without spawning anything -- the same reason triageOptions is
+// split from triageLog.
+func caseDeriveOptions(job qaJob, diff string) supervisor.Options {
+	return supervisor.Options{
+		Stage:      "qa-cases",
+		Prompt:     supervisor.QACasesPrompt(job.Key, job.Summary, job.Description, diff),
+		MaxMinutes: caseDeriveMaxMinutes,
+		MaxTurns:   caseDeriveMaxTurns,
+		// Its own actor on its own pinned model, not QA's: this is reading a
+		// specification and listing what follows from it, not the judgement of
+		// writing the tests, and pinning it is what makes the split a saving
+		// rather than a second run at QA's price. Attributed to the same ticket
+		// so its spend is its own row in that ticket's cost report instead of
+		// hiding inside QA's total (OR-182, following OR-143).
+		Actor: events.ActorCaseDerive, Key: job.Key,
+		Model:  actors.Model(events.ActorCaseDerive),
+		Effort: actors.Effort(events.ActorCaseDerive),
+	}
+}
+
+// deriveCases reduces the ticket's acceptance criteria and the branch's diff
+// to the list of cases QA has to cover, through a subagent that reads both in
+// its own context and returns only the list.
+//
+// Returns "" on any failure, which is today's behaviour: QA derives the cases
+// inside its own run from the description it is given. QA must still run --
+// a triage step that silently produced nothing must never be the reason a
+// ticket has no tests.
+//
+// The list is written to the event log for the reason OR-129 made the fix
+// loop record its closing summary: what a subagent returns is all the parent
+// ever sees of it, so an answer that is not written down is gone the moment
+// this function returns.
+func deriveCases(job qaJob, deps Deps, log *events.Log, w io.Writer) string {
+	if strings.TrimSpace(job.Description) == "" || job.BaseSHA == "" {
+		return ""
+	}
+	// The diff of the whole slice, base to HEAD. A failure here is not worth
+	// a warning: it means the subagent has nothing to read the change out of,
+	// so the stage takes the path it took before this step existed.
+	diff, err := runGit(job.WS.RepoDir(), "diff", job.BaseSHA, "HEAD")
+	if err != nil || strings.TrimSpace(diff) == "" {
+		return ""
+	}
+
+	res, sErr := deps.Supervise(job.WS, caseDeriveOptions(job, diff))
+	if sErr != nil || res == nil || res.ExitCode != 0 || strings.TrimSpace(res.Final) == "" {
+		ui.Say(w, job.Key, events.ActorCaseDerive, ui.VerbWarn,
+			"could not derive the cases, so QA reads the ticket itself")
+		log.Emitf(events.KindNote, events.ActorCaseDerive,
+			"case derivation produced nothing; QA derives its own cases from the ticket")
+		return ""
+	}
+
+	cases := strings.TrimSpace(res.Final)
+	log.Emit(events.Event{Kind: events.KindQA, Actor: events.ActorCaseDerive,
+		Model: actors.Model(events.ActorCaseDerive),
+		Msg:   "derived the cases to cover:\n" + cases})
+	ui.Say(w, job.Key, events.ActorCaseDerive, ui.VerbOK,
+		"derived %d case(s) from the acceptance criteria and the diff", countCases(cases))
+	return cases
+}
+
+// countCases is how many lines of the list actually name a case, for the one
+// line the console gets. A blank line is not a case, and neither is a header
+// the agent wrote above its list despite being asked for none.
+func countCases(cases string) int {
+	n := 0
+	for _, line := range strings.Split(cases, "\n") {
+		t := strings.TrimSpace(line)
+		if t != "" && !strings.HasSuffix(t, ":") {
+			n++
+		}
+	}
+	return n
 }
 
 // qaRan reports whether a QA run produced a usable result, warning when it
@@ -305,16 +448,59 @@ func firstSubstantiveLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// qaPostFindings puts one round's findings on the ticket. Every round, not
-// only the one that hits the ceiling -- by the time someone reads the ticket
-// weeks later, the in-memory findings and the raw stage log are both gone,
-// and the ticket is the only place left to look (OR-167).
-func qaPostFindings(deps Deps, key string, round int, findings string) {
+// qaRoundReport is one fix round as the ticket records it: what QA found,
+// what the implementer changed in response, and what re-verification made of
+// it. Assembled across the round rather than at one point, because the three
+// facts become known at three different moments.
+type qaRoundReport struct {
+	Key      string
+	Round    int
+	Findings string
+	// FixActor is whoever route() picked for this ticket, named in the body:
+	// the comment is attributed to QA, so without this a reader cannot tell
+	// who made the change QA is re-verifying (OR-171).
+	FixActor string
+	// Fix is one line of what changed. One line on purpose -- a reviewer
+	// wants the resolution, not the exchange that produced it. Empty when
+	// the fix run never finished.
+	Fix     string
+	Verdict string
+}
+
+// qaPostRound puts one round on the ticket. Every round, not only the one
+// that hits the ceiling -- by the time someone reads the ticket weeks later,
+// the in-memory findings and the raw stage log are both gone, and the ticket
+// is the only place left to look (OR-167).
+//
+// Text only, and deliberately: the run log this is drawn from is hundreds of
+// kilobytes, cannot be grepped once uploaded, and contains everything the
+// agent read and wrote -- including, on OR-105, a live-format access key that
+// push protection caught and an attachment would have published past it
+// (OR-200). Comments cost kilobytes; attachments cost the quota and the
+// secret both.
+func qaPostRound(deps Deps, r qaRoundReport) {
 	if deps.Jira == nil {
 		return
 	}
-	body := fmt.Sprintf("QA round %d found:\n\n%s", round, findings)
-	_ = deps.Jira.Comment(key, actors.Comment(events.ActorQA, body))
+	fix := strings.TrimSpace(r.Fix)
+	if fix == "" {
+		fix = "nothing was recorded."
+	}
+	body := fmt.Sprintf("QA round %d found:\n\n%s\n\n%s changed: %s\n\n%s",
+		r.Round, strings.TrimSpace(r.Findings), actors.Attribution(r.FixActor), fix, r.Verdict)
+	_ = deps.Jira.Comment(r.Key, actors.Comment(events.ActorQA, body))
+}
+
+// qaPostNothingFound is the one line a clean run leaves. Without it, silence
+// on the ticket means either "QA verified this and found nothing" or "QA
+// never ran", and those are not the same claim about a change (OR-156).
+func qaPostNothingFound(deps Deps, key string) {
+	if deps.Jira == nil {
+		return
+	}
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorQA,
+		"verified this change independently and found nothing: every case passes, "+
+			"and no fix rounds were needed."))
 }
 
 // qaEscalate hands the open findings to a person.
@@ -357,7 +543,7 @@ func qaEscalate(job qaJob, out qaOutcome, cfg config.Config, deps Deps,
 		"_Read these before you approve it._",
 	}, "\n")
 	tell(w, log, job.WS, notify.Event{
-		Level: notify.Blocked, Workspace: job.WS.ID, Actor: events.ActorQA,
+		Key: key, Level: notify.Blocked, Workspace: job.WS.ID, Actor: events.ActorQA,
 		Title: title, Body: msg,
 	})
 }

@@ -101,3 +101,33 @@ func TestFixPromptStillNamesTheFailureAndTheGuardrails(t *testing.T) {
 		}
 	}
 }
+
+// OR-191: routing reads a marker off the created ticket, and until this
+// prompt said so nothing that created a ticket knew the vocabulary existed
+// -- so every ticket took the default while the run log correctly announced
+// the default on every run.
+//
+// The prompt must send the planner to `orion routes` and must NOT restate
+// the keywords. A copy of the vocabulary in a prompt is a second copy, and
+// it drifts from the table routing actually reads the moment either changes;
+// Orion owns the tracker contract and the skill applies it (CLAUDE.md's
+// precedence rule).
+func TestDecomposePromptSendsThePlannerToThePublishedTable(t *testing.T) {
+	p, err := stagePrompt(ws(t, ""), "decompose")
+	if err != nil {
+		t.Fatalf("decompose: %v", err)
+	}
+	if !strings.Contains(p, "orion routes") {
+		t.Errorf("the decompose prompt never names the published routing table:\n%s", p)
+	}
+	if !strings.Contains(p, "marker") {
+		t.Errorf("the decompose prompt never tells the planner to set the marker:\n%s", p)
+	}
+	// The keywords themselves belong to internal/work, not here.
+	for _, kw := range []string{"front-end", "documentation", "adr", "requirements"} {
+		if strings.Contains(p, kw) {
+			t.Errorf("the prompt carries its own copy of the vocabulary (%q); it must "+
+				"point at `orion routes` instead, or the two drift", kw)
+		}
+	}
+}

@@ -19,6 +19,26 @@ import (
 // last one running -- the failure mode Fan could introduce if any part of
 // its cleanup path were shared across goroutines instead of scoped to each.
 func TestFanLeavesNoSurvivingChildOnWallClockTimeout(t *testing.T) {
+	// Shrunk for the same reason as the single-run case -- the concurrency is
+	// what this test is about, not the length of the wait (OR-202) -- but
+	// deliberately three times the single-run budget, and that asymmetry is
+	// the point rather than an oversight.
+	//
+	// The budget has to cover something this test cannot control: three
+	// shells forking and writing their pid file before the deadline they are
+	// racing fires. A child killed before it reports is a child whose sweep
+	// this test cannot verify, so it fails as "test setup is broken" -- not a
+	// product defect, but a red build either way.
+	//
+	// Measured under the CPU contention of a full parallel `go test ./...`:
+	// three children take ~200ms to all report, with outliers to 1.38s. At
+	// 500ms that was a 16%-per-run flake (4 failures in 25). At 1.5s it is
+	// 0 in 40, worst run 2.04s end to end.
+	//
+	// The grace drops to 100ms to buy that headroom back: it is a ceiling on
+	// how long a killed process may take to flush, and nothing in this test
+	// flushes anything.
+	shrinkWallClock(t, 1500*time.Millisecond, 100*time.Millisecond)
 	pidDir := t.TempDir()
 	t.Setenv("FAN_PID_DIR", pidDir)
 	fakeClaudeTree(t, `id="p$$"
@@ -36,7 +56,24 @@ wait
 			MaxMinutes: 1, MaxTurns: 1})
 	}
 
+	start := time.Now()
 	results := Fan(w, jobs)
+	// Fan must return on the children's own deadlines. Without this guard the
+	// test still passes when the sweep is broken -- it just waits out the
+	// grandchildren's `sleep 300`, and a survivor that eventually exits on
+	// its own is indistinguishable from one that was killed.
+	if time.Since(start) > 10*time.Second {
+		t.Fatalf("Fan took %s to return: it waited for the children rather than "+
+			"killing them on their wall clock", time.Since(start))
+	}
+	// OR-202's own acceptance criterion: this test "completes in under a
+	// second". The 10s check above only catches the old failure mode (waiting
+	// out the real children); this catches the deadline regressing to
+	// "shorter but still not sub-second" -- non-fatal so a loaded CI runner
+	// doesn't flake the suite over a budget that isn't this test's point.
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("Fan took %s: OR-202 expects this test under a second", elapsed)
+	}
 	if len(results) != 3 {
 		t.Fatalf("got %d results, want 3", len(results))
 	}

@@ -238,6 +238,28 @@ first, leaving it on means hitting a wall on the first edit, and people
 disable Orion entirely rather than change one setting. Turn it on with
 `orion init --plan-gate`, or flip it in `orion.json` when the habit is there.
 
+### 4c. Which actor works a ticket
+
+Orion picks the actor from the ticket's **issue type, components and labels**
+— a deterministic lookup, never a model call, and never inferred from the
+summary. `orion routes` prints the whole table: each routable actor, the
+exact keywords it accepts, and the actors that are deliberately unroutable
+because something else already invokes them.
+
+```bash
+orion routes
+```
+
+Matching is by **equality**, case-insensitive. A component named
+`docsite-infra` is not a documentation ticket, so containment would route it
+to the wrong actor.
+
+**Set the marker when the ticket is created.** Routing reads what planning
+wrote; a ticket carrying no marker goes to the backend developer, which is
+right for backend work and silently wrong for everything else. `orion queue`
+prints the routing split of the work in front of it, so an all-default queue
+is visible before the run rather than after the bill.
+
 ---
 
 ## 5. Tuning the guardrails
@@ -251,7 +273,7 @@ Everything lives in `orion.json` at the repo root, reviewable like code.
 | `limits.max_consecutive_failures` | 3 | retrying a broken thing forever |
 | `limits.max_session_minutes` | 90 | wall-clock runaway |
 | `limits.max_files_touched` | 60 | blast radius |
-| `limits.max_concurrent_tickets` | 2 | how many tickets `orion watch` works at once |
+| `limits.max_concurrent_tickets` | 4 | how many tickets `orion watch` works at once |
 | `gates.require_plan_before_edit` | true | implementation before a written plan |
 | `gates.protect_tests_during_fix` | true | an agent weakening the test that defines "fixed" |
 | `gates.production_requires_authorization` | true | an unauthorised production deploy |
@@ -263,11 +285,14 @@ is never a safe reading of an absent value in a circuit breaker.
 
 `limits.max_concurrent_tickets` is the one that bounds how many agents exist
 rather than what one agent may do, so it is also clamped from above: **5 is a
-hard ceiling**, and a larger number is reduced rather than honoured. Two is the
-default because everything concurrency breaks — git against the one shared
-clone, a budget checkpoint crossed by runs already in flight, tickets picked
-that all edit the same files — is invisible at 1 and obvious at 2. Prove it at
-2, then raise it. Set it to `1` for the previous strictly-sequential watcher.
+hard ceiling**, and a larger number is reduced rather than honoured. The
+default was 2 first, because everything concurrency breaks — git against the
+one shared clone, a budget checkpoint crossed by runs already in flight,
+tickets picked that all edit the same files — is invisible at 1 and obvious at
+2. The rule was "prove it at 2, then raise it"; 2 has now been proven across a
+full release, and 4 is that raise. It stops short of the ceiling on purpose, so
+that reaching 5 stays an explicit choice rather than the default. Set it to `1`
+for the previous strictly-sequential watcher.
 Note that approvals do not parallelise: N tickets finishing means N approvals
 waiting on one person.
 

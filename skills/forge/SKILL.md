@@ -47,7 +47,15 @@ Prefer it over guessing at them.
 
 The circuit breaker will stop you after repeated identical calls or repeated
 failures of the same command. When it does, it is right. Do not work around
-it. Write what you learned to `plans/BLOCKED.md` and hand back.
+it. `plans/BLOCKED.md` is written for you at the moment it trips; add what
+you were attempting, what is done and what remains.
+
+Stopping the run is not the same as abandoning the worktree. You keep a
+bounded allowance of `git status`, `git diff`, `git checkout -- <path>`,
+`git restore`, `git add` and `git commit` — use it to revert what should not
+survive and commit what compiles, then hand back. Nothing else is allowed,
+`--amend` is refused, and using it does not clear the trip. See
+`docs/BREAKERS.md`.
 
 ## Exit
 
