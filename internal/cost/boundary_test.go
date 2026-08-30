@@ -98,3 +98,72 @@ func TestTheReportTellsAFaultFromAFailure(t *testing.T) {
 		t.Errorf("the floor warning fired over a run known to have spent nothing:\n%s", out)
 	}
 }
+
+// Multiple never-started runs must accumulate, not just toggle a flag. A
+// counter that only ever reads 0 or 1 would pass the single-run tests above
+// and still misreport a roster that failed to log in three times running.
+func TestMultipleNeverStartedRunsAreCountedSeparatelyFromFailures(t *testing.T) {
+	dir := t.TempDir()
+	path := events.Path(dir)
+	log, err := events.Open(path, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		Record(log, "", events.ActorImplementer, "OR-9", Run{
+			Failed: true, Reason: "claude exited 1", Seconds: 3, NeverStarted: true,
+		})
+	}
+	Record(log, "", events.ActorImplementer, "OR-9", Run{
+		Failed: true, Reason: "timed out", Seconds: 1800, HaveUsage: true,
+		Turns: 40, CostUSD: 0.09,
+	})
+	log.Close()
+
+	rep := Aggregate(ReadAll(path), "OR-9")
+	if rep.Total.NeverStarted != 3 {
+		t.Errorf("never started = %d, want 3 -- each never-started run must add "+
+			"to the count, not merely set a flag", rep.Total.NeverStarted)
+	}
+	if rep.Total.Failed != 1 {
+		t.Errorf("failed = %d, want 1 -- the three never-started runs must not "+
+			"leak into the failure count", rep.Total.Failed)
+	}
+	if rep.Total.Runs != 4 {
+		t.Errorf("runs = %d, want 4", rep.Total.Runs)
+	}
+
+	out := Render(rep)
+	if !strings.Contains(out, "3 never started") {
+		t.Errorf("the report does not aggregate the three never-started runs "+
+			"into one count:\n%s", out)
+	}
+}
+
+// A never-started run's exit reason is not thrown away: the per-run status
+// column names both the fact and its cause, and never falls back to
+// "usage missing" or "failed" -- either of those words on this row is the
+// exact misreading the NeverStarted distinction exists to prevent.
+func TestANeverStartedRunsReasonIsPreservedInTheStatusColumn(t *testing.T) {
+	dir := t.TempDir()
+	path := events.Path(dir)
+	log, err := events.Open(path, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	Record(log, "", events.ActorImplementer, "OR-9", Run{
+		Failed: true, Reason: "Invalid API key · Please run /login", Seconds: 4,
+		NeverStarted: true,
+	})
+	log.Close()
+
+	out := Render(Aggregate(ReadAll(path), "OR-9"))
+	if !strings.Contains(out, "never started (Invalid API key · Please run /login)") {
+		t.Errorf("the never-started run's reason did not survive to the status "+
+			"column:\n%s", out)
+	}
+	if strings.Contains(out, "usage missing") || strings.Contains(out, "failed:") {
+		t.Errorf("the never-started run's status column also read as a failure "+
+			"or as missing usage:\n%s", out)
+	}
+}
