@@ -50,3 +50,18 @@ func TestAnUnanswerableProbeWarnsRatherThanBlocking(t *testing.T) {
 		}
 	}
 }
+
+// The auth check has to actually run as part of `orion doctor`, alongside
+// the binary check -- a present-but-logged-out CLI is exactly the case that
+// passing checkClaude alone would miss (OR-212).
+func TestDoctorsFullCheckListIncludesTheAuthCheck(t *testing.T) {
+	var buf strings.Builder
+	Run(&buf, t.TempDir(), false)
+	out := buf.String()
+	if !strings.Contains(out, "claude auth") {
+		t.Errorf("the check list does not include the claude auth check:\n%s", out)
+	}
+	if !strings.Contains(out, "claude CLI") {
+		t.Errorf("the check list no longer includes the binary check either:\n%s", out)
+	}
+}

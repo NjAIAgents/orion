@@ -118,3 +118,86 @@ func TestACleanRunIsNotALoginProblem(t *testing.T) {
 		t.Fatal("no output at all was reported as unauthenticated")
 	}
 }
+
+// Every wording the CLI is known to use for "no usable credential", each
+// checked in isolation so a future removal of one pattern fails on the right
+// line instead of hiding behind the others.
+func TestEveryKnownLoginWordingIsRecognised(t *testing.T) {
+	frame := func(result string) string {
+		return `{"type":"result","is_error":true,"terminal_reason":"api_error",` +
+			`"num_turns":1,"total_cost_usd":0,"result":"` + result + `"}`
+	}
+	for _, tc := range []struct {
+		name   string
+		result string
+	}{
+		{"not authenticated", "the client is not authenticated"},
+		{"authentication_error", "received authentication_error from the API"},
+		{"invalid API key", "invalid API key supplied"},
+		{"invalid bearer token", "invalid bearer token"},
+		{"re-authenticate, hyphenated", "please re-authenticate"},
+		{"reauthenticate, no hyphen", "please reauthenticate now"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, no := AuthFailure(frame(tc.result)); !no {
+				t.Errorf("%q was not recognised as a login problem", tc.result)
+			}
+		})
+	}
+}
+
+// A single turn is the refusal itself being reported; a run that took a
+// second turn got somewhere, whatever the closing text says.
+func TestTwoTurnsIsNotALoginProblemEvenWithLoginText(t *testing.T) {
+	twoTurns := `{"type":"result","is_error":true,"terminal_reason":"api_error",` +
+		`"num_turns":2,"total_cost_usd":0,"result":"Anthropic profile login expired - Re-authenticate"}`
+	if msg, no := AuthFailure(twoTurns); no {
+		t.Fatalf("a run with 2 turns was called a login problem: %s", msg)
+	}
+}
+
+// Spend alone, independent of turns, is still work done. Isolated from
+// TestAWorkFailureIsNotReportedAsALoginProblem, which also varies num_turns,
+// so this proves the cost check on its own rather than the two together.
+func TestNonZeroCostIsNotALoginProblemEvenWithLoginText(t *testing.T) {
+	spent := `{"type":"result","is_error":true,"terminal_reason":"api_error",` +
+		`"num_turns":1,"total_cost_usd":0.02,` +
+		`"usage":{"input_tokens":10,"output_tokens":5},` +
+		`"result":"Anthropic profile login expired - Re-authenticate your Anthropic profile"}`
+	if msg, no := AuthFailure(spent); no {
+		t.Fatalf("a run that spent $0.02 was called a login problem: %s", msg)
+	}
+}
+
+// Zero turns and zero cost with no result line at all -- or one that will not
+// parse -- is not a login problem either. Nothing said so.
+func TestNoResultLineIsNotALoginProblem(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  string
+	}{
+		{"no result field at all", `{"type":"assistant","message":{"content":[]}}`},
+		{"malformed json", `{"type":"result","is_error":true,"terminal_reason":`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if msg, no := AuthFailure(tc.out); no {
+				t.Errorf("%s: reported as a login problem: %s", tc.name, msg)
+			}
+		})
+	}
+}
+
+// The cause carried into the message is the CLI's own sentence, verbatim --
+// not a generic paraphrase -- so an operator reading two different failures
+// can tell them apart.
+func TestTheMessageCarriesTheCLIsCauseVerbatim(t *testing.T) {
+	frame := `{"type":"result","is_error":true,"terminal_reason":"api_error",` +
+		`"num_turns":1,"total_cost_usd":0,"result":"invalid bearer token supplied"}`
+	msg, no := AuthFailure(frame)
+	if !no {
+		t.Fatalf("not recognised: %s", msg)
+	}
+	if !strings.Contains(msg, "invalid bearer token supplied") {
+		t.Errorf("message does not carry the CLI's own cause verbatim: %q", msg)
+	}
+}
