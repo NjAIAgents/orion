@@ -117,6 +117,14 @@ type Result struct {
 	// Final is the agent's closing message. When a run stops to ask
 	// something, this is the question.
 	Final string
+	// Unauthenticated reports the failure that is neither this run's fault nor
+	// a quota wall: the CLI has no usable login, so nothing was attempted.
+	//
+	// Its own field rather than a Reason a caller would have to pattern-match,
+	// because the right response differs at every layer: the ticket must not be
+	// labelled failed, and the watcher must stop rather than claim the next one
+	// (OR-212). Reason carries the sentence to say; this carries the fact.
+	Unauthenticated bool
 	// Started reports that the CLI got far enough to emit a stream frame.
 	//
 	// False is the honest reading of "this never began": the process died in
@@ -236,6 +244,13 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 		// A killed run is Orion's own decision, never a provider limit.
 		// Inspecting it for quota would misattribute a timeout.
 		if res.Killed {
+			break
+		}
+
+		// A missing login is an environmental condition like a quota wall, and
+		// unlike one it never clears by waiting. Retrying spends nothing and
+		// achieves nothing; a human has to sign in.
+		if res.Unauthenticated {
 			break
 		}
 
@@ -628,6 +643,14 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 			res.ExitCode = 1
 			res.Reason = "claude exited without ever emitting a stream result: " +
 				"the process was cut off mid-run rather than finishing"
+			fmt.Fprintf(logFile, "\n[orion] %s\n", res.Reason)
+		}
+		// An expired login is not a work failure, and the CLI named both the
+		// cause and the fix in the frame just parsed. Reported as itself rather
+		// than as the exit code that replaced it (OR-212).
+		if msg, no := AuthFailure(tail.String()); no {
+			res.Unauthenticated = true
+			res.Reason = msg
 			fmt.Fprintf(logFile, "\n[orion] %s\n", res.Reason)
 		}
 	case <-ctx.Done():
