@@ -126,6 +126,7 @@ const (
 	ActorLogTriage   = "log-triage"  // reads a failing CI log, reports what broke and why
 	ActorExplore     = "explore"     // answers one question about the repository, citing the paths
 	ActorCaseDerive  = "case-derive" // reads the acceptance criteria and the diff, lists the cases to cover
+	ActorAIOps       = "aiops"       // reads a finished run's event log, reports what is worth filing
 	ActorHuman       = "human"
 	ActorCI          = "ci"
 )
