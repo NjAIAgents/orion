@@ -36,7 +36,11 @@ done
 # the number down by fifteen points and tell you nothing about whether the
 # logic is tested. The floor should track the code where a bug costs money.
 MIN_COVERAGE=${MIN_COVERAGE:-65}
-COVER_PKGS=${COVER_PKGS:-./internal/...}
+# The import-path fragment that decides which packages the floor is measured
+# over. A filter applied to the profile rather than a package list handed to
+# `go test`, because the tests and the coverage pass are now the SAME run
+# (see "tests" below) and that run has to include cmd either way.
+COVER_MATCH=${COVER_MATCH:-/internal/}
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
@@ -64,10 +68,26 @@ fi
 step "tests"
 # Everything, including cmd, so a compile error or a broken CLI test fails
 # the build even though cmd is excluded from the coverage floor.
-go test ./...
+#
+# One run, not two. This used to be a plain `go test ./...` followed by a
+# second `go test ./internal/...` for the profile, which ran every internal
+# package's tests twice for a number the first pass had already computed
+# nothing from (OR-202).
+#
+# No -coverpkg: without it each package instruments only its own statements
+# and is credited only to its own tests, which is exactly what the separate
+# ./internal/... pass measured. Adding -coverpkg=./internal/... would credit
+# cmd's tests to internal packages and move the number three points -- a
+# different measurement, not the same one made cheaper.
+go test ./... -coverprofile=coverage.raw.out -covermode=atomic
 
 step "coverage"
-go test $COVER_PKGS -coverprofile=coverage.out -covermode=atomic
+# Drop the packages the floor deliberately excludes. The profile keeps its
+# mode line (first line) or `go tool cover` cannot read it.
+{
+  head -1 coverage.raw.out
+  grep "$COVER_MATCH" coverage.raw.out || true
+} > coverage.out
 
 if [ "$QUICK" = 0 ]; then
   step "race detector"
