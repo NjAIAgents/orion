@@ -125,6 +125,25 @@ func TestPollingABackgroundTaskIsNotALoop(t *testing.T) {
 	}
 }
 
+// TaskOutput is the other tool that only ever means "has this finished yet".
+func TestPollingATaskOutputIsNotALoop(t *testing.T) {
+	cfg := testCfg()
+	cfg.Limits.MaxToolCalls = 1000
+	store := state.New(t.TempDir())
+
+	var d Decision
+	for i := 0; i < 8; i++ {
+		d = post(store, cfg, "s", Input{
+			ToolName:     "TaskOutput",
+			ToolInput:    json.RawMessage(`{"task_id":"bg1"}`),
+			ToolResponse: json.RawMessage(`{"status":"running"}`),
+		})
+	}
+	if d.Blocked() {
+		t.Fatalf("asking TaskOutput whether a background task has finished is the wait: %s", d.Msg)
+	}
+}
+
 // The half that must NOT move. Re-reading a file nothing is writing is the
 // loop this breaker was built for, and OR-189's own note concedes the point.
 func TestRereadingAFileNothingIsWritingStillTrips(t *testing.T) {
@@ -152,6 +171,34 @@ func TestRereadingAFileNothingIsWritingStillTrips(t *testing.T) {
 	}
 	if got := store.Read("s").Tripped; got != "breaker/loop" {
 		t.Errorf("tripped = %q, want breaker/loop", got)
+	}
+}
+
+// A background command that redirects to a RELATIVE path and a later read
+// that resolves the same file by its ABSOLUTE path must still be recognised
+// as the same awaited file -- the agent names it one way when it redirects
+// and the tool that reads it back may report the other.
+func TestARelativeAndAbsolutePathToTheSameFileAreRecognisedAsTheSameAwaitedFile(t *testing.T) {
+	cfg := testCfg()
+	cfg.Limits.MaxToolCalls = 1000
+	store := state.New(t.TempDir())
+
+	post(store, cfg, "s", Input{
+		ToolName:     "Bash",
+		ToolInput:    json.RawMessage(`{"command":"./scripts/test.sh > suite.log 2>&1 &"}`),
+		ToolResponse: json.RawMessage(`{"stdout":"","is_error":false}`),
+	})
+
+	var d Decision
+	for i := 0; i < 8; i++ {
+		d = post(store, cfg, "s", Input{
+			ToolName:     "Read",
+			ToolInput:    json.RawMessage(`{"file_path":"/repo/worktree/suite.log"}`),
+			ToolResponse: json.RawMessage(`{"file":{"content":""}}`),
+		})
+	}
+	if d.Blocked() {
+		t.Fatalf("an absolute read of a relatively-redirected file must still be recognised as a wait: %s", d.Msg)
 	}
 }
 
@@ -243,6 +290,74 @@ func TestATerminalTripCommitsTheWorkItWasHolding(t *testing.T) {
 		ToolInput: json.RawMessage(`{"command":"go test ./..."}`)}, cfg, store)
 	if !strings.Contains(pre.Msg, snap) {
 		t.Errorf("the block message does not say what happened to the work:\n%s", pre.Msg)
+	}
+}
+
+// The two things a snapshot commit must pick up are DIFFERENT git states: a
+// MODIFICATION to a file already on the branch, distinct from a brand new
+// file nothing has ever tracked. This pins the modified-tracked-file half
+// on its own, so a change that only handled new files (the case
+// TestATerminalTripCommitsTheWorkItWasHolding already exercises) would fail
+// it.
+func TestATerminalTripCommitsModifiedTrackedFiles(t *testing.T) {
+	root := gitRepo(t)
+	writeFile(t, filepath.Join(root, "impl.go"), "package x\n")
+	gitOut(t, root, "add", "impl.go")
+	gitOut(t, root, "commit", "-q", "-m", "feat: initial")
+
+	cfg := testCfg()
+	cfg.Root = root
+	store := state.New(t.TempDir())
+
+	// A modification to the file already on the branch -- not a new file.
+	writeFile(t, filepath.Join(root, "impl.go"), "package x\n\nfunc F() {}\n")
+
+	var d Decision
+	for i := 0; i < cfg.Limits.MaxRepeatIdentical; i++ {
+		d = post(store, cfg, "s", Input{
+			ToolName:  "Bash",
+			ToolInput: json.RawMessage(`{"command":"kill -USR1 4242"}`),
+		})
+	}
+	if !d.Blocked() {
+		t.Fatalf("the repeated call should have tripped: %s", d.Msg)
+	}
+
+	committed := gitOut(t, root, "show", "--name-only", "--format=%s", "HEAD")
+	if !strings.Contains(committed, "impl.go") || !strings.Contains(committed, "wip: snapshot") {
+		t.Errorf("the modified tracked file was not part of the snapshot commit:\n%s", committed)
+	}
+	diff := gitOut(t, root, "show", "HEAD", "--", "impl.go")
+	if !strings.Contains(diff, "func F()") {
+		t.Errorf("the actual modification did not reach the snapshot commit:\n%s", diff)
+	}
+	if dirty := gitOut(t, root, "status", "--porcelain", "--untracked-files=no"); strings.TrimSpace(dirty) != "" {
+		t.Errorf("the worktree still holds uncommitted tracked changes:\n%s", dirty)
+	}
+}
+
+// The commit message a trip snapshot leaves on the branch must say, in
+// plain words, that the work is unverified -- a reader of `git log` who has
+// not seen this ticket must not mistake it for reviewed work.
+func TestTheTripSnapshotCommitMessageStatesTheWorkIsUnverified(t *testing.T) {
+	root := gitRepo(t)
+	cfg := testCfg()
+	cfg.Root = root
+	store := state.New(t.TempDir())
+
+	writeFile(t, filepath.Join(root, "impl.go"), "package x\n")
+
+	for i := 0; i < cfg.Limits.MaxRepeatIdentical; i++ {
+		post(store, cfg, "s", Input{
+			ToolName:  "Bash",
+			ToolInput: json.RawMessage(`{"command":"kill -USR1 4242"}`),
+		})
+	}
+
+	msg := strings.ToLower(gitOut(t, root, "log", "-1", "--format=%B"))
+	if !strings.Contains(msg, "unverified") &&
+		!strings.Contains(msg, "nothing here has been verified") {
+		t.Errorf("the snapshot commit message does not say the work is unverified:\n%s", msg)
 	}
 }
 
