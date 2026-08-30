@@ -3,6 +3,7 @@ package work
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -77,9 +78,14 @@ type qaFake struct {
 	// the end repeats the last one, which is what a QA agent that keeps
 	// finding the same thing looks like.
 	qaReplies []string
-	stages    []string // "ticket" or "qa", in call order
-	prompts   []string
-	qaCalls   int
+	// fixReplies are the implementer's closing messages on a FIX round, in
+	// order -- what it says it changed in response to QA. Nil leaves Final
+	// unset, which is what every test predating OR-200 assumes.
+	fixReplies []string
+	stages     []string // "ticket" or "qa", in call order
+	prompts    []string
+	qaCalls    int
+	fixCalls   int
 }
 
 func (f *qaFake) run(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
@@ -105,6 +111,16 @@ func (f *qaFake) run(ws *workspace.Workspace, o supervisor.Options) (*supervisor
 		}
 		f.qaCalls++
 		res.Final = reply
+	}
+	// A fix round is the implementer resumed, which is the only "ticket" run
+	// that carries a session to resume.
+	if o.Stage == "ticket" && o.Resume != "" && len(f.fixReplies) > 0 {
+		i := f.fixCalls
+		if i >= len(f.fixReplies) {
+			i = len(f.fixReplies) - 1
+		}
+		f.fixCalls++
+		res.Final = f.fixReplies[i]
 	}
 	return res, nil
 }
@@ -390,12 +406,169 @@ func TestQAPostsEachRoundsDistinctFindingsToTheTicket(t *testing.T) {
 	}
 }
 
-// qaPostFindings itself must not reach for a nil deps.Jira -- runQA is
-// reachable directly (unlike the outer Run, which already dereferences
-// deps.Jira unconditionally before QA is ever claimed), and its own guard
-// is the only thing standing between a nil tracker and a panic here.
-func TestQAPostFindingsDoesNotPanicWithoutATracker(t *testing.T) {
-	qaPostFindings(Deps{Jira: nil}, "FCIA-6", 1, "the rounding case is wrong")
+// Neither comment path may reach for a nil deps.Jira -- runQA is reachable
+// directly (unlike the outer Run, which already dereferences deps.Jira
+// unconditionally before QA is ever claimed), and their own guards are the
+// only thing standing between a nil tracker and a panic here.
+func TestQACommentsDoNotPanicWithoutATracker(t *testing.T) {
+	qaPostRound(Deps{Jira: nil}, qaRoundReport{Key: "FCIA-6", Round: 1,
+		Findings: "the rounding case is wrong", FixActor: events.ActorImplementer})
+	qaPostNothingFound(Deps{Jira: nil}, "FCIA-6")
+}
+
+// OR-200: one round leaves ONE comment, and that comment carries all three
+// facts a reviewer wants -- what QA found, what changed in response, and
+// whether re-verification passed. A version that posted the finding alone
+// (the OR-167 behaviour) leaves the ticket saying a problem was raised and
+// never saying it was resolved, which reads worse than saying nothing.
+func TestQACommentsTheFindingAndItsResolutionInOneComment(t *testing.T) {
+	home := project(t, qaCfg)
+	j := &fakeJira{}
+	f := &qaFake{t: t,
+		qaReplies:  []string{"The rounding case is wrong: expected 2 decimal places, got 4.", "QA CLEAN"},
+		fixReplies: []string{"Rounded the total to 2 decimal places before formatting it."},
+	}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j, Supervise: f.run,
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+	if res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("outcome = %q", res[0].Outcome)
+	}
+
+	round := qaRoundComments(j.comments)
+	if len(round) != 1 {
+		t.Fatalf("one QA round produced %d round comment(s), want exactly 1:\n%s",
+			len(round), strings.Join(j.comments, "\n---\n"))
+	}
+	for _, want := range []string{
+		"expected 2 decimal places, got 4",                        // the finding
+		"Rounded the total to 2 decimal places before formatting", // the resolution
+		"Re-verified: every case passes.",                         // the re-verification
+	} {
+		if !strings.Contains(round[0], want) {
+			t.Errorf("the round comment is missing %q:\n%s", want, round[0])
+		}
+	}
+	// The exchange itself is noise. Only the fix's closing line belongs here.
+	if strings.Contains(round[0], "QA round 2") {
+		t.Errorf("a second round was reported though only one ran:\n%s", round[0])
+	}
+	// A clean end after a fix round is already said by that round's comment.
+	if strings.Contains(strings.Join(j.comments, "\n"), "no fix rounds were needed") {
+		t.Errorf("the nothing-found line was posted for a run that did have findings:\n%s",
+			strings.Join(j.comments, "\n---\n"))
+	}
+}
+
+// OR-200: two rounds produce two comments -- one per exchange, never one
+// merged summary and never a per-turn stream. The round cap (qa.go's max) is
+// what bounds this, so the count is the cap and cannot become a flood.
+func TestQACommentsOncePerRound(t *testing.T) {
+	home := project(t, `{"vcs":{"default_branch":"main","work_branch":"develop","branch_prefix":"orion/"},
+	                     "tracker":{"enabled":true,"project_key":"FCIA","queue_label":"ORION"},
+	                     "qa":{"max_rounds":2}}`)
+	j := &fakeJira{}
+	f := &qaFake{t: t,
+		qaReplies: []string{
+			"Round one problem: the discount is applied twice.",
+			"Round two problem: the refund path still double-charges.",
+			"QA CLEAN",
+		},
+		fixReplies: []string{
+			"Applied the discount once, in the pricing step only.",
+			"Made the refund path idempotent per transaction id.",
+		},
+	}
+	var out strings.Builder
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j, Supervise: f.run,
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	round := qaRoundComments(j.comments)
+	if len(round) != 2 {
+		t.Fatalf("two QA rounds produced %d round comment(s), want exactly 2:\n%s",
+			len(round), strings.Join(j.comments, "\n---\n"))
+	}
+	if !strings.Contains(round[0], "discount is applied twice") ||
+		!strings.Contains(round[0], "Applied the discount once") {
+		t.Errorf("round one's comment does not pair its finding with its fix:\n%s", round[0])
+	}
+	if !strings.Contains(round[1], "refund path still double-charges") ||
+		!strings.Contains(round[1], "idempotent per transaction id") {
+		t.Errorf("round two's comment does not pair its finding with its fix:\n%s", round[1])
+	}
+}
+
+// OR-200: QA finding nothing has to be SAID. Silence on the ticket is
+// currently ambiguous between "QA verified this and found nothing" and "QA
+// never ran", and after OR-156's proved-red requirement those are very
+// different claims about a change.
+func TestQACommentsWhenItFoundNothing(t *testing.T) {
+	home := project(t, qaCfg)
+	j := &fakeJira{}
+	f := &qaFake{t: t, qaReplies: []string{"QA CLEAN"}}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j, Supervise: f.run,
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+	if res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("outcome = %q", res[0].Outcome)
+	}
+
+	comments := strings.Join(j.comments, "\n---\n")
+	if !strings.Contains(comments, "found nothing") {
+		t.Fatalf("a clean QA run left nothing on the ticket, so it cannot be told apart "+
+			"from a run where QA never happened:\n%s", comments)
+	}
+	if got := qaRoundComments(j.comments); len(got) != 0 {
+		t.Errorf("a clean run reported %d fix round(s):\n%s", len(got), strings.Join(got, "\n---\n"))
+	}
+}
+
+// OR-200: no comment path may upload a file. A raw run log is hundreds of
+// kilobytes against a 2 GB free-tier quota, cannot be grepped once uploaded,
+// and carries everything the agent read and wrote -- on OR-105 that included
+// a live-format access key that push protection caught and an attachment
+// would have published past it. The structural guarantee is that the tracker
+// interface this package holds has no way to send a file at all, so this
+// asserts the interface rather than any one call site.
+func TestTheTrackerInterfaceCannotUploadAFile(t *testing.T) {
+	iface := reflect.TypeOf((*TrackerAPI)(nil)).Elem()
+	for i := 0; i < iface.NumMethod(); i++ {
+		name := strings.ToLower(iface.Method(i).Name)
+		for _, banned := range []string{"attach", "upload", "file", "artifact"} {
+			if strings.Contains(name, banned) {
+				t.Errorf("TrackerAPI.%s can put a file on a ticket; run logs must stay local "+
+					"(OR-200)", iface.Method(i).Name)
+			}
+		}
+	}
+}
+
+// qaRoundComments picks out the per-round comments, which are the ones this
+// ticket's count claims are about -- the escalation comment and the
+// nothing-found line are separate statements and are asserted separately.
+func qaRoundComments(comments []string) []string {
+	var out []string
+	for _, c := range comments {
+		if strings.Contains(c, "QA round ") && strings.Contains(c, " found:") {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // OR-167: the console note "(full text in the event log)" only makes sense
@@ -473,6 +646,12 @@ func TestQAEscalatesToAPersonWhenTheRoundsRunOut(t *testing.T) {
 	}
 	if !strings.Contains(comments, "QA engineer") {
 		t.Errorf("the findings do not say who reported them:\n%s", comments)
+	}
+	// OR-200: the unresolved case is the one most likely to be lost, so the
+	// ticket must say in as many words that the rounds ran out with findings
+	// still open -- not merely carry the last round's exchange.
+	if !strings.Contains(comments, "still open after 1 fix round(s)") {
+		t.Errorf("the ticket never says the rounds ran out with findings still open:\n%s", comments)
 	}
 	if !strings.Contains(out.String(), "A person needs to look") {
 		t.Errorf("nothing told the operator the findings are still open:\n%s", out.String())
