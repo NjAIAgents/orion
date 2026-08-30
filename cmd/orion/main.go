@@ -1866,6 +1866,15 @@ func runEventLog(target string, args []string) {
 // stored: a log written before the roster existed renders with the current
 // names, and renaming an agent later migrates nothing.
 func printEvent(w io.Writer, e events.Event) {
+	// A stage boundary is not a status line and must not read back as one:
+	// replaying it through the five-verb layout would put it back in the
+	// columns it was deliberately taken out of, and dump its from/to detail
+	// as loose key: value lines underneath. Same renderer, same shape as the
+	// live run printed (OR-189).
+	if e.Kind == events.KindStage {
+		fmt.Fprintln(w, ui.RenderStage(w, ui.HandoffOf(e)))
+		return
+	}
 	ui.Print(w, ui.Line{
 		At: e.At, Key: e.Key, Actor: e.Actor, Model: e.Model,
 		Verb: ui.VerbFor(e.Kind), Msg: e.Msg,

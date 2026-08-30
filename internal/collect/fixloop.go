@@ -83,12 +83,22 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 	}
 
 	attempt := state.Count()
-	ui.Ok(w, "working", "%s: CI failed; attempt %d of %d to fix it", key, attempt, max)
+
+	// The build went red, so the next party IS an agent and money starts
+	// being spent -- the one boundary after a pull request opens where that
+	// is true, and until now the only one of the three that was completely
+	// unmarked (OR-189). Through the same ui.Stage internal/work uses: a
+	// second hand-rolled copy in this package is exactly the drift OR-176
+	// produced, and boundary lines that differ between the two packages are
+	// the same failure in a new place.
+	ui.Stage(w, log, ui.Handoff{Key: key, From: "ci", To: "fix",
+		By: events.ActorCI, Next: events.ActorDevOps,
+		Detail: fmt.Sprintf("CI failed; attempt %d of %d", attempt, max)})
 	log.Emit(events.Event{Kind: events.KindCI, Actor: events.ActorOrion,
 		Msg: fmt.Sprintf("fix attempt %d of %d: %s", attempt, max, firstLine(pr.Detail))})
 
 	tell(w, log, notify.Event{
-		Channel: channelOf(ws), Level: notify.Warning, Workspace: ws.ID,
+		Key: key, Channel: channelOf(ws), Level: notify.Warning, Workspace: ws.ID,
 		Actor: events.ActorDevOps,
 		Title: fmt.Sprintf("%s: fixing a CI failure (attempt %d of %d)", key, attempt, max),
 		Body: fmt.Sprintf("*The build went red and Orion is trying to fix it.*\n\n"+
@@ -302,7 +312,7 @@ func announceLesson(n *lessonNotice, w io.Writer, log *events.Log) {
 		"          a lesson is waiting for your decision -- approve it with: orion lessons approve %s",
 		n.key, n.anchor, n.text, n.signature)
 	tell(w, log, notify.Event{
-		Channel: n.channel, Level: notify.Info, Workspace: n.workspaceID,
+		Key: n.key, Channel: n.channel, Level: notify.Info, Workspace: n.workspaceID,
 		Title: "A lesson is waiting for your decision",
 		Body: fmt.Sprintf("*This has now happened %d times, so it may be a pattern worth remembering.*\n\n"+
 			"From an earlier failure on this ticket (%s):\n%s\n\n*Where it was seen*\n%s\n\n"+

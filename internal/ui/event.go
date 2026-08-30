@@ -79,6 +79,11 @@ func VerbFor(kind string) string {
 	}
 	// answer, decision, commit, push, pr, merge, refresh, run-end, usage:
 	// something happened and it worked.
+	//
+	// KindStage is here too, and on purpose. A handoff asks nothing of the
+	// operator, so its category is `ok` -- spending a sixth verb on it would
+	// re-open the decision this comment records. What a boundary needs is a
+	// different LAYOUT, not a different word: see stage.go.
 	return VerbOK
 }
 

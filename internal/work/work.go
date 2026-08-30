@@ -513,10 +513,16 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	ui.Banner(w, key, issue.Summary, actorID,
 		actors.Model(actorID), job.Branch)
 
+	// Boundary one: Orion has finished deciding and an agent starts spending.
+	// Marked here rather than at the routing decision above, because routing
+	// picks the actor and this is the moment it actually takes the run.
+	ui.Stage(w, log, ui.Handoff{Key: key, From: "routing", To: "implementing",
+		By: events.ActorOrion, Next: actorID, Detail: "on " + job.Branch})
+
 	log.Emitf(events.KindRunStart, actorID, "implementing %s", key)
 	stTitle, stBody := msgStarted(key, issue.Summary, job.Branch, issue.URL)
 	tell(w, log, ws, notify.Event{
-		Level: notify.Info, Workspace: ws.ID, Actor: actorID,
+		Key: key, Level: notify.Info, Workspace: ws.ID, Actor: actorID,
 		Title: stTitle, Body: stBody,
 	})
 
@@ -623,7 +629,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 
 		anTitle, anBody := msgAnswered(key, ans, question)
 		tell(w, log, ws, notify.Event{
-			Level: notify.Info, Workspace: ws.ID, Actor: actorFor(ans.Role),
+			Key: key, Level: notify.Info, Workspace: ws.ID, Actor: actorFor(ans.Role),
 			Title: anTitle, Body: anBody,
 		})
 
@@ -688,19 +694,35 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		_ = deps.Jira.Comment(key, actors.Comment(actorID, body))
 		blTitle, blBody := msgBlocked(key, issue.Summary, res.Question, issue.URL, res.Advice)
 		tell(w, log, ws, notify.Event{
-			Level: notify.Blocked, Workspace: ws.ID, Actor: actorID,
+			Key: key, Level: notify.Blocked, Workspace: ws.ID, Actor: actorID,
 			Title: blTitle, Body: blBody,
 		})
 		return res
 	}
 	log.Emitf(events.KindCommit, actorID, "%d commit(s) on %s", commits, job.Branch)
-	ui.Say(w, key, actorID, ui.VerbOK, "%d commit(s) on %s", commits, job.Branch)
+
+	// Boundary two: implementation is over. The commit count is DETAIL on
+	// this line rather than a line of its own -- it used to be the last thing
+	// printed before QA started, so it stood in for a handoff it never
+	// described, and answered "how many commits" when the reader was asking
+	// what stage the run had reached (OR-189).
+	//
+	// Named for where the run actually goes. With QA switched off there is no
+	// QA stage to enter, and a boundary announcing one would be a handoff to
+	// an actor that never runs.
+	nextStage, nextActor := "qa", events.ActorQA
+	if !cfg.QA.On() {
+		nextStage, nextActor = "push", events.ActorOrion
+	}
+	ui.Stage(w, log, ui.Handoff{Key: key, From: "implementing", To: nextStage,
+		By: actorID, Next: nextActor,
+		Detail: fmt.Sprintf("%d commit(s) on %s", commits, job.Branch)})
 
 	// QA, before the branch is pushed. The tests QA writes and any fix its
 	// findings force belong in the same pull request as the change they are
 	// about; verifying after the pull request opened would leave the reviewer
 	// reading the code without its evidence. See qa.go.
-	runQA(qaJob{
+	qa := runQA(qaJob{
 		Key: key, Summary: issue.Summary, Description: issue.Description,
 		ImplSession: runRes.SessionID, Actor: actorID, WS: &jobWS,
 		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
@@ -715,11 +737,25 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		commits = n
 	}
 
+	// Boundary three: QA is over and the branch leaves the machine. Only when
+	// QA actually ran -- the boundary above already handed straight to push
+	// otherwise, and announcing a stage nobody entered is the same lie in
+	// reverse.
+	if qa.Ran {
+		ui.Stage(w, log, ui.Handoff{Key: key, From: "qa", To: "push",
+			By: events.ActorQA, Next: events.ActorOrion, Detail: qa.Verdict()})
+	}
+
 	if err := deps.Push(job.Path, job.Branch); err != nil {
 		return failAndTell(res, fmt.Errorf("pushing %s: %w", job.Branch, err), key, ws, log, w, deps)
 	}
 	log.Emitf(events.KindPush, events.ActorOrion, "pushed %s", job.Branch)
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "pushed %s", job.Branch)
+
+	// Boundary four: the branch is on the remote and a pull request is next.
+	// Orion holds both sides, so it says it continues rather than handing to
+	// itself. The pushed branch is the detail.
+	ui.Stage(w, log, ui.Handoff{Key: key, From: "push", To: "pull request",
+		By: events.ActorOrion, Next: events.ActorOrion, Detail: "pushed " + job.Branch})
 
 	title := key + ": " + issue.Summary
 	body := prBody(key, issue.URL, commits)
@@ -739,7 +775,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}
 	res.PR = url
 	log.Emitf(events.KindPR, events.ActorOrion, "opened %s", url)
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "opened %s, awaiting CI", url)
+	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "opened %s", url)
 
 	// Hand the ticket to the CI-wait state and release the job slot. The
 	// state lives on the ticket so a crash here does not lose the fact that
@@ -755,10 +791,18 @@ func one(key string, opts Options, deps Deps) (res Result) {
 
 	ciTitle, ciBody := msgCIWait(key, issue.Summary, job.Branch, url, issue.URL, commits)
 	tell(w, log, ws, notify.Event{
-		Level: notify.Info, Workspace: ws.ID,
+		Key: key, Level: notify.Info, Workspace: ws.ID,
 		Title: ciTitle, Body: ciBody,
 	})
-	ui.Say(w, key, events.ActorOrion, ui.VerbWaiting, "awaiting CI; the job slot is free")
+
+	// Boundary five, and the one most easily got wrong. The next party here
+	// is CI: a machine, running no agent and spending nothing. Naming devops
+	// -- the agent that only appears if the build goes RED -- would have the
+	// operator watching an agent apparently work for the length of the CI
+	// run, which is the same defect this line exists to fix, pointed the
+	// other way (OR-189). ui.Handoff says "no agent is running" for it.
+	ui.Stage(w, log, ui.Handoff{Key: key, From: "pull request", To: "ci",
+		By: events.ActorOrion, Next: events.ActorCI, Detail: "the job slot is free"})
 	res.Outcome = OutcomeCIWait
 	return res
 }
@@ -855,7 +899,7 @@ func failAndTell(res Result, err error, key string, ws *workspace.Workspace,
 	}
 	title, body := msgFailed(key, summary, err.Error(), res.Branch, res.IssueURL, res.LogPath)
 	tell(w, log, ws, notify.Event{
-		Level: notify.Blocked, Workspace: ws.ID,
+		Key: key, Level: notify.Blocked, Workspace: ws.ID,
 		Title: title, Body: body,
 	})
 	return fail(res, err)

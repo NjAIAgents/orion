@@ -517,7 +517,7 @@ func failing(res Result, key string, pr PR, cfg config.Config, branch string,
 
 	title, body := msgCIFailed(key, pr)
 	tell(w, log, notify.Event{
-		Channel: channelOf(ws), Level: notify.Blocked, Workspace: ws.ID,
+		Key: key, Channel: channelOf(ws), Level: notify.Blocked, Workspace: ws.ID,
 		Title: title, Body: mention(cfg) + body,
 	})
 	ui.Fail(w, "%s: CI failed. %s", key, firstLine(pr.Detail))
@@ -651,7 +651,7 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	title, body := msgMerged(key, pr, entry.Source, pruned, refreshed,
 		mergedInto, cfg.VCS.DefaultBranch)
 	tell(w, log, notify.Event{
-		Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
+		Key: key, Channel: channelOf(ws), Level: notify.Info, Workspace: ws.ID,
 		Title: title, Body: body,
 	})
 	return res

@@ -446,7 +446,8 @@ const (
 // attachment, no colour bar -- so whatever carries the meaning has to be
 // inside that field, at the very start where a truncated push still shows
 // it. The emoji is there too, but only to reinforce, the same rule the
-// terminal's own "[orion:blocked]" marker already follows.
+// terminal's own status column already follows: the level arrives there as a
+// word ("failed", "warning"), and colour only backs it up.
 func levelMarker(l Level) string {
 	switch l {
 	case LevelBlocked:

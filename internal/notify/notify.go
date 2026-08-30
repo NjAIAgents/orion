@@ -23,6 +23,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/slack"
+	"github.com/orion-sdlc/orion/internal/ui"
 	"runtime"
 	"strings"
 	"time"
@@ -50,7 +51,12 @@ type Event struct {
 	// the actor in the terminal does not exist there, so the name and job
 	// title have to travel inside the message. Empty attributes it to Orion
 	// itself.
-	Actor     string
+	Actor string
+	// Key is the ticket this message is about, for the terminal echo's key
+	// column. Empty renders an empty column rather than a guess: `orion
+	// notify` and a quota warning from the supervisor are genuinely about no
+	// single ticket, and inventing one would be worse than the blank.
+	Key       string    `json:"key,omitempty"`
 	Level     Level     `json:"level"`
 	Title     string    `json:"title"`
 	Body      string    `json:"body"`
@@ -100,17 +106,28 @@ func Send(e Event) []error {
 	// terminal gets a summary and Slack carries the formatted version; the
 	// detail the terminal lost is already in the run's own output, line by
 	// line, as it happened.
-	fmt.Fprintf(Out, "[orion:%s] %s\n", e.Level, Plain(e.Title))
+	//
+	// TITLE-ONLY IS DEFENDED ABOVE. The COLUMNS were not, and were simply
+	// incidental: this used to print `[orion:info] <title>` straight to Out,
+	// so an echo landed in the middle of a run with no timestamp, no ticket
+	// key, no icon and no verb, breaking the one alignment the log has
+	// (OR-189). It renders through internal/ui now, in the same columns as
+	// every other line, and the level is carried by the verb column -- which
+	// is the axis this renderer already has for exactly that question.
+	ui.Print(Out, ui.Line{
+		At: e.At, Key: e.Key, Actor: echoActor(e),
+		Verb: verbFor(e.Level),
+		// Prefixed, because the echo is not a status line: several callers
+		// print their own `ui.Say` about the same fact a line earlier, and
+		// without this the two read as two separate things happening.
+		Msg: "notified: " + Plain(e.Title),
+	})
 
 	if err := desktopSend(e); err != nil {
 		errs = append(errs, fmt.Errorf("desktop notify: %w", err))
 	}
 	if e.Channel != "" {
-		who := e.Actor
-		if who == "" {
-			who = events.ActorOrion
-		}
-		text := "*" + actors.Attribution(who) + "*\n" + e.Title + "\n" + e.Body
+		text := "*" + actors.Attribution(echoActor(e)) + "*\n" + e.Title + "\n" + e.Body
 		if err := slackSend(e.Channel, text, e.Level); err != nil {
 			errs = append(errs, fmt.Errorf("slack: %w", err))
 		}
@@ -128,6 +145,31 @@ func Send(e Event) []error {
 		}
 	}
 	return errs
+}
+
+// echoActor is who a message is about. An event with no actor is Orion's own
+// and must still be attributed rather than arriving anonymously.
+func echoActor(e Event) string {
+	if e.Actor == "" {
+		return events.ActorOrion
+	}
+	return e.Actor
+}
+
+// verbFor puts the notification's level in the renderer's status column.
+//
+// Many-to-few, the same way ui.VerbFor is: the column answers "do I have to
+// do something", and a level answers exactly that question already. blocked
+// means a person is needed, which is what `failed` says here; info means it
+// worked and is being reported.
+func verbFor(l Level) string {
+	switch l {
+	case Warning:
+		return ui.VerbWarn
+	case Blocked:
+		return ui.VerbFail
+	}
+	return ui.VerbOK
 }
 
 // slackSend posts to a channel. A package variable rather than a direct call

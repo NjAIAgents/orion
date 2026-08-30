@@ -79,7 +79,7 @@ func conflicted(res Result, key string, pr PR, cfg config.Config, branch string,
 
 	if ch := channelOf(ws); ch != "" {
 		tell(w, log, notify.Event{
-			Channel: ch, Level: notify.Blocked, Workspace: ws.ID,
+			Key: key, Channel: ch, Level: notify.Blocked, Workspace: ws.ID,
 			Title: key + " needs a rebase",
 			Body: fmt.Sprintf("`%s` conflicts with its base, so git will not merge it.\n"+
 				"Another ticket most likely landed first. Nothing was lost.\n\n"+
