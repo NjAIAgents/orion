@@ -19,10 +19,26 @@ import (
 // last one running -- the failure mode Fan could introduce if any part of
 // its cleanup path were shared across goroutines instead of scoped to each.
 func TestFanLeavesNoSurvivingChildOnWallClockTimeout(t *testing.T) {
-	// Sub-second budget for the same reason as the single-run case: the
-	// concurrency is what this test is about, not the length of the wait
-	// (OR-202).
-	shrinkWallClock(t, 500*time.Millisecond, 200*time.Millisecond)
+	// Shrunk for the same reason as the single-run case -- the concurrency is
+	// what this test is about, not the length of the wait (OR-202) -- but
+	// deliberately three times the single-run budget, and that asymmetry is
+	// the point rather than an oversight.
+	//
+	// The budget has to cover something this test cannot control: three
+	// shells forking and writing their pid file before the deadline they are
+	// racing fires. A child killed before it reports is a child whose sweep
+	// this test cannot verify, so it fails as "test setup is broken" -- not a
+	// product defect, but a red build either way.
+	//
+	// Measured under the CPU contention of a full parallel `go test ./...`:
+	// three children take ~200ms to all report, with outliers to 1.38s. At
+	// 500ms that was a 16%-per-run flake (4 failures in 25). At 1.5s it is
+	// 0 in 40, worst run 2.04s end to end.
+	//
+	// The grace drops to 100ms to buy that headroom back: it is a ceiling on
+	// how long a killed process may take to flush, and nothing in this test
+	// flushes anything.
+	shrinkWallClock(t, 1500*time.Millisecond, 100*time.Millisecond)
 	pidDir := t.TempDir()
 	t.Setenv("FAN_PID_DIR", pidDir)
 	fakeClaudeTree(t, `id="p$$"
