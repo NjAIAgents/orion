@@ -29,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/agentcfg"
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/cost"
@@ -221,11 +222,22 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 		}, fmt.Errorf("%s", st.Message())
 	}
 
+	// What this run is allowed to be, decided once for every attempt: the
+	// retries are the same run, and a toolset that changed between attempt 1
+	// and attempt 2 would make a quota retry a different experiment.
+	ac, err := agentcfg.For(workspace.Home(), cfg, opts.Stage, opts.Actor)
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range ac.Warnings {
+		fmt.Fprintf(os.Stderr, "orion: %s\n", w)
+	}
+
 	overall := time.Now()
 	var last *Result
 
 	for attempt := 1; attempt <= quota.MaxAttempts; attempt++ {
-		res, output := runOnce(ws, bin, prompt, opts, attempt)
+		res, output := runOnce(ws, bin, prompt, opts, attempt, ac)
 		recordUsage(ws, opts.Stage, output)
 		recordTicketCost(ws, opts, res, output)
 		// Numerator from the stream (a peak over turns), denominator from
@@ -511,7 +523,7 @@ func humanTokens(n int) string {
 
 // runOnce executes a single attempt and returns its result plus the tail
 // of its combined output for quota inspection.
-func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt int) (*Result, string) {
+func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt int, ac *agentcfg.Run) (*Result, string) {
 	stamp := time.Now().UTC().Format("20060102-150405")
 	logPath := filepath.Join(ws.LogsDir(),
 		fmt.Sprintf("%s-%s-a%d.log", stamp, safe(opts.Stage), attempt))
@@ -540,6 +552,11 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 		// controls actually relied upon.
 		"--max-turns", fmt.Sprint(opts.MaxTurns),
 	)
+	// No MCP servers unless the operator opted this run into their own
+	// configuration. Paired with CLAUDE_CONFIG_DIR below, which handles the
+	// half of the problem this flag does not: plugins, subagents and
+	// commands. See internal/agentcfg.
+	args = append(args, ac.Args()...)
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
 	}
@@ -567,7 +584,7 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = ws.RepoDir()
-	cmd.Env = childEnv(ws)
+	cmd.Env = childEnv(ws, ac)
 	// New process group so a kill can take the whole tree with it -- see
 	// terminate() below. claude -p runs bash, which runs whatever the agent
 	// invoked (go test, npm, a dev server, docker); without this, killing
@@ -777,7 +794,11 @@ func terminate(cmd *exec.Cmd, done <-chan error) {
 // supervised run has no business seeing. The OS sandbox denies these too;
 // doing it here as well means a misconfigured sandbox is not the only
 // thing standing between an agent and a cloud credential.
-func childEnv(ws *workspace.Workspace) []string {
+//
+// It also points CLAUDE_CONFIG_DIR at the directory Orion curated for this
+// run, which is what stops the operator's own plugins, subagents and slash
+// commands loading into it. See internal/agentcfg.
+func childEnv(ws *workspace.Workspace, ac *agentcfg.Run) []string {
 	drop := map[string]bool{
 		"AWS_SECRET_ACCESS_KEY": true, "AWS_SESSION_TOKEN": true,
 		"GITHUB_TOKEN": true, "GH_TOKEN": true,
@@ -797,6 +818,7 @@ func childEnv(ws *workspace.Workspace) []string {
 		}
 		out = append(out, kv)
 	}
+	out = ac.Env(out)
 	out = append(out, "ORION_WORKSPACE="+ws.ID, "ORION_WORKSPACE_DIR="+ws.Dir)
 	out = append(out, agentAuthorEnv(ws.RepoDir())...)
 	return append(out, agentTrackerEnv(ws.RepoDir())...)

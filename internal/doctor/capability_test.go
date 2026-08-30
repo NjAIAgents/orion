@@ -497,3 +497,20 @@ func TestRunRendersAndGradesOverall(t *testing.T) {
 		t.Errorf("exit code = %d; a script needs a stable contract", code)
 	}
 }
+
+// A missing nj-agents is FAIL, and stays FAIL now that a supervised run gets
+// a config directory Orion curates rather than the operator's own (OR-213).
+// The curated directory is built from THIS checkout, so if the grading ever
+// moved to the directory instead, a run would go out with no delegated skills
+// and doctor would call it healthy.
+func TestAMissingNJAgentsIsStillAFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())       // no ~/.claude skills to resolve from
+	t.Setenv("ORION_HOME", t.TempDir()) // and no managed clone
+	t.Setenv("ORION_NJ_AGENTS_DIR", "")
+
+	c := checkNJAgents(filepath.Join(t.TempDir(), "nowhere"), false)
+
+	if c.grade != fail {
+		t.Errorf("missing nj-agents graded %v, want fail: %+v", c.grade, c)
+	}
+}

@@ -6,6 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/orion-sdlc/orion/internal/agentcfg"
+	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
 // describeRunner runs pr-describe against a finished branch.
@@ -55,9 +60,20 @@ func describeRunner(dir, model, effort, prompt string) (string, error) {
 	if effort != "" {
 		args = append(args, "--effort", effort)
 	}
+	// The same curated configuration a supervised run gets. This runner
+	// builds its own argv rather than going through internal/supervisor, so
+	// without this it would keep inheriting the operator's plugins and MCP
+	// servers -- a describer with a write handle to the tracker, and 148
+	// unused tool definitions re-sent on every one of its turns (OR-213).
+	ac, err := agentcfg.For(workspace.Home(), config.Load(dir), "describe", events.ActorDescriber)
+	if err != nil {
+		return "", err
+	}
+	args = append(args, ac.Args()...)
+
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "ORION_ROLE=describer")
+	cmd.Env = ac.Env(append(os.Environ(), "ORION_ROLE=describer"))
 
 	out, err := cmd.Output()
 	if err != nil {
