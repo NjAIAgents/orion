@@ -79,6 +79,8 @@ func runReleaseVerify(args []string) {
 
 	fragments, err := changelog.Load(root)
 	exitOn(err)
+	collated, err := changelog.LoadCollated(root, version)
+	exitOn(err)
 
 	tickets := make([]changelog.Ticket, 0, len(issues))
 	inVersion := map[string]bool{}
@@ -86,13 +88,14 @@ func runReleaseVerify(args []string) {
 		tickets = append(tickets, changelog.Ticket{Key: is.Key, Done: is.Resolved()})
 		inVersion[is.Key] = true
 	}
-	rec := changelog.Reconcile(version, fragments, tickets)
+	rec := changelog.Reconcile(version, fragments, tickets, collated)
 
 	in := promote.Inputs{
-		Version:                version,
-		NotDone:                rec.NotDone,
-		TicketsWithoutFragment: rec.TicketsWithoutFragment,
-		FragmentsWithoutTicket: rec.FragmentsWithoutTicket,
+		Version:                    version,
+		NotDone:                    rec.NotDone,
+		TicketsWithoutFragment:     rec.TicketsWithoutFragment,
+		TicketsNotNamedInChangelog: rec.TicketsNotNamedInChangelog,
+		FragmentsWithoutTicket:     rec.FragmentsWithoutTicket,
 	}
 
 	_ = gitOut(root, "fetch", "--quiet", "origin")
