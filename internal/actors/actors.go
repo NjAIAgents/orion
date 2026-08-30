@@ -167,8 +167,22 @@ func defaults() map[string]Actor {
 		// short answer, not the judgement of writing the tests, and QA runs on
 		// every ticket, so its model is a real cost decision.
 		events.ActorCaseDerive: {ID: events.ActorCaseDerive, Name: "Tara", Designation: "test case analyst", Model: "haiku"},
-		events.ActorCI:         {ID: events.ActorCI, Designation: "ci"},
-		events.ActorHuman:      {ID: events.ActorHuman, Designation: "you"},
+		// AIOps reads a FINISHED run's event log and says what is worth
+		// filing. Almost all of that reading is rules -- a breaker trip and an
+		// exhausted fix loop are typed events, and a rule cannot hallucinate
+		// one -- so this actor is reserved for the one part rules cannot do:
+		// judging whether a pattern nothing recognises is worth a person's
+		// attention (OR-168).
+		//
+		// Sonnet, unlike the three cheap readers above it. Their job is to
+		// locate something already written down; this one's is to decide
+		// whether to propose creating something, and a cheap model that
+		// answers yes too readily makes a backlog nobody can scan -- which is
+		// the exact failure this pass exists to avoid. Opus is not warranted:
+		// the input is a few dozen structured lines, not a codebase.
+		events.ActorAIOps: {ID: events.ActorAIOps, Name: "Baba", Designation: "AIOps engineer", Model: "sonnet"},
+		events.ActorCI:    {ID: events.ActorCI, Designation: "ci"},
+		events.ActorHuman: {ID: events.ActorHuman, Designation: "you"},
 	}
 }
 
