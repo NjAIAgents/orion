@@ -19,9 +19,16 @@ import (
 // require_up_to_date is what makes this necessary. Every merge invalidates
 // every other open pull request, so on an evening with three tickets the
 // stale warning fired four times -- and every instance was the same three
-// commands, in the same order, with no decision taken at any point. The
-// count grows with the square of the queue: the second ticket rebases once,
-// the third twice.
+// commands, in the same order, with no decision taken at any point.
+//
+// Doing the rebase for EVERY branch at once was the mistake. The count then
+// grew with the square of the queue -- the second ticket rebasing once, the
+// third twice -- and at depth 2 that was already enough to starve the two
+// longest-open branches out of their rebase allowance in a single evening
+// (OR-206). The rebase was never the problem; performing it speculatively, on
+// branches that were going to be invalidated again before their checks
+// finished, was. So one branch takes a turn per pass and the rest hold: see
+// the landing queue below.
 //
 // Both halves of the answer are already computed on the same pass. conflict.go
 // asks the forge whether the branch merges cleanly; staleness.go asks git
@@ -47,9 +54,14 @@ const maxAutoRebases = 2
 
 // behind decides what to do about a branch whose base has moved.
 //
-// The one place the choice is made, so the two outcomes cannot drift: rebase
-// it, or hand it over with the commands exactly as before.
-func behind(res Result, key string, pr PR, branch string, cfg config.Config,
+// The one place the choice is made, so the three outcomes cannot drift: rebase
+// it, hold it until its turn comes, or hand it over with the commands exactly
+// as before.
+//
+// pass is every ticket this poll is reconciling, and is what the landing queue
+// elects a leader from -- Orion is the thing sequencing here, so the ordering
+// is decided in Orion rather than delegated to the forge (docs/decisions/0011).
+func behind(res Result, key string, pass []string, pr PR, branch string, cfg config.Config,
 	opts Options, deps Deps, ws *workspace.Workspace, log *events.Log, w io.Writer) Result {
 
 	// Same source as the caller used to decide we are here (OR-112): the
@@ -57,10 +69,20 @@ func behind(res Result, key string, pr PR, branch string, cfg config.Config,
 	// downstream chooses a branch by what it is called.
 	base, named := baseOf(pr, cfg)
 
+	// Every path below that hands the branch to a person gives up its place
+	// in the landing queue first. A ticket waiting for a turn it will never
+	// take is a ticket every branch behind it waits for too.
+	leave := func() {
+		if !opts.DryRun {
+			_ = leaveQueue(ws.Dir, key)
+		}
+	}
+
 	// A person working this branch by hand always wins. Checked first and
 	// outside the switch below so it short-circuits before the rebase count
 	// or anything else is even read (OR-130).
 	if dir := worktreeOrRepo(ws, branch); manuallyLocked(dir) {
+		leave()
 		ui.Say(w, key, events.ActorOrion, ui.VerbWaiting,
 			"%s is locked for manual work (%s); leaving it alone", branch, manualLockName)
 		log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorOrion,
@@ -74,23 +96,63 @@ func behind(res Result, key string, pr PR, branch string, cfg config.Config,
 	case !named:
 		// Can't rebase onto a base we couldn't determine -- report instead
 		// of guessing.
+		leave()
 		return stale(res, key, pr, branch, cfg, opts, deps, ws, log, w)
 	case !cfg.Collect.AutoRebase:
+		leave()
 		return stale(res, key, pr, branch, cfg, opts, deps, ws, log, w)
 	case pr.Head == "":
 		// Without the commit the forge reported, there is no lease to push
 		// under, and a force-push with no lease is the thing this must never
 		// be. Hand it over instead.
+		leave()
 		return stale(res, key, pr, branch, cfg, opts, deps, ws, log, w)
 	}
 
-	if n := loadRequests(ws.Dir).Rebases[key]; n >= maxAutoRebases {
-		ui.Warn(w, "%s: %s has been rebased %d times already and is behind %s again, "+
-			"so the queue is moving faster than it can land; leaving this one to you",
-			key, branch, n, base)
-		log.Emit(events.Event{Kind: events.KindEscalate, Actor: events.ActorOrion,
-			Msg: fmt.Sprintf("rebased automatically %d times and still behind %s", n, base)})
+	reqs := loadRequests(ws.Dir)
+	if n := reqs.Rebases[key]; n >= maxAutoRebases {
+		// Said once, at this commit, and then quietly. A branch already
+		// handed over is not news on the next poll, and repeating the whole
+		// escalation every two minutes -- three identical pairs in one log,
+		// for branches nobody had touched -- teaches the reader to skim
+		// exactly the block that was meant to get their attention (OR-206).
+		// stale() below goes quiet on the same fact.
+		if reqs.Conflicts[key] != pr.Head {
+			ui.Warn(w, "%s: %s has been rebased %d times already and is behind %s again, "+
+				"so the queue is moving faster than it can land; leaving this one to you",
+				key, branch, n, base)
+			log.Emit(events.Event{Kind: events.KindEscalate, Actor: events.ActorOrion,
+				Msg: fmt.Sprintf("rebased automatically %d times and still behind %s", n, base)})
+		}
+		leave()
 		return stale(res, key, pr, branch, cfg, opts, deps, ws, log, w)
+	}
+
+	// The landing queue (OR-206).
+	//
+	// This branch is behind, clean, and Orion could rebase it right now --
+	// and so, after one merge, is every other open branch. Rebasing them all
+	// is what produced the quadratic: each one force-pushes, each one waits
+	// out a full CI run, and the next merge lands before most of them finish,
+	// so they pay again. One branch takes the turn and the others hold, which
+	// makes the cost linear and, because the turn goes to whoever has been
+	// behind longest, means waiting is what earns it rather than what costs
+	// it. Holding is free: nothing is pushed, no allowance is spent, and the
+	// ticket keeps ci-wait so the next pass simply asks again.
+	if joinQueue(reqs, key, deps.Now()) && !opts.DryRun {
+		if err := writeRequests(ws.Dir, reqs); err != nil {
+			// Not fatal: an unrecorded place means this branch competes on
+			// equal terms next pass rather than losing its seniority, which
+			// is the harmless direction to fail in.
+			ui.Warn(w, "%s: could not record its place in the queue (%v)", key, err)
+		}
+	}
+	if next := leader(reqs, pass); next != key {
+		res.Verdict = VerdictStale
+		ui.Say(w, key, events.ActorOrion, ui.VerbWaiting,
+			"%s is behind %s and holding its turn; %s has been waiting longer",
+			branch, base, next)
+		return res
 	}
 
 	if opts.DryRun {

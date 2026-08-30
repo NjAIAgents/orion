@@ -147,17 +147,28 @@ func stale(res Result, key string, pr PR, branch string, cfg config.Config,
 		return res
 	}
 
-	ui.Warn(w, "%s", staleBranch(key, branch, base))
-	for _, line := range rebaseSteps(ws, branch, base) {
-		fmt.Fprintf(w, "          %s\n", ui.Dim(w, line))
-	}
-
 	// Once per HEAD, sharing the conflict store: both are "this branch needs
 	// a human to move it", both clear the same way, and two stores would
 	// drift on the one question they both answer.
-	already := loadRequests(ws.Dir).Conflicts[key]
-	if already == pr.Head && already != "" {
+	//
+	// Checked BEFORE anything is printed, not only before the tracker is
+	// written (OR-206). Handing a branch over is a single event, and the
+	// terminal was repeating the whole of it -- the warning and the three
+	// commands -- on every poll, for branches nobody had touched between
+	// polls. Three identical pairs appeared in one log. A block that reprints
+	// unchanged every two minutes reads as boilerplate, and the reader stops
+	// seeing the one that is new. Said once, then a line to say it is still
+	// true and still theirs.
+	if already := loadRequests(ws.Dir).Conflicts[key]; already != "" && already == pr.Head {
+		ui.Say(w, key, events.ActorOrion, ui.VerbWaiting,
+			"%s is still behind %s and still yours; nothing has moved since it was reported",
+			branch, base)
 		return res
+	}
+
+	ui.Warn(w, "%s", staleBranch(key, branch, base))
+	for _, line := range rebaseSteps(ws, branch, base) {
+		fmt.Fprintf(w, "          %s\n", ui.Dim(w, line))
 	}
 
 	log.Emit(events.Event{Kind: events.KindBlocked, Actor: events.ActorOrion,

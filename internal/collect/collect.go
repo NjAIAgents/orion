@@ -230,9 +230,18 @@ func Run(opts Options, deps Deps) []Result {
 		return nil
 	}
 
+	// Normalised once, up front, because the whole list is now an input and
+	// not merely something to loop over: the landing queue elects a leader
+	// from the tickets THIS pass is reconciling (OR-206), and a queue whose
+	// members are spelled differently from the keys being processed elects
+	// nobody and holds everybody.
+	pass := make([]string, len(keys))
+	for i, key := range keys {
+		pass[i] = strings.ToUpper(strings.TrimSpace(key))
+	}
 	var out []Result
-	for _, key := range keys {
-		out = append(out, one(strings.ToUpper(strings.TrimSpace(key)), opts, deps))
+	for _, key := range pass {
+		out = append(out, one(key, pass, opts, deps))
 	}
 	return out
 }
@@ -266,7 +275,7 @@ func waiting(j TrackerAPI, home string) ([]string, error) {
 	return keys, nil
 }
 
-func one(key string, opts Options, deps Deps) (res Result) {
+func one(key string, pass []string, opts Options, deps Deps) (res Result) {
 	w := opts.Out
 	res = Result{Key: key}
 
@@ -355,6 +364,12 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// the conflict clears, CI re-runs, and the normal flow resumes without
 	// anyone having to re-label anything.
 	if pr.Conflicted {
+		// Out of the landing queue: a conflict is a person's, and a ticket
+		// that cannot take its turn must not be the one everything else is
+		// waiting for (OR-206).
+		if !opts.DryRun {
+			_ = leaveQueue(ws.Dir, key)
+		}
 		return conflicted(res, key, pr, cfg, branch, opts, deps, ws, log, w)
 	}
 
@@ -380,9 +395,17 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if cfg.CI.RequireUpToDate {
 		if base, named := baseOf(pr, cfg); named {
 			if ok, known := upToDate(worktreeOrRepo(ws, branch), base, branch); known && !ok {
-				return behind(res, key, pr, branch, cfg, opts, deps, ws, log, w)
+				return behind(res, key, pass, pr, branch, cfg, opts, deps, ws, log, w)
 			}
 		}
+	}
+	// Not behind, so it is not waiting for a turn to be rebased. Given up
+	// here rather than only on merge, because a branch that has stopped
+	// waiting must stop being the branch everything else waits FOR: it can
+	// no longer reach behind(), so nothing else would ever release it
+	// (OR-206).
+	if !opts.DryRun {
+		_ = leaveQueue(ws.Dir, key)
 	}
 
 	switch pr.Verdict {
