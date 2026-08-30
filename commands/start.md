@@ -1,5 +1,5 @@
 ---
-description: Provision an isolated workspace for a new idea and capture its intent
+description: Start a new piece of work: elaborate the idea, name it, create its tracker project
 ---
 
 Start a new piece of work under Orion.
@@ -8,20 +8,29 @@ Start a new piece of work under Orion.
    the user what to fix. Do not proceed with a broken toolchain: every later
    stage will fail in a more confusing way.
 
-2. Provision the workspace:
+2. Hand the user this command to run **in their own terminal**:
 
    ```
    orion new "$ARGUMENTS"
    ```
 
-   This creates an isolated directory with its own git repo, its own generated
-   sandbox settings, and its own state. Nothing here can reach the user's other
-   work.
+   Do not run it yourself. It interviews the user about the idea — who it is
+   for, what is wrong today, what success looks like, what is out of scope,
+   what constrains it — and then has them finalise the project name. It needs a
+   terminal, and the answers are theirs to give.
 
-3. Report the workspace id and path to the user.
+   It creates the tracker project carrying that elaborated description, behind
+   a confirmation that says a Jira project cannot be deleted without admin
+   rights. It creates no workspace and writes nothing to disk.
 
-4. Invoke nj-agents `/capture-intent` to capture intent, working in the new workspace's
-   `repo/` directory.
+3. Ask the user for the project key it printed, then:
 
-Do not skip to design or implementation. The intent artifact is what the next
-stage reads.
+   ```
+   orion plan <KEY>
+   ```
+
+   That provisions the workspace and announces the design chain and its cost
+   before anything spends.
+
+Do not skip to design or implementation. The project description is what the
+next stage reads.
