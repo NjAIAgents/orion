@@ -134,15 +134,25 @@ func (j *Jira) CreateVersion(projectKey, name, description string) (Version, boo
 	return created, true, nil
 }
 
-// MarkReleased closes a version, dating it today.
+// MarkReleased closes a version, dating it on the given day. An empty date
+// means today.
 //
 // OR-188 needs to CLOSE a milestone at the end of a promotion, not only open
 // one at the start; without this the version stays open forever and the next
 // release has two candidates.
-func (j *Jira) MarkReleased(versionID string) error {
+//
+// The date is a parameter rather than always time.Now because a milestone is
+// routinely closed AFTER the release it records: v0.8.0 shipped on the 29th
+// and was closed on the 30th, and stamping the 30th would date the milestone
+// to a day on which nothing was released (OR-209). The caller decides; the
+// default stays today for the case where the two coincide.
+func (j *Jira) MarkReleased(versionID, date string) error {
+	if date == "" {
+		date = time.Now().Format("2006-01-02")
+	}
 	payload := map[string]any{
 		"released":    true,
-		"releaseDate": time.Now().Format("2006-01-02"),
+		"releaseDate": date,
 	}
 	code, body, err := j.do("PUT", "/rest/api/3/version/"+versionID, payload)
 	if err != nil {
