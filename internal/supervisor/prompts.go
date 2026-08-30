@@ -480,6 +480,7 @@ func TicketPromptWithChildren(key, summary, description, url, repoPath string,
 		"suite you did not run is not evidence.",
 	))
 	b.WriteString(testEnv(repoPath))
+	b.WriteString(waitingForALongCommand())
 	b.WriteString(exploreOffer())
 	b.WriteString(changelogFragment(repoPath, key))
 	b.WriteString(join(
@@ -583,6 +584,37 @@ func exploreOffer() string {
 // the next candidate has to clear the same bar, and most advice does not.
 // Notably absent: the contents of scripts/test.sh. The agent can read the
 // file; inlining it would go stale the first time somebody edited the script.
+// waitingForALongCommand tells the agent HOW to wait, because the absence of
+// an answer to that is what killed two finished tickets.
+//
+// OR-189 and OR-191 each backgrounded the suite -- nine minutes, before
+// OR-202 cut it -- re-read its output file while it ran, and tripped the
+// identical-repeat breaker with their work complete, green, and entirely
+// uncommitted. Both agents diagnosed themselves correctly in BLOCKED.md and
+// both were still lost: nothing had ever told them another way existed, so
+// they reached for the only one they could see.
+//
+// The breaker no longer counts that poll (internal/hook/breaker.go), but the
+// instruction is the half that matters here. A rule the agent cannot read is
+// not a rule it can follow, and the fix has to be stated where the agent
+// looks, not only enforced where it does not.
+//
+// Unconditional, unlike testEnv's lines. Every repository has some command
+// slow enough to be worth waiting for, and this costs four lines to say.
+func waitingForALongCommand() string {
+	return "\n\n" + join(
+		"WAITING FOR A LONG COMMAND",
+		"Run the suite in the FOREGROUND and give the call a generous timeout. One",
+		"Bash call that waits several minutes is ONE tool call, and waiting is free.",
+		"Do NOT launch it in the background and then re-read its output file to see",
+		"whether it has finished. Two tickets finished their work, had it green, and",
+		"were lost exactly that way: from outside, polling an unchanging file and",
+		"looping are the same action.",
+		"If something must run in the background, ask the tool that reports on a",
+		"background task, rather than re-reading its output file by hand.",
+	)
+}
+
 func testEnv(repoPath string) string {
 	if repoPath == "" {
 		return ""
