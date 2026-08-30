@@ -85,3 +85,39 @@ func TestATrunkOnlyProjectIsNotSentToMergeAgain(t *testing.T) {
 		t.Errorf("say it is genuinely done:\n%s", body)
 	}
 }
+
+// The approval request is the only message that waits on a person, and so
+// the only one that earns a mention. Tagging on a merged notice or a CI
+// report trains a room to mute the channel -- and a muted channel delivers
+// nothing at all, so a mention attached to news nobody has to act on costs
+// the approval request the only advantage it has.
+//
+// (A CI failure can still be tagged, from the separate slack.mention list
+// applied at the call site in collect.go. That list is opt-in, names people
+// explicitly, and is not built from merge_approvers.)
+func TestOnlyTheApprovalRequestMentionsAnybody(t *testing.T) {
+	pr := PR{URL: "https://pr/9", Detail: "3 checks failed"}
+
+	_, approval := msgApprovalWanted("X-1", pr, "orion/x-1", []string{"<@U012ABCDEF>"})
+	if !strings.Contains(approval, "<@U012ABCDEF>") {
+		t.Fatalf("the one message that waits on a person does not tag them:\n%s", approval)
+	}
+	if strings.Contains(approval, "<!") {
+		t.Errorf("the approval request broadcasts:\n%s", approval)
+	}
+
+	_, merged := msgMerged("X-1", pr, "/repo", true,
+		"fetched and fast-forwarded develop", "develop", "main")
+	_, failed := msgCIFailed("X-1", pr)
+
+	for name, body := range map[string]string{"merged": merged, "ci-failed": failed} {
+		if strings.Contains(body, "<@") {
+			t.Errorf("the %s notice mentions somebody:\n%s", name, body)
+		}
+		// @channel and @here reach a whole project room, most of whom have
+		// no standing to answer anything.
+		if strings.Contains(body, "<!") {
+			t.Errorf("the %s notice broadcasts:\n%s", name, body)
+		}
+	}
+}
