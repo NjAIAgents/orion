@@ -19,6 +19,10 @@ import (
 // last one running -- the failure mode Fan could introduce if any part of
 // its cleanup path were shared across goroutines instead of scoped to each.
 func TestFanLeavesNoSurvivingChildOnWallClockTimeout(t *testing.T) {
+	// Sub-second budget for the same reason as the single-run case: the
+	// concurrency is what this test is about, not the length of the wait
+	// (OR-202).
+	shrinkWallClock(t, 500*time.Millisecond, 200*time.Millisecond)
 	pidDir := t.TempDir()
 	t.Setenv("FAN_PID_DIR", pidDir)
 	fakeClaudeTree(t, `id="p$$"
@@ -36,7 +40,16 @@ wait
 			MaxMinutes: 1, MaxTurns: 1})
 	}
 
+	start := time.Now()
 	results := Fan(w, jobs)
+	// Fan must return on the children's own deadlines. Without this guard the
+	// test still passes when the sweep is broken -- it just waits out the
+	// grandchildren's `sleep 300`, and a survivor that eventually exits on
+	// its own is indistinguishable from one that was killed.
+	if time.Since(start) > 10*time.Second {
+		t.Fatalf("Fan took %s to return: it waited for the children rather than "+
+			"killing them on their wall clock", time.Since(start))
+	}
 	if len(results) != 3 {
 		t.Fatalf("got %d results, want 3", len(results))
 	}

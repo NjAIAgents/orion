@@ -29,6 +29,20 @@ func fakeClaude(t *testing.T) string {
 	return canary
 }
 
+// shrinkWallClock makes a MaxMinutes deadline and its post-SIGINT grace
+// reachable in milliseconds, and restores the real clocks afterwards.
+//
+// The unit, not MaxMinutes itself: a test still passes the MaxMinutes a
+// caller would, so it exercises the same arithmetic and the same "exceeded
+// %d minute wall clock" reason string. Only the second the unit stands for
+// gets shorter. Mirrors internal/events' shrink() (OR-9).
+func shrinkWallClock(t *testing.T, unit, grace time.Duration) {
+	t.Helper()
+	ou, og := wallClockUnit, graceTimeout
+	wallClockUnit, graceTimeout = unit, grace
+	t.Cleanup(func() { wallClockUnit, graceTimeout = ou, og })
+}
+
 // ws builds a workspace on disk with a repo, state and logs directory.
 func ws(t *testing.T, cfgJSON string) *workspace.Workspace {
 	t.Helper()

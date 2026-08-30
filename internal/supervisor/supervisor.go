@@ -121,14 +121,29 @@ type Result struct {
 const (
 	defaultMaxMinutes = 30
 	defaultMaxTurns   = 120
-	// graceTimeout is how long a killed process gets to exit on SIGINT
-	// before it is killed outright. Claude Code flushes its transcript on
-	// interrupt, and losing that transcript loses the diagnosis.
-	graceTimeout = 8 * time.Second
 	// captureBytes bounds the output kept in memory for quota inspection.
 	// The full stream still goes to the log; this is only the tail that
 	// gets pattern-matched.
 	captureBytes = 96 * 1024
+)
+
+// The two clocks a timed-out run actually sleeps through: the wall-clock
+// budget, and the grace a killed process gets before SIGKILL.
+//
+// Variables rather than constants so a test can shrink them instead of
+// waiting them out -- the same move OR-9 made for the event log's rotation
+// limits (see internal/events, MaxBytes/MaxFiles). The property the
+// process-group tests prove is "when the deadline passes, is the group
+// dead", and that takes the identical code path at 200ms as at a minute.
+// Waiting the real 68 seconds proved nothing further and, run three times
+// per pass of scripts/test.sh, was most of CI's wall time.
+var (
+	// wallClockUnit is the unit Options.MaxMinutes is counted in.
+	wallClockUnit = time.Minute
+	// graceTimeout is how long a killed process gets to exit on SIGINT
+	// before it is killed outright. Claude Code flushes its transcript on
+	// interrupt, and losing that transcript loses the diagnosis.
+	graceTimeout = 8 * time.Second
 )
 
 // Run executes one supervised stage, retrying across quota resets.
@@ -504,7 +519,7 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	activity := newActivityWriter(ws.RepoDir(), opts.OnActivity)
 
 	ctx, cancel := context.WithTimeout(context.Background(),
-		time.Duration(opts.MaxMinutes)*time.Minute)
+		time.Duration(opts.MaxMinutes)*wallClockUnit)
 	defer cancel()
 
 	cmd := exec.Command(bin, args...)
