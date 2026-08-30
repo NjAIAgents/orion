@@ -53,8 +53,25 @@ const (
 	KindUsage    = "usage"     // what one agent run consumed, per actor
 	KindTool     = "tool"      // an agent used a tool, as it used it
 	KindSay      = "say"       // an agent said what it was doing
+	KindStage    = "stage"     // the run crossed from one stage into the next
 	KindNote     = "note"      // anything else worth seeing
 )
+
+// STAGE IS A BOUNDARY, NOT AN ACTION. Every other kind reports something that
+// happened inside a stage; this one reports the moment between two of them,
+// and it is the only kind whose two consecutive occurrences are a DURATION.
+//
+// That is what it is for. "How long did this run spend in QA" and "how long
+// did it sit waiting for a human" are the two questions the log could not
+// answer, because a handoff left no trace at all -- the reader had to know
+// which actor holds which role and infer the crossing from the names
+// changing between two ordinary status lines (OR-189).
+//
+// Its Detail carries the two stage names and the ACTOR IDENTIFIERS on each
+// side, never their display names: the identifiers are what this file
+// promises never to change, and internal/actors resolves them to names at
+// render time. A boundary whose next side is ci or human is a boundary where
+// NO AGENT IS RUNNING, and internal/ui renders it saying so.
 
 // ASK AND ANSWER ARE A PAIR. Every ask is closed by an answer or a refuse,
 // on the same ticket, before the path that raised it returns. An ask with

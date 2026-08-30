@@ -47,6 +47,22 @@ type qaOutcome struct {
 	Findings string // open findings, when it ended without them being cleared
 }
 
+// Verdict is what the stage is worth saying on the boundary out of it: the
+// result, not the fact that it ran. "verified clean" and "findings still
+// open" are different enough to change what a reader does next, and a
+// boundary that said only "qa -> push" would hide which one happened.
+func (o qaOutcome) Verdict() string {
+	switch {
+	case o.Clean && o.Rounds > 0:
+		return fmt.Sprintf("verified clean after %d fix round(s)", o.Rounds)
+	case o.Clean:
+		return "verified clean"
+	case o.Findings != "":
+		return fmt.Sprintf("findings still open after %d fix round(s)", o.Rounds)
+	}
+	return "unverified"
+}
+
 // qaJob is what one stage run needs. A struct rather than eleven parameters
 // because the caller already holds all of it and threading it positionally is
 // how the wrong worktree gets passed.
@@ -162,8 +178,14 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 		report := qaRoundReport{Key: key, Round: out.Rounds,
 			Findings: findings, FixActor: job.Actor}
 
-		ui.Say(w, key, job.Actor, ui.VerbWorking,
-			"fixing what QA found (round %d of %d)", out.Rounds, max)
+		// QA found something and hands the run back to whoever wrote the
+		// branch. Both sides named: two adjacent lines with different names
+		// leave the reader to work out that the developer is now holding it
+		// again, which is exactly what was wrong before (OR-189).
+		ui.Stage(w, log, ui.Handoff{Key: key, From: "qa",
+			To: fmt.Sprintf("fix round %d", out.Rounds),
+			By: events.ActorQA, Next: job.Actor,
+			Detail: fmt.Sprintf("round %d of %d", out.Rounds, max)})
 		fix, fixErr := deps.Supervise(job.WS, supervisor.Options{
 			Stage: "ticket", Resume: job.ImplSession,
 			Prompt: supervisor.QAFindingsMessage(findings),
@@ -193,7 +215,13 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 		// ticket is what changed (OR-200).
 		report.Fix = firstSubstantiveLine(tailOf(fix))
 
-		ui.Say(w, key, events.ActorQA, ui.VerbWorking, "re-verifying")
+		// And back again. The return leg is a boundary too, and it has to be
+		// marked or the log shows a run entering a fix round and never
+		// leaving it -- which breaks the duration the event log exists to
+		// make queryable as surely as an unmarked departure does.
+		ui.Stage(w, log, ui.Handoff{Key: key,
+			From: fmt.Sprintf("fix round %d", out.Rounds), To: "qa",
+			By: job.Actor, Next: events.ActorQA, Detail: "re-verifying"})
 		res, err = deps.Supervise(job.WS, supervisor.Options{
 			Stage: "qa", Resume: qaSession,
 			Prompt:     supervisor.QAReverifyMessage(),
@@ -515,7 +543,7 @@ func qaEscalate(job qaJob, out qaOutcome, cfg config.Config, deps Deps,
 		"_Read these before you approve it._",
 	}, "\n")
 	tell(w, log, job.WS, notify.Event{
-		Level: notify.Blocked, Workspace: job.WS.ID, Actor: events.ActorQA,
+		Key: key, Level: notify.Blocked, Workspace: job.WS.ID, Actor: events.ActorQA,
 		Title: title, Body: msg,
 	})
 }

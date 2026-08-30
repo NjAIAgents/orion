@@ -148,7 +148,16 @@ func approvalFlow(res Result, key string, pr PR, cfg config.Config, branch strin
 		log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorOrion,
 			Msg: "asked for merge approval in Slack"})
 		res.Changed = true
-		ui.Ok(w, "ok", "%s: checks pass; asked for approval in Slack", key)
+
+		// The queue's actual bottleneck, and now visible as one. CI is done
+		// and a PERSON holds the run -- so the boundary names a person, not
+		// the devops agent that only wakes for a red build. This is also the
+		// pair of events OR-184's case rests on: the gap between this stage
+		// event and the merge is how long the run sat waiting for a human,
+		// which could not be queried at all before (OR-189).
+		ui.Stage(w, log, ui.Handoff{Key: key, From: "ci", To: "approval",
+			By: events.ActorCI, Next: events.ActorHuman,
+			Detail: "checks pass; asked for approval in Slack"})
 
 		// Say that a SECOND pass is required, and how to get one.
 		//
@@ -224,6 +233,14 @@ func approvalFlow(res Result, key string, pr PR, cfg config.Config, branch strin
 	// wrote it, and the reader cannot tell the two apart.
 	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion,
 		fmt.Sprintf("%s approved the merge in Slack (%s).", d.By, d.How)))
+
+	// The person answered and Orion takes the run back. Named before the
+	// merge rather than after it, so the boundary marks the moment the wait
+	// ENDED rather than the moment the work finished.
+	ui.Stage(w, log, ui.Handoff{Key: key, From: "approval", To: "merge",
+		By: events.ActorHuman, Next: events.ActorOrion,
+		Detail: fmt.Sprintf("approved by %s (%s)", d.By, d.How)})
+
 	if err := deps.Merge(ws.RepoDir(), branch, fmt.Sprintf(
 		"Approved by %s in Slack (%s).", d.By, d.How), cfg.VCS.MergeStrategy); err != nil {
 		res.Err = err

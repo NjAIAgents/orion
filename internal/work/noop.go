@@ -165,7 +165,7 @@ func release(comment, key, actorID string, cfg config.Config, deps Deps,
 	log.Emitf(events.KindNote, events.ActorOrion, "no change: %s", firstLine(res.Note))
 	title, body := msgNoop(key, res.Summary, res.Note, res.IssueURL)
 	tell(w, log, ws, notify.Event{
-		Level: notify.Info, Workspace: ws.ID, Actor: actorID,
+		Key: key, Level: notify.Info, Workspace: ws.ID, Actor: actorID,
 		Title: title, Body: body,
 	})
 }
