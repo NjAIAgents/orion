@@ -58,12 +58,29 @@ type Capability struct {
 	Detail       string
 }
 
+// Project is a project that already exists, read back rather than derived.
+//
+// Distinct from Binding, which is what a workspace RECORDS about a project it
+// provisioned. This is what the tracker currently says, which is the thing a
+// later stage needs: by the time `orion plan` runs, the project is the handoff
+// artifact between it and `orion new` (docs/decisions/0006), so its name and
+// description are the agreed statement of the work. Re-deriving either from
+// the original idea text would be a second source of truth that drifts from
+// the one a human has since edited.
+type Project struct {
+	ID          string
+	Key         string
+	Name        string
+	Description string
+}
+
 // Tracker is the interface a provider implements. Jira is the only
 // implementation today; the interface exists so adding Linear or GitLab is
 // a new file rather than a rewrite of the callers.
 type Tracker interface {
 	Probe() (Capability, error)
 	ProjectExists(key string) (bool, string, error)
+	Project(key string) (Project, error)
 	CreateProject(key, name, lead string) (Binding, error)
 	Name() string
 }
@@ -311,6 +328,46 @@ func (j *Jira) ProjectExists(key string) (bool, string, error) {
 	}
 	_ = json.Unmarshal(body, &p)
 	return true, p.ID, nil
+}
+
+// Project reads a project back: the free-text name a human chose and the
+// description carrying what the work is.
+//
+// Separate from ProjectExists rather than folded into it. That one answers a
+// yes/no asked in a loop while ResolveKey hunts for a free key, and widening
+// its return would make every one of those calls parse a body it discards.
+// This one is asked once, by a caller that wants the contents.
+//
+// A missing project is an ERROR here, not a false: ProjectExists is asked
+// about keys that are expected to be free, while this is asked about one the
+// user just named, and "no such project" is the answer they need to see.
+func (j *Jira) Project(key string) (Project, error) {
+	code, body, err := j.do("GET", "/rest/api/3/project/"+key, nil)
+	if err != nil {
+		return Project{}, err
+	}
+	if code == 404 {
+		return Project{}, fmt.Errorf("no project %s in %s.\n"+
+			"  Check the key, or create it first: orion provision <id>", key, j.BaseURL)
+	}
+	if code >= 400 {
+		return Project{}, fmt.Errorf("reading project %s: %d %s", key, code, snippet(body))
+	}
+	var p struct {
+		ID          string `json:"id"`
+		Key         string `json:"key"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil {
+		return Project{}, fmt.Errorf("reading project %s: %w", key, err)
+	}
+	return Project{
+		ID:          p.ID,
+		Key:         p.Key,
+		Name:        strings.TrimSpace(p.Name),
+		Description: strings.TrimSpace(p.Description),
+	}, nil
 }
 
 // CreateProject makes a team-managed software project. The template choice

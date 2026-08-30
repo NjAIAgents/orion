@@ -64,6 +64,13 @@ func (f *fake) ProjectExists(key string) (bool, string, error) {
 	id, ok := f.existing[key]
 	return ok, id, nil
 }
+func (f *fake) Project(key string) (Project, error) {
+	id, ok := f.existing[key]
+	if !ok {
+		return Project{}, fmt.Errorf("no project %s", key)
+	}
+	return Project{ID: id, Key: key, Name: key}, nil
+}
 func (f *fake) CreateProject(key, name, lead string) (Binding, error) {
 	if !f.perm {
 		return Binding{}, ErrNoPermission
