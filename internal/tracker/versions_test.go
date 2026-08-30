@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // versionSrv is a Jira stub holding one project's versions in memory, so the
@@ -123,18 +124,47 @@ func TestFindVersionMatchesExactlyNotByPrefix(t *testing.T) {
 	}
 }
 
+// Case-exact too, not only prefix-exact. `release close` resolves the name it
+// is given through this lookup, and closing a milestone is not undone by
+// re-running -- so a near-miss must find nothing rather than the closest
+// thing (OR-209).
+func TestFindVersionIsCaseExact(t *testing.T) {
+	j, _ := versionSrv(t, []Version{{ID: "10", Name: "v0.8.1"}})
+
+	if _, found, err := j.FindVersion("OR", "V0.8.1"); err != nil {
+		t.Fatal(err)
+	} else if found {
+		t.Error("V0.8.1 matched v0.8.1; a differently-cased name must not resolve")
+	}
+}
+
 func TestMarkReleasedSendsReleasedAndADate(t *testing.T) {
 	j, posted := versionSrv(t, []Version{{ID: "20001", Name: "v0.9.0"}})
 
-	if err := j.MarkReleased("20001"); err != nil {
+	if err := j.MarkReleased("20001", ""); err != nil {
 		t.Fatal(err)
 	}
 	last := (*posted)[len(*posted)-1]
 	if last["released"] != true {
 		t.Error("did not set released")
 	}
-	if d, _ := last["releaseDate"].(string); len(d) != len("2006-01-02") {
-		t.Errorf("releaseDate is not a plain date: %q", d)
+	if d, _ := last["releaseDate"].(string); d != time.Now().Format("2006-01-02") {
+		t.Errorf("an empty date did not fall back to today: %q", d)
+	}
+}
+
+// A milestone closed after the fact must carry the day it SHIPPED, not the
+// day somebody got round to closing it: v0.8.0 shipped on the 29th and was
+// closed on the 30th (OR-209).
+func TestMarkReleasedHonoursAnExplicitDate(t *testing.T) {
+	j, posted := versionSrv(t, []Version{{ID: "20001", Name: "v0.8.0"}})
+
+	if err := j.MarkReleased("20001", "2026-08-29"); err != nil {
+		t.Fatal(err)
+	}
+	last := (*posted)[len(*posted)-1]
+	if d, _ := last["releaseDate"].(string); d != "2026-08-29" {
+		t.Errorf("releaseDate is %q, want the date given; the milestone would be misdated", d)
 	}
 }
 
