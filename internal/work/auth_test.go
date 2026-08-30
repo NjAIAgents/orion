@@ -56,6 +56,46 @@ func TestALoggedOutCLIRequeuesTheTicketRatherThanFailingIt(t *testing.T) {
 	if strings.Contains(out.String(), "claude exited 1") {
 		t.Errorf("the exit code was reported instead of the cause:\n%s", out.String())
 	}
+	// The claim moved it to In Progress. Left there, the board would say an
+	// agent is working it while the queue says it is waiting -- the same
+	// contradiction the label rollback exists to prevent.
+	if len(j.transitions) == 0 || j.transitions[len(j.transitions)-1] != "To Do" {
+		t.Errorf("left In Progress after the claim was released: %v", j.transitions)
+	}
+}
+
+// The wording half, at the level that acts on it. A run that DID work and
+// failed while talking about re-authentication is a failed run: the supervisor
+// is the only layer that decides this, and work must not second-guess it from
+// the text.
+func TestAGenuineFailureMentioningAuthIsStillAFailedRun(t *testing.T) {
+	home := project(t, cfg)
+	j := &fakeJira{}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(*workspace.Workspace, supervisor.Options) (*supervisor.Result, error) {
+				// Turns taken, money spent, and the agent talking about logins:
+				// Unauthenticated is false, so this is ordinary breakage.
+				return &supervisor.Result{ExitCode: 1,
+					Reason: "claude exited 1",
+					Final:  "the staging client needs to re-authenticate; login expired"}, nil
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	if res[0].Outcome != OutcomeFailed {
+		t.Fatalf("outcome = %q, want %q", res[0].Outcome, OutcomeFailed)
+	}
+	if !strings.Contains(j.labelLog(), "add:orion-failed remove:orion-working") {
+		t.Errorf("a real failure must still be labelled: %s", j.labelLog())
+	}
+	if strings.Contains(j.labelLog(), "add:ORION remove:orion-working") {
+		t.Errorf("a real failure was requeued as though nothing had been attempted: %s", j.labelLog())
+	}
 }
 
 // The batch stop must keep working -- and now say WHY, since here the reason

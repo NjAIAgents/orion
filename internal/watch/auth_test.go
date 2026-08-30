@@ -44,4 +44,13 @@ func TestALoggedOutCLIStopsTheWatcherRatherThanDrainingTheQueue(t *testing.T) {
 		!strings.Contains(out, "sign in") {
 		t.Errorf("the watcher stopped without naming the cause or the fix:\n%s", out)
 	}
+	// Why it stopped, not merely that it did. A watcher that goes quiet mid-queue
+	// looks identical to one that crashed, and the reader has to be told that the
+	// remaining tickets were left alone deliberately.
+	if !strings.Contains(out, "every queued ticket would fail the same way") {
+		t.Errorf("the stop does not say why the rest of the queue was left alone:\n%s", out)
+	}
+	if !strings.Contains(out, "nothing is labelled failed") {
+		t.Errorf("the stop does not say the queue was left clean:\n%s", out)
+	}
 }
