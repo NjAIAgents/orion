@@ -346,7 +346,22 @@ func Line(e events.Event) string {
 	if !e.At.IsZero() {
 		at = e.At.UTC().Format("15:04:05")
 	}
-	return fmt.Sprintf("%s  %-9s %-24s %s", at, e.Kind, actors.Display(e.Actor), oneLine(e.Msg))
+	return fmt.Sprintf("%s  %-9s %-24s %s", at, e.Kind, actors.Display(e.Actor),
+		truncate(oneLine(e.Msg), 110))
+}
+
+// truncate keeps an evidence line readable where it is actually read: pasted
+// into a tracker, wrapped by Slack, or in a terminal beside three others.
+// The whole message is still in the event log, which the draft names.
+// Counted in runes, not bytes: a message quoting an artifact can carry
+// non-ASCII, and slicing bytes would cut a character in half and put a
+// replacement glyph in the evidence a person is meant to check.
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
 }
 
 // Open is the read-only slice of the tracker this pass may use.

@@ -385,6 +385,26 @@ func TestOpenIssuesReportsItsCap(t *testing.T) {
 	}
 }
 
+// An evidence line is read pasted into a tracker or wrapped by Slack, so a
+// 300-character message has to be capped -- and capped without cutting a
+// character in half, or the evidence a person is meant to check arrives with
+// a replacement glyph in it.
+func TestEvidenceLinesAreCappedWithoutBreakingCharacters(t *testing.T) {
+	long := strings.Repeat("é", 400)
+	got := Line(events.Event{At: at(1), Kind: events.KindNote, Actor: events.ActorOrion, Msg: long})
+
+	if strings.ContainsRune(got, '�') {
+		t.Error("the line contains a replacement character, so a rune was cut in half")
+	}
+	if n := len([]rune(got)); n > 160 {
+		t.Errorf("line is %d runes; an evidence line this wide is unreadable wherever "+
+			"a draft actually gets read", n)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("a truncated line does not say it was truncated: %q", got)
+	}
+}
+
 type stubOpen struct{ issues []tracker.Issue }
 
 func (s stubOpen) Search(string, int) ([]tracker.Issue, error) { return s.issues, nil }
