@@ -441,6 +441,201 @@ func TestBlockedNoteDoesNotUnprotectUnpushedCommits(t *testing.T) {
 	}
 }
 
+// A worktree holding only Orion's runtime directory -- no stop-note at all --
+// must be just as prunable. .orion/ was already ignored before OR-220; this
+// pins that the merge into one shared function did not narrow it.
+func TestOnlyOrionRuntimeDirAloneDoesNotKeepAMergedWorktree(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/only-runtime-dir")
+	writeOrionRuntimeFile(t, j.Path, "state/run.json", "{}\n")
+
+	if dirty, detail := Dirty(j.Path); dirty {
+		t.Fatalf("Orion's own runtime directory counted as the operator's work: %s", detail)
+	}
+	if err := RemoveMergedWorktree(ws, j.Path); err != nil {
+		t.Fatalf("kept the worktree over files Orion wrote itself: %v", err)
+	}
+}
+
+// Both of Orion's own artefacts together still must not block a prune -- the
+// deadlock OR-220 fixes was never about just one of them.
+func TestBlockedNoteAndRuntimeDirTogetherDoNotKeepAMergedWorktree(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/note-and-runtime-dir")
+	writeBlockedNote(t, j.Path)
+	writeOrionRuntimeFile(t, j.Path, "state/run.json", "{}\n")
+	writeOrionRuntimeFile(t, j.Path, "logs/run.log", "log\n")
+
+	if dirty, detail := Dirty(j.Path); dirty {
+		t.Fatalf("Orion's own files, together, counted as the operator's work: %s", detail)
+	}
+	if err := RemoveMergedWorktree(ws, j.Path); err != nil {
+		t.Fatalf("kept the worktree over files Orion wrote itself: %v", err)
+	}
+}
+
+// .orion/ plus one file the operator actually produced must still keep the
+// worktree, and the refusal must name the operator's file -- not either of
+// Orion's own artefacts sitting next to it.
+func TestRuntimeDirPlusOperatorFileStillKeepsTheWorktree(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/runtime-dir-with-work")
+	writeOrionRuntimeFile(t, j.Path, "state/run.json", "{}\n")
+	if err := os.WriteFile(filepath.Join(j.Path, "notes.txt"), []byte("do not lose this\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := RemoveMergedWorktree(ws, j.Path)
+	if err == nil {
+		t.Fatal("removed a worktree holding a file the operator wrote")
+	}
+	if !strings.Contains(err.Error(), "notes.txt") {
+		t.Errorf("the refusal must name what it is protecting: %v", err)
+	}
+	if strings.Contains(err.Error(), ".orion/") {
+		t.Errorf("Orion's own runtime directory was reported as a reason to keep: %v", err)
+	}
+}
+
+// The dirt check has to read the SAME plans path config.Load() resolves, not
+// a literal "plans/BLOCKED.md" -- a project that configures paths.plans
+// elsewhere would otherwise have its real stop-note reported as the
+// operator's work, and the literal "plans/BLOCKED.md" (unused by that
+// project) would be wrongly ignored if anyone ever wrote to it.
+func TestDirtRespectsTheConfiguredPlansPath(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/custom-plans-path")
+	if err := os.WriteFile(filepath.Join(j.Path, "orion.json"),
+		[]byte(`{"paths":{"plans":"docs/plans"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Committed: orion.json is the project's own tracked config, not
+	// something this test means to exercise as "operator work in progress".
+	gitT(t, j.Path, "add", "-f", "orion.json")
+	gitT(t, j.Path, "commit", "-q", "-m", "configure a custom plans path")
+
+	// The note at the CONFIGURED path is Orion's own and must be ignored.
+	if err := os.MkdirAll(filepath.Join(j.Path, "docs", "plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(j.Path, "docs", "plans", "BLOCKED.md"),
+		[]byte("tripped\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if dirty, detail := Dirty(j.Path); dirty {
+		t.Fatalf("a note at the configured plans path was not recognised as Orion's own: %s", detail)
+	}
+
+	// A file at the default, UNCONFIGURED "plans/BLOCKED.md" is not the
+	// breaker's note for this project and must still be treated as work to
+	// protect -- resolving by the hardcoded default would ignore it.
+	writeBlockedNote(t, j.Path)
+	dirty, detail := Dirty(j.Path)
+	if !dirty {
+		t.Fatal("a file at the unconfigured default plans path was ignored as if it were Orion's note")
+	}
+	if !strings.Contains(detail, "plans/BLOCKED.md") {
+		t.Errorf("expected the default-path file to be reported, got: %s", detail)
+	}
+}
+
+// No orion.json at all -- or one that sets paths.plans to "" -- must still
+// resolve to the shipped default ("plans"), the same path the breaker itself
+// falls back to. config.Load() guarantees this by filling empty fields from
+// Defaults(); this pins that the dirt check actually goes through Load()
+// rather than reading the raw (possibly empty) field.
+func TestDirtDefaultsThePlansPathWhenConfigIsAbsentOrEmpty(t *testing.T) {
+	ws := sandbox(t)
+
+	j1, _ := AddWorktree(ws, "develop", "orion/no-config-file")
+	writeBlockedNote(t, j1.Path)
+	if dirty, detail := Dirty(j1.Path); dirty {
+		t.Fatalf("with no orion.json, the default plans path was not applied: %s", detail)
+	}
+
+	j2, _ := AddWorktree(ws, "develop", "orion/empty-plans-config")
+	if err := os.WriteFile(filepath.Join(j2.Path, "orion.json"),
+		[]byte(`{"paths":{"plans":""}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, j2.Path, "add", "-f", "orion.json")
+	gitT(t, j2.Path, "commit", "-q", "-m", "empty plans path in config")
+	writeBlockedNote(t, j2.Path)
+	if dirty, detail := Dirty(j2.Path); dirty {
+		t.Fatalf("with an empty paths.plans, the default was not applied: %s", detail)
+	}
+}
+
+// A blocked run that was never pushed must stay on disk even when the ONLY
+// uncommitted files in it are Orion's own -- the unpushed-commits guard is a
+// separate question from the dirt check, and ignoring Orion's artefacts for
+// one must not quietly relax the other.
+func TestUnpushedRunWithOnlyOrionArtifactsStillKept(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/unpushed-with-only-orion-artifacts")
+	if err := os.WriteFile(filepath.Join(j.Path, "half.go"), []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, j.Path, "add", ".")
+	gitT(t, j.Path, "commit", "-q", "-m", "as far as it got")
+	writeBlockedNote(t, j.Path)
+	writeOrionRuntimeFile(t, j.Path, "state/run.json", "{}\n")
+
+	if dirty, detail := Dirty(j.Path); dirty {
+		t.Fatalf("Orion's own artefacts alone were counted as uncommitted work: %s", detail)
+	}
+	err := RemoveWorktree(ws, j.Path, false)
+	if err == nil || !strings.Contains(err.Error(), "not on the remote") {
+		t.Fatalf("a blocked, unpushed run must stay, and for the unpushed-commits reason, got: %v", err)
+	}
+}
+
+// A tracked (committed) BLOCKED.md that also happens to be freshly staged
+// (status "A ", not "M ") must be protected too -- the rule is "anything but
+// ??", not "anything but M".
+func TestStagedBlockedNoteIsProtected(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/staged-note")
+	writeBlockedNote(t, j.Path)
+	gitT(t, j.Path, "add", "-f", "plans/BLOCKED.md")
+
+	dirty, detail := Dirty(j.Path)
+	if !dirty {
+		t.Fatal("a staged BLOCKED.md was ignored as if it were Orion's untracked note")
+	}
+	if !strings.Contains(detail, "BLOCKED.md") {
+		t.Errorf("expected the staged note to be named, got: %s", detail)
+	}
+}
+
+// A file Orion wrote into .orion/ that somebody force-added and later
+// modified is a TRACKED, uncommitted change -- exactly the case the deletion
+// guard exists for (OR-122) -- and the ticket's own spec calls it out
+// separately from the untracked case .orion/ is meant for. orionAuthored's
+// ".orion/" branch currently matches on path alone, before it looks at
+// status, so this is expected to catch that gap.
+func TestTrackedChangesUnderOrionRuntimeDirAreProtected(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/tracked-runtime-dir-change")
+	writeOrionRuntimeFile(t, j.Path, "config.json", `{"v":1}`+"\n")
+	gitT(t, j.Path, "add", "-f", ".orion/config.json")
+	gitT(t, j.Path, "commit", "-q", "-m", "someone force-committed .orion/config.json")
+	if err := os.WriteFile(filepath.Join(j.Path, ".orion", "config.json"),
+		[]byte(`{"v":2}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dirty, detail := Dirty(j.Path)
+	if !dirty {
+		t.Fatal("a tracked, modified file under .orion/ was ignored as Orion's own scratch " +
+			"(orionAuthored matches the \".orion/\" prefix before checking status, " +
+			"so a tracked change there is dropped the same as an untracked one)")
+	}
+	if !strings.Contains(detail, ".orion/config.json") {
+		t.Errorf("expected the tracked change to be named, got: %s", detail)
+	}
+}
+
 // writeBlockedNote writes the file the breaker writes when it trips.
 func writeBlockedNote(t *testing.T, worktree string) {
 	t.Helper()
@@ -450,6 +645,19 @@ func writeBlockedNote(t *testing.T, worktree string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "BLOCKED.md"),
 		[]byte("# Blocked\n\nthe breaker tripped\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeOrionRuntimeFile writes a file under .orion/ the way Orion itself
+// would -- state, logs, whatever -- at the given path relative to .orion/.
+func writeOrionRuntimeFile(t *testing.T, worktree, rel, body string) {
+	t.Helper()
+	full := filepath.Join(worktree, ".orion", rel)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
