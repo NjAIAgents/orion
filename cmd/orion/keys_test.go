@@ -78,3 +78,83 @@ func TestWatchTakesProjectKeysNotTicketKeys(t *testing.T) {
 		}
 	}
 }
+
+// Bare keys, comma- or space-separated, and INCLUSIVE ranges. The range is
+// the reason this command exists: one work block was thirty-six consecutive
+// tickets and attaching them meant a scripted REST loop (OR-222).
+func TestExpandTicketKeysAcceptsKeysListsAndRanges(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"a bare key", []string{"OR-100"}, []string{"OR-100"}},
+		{"lowercase is upcased", []string{"or-100"}, []string{"OR-100"}},
+		{"space separated", []string{"OR-100", "OR-133"}, []string{"OR-100", "OR-133"}},
+		{"comma separated in one argument", []string{"OR-100,OR-133"}, []string{"OR-100", "OR-133"}},
+		{"commas with spaces", []string{"OR-100, OR-133"}, []string{"OR-100", "OR-133"}},
+		// Inclusive at BOTH ends. A half-open range silently drops the last
+		// ticket, which is the one nobody would think to check.
+		{"an inclusive range", []string{"OR-140..OR-145"},
+			[]string{"OR-140", "OR-141", "OR-142", "OR-143", "OR-144", "OR-145"}},
+		{"a range of one", []string{"OR-140..OR-140"}, []string{"OR-140"}},
+		// Numeric, not lexical: OR-9..OR-11 is three tickets, and a string
+		// comparison would call it an empty range.
+		{"a range across a digit boundary", []string{"OR-9..OR-11"},
+			[]string{"OR-9", "OR-10", "OR-11"}},
+		{"keys and a range together", []string{"OR-100", "OR-140..OR-142"},
+			[]string{"OR-100", "OR-140", "OR-141", "OR-142"}},
+		// The ticket's own example line.
+		{"the documented invocation", []string{"OR-100", "OR-133", "OR-140..OR-145"},
+			[]string{"OR-100", "OR-133", "OR-140", "OR-141", "OR-142", "OR-143", "OR-144", "OR-145"}},
+		// A key named twice, or covered by a range and named again, must be
+		// written once -- not queued for two writes of the same field.
+		{"an overlapping range and key", []string{"OR-140..OR-142", "OR-141"},
+			[]string{"OR-140", "OR-141", "OR-142"}},
+		{"a trailing comma", []string{"OR-100,"}, []string{"OR-100"}},
+		{"no arguments at all", nil, []string{}},
+	} {
+		got, err := expandTicketKeys("release add", "<version> <KEY>...", tc.args)
+		if err != nil {
+			t.Errorf("%s: expandTicketKeys(%v) errored: %v", tc.name, tc.args, err)
+			continue
+		}
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("%s: expandTicketKeys(%v) = %v, want %v", tc.name, tc.args, got, tc.want)
+		}
+	}
+}
+
+// Every refusal has to NAME the reason. A range expanded to nothing looks
+// exactly like success, so "0 tickets" is the worst possible answer to a
+// reversed range.
+func TestExpandTicketKeysRefusesBadRangesWithTheReason(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want []string // fragments the message must contain
+	}{
+		{"reversed", []string{"OR-145..OR-140"}, []string{"OR-145..OR-140", "before it starts"}},
+		{"cross project", []string{"OR-140..AB-145"}, []string{"two projects", "OR", "AB"}},
+		{"a project key as an end", []string{"OR..OR-145"}, []string{"not a ticket key"}},
+		{"three ends", []string{"OR-1..OR-2..OR-3"}, []string{"not a range"}},
+		{"no left end", []string{"..OR-3"}, []string{"not a range"}},
+		{"no right end", []string{"OR-3.."}, []string{"not a range"}},
+		{"a plain bad key", []string{"or"}, []string{"not a ticket key or range"}},
+		{"a flag that slipped through", []string{"--project"}, []string{"not a ticket key or range"}},
+		// A typo is four keystrokes from writing to every ticket in the
+		// project, so an absurd range is refused rather than attempted.
+		{"a runaway range", []string{"OR-1..OR-99999"}, []string{"99999", "100"}},
+	} {
+		got, err := expandTicketKeys("release add", "<version> <KEY>...", tc.args)
+		if err == nil {
+			t.Errorf("%s: expandTicketKeys(%v) = %v, want a refusal", tc.name, tc.args, got)
+			continue
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: refusal %q does not say %q", tc.name, err, want)
+			}
+		}
+	}
+}
