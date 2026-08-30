@@ -27,6 +27,7 @@ package work
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"unicode"
 
@@ -110,6 +111,12 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 	// fix rounds run in between.
 	preQA, _ := headSHA(job.WS.RepoDir())
 	defer func() {
+		// The commit FIRST, then the check that reads commits. Everything
+		// downstream of this stage reads history rather than the worktree --
+		// red-before-green diffs preQA..HEAD, the push carries commits, the
+		// pull request shows commits -- so a test that is still only on disk
+		// here is a test none of them can see (OR-234).
+		commitQAWork(job, cfg, log, w)
 		// Only when QA actually ran: a stage that never started wrote no
 		// tests, and there is nothing to prove red about a run that failed
 		// before its first turn (qaRan below handles that case).
@@ -379,6 +386,71 @@ func qaGiveUp(key, why string, log *events.Log, w io.Writer) {
 	log.Emitf(events.KindQA, events.ActorOrion, "QA stopped: %s", why)
 	ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
 		"%s, so this change goes to review unverified by QA", why)
+}
+
+// commitQAWork commits whatever the QA stage left in the worktree (OR-234).
+//
+// QAPrompt already asks for this commit, and QA does not reliably make it: on
+// OR-217 it left 163 lines across two test files STAGED, on OR-213 110 lines
+// across three UNSTAGED, fifteen minutes apart. Asking again is not a fix --
+// Orion owns the artifact, so Orion makes the commit.
+//
+// All three consequences of not doing it are silent. The red-before-green
+// check reads commits, so an uncommitted test reports "QA did not add or
+// change a test file" -- a false negative on precisely the run where a test
+// WAS written. collect's rebaseOnto refuses a worktree holding uncommitted
+// tracked changes, so QA's own output disables the automation meant to keep
+// the branch current. And the branch is pushed from what is committed: on
+// OR-217 CI went green on a pull request that did not contain the failing test
+// sitting on disk beside it, which is the worst outcome available.
+//
+// Unconditional, on every exit from the stage. A run that ended on the round
+// ceiling, on a failing test, or with no verdict at all still leaves its tests
+// on the branch: a red pull request is the correct outcome for a change QA
+// found a defect in, and it must not be avoided by leaving the evidence
+// behind.
+//
+// Everything the worktree holds, not only the test files, for the reason
+// settleTripResidue commits everything: the tree has to end CLEAN or the next
+// rebase still refuses, and OR-233 is meant to be a backstop rather than the
+// thing keeping the branch rebasable. The same two exclusions, so the
+// breaker's stop-note and the hooks' state stay out of the branch's history.
+//
+// A failure here is a warning, never a failed run -- see the file comment.
+func commitQAWork(job qaJob, cfg config.Config, log *events.Log, w io.Writer) {
+	n, err := workspace.CommitAll(job.WS.RepoDir(), msgQATests(job.Key),
+		filepath.Join(cfg.Paths.Plans, "BLOCKED.md"), cfg.Paths.State)
+	switch {
+	case err != nil:
+		log.Emitf(events.KindNote, events.ActorOrion,
+			"could not commit what the QA stage left uncommitted: %v", err)
+		ui.Say(w, job.Key, events.ActorOrion, ui.VerbWarn,
+			"could not commit what QA left in the worktree, so it does not reach "+
+				"the pull request: %v", err)
+	case n > 0:
+		// Said out loud, because the whole failure this replaces was invisible.
+		log.Emitf(events.KindQA, events.ActorOrion,
+			"committed %d file(s) the QA stage left uncommitted, so they reach the pull request", n)
+		ui.Say(w, job.Key, events.ActorOrion, ui.VerbOK,
+			"committed %d file(s) QA left uncommitted", n)
+	}
+}
+
+// msgQATests is the commit message for QA's own work. It says why the commit
+// exists rather than what is in it, because `git log` on a branch with a
+// verification commit on it raises exactly one question: who wrote this, and
+// was it reviewed like the rest.
+func msgQATests(key string) string {
+	return fmt.Sprintf("test(%s): the tests QA wrote for this change\n\n"+
+		"QA writes its tests after the implementer has already committed, and this\n"+
+		"is what it left in the worktree when its stage ended. Committed by Orion\n"+
+		"so the evidence travels with the change it is about: everything after the\n"+
+		"QA stage reads commits, so a test left on disk is one the red-before-green\n"+
+		"check cannot see, the pull request does not carry, and CI can go green\n"+
+		"without.\n\n"+
+		"These tests may be FAILING. That is the correct state for a change QA\n"+
+		"found a defect in -- read the findings on the ticket rather than assuming\n"+
+		"a red branch is a broken one.\n", key)
 }
 
 // reportRedBeforeGreen says which of QA's own tests were proven to fail
