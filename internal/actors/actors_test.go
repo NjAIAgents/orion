@@ -339,3 +339,114 @@ func TestExploreIsInTheRosterAndPinnedCheap(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = Configure(nil) })
 }
+
+// Roster answers the question the override file cannot: agents.json holds
+// only overrides, so an actor nobody has touched is absent from it entirely
+// and its effective model is in this file. Every actor the wizard can edit
+// has to be in the listing, whether or not the file mentions it.
+func TestRosterCarriesEveryActorTheWizardWalks(t *testing.T) {
+	t.Cleanup(Reset)
+	got := Roster(map[string]config.Agent{events.ActorImplementer: {Effort: "high"}})
+
+	seen := map[string]RosterEntry{}
+	for _, e := range got {
+		seen[e.ID] = e
+	}
+	for _, id := range ConfigurableIDs() {
+		e, ok := seen[id]
+		if !ok {
+			t.Errorf("%s is missing from the roster", id)
+			continue
+		}
+		if e.Designation == "" {
+			t.Errorf("%s has no designation; a roster row with an empty job title is "+
+				"the two-file lookup this listing exists to remove", id)
+		}
+	}
+	if len(seen) != len(ConfigurableIDs()) {
+		t.Errorf("roster has %d entries for %d configurable actors", len(seen), len(ConfigurableIDs()))
+	}
+	// ci and human are in neither the wizard nor the listing: one is a
+	// machine and one is the person reading, and neither runs on a model.
+	for _, id := range []string{events.ActorCI, events.ActorHuman} {
+		if _, ok := seen[id]; ok {
+			t.Errorf("%s is in the roster listing, but it is not an agent and is not configurable", id)
+		}
+	}
+}
+
+// Provenance is per FIELD. An operator who set only an effort still gets the
+// shipped model, and a roster that reported the whole row as overridden
+// would misstate three columns out of four -- which is exactly the
+// difference a reader opens this listing to check.
+func TestRosterReportsProvenancePerField(t *testing.T) {
+	t.Cleanup(Reset)
+	shipped := map[string]Actor{}
+	for _, e := range Roster(nil) {
+		shipped[e.ID] = e.Actor
+		if f := e.Overridden.Fields(); len(f) != 0 {
+			t.Errorf("%s reports %v as overridden with no override file at all", e.ID, f)
+		}
+	}
+
+	got := map[string]RosterEntry{}
+	for _, e := range Roster(map[string]config.Agent{
+		events.ActorImplementer: {Effort: "high"},
+		events.ActorQA:          {Name: ptr(""), Model: "haiku"},
+	}) {
+		got[e.ID] = e
+	}
+
+	impl := got[events.ActorImplementer]
+	if !impl.Overridden.Effort || impl.Overridden.Model || impl.Overridden.Name {
+		t.Errorf("implementer provenance = %+v, want effort only", impl.Overridden)
+	}
+	if impl.Model != shipped[events.ActorImplementer].Model {
+		t.Errorf("implementer model = %q; overriding one field must not disturb another", impl.Model)
+	}
+	if impl.Effort != "high" {
+		t.Errorf("implementer effort = %q, want the overridden high", impl.Effort)
+	}
+
+	// An explicitly cleared name is a decision, not an absence -- it turns
+	// the persona off -- so it counts as overridden even though it is empty.
+	qa := got[events.ActorQA]
+	if !qa.Overridden.Name || qa.Name != "" {
+		t.Errorf("qa name = %q (overridden %v); an explicit \"\" clears the persona and is "+
+			"still a value somebody chose", qa.Name, qa.Overridden.Name)
+	}
+	if !qa.Overridden.Model || qa.Model != "haiku" {
+		t.Errorf("qa model = %q (overridden %v), want haiku from the file", qa.Model, qa.Overridden.Model)
+	}
+	if fields := qa.Overridden.Fields(); strings.Join(fields, ",") != "name,model" {
+		t.Errorf("qa overridden fields = %v, want name and model in column order", fields)
+	}
+
+	// An actor the file never mentions is the whole point: it still resolves.
+	router := got[events.ActorRouter]
+	if router.Model != shipped[events.ActorRouter].Model || len(router.Overridden.Fields()) != 0 {
+		t.Errorf("router = %+v; an actor absent from the file resolves to its shipped "+
+			"values, reported as such", router)
+	}
+}
+
+// The listing must resolve values the way the RUNNING code resolves them.
+// A roster that disagrees with the run is worse than no roster: it is read
+// precisely when somebody is working out what a run will cost before
+// starting it.
+func TestRosterResolvesTheSameValuesConfigureDoes(t *testing.T) {
+	t.Cleanup(Reset)
+	over := map[string]config.Agent{
+		events.ActorImplementer: {Effort: "high", Model: "opus"},
+		events.ActorQA:          {Name: ptr("Sam-the-second"), Designation: "test engineer"},
+		events.ActorLogTriage:   {Model: "sonnet"},
+	}
+	if err := Configure(over); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range Roster(over) {
+		if live := Get(e.ID); live != e.Actor {
+			t.Errorf("roster shows %s as %+v, but the run resolves %+v", e.ID, e.Actor, live)
+		}
+	}
+}
