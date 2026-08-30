@@ -1,6 +1,7 @@
 package adopt
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -196,32 +197,12 @@ func DeriveJiraKey(name string) string {
 // the settings they document. The file is meant to be read by people; a
 // patch that shuffles it is a regression even though the JSON stays valid.
 func SetBlockField(src, block, field, newValue string) (string, bool) {
-	start := regexp.MustCompile(`(?m)^\s*"` + regexp.QuoteMeta(block) + `"\s*:\s*\{`).FindStringIndex(src)
-	if start == nil {
+	start, end, ok := blockSpan(src, block)
+	if !ok {
 		return src, false
 	}
-	depth := 0
-	end := -1
-	for i := start[1] - 1; i < len(src); i++ {
-		switch src[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				end = i
-			}
-		}
-		if end >= 0 {
-			break
-		}
-	}
-	if end < 0 {
-		return src, false
-	}
-	body := src[start[1]:end]
-	re := regexp.MustCompile(`("` + regexp.QuoteMeta(field) + `"\s*:\s*)([^,\n}]*)`)
-	loc := re.FindStringSubmatchIndex(body)
+	body := src[start:end]
+	loc := fieldSpan(body, field)
 	if loc == nil {
 		return src, false
 	}
@@ -229,5 +210,79 @@ func SetBlockField(src, block, field, newValue string) (string, bool) {
 		return src, false // already set; not a change
 	}
 	patched := body[:loc[4]] + newValue + body[loc[5]:]
-	return src[:start[1]] + patched + src[end:], true
+	return src[:start] + patched + src[end:], true
+}
+
+// ErrNoBlock reports that orion.json has no such top-level block, so there
+// is nowhere to put the field. Distinct from "the value was already what you
+// asked for", which is also not a change but is not a failure either.
+var ErrNoBlock = errors.New("no such block in orion.json")
+
+// SetOrAddBlockField is SetBlockField plus the case it does not cover: a
+// field the block does not have yet is APPENDED rather than reported as
+// nothing-to-do.
+//
+// That case is the common one, not the exotic one. An adopted repository's
+// orion.json is a trimmed copy of the template, so the settings its author
+// never touched are simply absent -- this repository's own limits block has
+// seven keys and no max_concurrent_tickets. A setter that could only rewrite
+// keys already present would refuse exactly the projects that most need it
+// (OR-198).
+//
+// Text again, for SetBlockField's reason: the "_comment_*" keys have to stay
+// beside the settings they explain. The new field lands at the end of the
+// block, indented like the entry above it.
+func SetOrAddBlockField(src, block, field, newValue string) (string, bool, error) {
+	start, end, ok := blockSpan(src, block)
+	if !ok {
+		return src, false, fmt.Errorf("%w: %q", ErrNoBlock, block)
+	}
+	if loc := fieldSpan(src[start:end], field); loc != nil {
+		out, changed := SetBlockField(src, block, field, newValue)
+		return out, changed, nil
+	}
+
+	body := src[start:end]
+	entry := `"` + field + `": ` + newValue
+	// Everything after the last entry is the closing brace's own whitespace;
+	// keep it where it is so the block still closes the way it did.
+	kept := strings.TrimRight(body, " \t\r\n")
+	if kept == "" {
+		return src[:start] + "\n    " + entry + body + src[end:], true, nil
+	}
+	indent := "    "
+	if i := strings.LastIndexByte(kept, '\n'); i >= 0 {
+		line := kept[i+1:]
+		indent = line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+	}
+	return src[:start] + kept + ",\n" + indent + entry + body[len(kept):] + src[end:], true, nil
+}
+
+// blockSpan locates one top-level block's body: the offset just past its
+// opening brace and the offset of the matching closing brace.
+func blockSpan(src, block string) (int, int, bool) {
+	start := regexp.MustCompile(`(?m)^\s*"` + regexp.QuoteMeta(block) + `"\s*:\s*\{`).FindStringIndex(src)
+	if start == nil {
+		return 0, 0, false
+	}
+	depth := 0
+	for i := start[1] - 1; i < len(src); i++ {
+		switch src[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return start[1], i, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// fieldSpan finds one field inside a block body, returning the submatch
+// index pairs (group 2 is the value) or nil when the field is absent.
+func fieldSpan(body, field string) []int {
+	re := regexp.MustCompile(`("` + regexp.QuoteMeta(field) + `"\s*:\s*)([^,\n}]*)`)
+	return re.FindStringSubmatchIndex(body)
 }

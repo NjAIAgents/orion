@@ -1,6 +1,8 @@
 package adopt
 
 import (
+	"encoding/json"
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -67,6 +69,59 @@ func TestSetBlockFieldPreservesTheRestOfTheFile(t *testing.T) {
 	}
 	if _, ok := SetBlockField(src, "nosuch", "enabled", "true"); ok {
 		t.Error("a missing block must not report a change")
+	}
+}
+
+// An adopted repository's orion.json is a trimmed copy of the template, so
+// the settings its author never touched are simply ABSENT. Appending is
+// therefore the common case, not the exotic one -- SetBlockField alone would
+// refuse exactly the projects that need a setter (OR-198).
+func TestSetOrAddBlockFieldAppendsAnAbsentField(t *testing.T) {
+	src := `{
+  "_comment_limits": "why the limits exist",
+  "limits": {
+    "max_tool_calls": 400,
+    "max_files_touched": 60
+  },
+
+  "tracker": {
+    "enabled": true
+  }
+}
+`
+	out, changed, err := SetOrAddBlockField(src, "limits", "max_concurrent_tickets", "3")
+	if err != nil || !changed {
+		t.Fatalf("SetOrAddBlockField: changed=%v err=%v", changed, err)
+	}
+	if !json.Valid([]byte(out)) {
+		t.Fatalf("the patch is not valid JSON:\n%s", out)
+	}
+	if !strings.Contains(out, "\"max_files_touched\": 60,\n    \"max_concurrent_tickets\": 3\n") {
+		t.Errorf("the new field is not appended in the block's own indentation:\n%s", out)
+	}
+	for _, keep := range []string{
+		`"_comment_limits": "why the limits exist"`,
+		`"max_tool_calls": 400`,
+		"\"tracker\": {\n    \"enabled\": true",
+	} {
+		if !strings.Contains(out, keep) {
+			t.Errorf("appending disturbed %s:\n%s", keep, out)
+		}
+	}
+
+	// Present already: the update path, and idempotent after it.
+	out, changed, err = SetOrAddBlockField(out, "limits", "max_concurrent_tickets", "4")
+	if err != nil || !changed || !strings.Contains(out, `"max_concurrent_tickets": 4`) {
+		t.Fatalf("an existing field must be updated in place: changed=%v err=%v\n%s", changed, err, out)
+	}
+	if _, changed, _ := SetOrAddBlockField(out, "limits", "max_concurrent_tickets", "4"); changed {
+		t.Error("re-setting an identical value should report no change")
+	}
+
+	// A missing block is a failure, not a silent no-op: there is nowhere to
+	// put the field, and the caller has to be able to say so.
+	if _, _, err := SetOrAddBlockField(src, "nosuch", "enabled", "true"); !errors.Is(err, ErrNoBlock) {
+		t.Errorf("a missing block must report ErrNoBlock, got %v", err)
 	}
 }
 

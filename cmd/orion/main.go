@@ -56,6 +56,8 @@ CONFIGURATION
   orion config show           what is set, where it came from, secrets masked
   orion config path           print the config file location
   orion config agents         interactive: name, model and effort per agent, by menu
+  orion config limits         show the circuit breakers and where each value came from
+  orion config limits KEY N   set one, e.g. limits max_concurrent_tickets 3
                               (global -- one roster, shared by every project)
   orion config agents --reset [id...]   reset one, some, or every agent to shipped defaults
 
@@ -358,6 +360,10 @@ orion config path           print the config file location
 orion config agents         interactive: name, model and effort per agent, by menu
                              (global -- one roster, shared by every project)
 orion config agents --reset [id...]   reset one, some, or every agent to shipped defaults
+orion config limits         show the circuit breakers and where each value came from
+orion config limits KEY N   set one, e.g. limits max_concurrent_tickets 3
+                             (writes the project's orion.json -- the same file
+                              the watcher reads; a running watcher keeps its own)
 `
 
 // runConfig dispatches "orion config" and its subcommands.
@@ -406,8 +412,11 @@ func runConfig(args []string) {
 	case "agents":
 		runConfigAgents(args)
 
+	case "limits":
+		runConfigLimits(args)
+
 	default:
-		fmt.Fprintf(os.Stderr, "orion: unknown config subcommand %q (set|show|path|agents)\n", sub)
+		fmt.Fprintf(os.Stderr, "orion: unknown config subcommand %q (set|show|path|agents|limits)\n", sub)
 		os.Exit(64)
 	}
 }
