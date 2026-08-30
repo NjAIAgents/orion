@@ -112,6 +112,22 @@ func TestWithoutElaborationOnlyTheNameIsAsked(t *testing.T) {
 	}
 }
 
+// A whitespace-only answer is not "something was typed" -- it must be treated
+// exactly like an empty one: open, not a hidden invisible answer the gate
+// can't see.
+func TestWhitespaceOnlyAnswerIsTreatedAsBlank(t *testing.T) {
+	in := strings.NewReader("handlers\n   \t  \nout of scope\nsuccess\n\n")
+	k := Interview(in, &bytes.Buffer{}, "idea", "Idea", true)
+
+	open := k.OpenQuestions()
+	if len(open) != 1 || open[0] != sections[1].Prompt {
+		t.Fatalf("open questions = %v, want only %q", open, sections[1].Prompt)
+	}
+	if strings.Contains(k.Description(), "\t") {
+		t.Fatalf("whitespace answer leaked into the description:\n%s", k.Description())
+	}
+}
+
 func TestNameFromSlug(t *testing.T) {
 	for slug, want := range map[string]string{
 		"claim-status-portal": "Claim status portal",
