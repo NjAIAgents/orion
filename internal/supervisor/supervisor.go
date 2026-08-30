@@ -117,6 +117,13 @@ type Result struct {
 	// Final is the agent's closing message. When a run stops to ask
 	// something, this is the question.
 	Final string
+	// Started reports that the CLI got far enough to emit a stream frame.
+	//
+	// False is the honest reading of "this never began": the process died in
+	// startup, before a session existed and before a token was sent. It
+	// defaults to false on every path that returns before the process is even
+	// launched, which is correct for all of them.
+	Started bool
 }
 
 const (
@@ -464,6 +471,10 @@ func recordTicketCost(ws *workspace.Workspace, opts Options, res *Result, out st
 	defer func() { _ = log.Close() }()
 	run, ok := budget.FromResultJSON(out)
 	r := cost.FromBudgetRun(run, ok, res.ExitCode != 0, res.Reason, res.Duration)
+	// Only ever claimed when the run also reported nothing. Usage that DID
+	// arrive is proof the run started, whatever the stream looked like, and
+	// the recorded fact must never contradict the recorded numbers.
+	r.NeverStarted = !res.Started && !ok
 	r.Model, r.Effort, r.Stage = opts.Model, opts.Effort, opts.Stage
 	r.Project, r.Session = registry.ProjectOf(opts.Key), res.SessionID
 	if err := cost.Record(log, workspace.Home(), opts.Actor, opts.Key, r); err != nil {
@@ -632,6 +643,9 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 			Body:  res.Reason + "\nLog: " + logPath,
 		})
 	}
+	// Set on BOTH branches of the select, so a run killed on the wall clock is
+	// still recorded as one that started -- it did, and it spent.
+	res.Started = activity.Started()
 	return res, tail.String()
 }
 
@@ -848,11 +862,28 @@ func agentTrackerEnv(repoDir string) []string {
 // sessionAndFinal pulls the session id and the agent's last message out of
 // the --output-format json result.
 //
-// Scans for the LAST JSON object in the stream rather than parsing the whole
-// thing: the tail buffer may begin mid-object, and with stream-json there are
-// several. Failing to find them is not an error -- it costs the ability to
-// resume, which degrades to a fresh run, never to a wrong one.
+// Asks budget.ResultLine for the run's OWN result frame first, for the reason
+// spelled out there: with stream-json the CLI keeps emitting background-task
+// frames after the result, and those frames carry a SUBAGENT's session id.
+// Taking the last id on the stream therefore did not merely fail here, it
+// would resume the wrong conversation (OR-219).
+//
+// The decoder loop below stays as the fallback for --output-format json and
+// for a tail that begins mid-object. Failing to find them is not an error --
+// it costs the ability to resume, which degrades to a fresh run, never to a
+// wrong one.
 func sessionAndFinal(out string) (sessionID, final string) {
+	if line, ok := budget.ResultLine(out); ok {
+		var m map[string]any
+		if json.Unmarshal([]byte(line), &m) == nil {
+			sid, _ := m["session_id"].(string)
+			fin, _ := m["result"].(string)
+			if sid != "" || strings.TrimSpace(fin) != "" {
+				return sid, strings.TrimSpace(fin)
+			}
+		}
+	}
+
 	dec := json.NewDecoder(strings.NewReader(out))
 	for {
 		var m map[string]any
