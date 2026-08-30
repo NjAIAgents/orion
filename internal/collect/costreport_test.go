@@ -129,6 +129,24 @@ func TestAFailedPostIsRetriedOnTheNextPass(t *testing.T) {
 	}
 }
 
+// The cost report is not the message that waits on anybody, so nothing about
+// it may ever render as a Slack mention. A mention on a comment nobody has to
+// act on is exactly what trains a room to mute the channel.
+func TestTheCostReportDoesNotMentionAnyApprover(t *testing.T) {
+	home, _ := bound(t)
+	spend(t, home, "FCIA-6")
+	jira := newTracker()
+	_, _, _ = run(t, home, jira, PR{Verdict: VerdictMerged, URL: "u"}, Options{})
+
+	posted := costComments(jira, "FCIA-6")
+	if len(posted) != 1 {
+		t.Fatalf("posted %d cost comments, want 1", len(posted))
+	}
+	if strings.Contains(posted[0], "<@") {
+		t.Errorf("the cost report mentions somebody:\n%s", posted[0])
+	}
+}
+
 // A ticket worked before usage was recorded has nothing to aggregate. It must
 // say that rather than post a table of zeroes, which reads as "this was free".
 func TestATicketWithNoRecordedUsageSaysSo(t *testing.T) {

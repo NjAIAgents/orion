@@ -81,6 +81,25 @@ func TestNoPathEverRendersAChannelWideMention(t *testing.T) {
 	}
 }
 
+// An empty or whitespace-only entry in slack.merge_approvers names nobody --
+// it must be dropped silently rather than rendered as a blank tag or asked
+// of the resolver at all.
+func TestEmptyAndWhitespaceApproversAreSkipped(t *testing.T) {
+	r := &resolver{ids: map[string]string{"navjyot": "U012ABCDEF"}}
+
+	tags, unresolved := approverTags(r, []string{"", "   ", "navjyot", "\t"})
+
+	if len(tags) != 1 || tags[0] != "<@U012ABCDEF>" {
+		t.Fatalf("blank entries must not produce tags: %v", tags)
+	}
+	if len(unresolved) != 0 {
+		t.Errorf("a blank entry is not a failed lookup: %v", unresolved)
+	}
+	if r.calls != 1 {
+		t.Errorf("the resolver was asked about a blank entry: %d calls", r.calls)
+	}
+}
+
 // Slack is not configured for approvals at all. The message still has to say
 // who may approve, and nothing may panic on the way there.
 func TestNoResolverStillNamesTheApprovers(t *testing.T) {
