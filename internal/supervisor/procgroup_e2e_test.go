@@ -59,6 +59,12 @@ func TestRunKillsGrandchildrenOnWallClockTimeout(t *testing.T) {
 	if time.Since(start) > 10*time.Second {
 		t.Fatalf("Run took too long to return after its own timeout: %s", time.Since(start))
 	}
+	// OR-202's own acceptance criterion: this test "completes in under a
+	// second". Non-fatal so a loaded CI runner doesn't flake the suite over
+	// a budget that isn't this test's actual point.
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("Run took %s: OR-202 expects this test under a second", elapsed)
+	}
 
 	var grandchildPID int
 	deadline := time.Now().Add(2 * time.Second)

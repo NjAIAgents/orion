@@ -50,6 +50,14 @@ wait
 		t.Fatalf("Fan took %s to return: it waited for the children rather than "+
 			"killing them on their wall clock", time.Since(start))
 	}
+	// OR-202's own acceptance criterion: this test "completes in under a
+	// second". The 10s check above only catches the old failure mode (waiting
+	// out the real children); this catches the deadline regressing to
+	// "shorter but still not sub-second" -- non-fatal so a loaded CI runner
+	// doesn't flake the suite over a budget that isn't this test's point.
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("Fan took %s: OR-202 expects this test under a second", elapsed)
+	}
 	if len(results) != 3 {
 		t.Fatalf("got %d results, want 3", len(results))
 	}
