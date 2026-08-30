@@ -81,7 +81,7 @@ type Tracker interface {
 	Probe() (Capability, error)
 	ProjectExists(key string) (bool, string, error)
 	Project(key string) (Project, error)
-	CreateProject(key, name, lead string) (Binding, error)
+	CreateProject(key, name, description, lead string) (Binding, error)
 	Name() string
 }
 
@@ -374,7 +374,16 @@ func (j *Jira) Project(key string) (Project, error) {
 // matters: a team-managed project can be created by a wider set of accounts
 // than a company-managed one, which is the difference between this working
 // and not for most users.
-func (j *Jira) CreateProject(key, name, leadAccountID string) (Binding, error) {
+//
+// The description is the caller's, not a fixed string, because it is the
+// handoff artifact: `orion plan` reads it back as the statement of the work
+// and designs from it (docs/decisions/0006). An empty one falls back to the
+// provenance line, so a caller with nothing to say still leaves a project that
+// explains where it came from.
+func (j *Jira) CreateProject(key, name, description, leadAccountID string) (Binding, error) {
+	if strings.TrimSpace(description) == "" {
+		description = "Provisioned by Orion."
+	}
 	payload := map[string]any{
 		"key":                key,
 		"name":               name,
@@ -382,7 +391,7 @@ func (j *Jira) CreateProject(key, name, leadAccountID string) (Binding, error) {
 		"projectTemplateKey": "com.pyxis.greenhopper.jira:gh-simplified-agility-scrum",
 		"leadAccountId":      leadAccountID,
 		"assigneeType":       "PROJECT_LEAD",
-		"description":        "Provisioned by Orion.",
+		"description":        description,
 	}
 	code, body, err := j.do("POST", "/rest/api/3/project", payload)
 	if err != nil {
@@ -525,7 +534,7 @@ func Provision(t Tracker, slug, humanName, existingKey, leadAccountID string) (B
 	if err != nil {
 		return Binding{}, "", err
 	}
-	b, err := t.CreateProject(key, humanName, leadAccountID)
+	b, err := t.CreateProject(key, humanName, "", leadAccountID)
 	if err != nil {
 		if errors.Is(err, ErrNoPermission) {
 			return Binding{}, "", fmt.Errorf(
