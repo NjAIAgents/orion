@@ -133,6 +133,20 @@ type Deps struct {
 // costs every ticket the queue would have finished.
 const maxLimitSleep = 30 * time.Minute
 
+// DefaultInterval is the gap between ticks when none is given.
+//
+// The tick is the latency floor on every transition Orion notices rather
+// than causes -- a green CI run, a merged PR, an approval reaction, a newly
+// queued ticket -- so the wait is on average half of it for no reason. A
+// tick is a tracker query and a PR status check: it starts no agent and
+// spends no tokens, because work begins only when a ticket is claimed and
+// claiming is gated by MaxConcurrent, not by how often we look. So shortening
+// this doubles a cheap poll and changes nothing about spend (OR-218).
+//
+// Exported because the watch command prints the effective interval in its
+// startup banner (OR-128) and has to name the same number the loop uses.
+const DefaultInterval = time.Minute
+
 // Run watches until interrupted, or until MaxJobs tickets have been started.
 func Run(opts Options, deps Deps) error {
 	w := opts.Out
@@ -143,7 +157,7 @@ func Run(opts Options, deps Deps) error {
 		opts.Home = workspace.Home()
 	}
 	if opts.Interval <= 0 {
-		opts.Interval = 2 * time.Minute
+		opts.Interval = DefaultInterval
 	}
 	if deps.Now == nil {
 		deps.Now = time.Now

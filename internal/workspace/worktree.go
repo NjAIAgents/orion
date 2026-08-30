@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/orion-sdlc/orion/internal/config"
 )
 
 // Per-job git worktrees.
@@ -170,33 +172,77 @@ func canonPath(p string) string {
 // Used before removing one. A killed run leaves work in progress, and that
 // is precisely the state worth preserving rather than discarding.
 func Dirty(path string) (bool, string) {
-	out, err := git(path, "status", "--porcelain")
+	// --untracked-files=all, because the default collapses a wholly untracked
+	// directory to one entry -- "?? plans/" -- and an entry naming a directory
+	// can be neither recognised as Orion's own file nor safely ignored: the
+	// same line would cover an agent's draft sitting next to it. Expanding
+	// costs a stat walk and hides nothing.
+	out, err := git(path, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return true, out // unreadable: assume dirty rather than risk deleting
 	}
-	// Ignore Orion's OWN runtime directory.
-	//
-	// Every job worktree contains a .orion/ that Orion writes itself --
-	// state, logs, breaker counters -- and git sees it as untracked. Counting
-	// it made every worktree permanently dirty, so the prune after a merge
-	// refused every single time, on the grounds that Orion might destroy
-	// Orion's own scratch files. The refusal is right about agent work and
-	// absurd about this.
-	//
-	// Being conservative is correct for a deletion guard, but only about
-	// things a person or an agent produced.
+	lines := AgentDirt(path, out)
+	return len(lines) > 0, strings.Join(lines, "\n")
+}
+
+// AgentDirt filters `git status --porcelain` output down to the lines a person
+// or an agent produced, dropping the files Orion writes into a job worktree
+// itself.
+//
+// Being conservative is correct for a deletion guard, but only about things
+// somebody else produced. Orion's own artefacts are untracked by design -- so
+// they can never be committed away -- and counting them as reasons to refuse
+// makes Orion block its own cleanup with its own output:
+//
+//	WARNING kept the worktree for orion/or-168: ... has uncommitted work:
+//	        ?? plans/BLOCKED.md
+//
+// for a ticket that had merged minutes earlier (OR-220). Every tripped run
+// then leaves a full checkout behind forever.
+//
+// The list is deliberately by NAME. Ignoring untracked files in general is the
+// rule that protects an agent's four new test files, and making these tracked
+// instead would put them in the diff and the pull request.
+func AgentDirt(worktree, porcelain string) []string {
 	var lines []string
-	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+	for _, l := range strings.Split(strings.TrimSpace(porcelain), "\n") {
 		if l = strings.TrimSpace(l); l == "" {
 			continue
 		}
+		// Status lines are "XY path"; the path is what identifies the file,
+		// and for a rename ("R  old -> new") the destination is what is on
+		// disk to lose.
 		f := strings.Fields(l)
-		if len(f) >= 2 && strings.HasPrefix(f[len(f)-1], ".orion/") {
+		if len(f) >= 2 && orionAuthored(worktree, f[0], f[len(f)-1]) {
 			continue
 		}
 		lines = append(lines, l)
 	}
-	return len(lines) > 0, strings.Join(lines, "\n")
+	return lines
+}
+
+// orionAuthored reports whether one porcelain entry names something Orion
+// wrote rather than something to protect.
+func orionAuthored(worktree, status, path string) bool {
+	// UNTRACKED only, for every artefact below.
+	//
+	// Orion writes these files itself and nothing tracks them, so untracked is
+	// the state they are always in. Once one is in the index it is a file
+	// somebody deliberately committed to this repository -- git does not track
+	// a file by accident -- and an uncommitted change to it is a tracked change
+	// of exactly the kind the deletion guard exists to protect (OR-122). Being
+	// Orion's by name is not the same as being Orion's to discard.
+	if status != "??" {
+		return false
+	}
+	// The runtime directory: state, logs, breaker counters.
+	if strings.HasPrefix(path, ".orion/") {
+		return true
+	}
+	// The breaker's stop-note (OR-194), at whatever plans path this repository
+	// configures.
+	plans := config.Load(worktree).Paths.Plans
+	return path == filepath.ToSlash(filepath.Join(plans, "BLOCKED.md"))
 }
 
 // DirtyTracked reports uncommitted changes to TRACKED files, as porcelain
@@ -215,6 +261,60 @@ func DirtyTracked(path string) (string, error) {
 		return "", fmt.Errorf("reading the state of %s: %w", path, err)
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// CommitAll commits everything the worktree holds -- modified tracked files
+// AND new untracked ones -- minus the excluded pathspecs, and reports how
+// many files went in. Zero files means there was nothing to commit and no
+// commit was made.
+//
+// It exists because the alternative to committing a stopped run's work is
+// losing it. OR-189 and OR-191 both finished their implementation, both had
+// it green, and both ended with every line uncommitted: 258 and 439 lines,
+// recovered by hand. Untracked files are included deliberately -- both of
+// those runs had four NEW files each, and `git commit -a` would have left
+// exactly the new tests behind.
+//
+// The exclusions are pathspecs rather than a post-hoc `git reset`, so a file
+// that must not be committed is never staged in the first place. The caller
+// passes plans/BLOCKED.md: that note is the breaker's account of the trip,
+// written for whoever opens the worktree next, and it does not belong in the
+// branch's history.
+func CommitAll(path, message string, exclude ...string) (int, error) {
+	// Commit HERE or nowhere. git resolves a repository by walking upwards,
+	// so `git -C <dir> add -A` in a directory that is not itself a checkout
+	// stages files in whatever repository happens to be above it. The caller
+	// is a breaker hook holding a path it was handed; that is not a mistake
+	// to discover from the commit it made in somebody else's tree.
+	top, err := git(path, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return 0, fmt.Errorf("%s is not a git worktree: %w", path, err)
+	}
+	if canonPath(strings.TrimSpace(top)) != canonPath(path) {
+		return 0, fmt.Errorf("%s is not the root of its worktree (%s is)", path, strings.TrimSpace(top))
+	}
+	args := []string{"add", "-A", "--", "."}
+	for _, e := range exclude {
+		if e != "" {
+			args = append(args, ":(exclude)"+e)
+		}
+	}
+	if _, err := git(path, args...); err != nil {
+		return 0, fmt.Errorf("staging the work in %s: %w", path, err)
+	}
+	staged, err := git(path, "diff", "--cached", "--name-only")
+	if err != nil {
+		return 0, fmt.Errorf("reading the staged set in %s: %w", path, err)
+	}
+	staged = strings.TrimSpace(staged)
+	if staged == "" {
+		return 0, nil
+	}
+	n := len(strings.Split(staged, "\n"))
+	if _, err := git(path, "commit", "-q", "-m", message); err != nil {
+		return 0, fmt.Errorf("committing %d file(s) in %s: %w", n, path, err)
+	}
+	return n, nil
 }
 
 // RevertTracked discards uncommitted changes to tracked files, staged or not.

@@ -127,35 +127,26 @@ func runSandbox(args []string) {
 	}
 }
 
-// agentDirt reports uncommitted work, ignoring Orion's own runtime directory.
+// agentDirt reports uncommitted work, ignoring the files Orion writes itself.
 //
-// Every job worktree contains a .orion/ that Orion itself writes -- state,
-// logs, breaker counters -- and git sees it as untracked. Reporting that as
-// "uncommitted changes" makes every finished worktree look like it is
-// holding unpushed work, which trains the reader to ignore the warning by
-// the second time they see it. The warning is worth keeping only if it fires
-// on things a person wrote.
+// Reporting Orion's own output as "uncommitted changes" makes every finished
+// worktree look like it is holding unpushed work, which trains the reader to
+// ignore the warning by the second time they see it. The warning is worth
+// keeping only if it fires on things a person or an agent wrote.
 //
-// workspace.Dirty stays deliberately blunter: it guards DELETION, where
-// counting Orion's own files as reasons to refuse is the safe direction.
+// Shares workspace.AgentDirt with the deletion guard on purpose. The two used
+// to keep separate lists, so this could report a worktree as clean while
+// workspace.Dirty refused to remove it -- a prune that prints one verdict and
+// acts on another.
 func agentDirt(path string) (bool, []string) {
-	out, err := gitIn(path, "status", "--porcelain")
+	// --untracked-files=all for the reason workspace.Dirty gives: the default
+	// reports "?? plans/" for a wholly untracked directory, and one line
+	// naming a directory cannot be told apart from the agent's work inside it.
+	out, err := gitIn(path, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return true, []string{strings.TrimSpace(out)}
 	}
-	var lines []string
-	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
-		l = strings.TrimSpace(l)
-		if l == "" {
-			continue
-		}
-		// Status lines are "XY path"; the path is what identifies the file.
-		fields := strings.Fields(l)
-		if len(fields) >= 2 && strings.HasPrefix(fields[len(fields)-1], ".orion/") {
-			continue
-		}
-		lines = append(lines, l)
-	}
+	lines := workspace.AgentDirt(path, out)
 	return len(lines) > 0, lines
 }
 

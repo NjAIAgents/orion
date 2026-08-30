@@ -367,6 +367,73 @@ func ExplorePrompt(question string) string {
 	)
 }
 
+// AIOpsNonePrefix is how the triage subagent says the leftover events are
+// all explainable and nothing should be filed.
+//
+// A literal marker rather than a reading of the prose, for the same reason
+// ExploreNotFound is one: "nothing here is worth reporting" is the answer
+// this agent should give most nights, and an answer that has to be inferred
+// from prose is one a parser will eventually read as a proposal.
+const AIOpsNonePrefix = "NOTHING TO REPORT"
+
+// AIOpsProposePrefix opens each proposed finding, one per line.
+const AIOpsProposePrefix = "PROPOSE:"
+
+// AIOpsPrompt asks a subagent whether any leftover event in a finished run is
+// worth filing a ticket about.
+//
+// It is handed ONLY the concerning events that no rule recognised. The rules
+// are pure functions over typed events -- they cannot hallucinate and they
+// cost nothing -- so everything they can already explain is settled before
+// this agent is started, and what is left is the far smaller and more honest
+// question of whether an unrecognised pattern matters (OR-168).
+//
+// Two clauses carry the whole prompt.
+//
+// SAYING NOTHING IS THE EXPECTED ANSWER. Orion degrades on purpose in many
+// places: a lock timeout proceeds unlocked, a QA failure is a warning, an
+// absent optional tool is fine. An agent that reads "blocked" or "failed" and
+// proposes a ticket is filing against behaviour that is working correctly,
+// and the backlog is already hard to scan. So the default is stated as the
+// default, not as a permitted exception.
+//
+// IT PROPOSES; IT DOES NOT FILE. Said here as well as enforced by the type
+// the caller uses, because an agent told it may create tickets will look for
+// a way to, and the tracker credentials are in the environment it runs in.
+func AIOpsPrompt(key, lines string) string {
+	return join(
+		"A run working "+key+" has FINISHED. Below are the events from its log that",
+		"went wrong and that Orion's own rules did not already recognise.",
+		"",
+		"THE UNRECOGNISED EVENTS",
+		quote(lines),
+		"",
+		"ONE QUESTION: is any of this worth a person filing a ticket about?",
+		"",
+		"ALMOST ALWAYS THE ANSWER IS NO, AND THAT IS THE RIGHT ANSWER",
+		"Orion degrades on purpose. A lock timeout proceeds unlocked and says so.",
+		"A QA failure is a warning, not a block. A missing optional tool is a",
+		"supported configuration. A run that found the work already present and",
+		"changed nothing is a correct outcome. None of those is a defect, and a",
+		"ticket filed against one teaches everybody that these tickets mean",
+		"nothing. Propose something only when you can say what is BROKEN, not",
+		"merely what looks alarming.",
+		"",
+		"DO NOT CREATE ANYTHING",
+		"Do not open a ticket, comment on one, or run any command that would.",
+		"A person decides what gets created. You are writing a suggestion.",
+		"",
+		"ANSWER",
+		"If nothing is worth reporting, reply with exactly:",
+		"  "+AIOpsNonePrefix,
+		"Otherwise write one line per finding, and nothing else:",
+		"  "+AIOpsProposePrefix+" <one-line title> | <why this is broken rather than",
+		"  degrading on purpose, in a sentence>",
+		"At most three. If you have more than three, you are pattern-matching on",
+		"the word \"failed\" rather than judging, and none of them will be read.",
+	)
+}
+
 // TicketPrompt is the instruction for implementing one tracker issue.
 //
 // Every clause here is load-bearing, because this text is what decides how
@@ -480,6 +547,7 @@ func TicketPromptWithChildren(key, summary, description, url, repoPath string,
 		"suite you did not run is not evidence.",
 	))
 	b.WriteString(testEnv(repoPath))
+	b.WriteString(waitingForALongCommand())
 	b.WriteString(exploreOffer())
 	b.WriteString(changelogFragment(repoPath, key))
 	b.WriteString(join(
@@ -583,6 +651,37 @@ func exploreOffer() string {
 // the next candidate has to clear the same bar, and most advice does not.
 // Notably absent: the contents of scripts/test.sh. The agent can read the
 // file; inlining it would go stale the first time somebody edited the script.
+// waitingForALongCommand tells the agent HOW to wait, because the absence of
+// an answer to that is what killed two finished tickets.
+//
+// OR-189 and OR-191 each backgrounded the suite -- nine minutes, before
+// OR-202 cut it -- re-read its output file while it ran, and tripped the
+// identical-repeat breaker with their work complete, green, and entirely
+// uncommitted. Both agents diagnosed themselves correctly in BLOCKED.md and
+// both were still lost: nothing had ever told them another way existed, so
+// they reached for the only one they could see.
+//
+// The breaker no longer counts that poll (internal/hook/breaker.go), but the
+// instruction is the half that matters here. A rule the agent cannot read is
+// not a rule it can follow, and the fix has to be stated where the agent
+// looks, not only enforced where it does not.
+//
+// Unconditional, unlike testEnv's lines. Every repository has some command
+// slow enough to be worth waiting for, and this costs four lines to say.
+func waitingForALongCommand() string {
+	return "\n\n" + join(
+		"WAITING FOR A LONG COMMAND",
+		"Run the suite in the FOREGROUND and give the call a generous timeout. One",
+		"Bash call that waits several minutes is ONE tool call, and waiting is free.",
+		"Do NOT launch it in the background and then re-read its output file to see",
+		"whether it has finished. Two tickets finished their work, had it green, and",
+		"were lost exactly that way: from outside, polling an unchanging file and",
+		"looping are the same action.",
+		"If something must run in the background, ask the tool that reports on a",
+		"background task, rather than re-reading its output file by hand.",
+	)
+}
+
 func testEnv(repoPath string) string {
 	if repoPath == "" {
 		return ""

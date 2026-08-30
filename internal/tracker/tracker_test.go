@@ -53,7 +53,11 @@ func TestDeriveKeyAlwaysValidForJira(t *testing.T) {
 type fake struct {
 	existing map[string]string
 	created  []string
-	perm     bool
+	// descriptions is what each CreateProject was asked to write, in order.
+	// The description is the handoff artifact `orion plan` designs from, so a
+	// caller silently losing it is the failure worth catching.
+	descriptions []string
+	perm         bool
 }
 
 func (f *fake) Name() string { return "fake" }
@@ -64,12 +68,20 @@ func (f *fake) ProjectExists(key string) (bool, string, error) {
 	id, ok := f.existing[key]
 	return ok, id, nil
 }
-func (f *fake) CreateProject(key, name, lead string) (Binding, error) {
+func (f *fake) Project(key string) (Project, error) {
+	id, ok := f.existing[key]
+	if !ok {
+		return Project{}, fmt.Errorf("no project %s", key)
+	}
+	return Project{ID: id, Key: key, Name: key}, nil
+}
+func (f *fake) CreateProject(key, name, description, lead string) (Binding, error) {
 	if !f.perm {
 		return Binding{}, ErrNoPermission
 	}
 	f.existing[key] = "id-" + key
 	f.created = append(f.created, key)
+	f.descriptions = append(f.descriptions, description)
 	return Binding{Provider: "fake", Key: key, ProjectID: "id-" + key, Created: true}, nil
 }
 

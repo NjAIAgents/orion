@@ -224,6 +224,38 @@ func TestARunThatNeverReportedUsageStillGetsAMarkedRow(t *testing.T) {
 	}
 }
 
+// The overwhelmingly common row -- a run that DID start -- must serialize
+// exactly as it did before NeverStarted existed. omitempty is what makes
+// that true; without it every historical row gains a `"never_started":false`
+// column no earlier reader or query expects.
+func TestAStartedRunsHistoryRowOmitsTheNeverStartedField(t *testing.T) {
+	home := t.TempDir()
+	record(t, nil, home, events.ActorImplementer, "OR-193", completedRun())
+
+	raw, err := os.ReadFile(HistoryPath(home))
+	if err != nil {
+		t.Fatalf("reading the raw history file: %v", err)
+	}
+	if strings.Contains(string(raw), "never_started") {
+		t.Errorf("a run that started wrote a never_started field, breaking "+
+			"byte-comparability with rows written before OR-219:\n%s", raw)
+	}
+
+	// And the field appears, true, exactly when the run actually never
+	// started -- so the omission above is "false", not "absent from the type".
+	r := FromBudgetRun(budget.Run{}, false, true, "claude exited 1", 5*time.Second)
+	r.NeverStarted = true
+	record(t, nil, home, events.ActorImplementer, "OR-193", r)
+
+	raw, err = os.ReadFile(HistoryPath(home))
+	if err != nil {
+		t.Fatalf("reading the raw history file: %v", err)
+	}
+	if !strings.Contains(string(raw), `"never_started":true`) {
+		t.Errorf("a never-started run's history row does not carry the flag:\n%s", raw)
+	}
+}
+
 // Both sinks come from one function, so neither can be written without the
 // other. Model and effort have to survive the event log's JSON round trip too.
 func TestRecordWritesBothSinksFromOneCall(t *testing.T) {

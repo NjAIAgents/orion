@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
 // The bug OR-88 fixed was not in Orion's logic. It was a belief about git
@@ -223,6 +225,159 @@ func TestProtectionFailureNamesTheFreeOption(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(msg), "private") {
 		t.Errorf("the message should say the limit applies to PRIVATE repos: %q", msg)
+	}
+}
+
+// `orion sandbox prune` is the command that sweeps the worktrees a tripped run
+// left behind, so its own dirt check has to agree with the deletion guard --
+// otherwise it keeps a merged checkout over a note Orion wrote itself (OR-220)
+// and the backlog of stale worktrees only grows.
+func TestSandboxPruneIgnoresOrionsOwnStopNote(t *testing.T) {
+	dir := t.TempDir()
+	gitT(t, dir, "init", "--initial-branch=main")
+	gitT(t, dir, "config", "user.email", "test@example.com")
+	gitT(t, dir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, dir, "add", ".")
+	gitT(t, dir, "commit", "-m", "base")
+
+	write := func(rel, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("plans/BLOCKED.md", "the breaker tripped\n")
+	write(".orion/state/run.json", "{}\n")
+	if dirty, lines := agentDirt(dir); dirty {
+		t.Fatalf("Orion's own files counted as somebody's work: %v", lines)
+	}
+
+	write("plans/OR-1.md", "the agent's plan\n")
+	dirty, lines := agentDirt(dir)
+	if !dirty {
+		t.Fatal("a file the agent wrote was not reported")
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "OR-1.md") {
+		t.Errorf("expected only the agent's file, got %v", lines)
+	}
+}
+
+// `orion sandbox` (agentDirt, this package) and the deletion guard
+// (workspace.Dirty) used to keep separate lists of what counts as Orion's
+// own; OR-220 merged them into one function specifically so `orion sandbox`
+// could never again report a worktree clean that prune then refused to
+// remove. This pins the two verdicts agreeing across the scenarios that
+// distinguish them: BLOCKED.md alone, .orion/ alone, both together, and
+// either alongside a file a person or agent actually produced.
+func TestSandboxCleanVerdictAgreesWithWorkspaceDirty(t *testing.T) {
+	setup := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		gitT(t, dir, "init", "--initial-branch=main")
+		gitT(t, dir, "config", "user.email", "test@example.com")
+		gitT(t, dir, "config", "user.name", "Test")
+		if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitT(t, dir, "add", ".")
+		gitT(t, dir, "commit", "-m", "base")
+		return dir
+	}
+	write := func(t *testing.T, dir, rel, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cases := []struct {
+		name  string
+		files map[string]string
+		want  bool // true = should be reported dirty (kept)
+	}{
+		{"blocked-note-alone", map[string]string{"plans/BLOCKED.md": "tripped\n"}, false},
+		{"runtime-dir-alone", map[string]string{".orion/state/run.json": "{}\n"}, false},
+		{"both-together", map[string]string{
+			"plans/BLOCKED.md":      "tripped\n",
+			".orion/state/run.json": "{}\n",
+		}, false},
+		{"note-plus-agent-file", map[string]string{
+			"plans/BLOCKED.md": "tripped\n",
+			"plans/OR-1.md":    "the agent's plan\n",
+		}, true},
+		{"runtime-dir-plus-operator-file", map[string]string{
+			".orion/state/run.json": "{}\n",
+			"notes.txt":             "keep me\n",
+		}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := setup(t)
+			for rel, body := range tc.files {
+				write(t, dir, rel, body)
+			}
+			sandboxDirty, _ := agentDirt(dir)
+			guardDirty, _ := workspace.Dirty(dir)
+			if sandboxDirty != tc.want {
+				t.Errorf("agentDirt: got dirty=%v, want %v", sandboxDirty, tc.want)
+			}
+			if guardDirty != tc.want {
+				t.Errorf("workspace.Dirty: got dirty=%v, want %v", guardDirty, tc.want)
+			}
+			if sandboxDirty != guardDirty {
+				t.Errorf("orion sandbox and the deletion guard disagree: agentDirt=%v workspace.Dirty=%v",
+					sandboxDirty, guardDirty)
+			}
+		})
+	}
+}
+
+// git's default --untracked-files mode collapses a wholly untracked
+// directory to one "?? plans/" line. That single line can be neither
+// recognised as Orion's own note by name nor safely ignored, since the same
+// directory can also hold an agent's draft -- so both agentDirt and
+// workspace.Dirty must ask git with --untracked-files=all, which reports one
+// line per file instead. This pins the flag itself: if it is ever dropped,
+// a mix of Orion's note and an agent's file in the same untracked directory
+// becomes indistinguishable from either extreme.
+func TestUntrackedDirectoryIsExpandedToIndividualFiles(t *testing.T) {
+	dir := t.TempDir()
+	gitT(t, dir, "init", "--initial-branch=main")
+	gitT(t, dir, "config", "user.email", "test@example.com")
+	gitT(t, dir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, dir, "add", ".")
+	gitT(t, dir, "commit", "-m", "base")
+
+	if err := os.MkdirAll(filepath.Join(dir, "plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plans", "BLOCKED.md"), []byte("tripped\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plans", "OR-1.md"), []byte("the agent's plan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dirty, lines := agentDirt(dir)
+	if !dirty {
+		t.Fatal("the agent's file next to the note was not reported at all")
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "OR-1.md") {
+		t.Fatalf("expected exactly one line naming OR-1.md, got %v "+
+			"(a collapsed \"?? plans/\" entry would fail this)", lines)
 	}
 }
 

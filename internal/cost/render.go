@@ -9,6 +9,7 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/ui"
 )
 
 // ReadAll reads a workspace's event log and every rotated generation of it.
@@ -41,14 +42,22 @@ func ReadAll(path string) []events.Event {
 //
 // Plain text rather than tracker markup, because the console is the other
 // sink and markup there is noise.
+//
+// Bounded top and bottom by ui.BlockStart/BlockEnd. A table is not a status
+// line, and in a concurrent watch log an unbounded one ran straight into
+// whatever printed either side of it (OR-219). The boundary carries its words
+// in text and degrades to ASCII, so it survives both sinks and a non-UTF-8
+// terminal -- see internal/ui/block.go.
 func Render(r Report) string {
+	title := "cost report " + r.Key
 	var b strings.Builder
-	fmt.Fprintf(&b, "Cost report — %s\n\n", r.Key)
+	b.WriteString(ui.BlockStart(title) + "\n\n")
 
 	if r.Empty() {
 		b.WriteString("No per-run usage was recorded for this ticket, so Orion cannot say " +
 			"what it cost. That means the runs predate usage recording, or the event log " +
 			"they were written to is gone.\n")
+		b.WriteString("\n" + ui.BlockEnd(title) + "\n")
 		return b.String()
 	}
 
@@ -74,11 +83,23 @@ func Render(r Report) string {
 	fmt.Fprintf(&b, "\nwall time %s across %s. %s\n",
 		dur(r.Total.Seconds), plural(r.Total.Runs, "run"), provenance(r))
 
+	// Said before the floor warning, because it SUBTRACTS from the run count
+	// the reader has just been given. A run that never opened a session is
+	// not work the ticket attempted and failed at; leaving it in the total
+	// makes both the run count and the failure count read high.
+	if n := r.Total.NeverStarted; n > 0 {
+		fmt.Fprintf(&b, "\n%s never started -- the runner exited before opening a session, "+
+			"so nothing was attempted and nothing was spent. Counted apart from the failed "+
+			"runs, and %s of genuine work above.\n",
+			plural(n, "run"), plural(r.Total.Runs-n, "run"))
+	}
+
 	if r.Total.Missing > 0 {
 		fmt.Fprintf(&b, "\nUsage is missing for %s, so every number above is a FLOOR "+
 			"rather than the total: the ticket cost at least this much.\n",
 			plural(r.Total.Missing, "run"))
 	}
+	b.WriteString("\n" + ui.BlockEnd(title) + "\n")
 	return b.String()
 }
 
@@ -94,8 +115,18 @@ func provenance(r Report) string {
 
 func cells(row Row) []string {
 	runs := strconv.Itoa(row.Runs)
+	// Both annotations, separately, never merged into one "n bad". They are
+	// different facts about different money: a failed run spent what it spent
+	// before it died, a never-started one spent nothing at all.
+	var notes []string
 	if row.Failed > 0 {
-		runs += fmt.Sprintf(" (%d failed)", row.Failed)
+		notes = append(notes, fmt.Sprintf("%d failed", row.Failed))
+	}
+	if row.NeverStarted > 0 {
+		notes = append(notes, fmt.Sprintf("%d never started", row.NeverStarted))
+	}
+	if len(notes) > 0 {
+		runs += " (" + strings.Join(notes, ", ") + ")"
 	}
 	return []string{
 		displayOf(row.Actor), runs, commas(row.Turns), commas(row.Prompt),
@@ -113,6 +144,13 @@ func displayOf(s string) string {
 
 func status(r Run) string {
 	switch {
+	// Checked FIRST. Such a run is also failed and also has no usage, and
+	// either of those words in this column would be the misreading the row
+	// exists to prevent.
+	case r.NeverStarted && r.Reason != "":
+		return "never started (" + r.Reason + ")"
+	case r.NeverStarted:
+		return "never started"
 	case !r.HaveUsage && r.Reason != "":
 		return "usage missing (" + r.Reason + ")"
 	case !r.HaveUsage:

@@ -167,7 +167,9 @@ func msgAnswered(key string, a advise.Answer, question string) (string, string) 
 // is not the tidy-up. It is that a run stopped somewhere it could not clean
 // up after itself, and that the branch was one collect tick away from a
 // rebase that would have refused with no explanation attached to it.
-func msgTripResidue(key, summary, kind, detail, branch, dirty, issueURL string, revertErr error) (string, string) {
+func msgTripResidue(key, summary, kind, detail, branch, dirty, issueURL, outcome string,
+	unresolved bool) (string, string) {
+
 	title := fmt.Sprintf("%s tripped the breaker and left the worktree dirty", key)
 	lines := []string{
 		"*" + summary + "*",
@@ -179,18 +181,21 @@ func msgTripResidue(key, summary, kind, detail, branch, dirty, issueURL string, 
 		quote(dirty),
 		"",
 	}
-	if revertErr != nil {
+	if unresolved {
 		lines = append(lines,
-			"Orion could *not* revert it:",
-			quote(revertErr.Error()),
+			"Orion could *not* preserve it:",
+			quote(outcome),
 			"",
-			"Until the worktree is clean, `orion collect` cannot rebase `"+branch+"`.",
+			"Work may have been lost, and until the worktree is clean `orion collect`",
+			"cannot rebase `"+branch+"`. Open the worktree before you assume this was",
+			"an ordinary failure.",
 		)
 	} else {
 		lines = append(lines,
-			"Orion reverted those changes. They were never verified — the session was",
-			"stopped for not making progress — and left in place they would have blocked",
-			"the next rebase of `"+branch+"`. Anything the run committed is untouched.",
+			"Orion "+outcome+". Nothing in it has been verified — the session was stopped",
+			"for not making progress — but a branch with commits can be read and resumed,",
+			"and left uncommitted it would have blocked the next rebase of `"+branch+"`.",
+			"Anything the run committed itself is untouched.",
 		)
 	}
 	lines = append(lines,

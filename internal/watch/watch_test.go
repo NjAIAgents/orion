@@ -29,6 +29,10 @@ type spy struct {
 	outcome   work.Outcome
 	sleeps    int
 	maxSleeps int
+	// slept is every duration the loop asked to wait for, so a test can
+	// assert on the interval actually in use rather than on the one it hoped
+	// was passed through.
+	slept []time.Duration
 	// hold blocks every job until it is closed, so a test can observe how
 	// many agents are in flight AT ONCE rather than in total.
 	hold chan struct{}
@@ -104,7 +108,7 @@ func (s *spy) deps() Deps {
 			defer s.mu.Unlock()
 			return s.busy, s.busyErr
 		},
-		Sleep: func(time.Duration) bool {
+		Sleep: func(d time.Duration) bool {
 			// A REAL pause, however short. The spy's first version returned
 			// instantly, which made the loop spin so tightly that a dispatched
 			// job's goroutine never got the spy's own mutex -- so every test
@@ -114,6 +118,7 @@ func (s *spy) deps() Deps {
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			s.sleeps++
+			s.slept = append(s.slept, d)
 			return s.sleeps < s.maxSleeps
 		},
 	}
@@ -891,5 +896,97 @@ func TestALockThatCannotBeClearedIsReportedAndNotTreatedAsRunning(t *testing.T) 
 	}
 	if !strings.Contains(b.String(), "403 forbidden") {
 		t.Errorf("the reason must be reported: %q", b.String())
+	}
+}
+
+// sleptDurations returns every interval the loop asked to wait for.
+func (s *spy) sleptDurations() []time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]time.Duration(nil), s.slept...)
+}
+
+// The tick interval is the latency floor on every transition Orion NOTICES
+// rather than causes -- green CI, a merged PR, an approval, a newly queued
+// ticket. A tick is one tracker query and one status check and starts
+// nothing, so the default is a minute rather than two (OR-218).
+//
+// Asserted on the duration the loop actually sleeps for, not on the
+// constant: a default read correctly and then not used is the failure worth
+// catching.
+func TestAnUnsetIntervalTicksEveryMinute(t *testing.T) {
+	stopping.Store(false)
+	s := &spy{maxSleeps: 1}
+
+	var buf bytes.Buffer
+	if err := Run(Options{Out: &buf, Home: t.TempDir()}, s.deps()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := s.sleptDurations()
+	if len(got) != 1 || got[0] != time.Minute {
+		t.Errorf("an unset interval slept %v, want [1m0s]", got)
+	}
+}
+
+// The single-sleep test above only proves the FIRST tick used the default; it
+// would still pass if the interval were somehow recomputed and widened on
+// later ticks. Subsequent ticks matter just as much -- the queued work this
+// loop notices keeps arriving after tick one, not only before it.
+func TestSubsequentTicksAlsoUseTheMinuteDefault(t *testing.T) {
+	stopping.Store(false)
+	s := &spy{maxSleeps: 4}
+
+	var buf bytes.Buffer
+	if err := Run(Options{Out: &buf, Home: t.TempDir()}, s.deps()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := s.sleptDurations()
+	if len(got) != 4 {
+		t.Fatalf("slept %d times, want 4", len(got))
+	}
+	for i, d := range got {
+		if d != time.Minute {
+			t.Errorf("tick %d slept %v, want 1m0s", i+1, d)
+		}
+	}
+}
+
+// The default is a fallback, never an override: a caller who names an
+// interval gets exactly that one.
+func TestAnExplicitIntervalIsUsedAsGiven(t *testing.T) {
+	stopping.Store(false)
+	s := &spy{maxSleeps: 1}
+
+	var buf bytes.Buffer
+	err := Run(Options{Out: &buf, Home: t.TempDir(), Interval: 17 * time.Second}, s.deps())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := s.sleptDurations()
+	if len(got) != 1 || got[0] != 17*time.Second {
+		t.Errorf("an explicit interval slept %v, want [17s]", got)
+	}
+}
+
+// Zero and below mean "unset", which has to land on the default rather than
+// on no wait at all: a loop that sleeps for nothing spins, and a watcher
+// that spins hammers the tracker until it is rate-limited.
+func TestANonPositiveIntervalFallsBackRatherThanSpinning(t *testing.T) {
+	for _, given := range []time.Duration{0, -time.Second} {
+		stopping.Store(false)
+		s := &spy{maxSleeps: 1}
+
+		var buf bytes.Buffer
+		if err := Run(Options{Out: &buf, Home: t.TempDir(), Interval: given}, s.deps()); err != nil {
+			t.Fatalf("Run(%v): %v", given, err)
+		}
+
+		got := s.sleptDurations()
+		if len(got) != 1 || got[0] != DefaultInterval {
+			t.Errorf("interval %v slept %v, want [%v]", given, got, DefaultInterval)
+		}
 	}
 }

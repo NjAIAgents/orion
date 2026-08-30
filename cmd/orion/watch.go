@@ -49,6 +49,19 @@ func watchBanner(w io.Writer, projects []string, interval time.Duration, maxJobs
 	fmt.Fprintf(w, "  %s\n\n", ui.Dim(w, "ctrl-c to stop after the current step"))
 }
 
+// watchInterval reads --interval S, in seconds, and applies the SAME
+// fallback the loop does: anything at or below zero means the default.
+//
+// Resolved here rather than left to watch.Run because the banner prints the
+// effective interval before Run is called, and a banner that says 0s while
+// the loop ticks at the default is worse than no banner at all.
+func watchInterval(args []string) time.Duration {
+	if n := intFlag(args, "--interval", 0); n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return watch.DefaultInterval
+}
+
 func runWatch(args []string) {
 	w := os.Stdout
 
@@ -59,7 +72,7 @@ func runWatch(args []string) {
 		os.Exit(64)
 	}
 
-	interval := time.Duration(intFlag(args, "--interval", 120)) * time.Second
+	interval := watchInterval(args)
 	maxJobs := intFlag(args, "--max-jobs", 0)
 	once := hasFlag(args, "--once")
 	dry := hasFlag(args, "--dry-run")

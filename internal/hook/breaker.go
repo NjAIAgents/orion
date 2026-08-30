@@ -9,6 +9,7 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/state"
+	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
 // cleanupAllowance is how many cleanup commands a tripped session may still
@@ -106,6 +107,13 @@ func breakerPre(in Input, cfg config.Config, store *state.Store) Decision {
 			recovery = "  Running the tests or the build IS still allowed, and is the way out:\n" +
 				"  a PASSING verify clears this trip and you may continue.\n"
 		}
+		// What became of the uncommitted work, stated rather than implied.
+		// "Committed for you" printed after a commit that failed is the
+		// technically-shaped, reliably-misleading message this codebase keeps
+		// having to unlearn (OR-143), so the line reports the real outcome.
+		if sess.TripSnapshot != "" {
+			recovery += "  Your uncommitted work: " + sess.TripSnapshot + ".\n"
+		}
 		// The cleanup allowance is named on EVERY trip kind because it exists
 		// on every trip kind -- unlike the verify recovery above, stating it
 		// unconditionally is accurate. It is spelled as the exact commands
@@ -155,18 +163,25 @@ func breakerPost(in Input, cfg config.Config, store *state.Store) Decision {
 
 	sess, err := store.Update(in.SessionID, func(s *state.Session) {
 		s.ToolCalls++
+		rememberAwaited(s, in)
 		// A PASSING verification command is exempt from the identical-repeat
 		// loop counter. Re-running the tests is the normal edit-test cycle,
 		// and it is exactly what the unverified-edits breaker demands after
 		// every edit -- counting it as a loop makes the two breakers fight
 		// each other (OR-124). A FAILING verify still counts: retrying a red
 		// test with nothing changed is a real loop signal.
-		if !isVerify || failed {
+		//
+		// A POLL is exempt on the same precedent. Waiting for a long command
+		// to finish and looping look identical from here -- both are the same
+		// read of the same path -- so counting the wait meant the only legal
+		// way to run a nine-minute suite was to not wait for it (OR-207).
+		if (!isVerify || failed) && !isPoll(s, in) {
 			if s.Repeats[actor] == nil {
 				s.Repeats[actor] = map[string]int{}
 			}
 			s.Repeats[actor][sig]++
 		}
+		rememberPoll(s, actor, sig, in)
 
 		if failed {
 			s.ConsecFailures++
@@ -331,7 +346,53 @@ func trip(store *state.Store, cfg config.Config, sessionID, kind, detail string)
 	})
 	if first {
 		writeBlockedNote(cfg, sessionID, kind, detail)
+		if snap := commitTripWork(cfg, kind, detail); snap != "" {
+			_, _ = store.Update(sessionID, func(s *state.Session) { s.TripSnapshot = snap })
+		}
 	}
+}
+
+// commitTripWork commits whatever the run had uncommitted, at the moment of
+// the trip, and returns a one-line account of what happened -- empty when
+// this trip kind does not take a snapshot.
+//
+// This is the allowance's FIRST act rather than something the agent has to
+// think to spend its remaining budget on. OR-189 and OR-191 both finished
+// their implementation, both had it green, and both ended orion-failed with
+// every line uncommitted; both BLOCKED.md files said so in as many words,
+// which means the information needed to act was there and nothing acted on
+// it. A branch with commits can be resumed or reviewed. A worktree cannot.
+//
+// NOT for breaker/unverified-edits, which is the one trip with a designed way
+// out: a passing verify clears it and the run continues. A snapshot commit in
+// the middle of a run that then succeeds is a "wip:" commit in somebody's
+// pull request for no reason.
+//
+// The snapshot is explicitly unverified, and the message says so. The session
+// was stopped for not making progress, so this is preservation for review,
+// not a claim the work is correct.
+func commitTripWork(cfg config.Config, kind, detail string) string {
+	if kind == "breaker/unverified-edits" || cfg.Root == "" {
+		return ""
+	}
+	msg := fmt.Sprintf("wip: snapshot the work uncommitted when %s tripped\n\n"+
+		"The breaker tripped: %s. Committed by the breaker itself so the run's\n"+
+		"work survives the run; NOTHING here has been verified -- the session was\n"+
+		"stopped for not making progress. Review before merging, and see\n"+
+		"%s/BLOCKED.md in this worktree for what it was attempting.\n",
+		kind, detail, cfg.Paths.Plans)
+
+	// BLOCKED.md is excluded: it is the account of the trip, written for
+	// whoever opens the worktree next, and it is not part of the change.
+	n, err := workspace.CommitAll(cfg.Root, msg,
+		filepath.Join(cfg.Paths.Plans, "BLOCKED.md"), cfg.Paths.State)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("could NOT commit the uncommitted work: %v", err)
+	case n == 0:
+		return ""
+	}
+	return fmt.Sprintf("committed %d uncommitted file(s) as an unverified snapshot", n)
 }
 
 // writeBlockedNote records the trip in BLOCKED.md as PART OF tripping.
@@ -393,6 +454,144 @@ func actorKey(in Input) string {
 	}
 	return in.SessionID
 }
+
+// isPoll reports whether this call is an agent WAITING rather than an agent
+// repeating itself.
+//
+// The two are the same action seen from here -- read the same path again --
+// which is exactly why OR-189 and OR-191 both died: each backgrounded
+// ./scripts/test.sh (nine minutes at the time), re-read its output file while
+// it ran, and tripped the identical-repeat breaker with the finished work
+// still uncommitted. Both agents diagnosed themselves correctly and both were
+// still lost, because polling was the only way to wait that existed.
+//
+// Three signals, each of which distinguishes a wait from a loop:
+//
+//  1. Asking a background task for its output. That tool has no other use.
+//  2. Reading a file this session was told a background command would write.
+//     Empty is the normal state of such a file for most of the wait, so
+//     "unchanged" proves nothing about progress here.
+//  3. A read that returned something DIFFERENT from the previous identical
+//     read. Same input, new output, is not a no-progress repeat by any
+//     definition -- the file is being written to while it is read.
+//
+// Everything else still counts. Re-reading a static file that nothing is
+// writing is the loop this breaker was built for, and OR-189's own note
+// concedes the point; the fix is to make waiting possible, not to weaken the
+// trip.
+func isPoll(s *state.Session, in Input) bool {
+	switch in.ToolName {
+	case "BashOutput", "TaskOutput":
+		return true
+	case "Read", "NotebookRead":
+	default:
+		return false
+	}
+	if p := in.FilePath(); p != "" && (s.Awaiting[p] || s.Awaiting[filepath.Base(p)]) {
+		return true
+	}
+	prev := s.LastPoll[actorKey(in)][in.Signature()]
+	return prev != "" && prev != fingerprint(in.ToolResponse)
+}
+
+// awaitedCap bounds both poll maps. They are memory of convenience, not a
+// ledger: a session that has launched sixty-four background commands has
+// bigger problems than an exemption it did not get.
+const awaitedCap = 64
+
+// rememberAwaited records the files a backgrounded command will write to, so
+// a later read of one of them is recognised as a wait.
+//
+// Two sources, because the path can come from either side. The agent names it
+// when it redirects (`./scripts/test.sh > /tmp/out.log &`), and the harness
+// names it in the response when it chooses the output file itself -- which is
+// the case both lost runs actually hit.
+//
+// The base name is stored alongside the path: a command that redirects to a
+// relative path and a read that resolves it to an absolute one are the same
+// file, and refusing to see that would exempt nothing.
+func rememberAwaited(s *state.Session, in Input) {
+	if in.ToolName != "Bash" || !in.Background() {
+		return
+	}
+	for _, p := range awaitedPaths(in) {
+		if s.Awaiting == nil {
+			s.Awaiting = map[string]bool{}
+		}
+		if len(s.Awaiting) >= awaitedCap {
+			return
+		}
+		s.Awaiting[p] = true
+		s.Awaiting[filepath.Base(p)] = true
+	}
+}
+
+// rememberPoll stores what this read returned, so the next identical one can
+// tell "the file grew" from "nothing has changed".
+func rememberPoll(s *state.Session, actor, sig string, in Input) {
+	if in.ToolName != "Read" && in.ToolName != "NotebookRead" {
+		return
+	}
+	if s.LastPoll == nil {
+		s.LastPoll = map[string]map[string]string{}
+	}
+	if s.LastPoll[actor] == nil {
+		s.LastPoll[actor] = map[string]string{}
+	}
+	if _, seen := s.LastPoll[actor][sig]; !seen && len(s.LastPoll[actor]) >= awaitedCap {
+		return
+	}
+	s.LastPoll[actor][sig] = fingerprint(in.ToolResponse)
+}
+
+// awaitedPaths pulls the output file out of a backgrounded Bash call: the
+// redirect targets in the command, plus any absolute path the harness reports
+// back. Heuristic on purpose -- a wrong hit only exempts a poll of that one
+// path from the repeat counter, while a miss costs a finished ticket.
+func awaitedPaths(in Input) []string {
+	var out []string
+	fields := strings.Fields(in.Command())
+	for i, f := range fields {
+		switch {
+		case f == ">" || f == ">>" || f == "1>" || f == "2>" || f == "&>" || f == "tee":
+			if i+1 < len(fields) {
+				out = appendPath(out, fields[i+1])
+			}
+		case strings.HasPrefix(f, ">") || strings.HasPrefix(f, ">>"):
+			out = appendPath(out, strings.TrimLeft(f, ">"))
+		}
+	}
+	for _, f := range strings.Fields(string(in.ToolResponse)) {
+		if p := unquotePath(f); strings.HasPrefix(p, "/") && len(p) > 1 {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func appendPath(out []string, raw string) []string {
+	if p := unquotePath(raw); p != "" {
+		return append(out, p)
+	}
+	return out
+}
+
+// unquotePath strips the quoting and JSON punctuation a path arrives wrapped
+// in, so `"/tmp/out.log\n",` reads as /tmp/out.log.
+func unquotePath(f string) string {
+	f = strings.TrimLeft(f, "\"'`")
+	// A path lifted out of a JSON response arrives welded to what followed
+	// it -- `/tmp/ab12.output","is_error":false}` -- so the end of the path
+	// is the first quote, comma or escape, not the end of the token.
+	if i := strings.IndexAny(f, "\"'`,;\\ \t"); i >= 0 {
+		f = f[:i]
+	}
+	// Trailing punctuation only: a leading dot is `./out.log`, which is a
+	// path, not punctuation.
+	return strings.TrimRight(f, "()[]{}:")
+}
+
+func fingerprint(b []byte) string { return fmt.Sprintf("%016x", fnv1a(string(b))) }
 
 func isEditTool(name string) bool {
 	switch name {

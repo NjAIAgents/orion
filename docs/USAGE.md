@@ -113,15 +113,22 @@ This is the path Orion is built for: nothing exists yet.
 orion new "customers should see claim status in the portal"
 ```
 
-You get an isolated workspace under `$ORION_HOME/projects/<slug>-<id>/` with
-its own git repo, generated sandbox settings, and `main` + `develop` already
-created. Nothing here touches your other work.
+This is the one interactive step in the whole system. It asks you five things
+the flat text does not say — who it is for, what is wrong for them today, how
+you will know it worked, what is explicitly out of scope, what constrains it —
+then asks you to finalise the project name. It creates the tracker project
+carrying that elaborated description, behind a confirmation that first says a
+Jira project cannot be deleted without admin rights.
+
+It creates **no workspace** and writes nothing to disk. The project is the
+handoff artifact, and `orion plan` reads its description back as the statement
+of the work.
 
 ```bash
-orion run <id> --stage intent      # /capture-intent -> docs/intent/<slug>.md
+orion plan <KEY>                   # workspace, roster and cost shape, then stop
 orion run <id> --stage spec        # -> specs/<slug>.spec.md
 orion run <id> --stage plan        # -> plans/<slug>.plan.md   (review this)
-orion provision <id>               # remote repo, branches, Jira project
+orion provision <id>               # remote repo, branches
 orion run <id> --stage scaffold    # /scaffold-project, OSPS baseline layout
 orion run <id> --stage decompose   # /pm-plan tree, approved before creation
 orion run <id> --stage build       # implementation + tests, on a branch
@@ -131,22 +138,21 @@ orion run <id> --stage pr          # /pr-describe, PR into develop
 orion status <id>
 ```
 
-### Discovery comes first
+### Why the questions are asked now
 
-`orion new` starts a conversation before anything is derived, because the
-intent stage runs through `claude -p` and **cannot ask you anything**. Without
-that conversation the agent's only options are to invent answers or write
-questions nobody reads, and one ambiguous sentence then propagates into spec,
-plan, scaffold and a tracker tree. Each stage carries a token floor of roughly
-30k, so a wrong premise costs nine floors plus the rework, against a
-conversation costing about one.
+Every stage after `new` runs through `claude -p` and **cannot ask you
+anything**. Without this conversation the agent's only options are to invent
+answers or write questions nobody reads, and one ambiguous sentence then
+propagates into spec, plan, scaffold and a tracker tree. Each stage carries a
+token floor of roughly 30k, so a wrong premise costs nine floors plus the
+rework, against a conversation costing nothing but your attention.
 
-```bash
-cd <workspace>/repo && claude "/capture-intent"
-```
+A question you leave blank is recorded in the description as unstated rather
+than dropped, so a later stage can tell "nobody decided this" from "this does
+not apply".
 
-Anything left unresolved under **Open questions** blocks the `spec`, `plan`,
-`scaffold` and `decompose` stages until it is answered:
+Anything left unresolved under **Open questions** in an intent file blocks the
+`spec`, `plan`, `scaffold` and `decompose` stages until it is answered:
 
 ```bash
 orion answer <id>       # lists what is blocking, and where to answer it
@@ -155,11 +161,6 @@ orion answer <id>       # lists what is blocking, and where to answer it
 Answers go in the intent file itself, not a prompt, so every later stage reads
 them. Mark one resolved with `[x]`, `~~strikethrough~~`, or an inline
 `Answer: ...`.
-
-Orion skips discovery on its own when the idea already states constraints,
-scope or a rationale, and `--skip-discovery` bypasses it outright. A gate you
-cannot skip on a typo fix is a gate people learn to route around, and one
-routed around reflexively is worse than none.
 
 **Stop and read `plans/<slug>.plan.md` before letting build run.** It is the
 cheapest moment to change direction: editing a document rather than a diff.
@@ -180,13 +181,12 @@ Two ways, and they answer different questions.
 Best when you want Orion's isolation and do not want it near your working
 tree.
 
-```bash
-orion new "add rate limiting to the status endpoint" --from https://github.com/you/your-repo
-```
-
-The repo is cloned shallow into a fresh workspace. Everything above applies.
-The change leaves as a pull request against your real remote once you push the
-branch; nothing is written to your local checkout at any point.
+**Currently unavailable.** `orion new --from <repo>` cloned a repository into a
+fresh workspace, and `orion new` no longer provisions a workspace at all
+([0013](decisions/0013-new-creates-the-tracker-project-not-a-workspace.md)).
+`orion plan`, which now owns workspace provisioning, has not yet grown the
+equivalent flag, so the flag is refused rather than silently ignored. Use 4b
+below meanwhile.
 
 ### 4b. Adopt Orion inside the repo itself
 
@@ -441,7 +441,7 @@ check matters more than it looks: a token for the *wrong* workspace
 authenticates perfectly and posts into a room nobody reads, which is
 indistinguishable from working.
 
-`orion new` creates `#orion-<slug>`, sets the channel topic to the idea, and
+`orion plan` creates `#orion-<slug>`, sets the channel topic to the idea, and
 posts an opening message naming the workspace id and the commands to drive
 it. Every stage failure, breaker trip, quota wait and budget checkpoint for
 that project then lands in that channel rather than one shared firehose.

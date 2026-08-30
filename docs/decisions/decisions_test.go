@@ -23,6 +23,19 @@ var expectedDecisions = []string{
 	"0008-parallelism-level-ordering.md",
 	"0009-canonical-slug-one-name.md",
 	"0010-routing-vocabulary-is-a-published-contract.md",
+	// OR-206. Load-bearing in the same way 0001 is: it decides who sequences
+	// landing, so a later "why not just turn on GitHub's merge queue?" has
+	// somewhere to land other than a re-litigation.
+	"0011-orion-owns-the-landing-queue.md",
+	// OR-149. Settles the question 0009 left open, and it is load-bearing in
+	// the same way: without it, "just let a re-run reuse the workspace" is a
+	// one-line change nobody would think to argue with.
+	"0012-one-workspace-per-tracker-project.md",
+	// OR-148. Settles the open question that ticket carried, and it is
+	// load-bearing: without it, "why not have `orion new` set the workspace up
+	// too, it is right there?" is a change that reads as a convenience and
+	// quietly reintroduces the two-workspaces-per-project state 0012 refuses.
+	"0013-new-creates-the-tracker-project-not-a-workspace.md",
 }
 
 func TestEveryDecisionHasContextDecisionConsequences(t *testing.T) {
@@ -101,12 +114,31 @@ func TestDecisionContentMatchesTicket(t *testing.T) {
 			[]string{"OR-134", "prompt-cache"},
 		},
 		{
+			// The amendment is the substance now: the gate FIRED, and a file
+			// that still reads as "waiting for evidence" would send the next
+			// reader looking for evidence that has already arrived (OR-206).
 			"0008-parallelism-level-ordering.md",
-			[]string{"OR-143", "OR-144", "OR-145", "auto-rebase"},
+			[]string{"OR-143", "OR-144", "OR-145", "auto-rebase", "OR-206", "landing queue"},
+		},
+		{
+			// Which option was taken and which were declined is the whole
+			// point of OR-206's record. A file that kept the sections but
+			// lost "why not GitHub's merge queue" would invite the question
+			// again on the next incident.
+			"0011-orion-owns-the-landing-queue.md",
+			[]string{"OR-206", "OR-202", "merge queue", "maxAutoRebases", "require_up_to_date"},
 		},
 		{
 			"0009-canonical-slug-one-name.md",
 			[]string{"OR-149"},
+		},
+		{
+			// WHICH way the open question went, and the reason it was not a
+			// free choice, is the whole substance of OR-148's record. A file
+			// that kept the sections but lost the 0012 argument would leave the
+			// next reader thinking either answer is still available.
+			"0013-new-creates-the-tracker-project-not-a-workspace.md",
+			[]string{"OR-148", "OR-149", "0012", "no workspace", "CreateProject"},
 		},
 		{
 			// Which actors are routable, and why the rest are not, is the

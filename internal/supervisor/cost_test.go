@@ -56,10 +56,13 @@ func TestEveryRunIsBookedAgainstTheTicket(t *testing.T) {
 // recorded as a run with nothing to show. The report then says the total is a
 // floor, which is the honest answer; dropping the row would present a lowball
 // number as complete.
+// Started: the run opened a session and did work; only its result JSON is
+// gone. That is what makes its usage genuinely MISSING, as against merely
+// zero, and it is the case the floor warning exists for.
 func TestARunThatReportedNothingIsStillRecorded(t *testing.T) {
 	w := ws(t, "")
 	recordTicketCost(w, Options{Actor: events.ActorImplementer, Key: "OR-9"},
-		&Result{ExitCode: 1, Reason: "claude exited 1"}, "no json here")
+		&Result{ExitCode: 1, Reason: "claude exited 1", Started: true}, "no json here")
 
 	rep := aggregate(t, w.Dir, "OR-9")
 	if len(rep.Runs) != 1 || rep.Total.Missing != 1 {
@@ -71,6 +74,57 @@ func TestARunThatReportedNothingIsStillRecorded(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("the report presented an incomplete total as complete:\n%s", out)
 		}
+	}
+}
+
+// OR-219, third problem. Run 1 of the OR-168 report died in five seconds on an
+// expired login (OR-212) and appeared in the table as an ordinary failed run.
+// A run that never started is not a run that failed: it opened no session and
+// spent nothing, so counting it as a failure overstates how often the agents
+// fail, and counting it as missing usage claims a hole in a total where the
+// true figure is known to be zero.
+func TestANeverStartedRunIsNotCountedAsAFailure(t *testing.T) {
+	w := ws(t, "")
+	opts := Options{Actor: events.ActorImplementer, Key: "OR-9"}
+
+	// The environmental fault: no stream frame ever arrived.
+	recordTicketCost(w, opts,
+		&Result{ExitCode: 1, Reason: "claude exited 1", Started: false}, "")
+	// And a genuine failure alongside it, so the two are told apart rather
+	// than merely both suppressed.
+	recordTicketCost(w, opts,
+		&Result{ExitCode: 124, Reason: "timed out", Duration: time.Minute, Started: true},
+		resultJSON)
+
+	rep := aggregate(t, w.Dir, "OR-9")
+	if rep.Total.NeverStarted != 1 {
+		t.Errorf("counted %d never-started runs, want 1", rep.Total.NeverStarted)
+	}
+	if rep.Total.Failed != 1 {
+		t.Errorf("counted %d failed runs, want 1 -- the fault must not inflate "+
+			"the failure count", rep.Total.Failed)
+	}
+	if rep.Total.Missing != 0 {
+		t.Errorf("counted %d runs with missing usage, want 0 -- a run that never "+
+			"started has no usage to miss", rep.Total.Missing)
+	}
+
+	out := cost.Render(rep)
+	if !strings.Contains(out, "never started") {
+		t.Errorf("the report does not distinguish the fault from a failed run:\n%s", out)
+	}
+	if strings.Contains(out, "FLOOR") {
+		t.Errorf("the floor warning fired over a run known to have spent nothing:\n%s", out)
+	}
+
+	// And the durable history carries the same distinction, so OR-199 does not
+	// inherit a file that cannot tell the two apart.
+	rows, err := cost.ReadHistory(workspace.Home())
+	if err != nil {
+		t.Fatalf("reading the history: %v", err)
+	}
+	if len(rows) != 2 || !rows[0].NeverStarted || rows[1].NeverStarted {
+		t.Errorf("history rows do not mark the never-started run: %+v", rows)
 	}
 }
 

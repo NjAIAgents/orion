@@ -1337,25 +1337,284 @@ func TestRedBeforeGreenIsWiredThroughARealRun(t *testing.T) {
 // The sentinel decides the verdict, and only when it starts a line. An agent
 // that quotes its own instructions must not declare a clean branch by
 // describing one.
+//
+// OR-204 added the third state: a message that names neither the sentinel nor
+// a failure is NOT findings. Prose that concludes everything passes was
+// indistinguishable from a report of real defects, and the difference decided
+// whether an opus fix round ran.
 func TestQAVerdictReadsTheSentinelAndNotThePraise(t *testing.T) {
 	cases := []struct {
-		final     string
-		wantClean bool
+		final string
+		want  qaVerdictKind
 	}{
-		{"everything passed\nQA CLEAN", true},
-		{"**QA CLEAN**", true},
-		{"You told me to write QA CLEAN when every case passes.\nCase 3 fails.", false},
-		{"Case 3 fails: expected 400, got 500.", false},
-		{"   ", false},
-		{"All tests pass and the change looks good to me.", false},
+		{"everything passed\nQA CLEAN", qaVerdictClean},
+		{"**QA CLEAN**", qaVerdictClean},
+		{"You told me to write QA CLEAN when every case passes.\nCase 3 fails.", qaVerdictFindings},
+		{"Case 3 fails: expected 400, got 500.", qaVerdictFindings},
+		{"The rounding is wrong: expected 2 decimal places, got 4.", qaVerdictFindings},
+		// The two that used to be read as findings, and are not.
+		{"   ", qaVerdictNone},
+		{"All tests pass and the change looks good to me.", qaVerdictNone},
+		// The OR-194 message, near enough: a verified pass, written as prose.
+		{"**Coverage already present** for every case I derived. All pass.", qaVerdictNone},
 	}
 	for _, c := range cases {
-		findings, clean := qaVerdict(c.final)
-		if clean != c.wantClean {
-			t.Errorf("qaVerdict(%q) clean = %v, want %v", c.final, clean, c.wantClean)
+		said, kind := qaVerdict(c.final)
+		if kind != c.want {
+			t.Errorf("qaVerdict(%q) kind = %v, want %v", c.final, kind, c.want)
 		}
-		if !clean && strings.TrimSpace(findings) == "" {
-			t.Errorf("qaVerdict(%q) reported no findings and no pass; a reader learns nothing", c.final)
+		if kind != qaVerdictClean && strings.TrimSpace(said) == "" {
+			t.Errorf("qaVerdict(%q) reported nothing and no pass; a reader learns nothing", c.final)
 		}
+	}
+}
+
+// Every stem namesAFailure is supposed to catch, each in a natural sentence
+// that is not the sentinel -- so a QA report using any of these words for its
+// defect is read as findings and not silently treated as no verdict, which
+// would cost a real defect a cheap re-ask instead of a fix round.
+func TestQAVerdictRecognizesEveryFailureStem(t *testing.T) {
+	sentences := map[string]string{
+		"fail":       "Case 3 fails on the boundary value.",
+		"defect":     "Found a defect in the rounding path.",
+		"broke":      "The refactor broke the discount calculation.",
+		"regress":    "This regressed the totals for negative amounts.",
+		"incorrect":  "The tax total is incorrect for zero-quantity orders.",
+		"wrong":      "The rounding is wrong: expected 2 decimal places, got 4.",
+		"missing":    "Authorisation check is missing on the delete endpoint.",
+		"mismatch":   "There is a type mismatch between the two totals.",
+		"crash":      "The handler crashes on an empty payload.",
+		"panic":      "The parser panics on malformed input.",
+		"unable":     "The client is unable to reach the retry path.",
+		"problem":    "There is a problem with the pagination cursor.",
+		"unexpected": "Got an unexpected status code for the same request.",
+	}
+	for stem, s := range sentences {
+		if _, kind := qaVerdict(s); kind != qaVerdictFindings {
+			t.Errorf("qaVerdict(%q) [stem %q] kind = %v, want qaVerdictFindings", s, stem, kind)
+		}
+	}
+}
+
+// Words that look like a failure stem but are not one, and are not preceded
+// by a negator either -- the two ways this list could misfire in opposite
+// directions. A prompt or report using ordinary engineering vocabulary must
+// not be read as a defect report.
+func TestQAVerdictAvoidsFalsePositiveFailureWords(t *testing.T) {
+	sentences := []string{
+		"Ran with debug logging enabled for the whole suite.",
+		"The passfail summary printed at the end of the run.",
+		"Coverage looks complete for every case in the list.",
+	}
+	for _, s := range sentences {
+		if _, kind := qaVerdict(s); kind != qaVerdictNone {
+			t.Errorf("qaVerdict(%q) kind = %v, want qaVerdictNone (no failure word present)", s, kind)
+		}
+	}
+}
+
+// A report of a pass stated in the negative is a pass, not a defect: "no
+// failures" and "nothing broke" name a failure word but deny it, and reading
+// past the negation is exactly the misread namesAFailure exists to avoid.
+// Neither is the sentinel, so both fall out as no verdict -- a re-ask, never
+// a fix round.
+func TestQAVerdictReadsNegatedFailureWordsAsNoVerdict(t *testing.T) {
+	sentences := []string{
+		"Ran every case; no failures.",
+		"Nothing broke after the change.",
+	}
+	for _, s := range sentences {
+		if _, kind := qaVerdict(s); kind != qaVerdictNone {
+			t.Errorf("qaVerdict(%q) kind = %v, want qaVerdictNone (negated failure word)", s, kind)
+		}
+	}
+}
+
+// OR-204. A QA run that verified everything but wrote its conclusion as prose
+// must not be routed into a fix round: the implementer would be told to fix a
+// defect nobody described, and the cheapest way to obey that is to weaken the
+// nearest assertion -- which makes CI greener, not redder.
+//
+// One re-ask on QA's own model, and the sentinel this time. No ticket-stage
+// run may be dispatched in between.
+func TestQAWithoutAVerdictIsReAskedRatherThanFixed(t *testing.T) {
+	home := project(t, qaCfg)
+	j := &fakeJira{}
+	f := &qaFake{t: t, qaReplies: []string{
+		"**Coverage already present** for every case I derived. All pass.",
+		"QA CLEAN",
+	}}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j, Supervise: f.run,
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	// implement, derive the cases, verify, re-ask. No second "ticket" run:
+	// that would be the opus fix round this ticket exists to prevent.
+	if got := f.sequence(); got != "ticket,qa-cases,qa,qa" {
+		t.Fatalf("run sequence = %q, want ticket,qa-cases,qa,qa (a fix round was dispatched "+
+			"on a verdict Orion did not have)", got)
+	}
+	if p := f.prompts[3]; !strings.Contains(p, supervisor.QAClean) ||
+		!strings.Contains(strings.ToLower(p), "without findings") {
+		t.Errorf("the re-ask did not ask for a verdict line:\n%s", p)
+	}
+	if strings.Contains(f.prompts[3], "Fix the behaviour they describe") {
+		t.Error("the re-ask carried the findings message; QA was told to fix its own report")
+	}
+	if res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("outcome = %q; the re-asked sentinel must clear the stage: %+v",
+			res[0].Outcome, res[0])
+	}
+	if c := strings.Join(j.comments, "\n"); !strings.Contains(c, "found nothing") {
+		t.Errorf("a re-asked clean verdict was not reported as clean on the ticket:\n%s", c)
+	}
+	if strings.Contains(out.String(), "A person needs to look") {
+		t.Error("a clean branch escalated to a person")
+	}
+}
+
+// The re-ask is a question, not an acquittal: findings on the second ask run
+// the ordinary fix loop, with those findings.
+func TestQAReAskedIntoFindingsRunsTheNormalFixLoop(t *testing.T) {
+	home := project(t, qaCfg)
+	f := &qaFake{t: t, qaReplies: []string{
+		"I looked at the rounding, the boundaries and the error branch.",
+		"The rounding case is wrong: expected 2 decimal places, got 4.",
+		"QA CLEAN",
+	}}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: &fakeJira{}, Supervise: f.run,
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	if got := f.sequence(); got != "ticket,qa-cases,qa,qa,ticket,qa" {
+		t.Fatalf("run sequence = %q, want ticket,qa-cases,qa,qa,ticket,qa", got)
+	}
+	if !strings.Contains(f.prompts[4], "2 decimal places") {
+		t.Errorf("the re-asked findings did not reach the developer:\n%s", f.prompts[4])
+	}
+	if res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("outcome = %q: %+v", res[0].Outcome, res[0])
+	}
+}
+
+// Asked twice and still nothing: a person is told, and what they are told is
+// that the verdict was never obtained -- not that there were findings. No fix
+// round runs on the way there.
+func TestQAWithNoVerdictTwiceGoesToAPersonAndNotToAFixRound(t *testing.T) {
+	home := project(t, qaCfg)
+	j := &fakeJira{}
+	f := &qaFake{t: t, qaReplies: []string{"All pass, looks good."}}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j, Supervise: f.run,
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	if got := f.sequence(); got != "ticket,qa-cases,qa,qa" {
+		t.Fatalf("run sequence = %q, want ticket,qa-cases,qa,qa (one re-ask, no fix round)", got)
+	}
+	// The run CONTINUES: QA does not block, and "no verdict" is weaker
+	// ground to stop on than findings would be.
+	if res[0].Outcome != OutcomeCIWait {
+		t.Fatalf("outcome = %q; an unread verdict must not fail the ticket: %+v",
+			res[0].Outcome, res[0])
+	}
+
+	logged, err := events.Read(findEventLog(t, home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saidNoVerdict bool
+	for _, e := range logged {
+		if e.Kind == events.KindEscalate && strings.Contains(e.Msg, "never reported a verdict") {
+			saidNoVerdict = true
+		}
+		if strings.Contains(e.Msg, "findings are still open") {
+			t.Errorf("the run log reported findings for a verdict it never got: %q", e.Msg)
+		}
+	}
+	if !saidNoVerdict {
+		t.Errorf("the run log never said the verdict was not obtained:\n%+v", logged)
+	}
+	if c := strings.Join(j.comments, "\n"); !strings.Contains(c, "never reported a verdict") {
+		t.Errorf("the ticket was not told the verdict was never obtained:\n%s", c)
+	}
+	if !strings.Contains(out.String(), "gave no verdict") {
+		t.Errorf("the console never said the verdict was missing:\n%s", out.String())
+	}
+}
+
+// An empty closing message is the same unknown -- and its stand-in text is
+// Orion's own words about QA, which must never be handed to the implementer
+// as a defect to fix.
+func TestQASayingNothingIsNotADefectToFix(t *testing.T) {
+	home := project(t, qaCfg)
+	f := &qaFake{t: t, qaReplies: []string{"", "QA CLEAN"}}
+	var out strings.Builder
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: &fakeJira{}, Supervise: f.run,
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	if got := f.sequence(); got != "ticket,qa-cases,qa,qa" {
+		t.Fatalf("run sequence = %q, want ticket,qa-cases,qa,qa", got)
+	}
+	for i, p := range f.prompts {
+		if strings.Contains(p, "QA finished without reporting anything") {
+			t.Errorf("prompt %d handed Orion's own no-report message to an agent to fix:\n%s", i, p)
+		}
+	}
+}
+
+// The re-ask is meant to be one short run on QA's model, not a second full
+// verification: that is what makes it cheaper than the fix round it replaces.
+func TestTheVerdictReAskIsShortAndRunsAsQA(t *testing.T) {
+	home := project(t, qaCfg)
+	f := &qaFake{t: t, qaReplies: []string{"All pass.", "QA CLEAN"}}
+	var opts []supervisor.Options
+	var out strings.Builder
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: &fakeJira{},
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				opts = append(opts, o)
+				return f.run(ws, o)
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "https://pr/1", nil },
+		})
+
+	if len(opts) != 4 {
+		t.Fatalf("%d runs, want 4: %v", len(opts), f.sequence())
+	}
+	ask := opts[3]
+	if ask.Actor != events.ActorQA || ask.Model != actors.Model(events.ActorQA) {
+		t.Errorf("the re-ask ran as %q on %q, want QA on QA's model", ask.Actor, ask.Model)
+	}
+	// Resumed, not a fresh run: the context it is being asked about is the
+	// verification it just did.
+	if ask.Resume != "qa-session" {
+		t.Errorf("the re-ask did not resume QA's session: resume = %q", ask.Resume)
+	}
+	if ask.MaxMinutes != qaVerdictMaxMinutes || ask.MaxTurns != qaVerdictMaxTurns {
+		t.Errorf("the re-ask ran with %d minutes / %d turns, want the short verdict bounds "+
+			"(%d/%d)", ask.MaxMinutes, ask.MaxTurns, qaVerdictMaxMinutes, qaVerdictMaxTurns)
 	}
 }

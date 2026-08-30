@@ -77,6 +77,17 @@ type activityWriter struct {
 	// process that exits 0 without ever emitting it did not finish, it was
 	// cut off mid-stream (OR-127), and that must not read as success.
 	sawResult bool
+	// sawFrame marks whether ANY well-formed stream frame arrived, which is
+	// the difference between a run that failed and a run that never started.
+	//
+	// An expired login makes `claude` print to stderr and exit 1 in under five
+	// seconds, having opened no session and sent no tokens (OR-212). On the
+	// stream that is indistinguishable from silence, and silence is the fact
+	// worth recording: a run that emitted nothing did not get as far as
+	// spending anything, so counting it as a failure inflates the failure
+	// count and counting it as a run with missing usage inflates the floor
+	// warning (OR-219).
+	sawFrame bool
 }
 
 // SawResult reports whether this stream ever carried a "type":"result" line
@@ -87,6 +98,15 @@ func (w *activityWriter) SawResult() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.sawResult
+}
+
+// Started reports whether the CLI ever emitted a parseable stream frame -- the
+// earliest proof that the process got past its own startup and opened a
+// session, as opposed to dying on an expired login or a bad flag.
+func (w *activityWriter) Started() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.sawFrame
 }
 
 // Limit returns the plan limit last reported by this run.
@@ -190,6 +210,9 @@ func (w *activityWriter) emit(line []byte) {
 	if json.Unmarshal(line, &m) != nil {
 		return
 	}
+	// Recorded before anything is done with the frame: what matters is that
+	// the CLI produced one at all, whatever it turned out to say.
+	w.sawFrame = true
 
 	// Context occupancy, tracked as a running maximum.
 	//
