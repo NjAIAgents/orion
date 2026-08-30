@@ -64,7 +64,7 @@ func TestEveryLineCarriesATimePrefix(t *testing.T) {
 // what scanning hundreds of lines needs. Both, never one: the word is what
 // survives a terminal that cannot render the glyph.
 func TestEveryStatusRendersItsOwnIcon(t *testing.T) {
-	t.Setenv("LANG", "en_US.UTF-8")
+	setUTF8Locale(t)
 	for verb, want := range map[string]string{
 		VerbOK:      iconOK,
 		VerbWorking: iconWorking,
@@ -116,7 +116,10 @@ func TestTheIconsFallBackToASCII(t *testing.T) {
 		{"LC_ALL", "C"},
 	} {
 		t.Run(env.name+"="+env.value, func(t *testing.T) {
-			t.Setenv("LANG", "en_US.UTF-8")
+			// UTF-8 first, so the variable under test is the only reason
+			// the icon degrades -- including when it is a locale variable
+			// of its own, which then overrides what the helper set.
+			setUTF8Locale(t)
 			t.Setenv(env.name, env.value)
 			got := render(Line{Key: "OR-125", Verb: VerbFail, Msg: "boom"})
 			if strings.Contains(got, iconFail) {
@@ -136,7 +139,7 @@ func TestTheIconsFallBackToASCII(t *testing.T) {
 // every waiting line one column right of every other line -- the ragged wall
 // the fixed widths exist to prevent.
 func TestTheIconColumnIsPaddedInCellsNotRunes(t *testing.T) {
-	t.Setenv("LANG", "en_US.UTF-8")
+	setUTF8Locale(t)
 	for _, verb := range []string{VerbOK, VerbWorking, VerbWaiting, VerbWarn, VerbFail} {
 		if got := cells(iconFor(verb)); got != iconWidth {
 			t.Errorf("%q occupies %d cells, want %d", verb, got, iconWidth)
