@@ -31,6 +31,11 @@ var expectedDecisions = []string{
 	// the same way: without it, "just let a re-run reuse the workspace" is a
 	// one-line change nobody would think to argue with.
 	"0012-one-workspace-per-tracker-project.md",
+	// OR-148. Settles the open question that ticket carried, and it is
+	// load-bearing: without it, "why not have `orion new` set the workspace up
+	// too, it is right there?" is a change that reads as a convenience and
+	// quietly reintroduces the two-workspaces-per-project state 0012 refuses.
+	"0013-new-creates-the-tracker-project-not-a-workspace.md",
 }
 
 func TestEveryDecisionHasContextDecisionConsequences(t *testing.T) {
@@ -126,6 +131,14 @@ func TestDecisionContentMatchesTicket(t *testing.T) {
 		{
 			"0009-canonical-slug-one-name.md",
 			[]string{"OR-149"},
+		},
+		{
+			// WHICH way the open question went, and the reason it was not a
+			// free choice, is the whole substance of OR-148's record. A file
+			// that kept the sections but lost the 0012 argument would leave the
+			// next reader thinking either answer is still available.
+			"0013-new-creates-the-tracker-project-not-a-workspace.md",
+			[]string{"OR-148", "OR-149", "0012", "no workspace", "CreateProject"},
 		},
 		{
 			// Which actors are routable, and why the rest are not, is the
