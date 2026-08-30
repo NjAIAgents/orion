@@ -121,6 +121,10 @@ func TestTheWatchIntervalDefaultsToAMinuteAndTheBannerSaysSo(t *testing.T) {
 	}{
 		{"unset", []string{"fcia"}, time.Minute},
 		{"explicit", []string{"--interval", "300", "fcia"}, 5 * time.Minute},
+		// A small explicit value below the default must still be used as
+		// given -- the fallback is for non-positive input, not for "smaller
+		// than what we'd have picked ourselves".
+		{"explicit below the default", []string{"--interval", "30", "fcia"}, 30 * time.Second},
 		{"zero", []string{"--interval", "0"}, time.Minute},
 		{"negative", []string{"--interval", "-30"}, time.Minute},
 	} {
