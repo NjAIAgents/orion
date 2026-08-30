@@ -3,13 +3,16 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/creds"
+	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -37,6 +40,13 @@ var (
 // root at all -- it works from any directory.
 func runConfigAgents(args []string) {
 	home := workspace.Home()
+
+	// Answered before the terminal check below and before anything reads
+	// stdin, which is the whole point of it -- see listAgents.
+	if hasFlag(args, "--list") {
+		exitOn(listAgents(home, os.Stdout))
+		return
+	}
 
 	if hasFlag(args, "--reset") {
 		resetAgents(home, positional(args))
@@ -205,4 +215,125 @@ func plural(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// listAgents is `orion config agents --list`: the read-only twin of the
+// wizard, printing every actor with the values a run will actually use and
+// which of them agents.json decided.
+//
+// WHY A FLAG ON THE EXISTING SUBCOMMAND, not a top-level `orion agents`.
+// The precedent is already set one level up: `orion config show` is the
+// read-only twin of `orion config`, not `orion show`. The roster is
+// configuration, the command that edits it lives under `orion config`, and
+// a second top-level noun would leave two places to look for one thing --
+// with the top-level one, inevitably, the one somebody finds first and then
+// wonders why it cannot edit anything. Discoverability is bought by naming
+// it in `orion config --help` instead, which is where a reader looking for
+// the roster is already standing.
+//
+// WHY IT EXISTS. agents.json holds only OVERRIDES, so most of the roster is
+// absent from it; the effective model for an actor nobody has overridden is
+// in Go source. That makes the one question worth asking before an
+// unattended run -- which agent runs on which model, at what effort --
+// answerable only by reading two files and merging them by hand. Since
+// OR-184 the watcher works several tickets at once, so the roster is the
+// cost model multiplied by the concurrency cap.
+//
+// IT NEVER PROMPTS. --list is answered before the wizard's terminal check
+// and before anything reads stdin. That ordering is the point, not an
+// accident of layout: runConfig documents a real bug where `--help` fell
+// through to the wizard's default case and blocked on stdin with Ctrl-C the
+// only way out. A listing flag must be incapable of starting a prompt,
+// including when stdout is redirected -- which is how anyone captures this
+// to share it.
+func listAgents(home string, out io.Writer) error {
+	over, err := config.LoadAgents(home)
+	if err != nil {
+		return err
+	}
+	roster := actors.Roster(over)
+
+	path := config.AgentsPath(home)
+	fmt.Fprintln(out, ui.Heading(out, "Orion agent roster"))
+	fmt.Fprintln(out, ui.Dim(out, "effective values -- the shipped defaults with "+path+" applied"))
+	if len(over) == 0 {
+		fmt.Fprintln(out, ui.Dim(out, "nothing is overridden there; every value below is a shipped default"))
+	}
+	fmt.Fprintln(out)
+
+	head := []string{"id", "name", "designation", "model", "effort", "overridden"}
+	rows := make([][]string, 0, len(roster))
+	for _, e := range roster {
+		rows = append(rows, []string{
+			e.ID,
+			orNotSet(e.Name),
+			orNotSet(e.Designation),
+			orNotSet(e.Model),
+			orNotSet(e.Effort),
+			orNotSet(strings.Join(e.Overridden.Fields(), ", ")),
+		})
+	}
+
+	w := make([]int, len(head))
+	for i, h := range head {
+		w[i] = utf8.RuneCountInString(h)
+	}
+	for _, r := range rows {
+		for i, c := range r {
+			if n := utf8.RuneCountInString(c); n > w[i] {
+				w[i] = n
+			}
+		}
+	}
+
+	fmt.Fprintln(out, ui.Heading(out, strings.TrimRight(joinColumns(head, w), " ")))
+	for i, r := range rows {
+		// Only the two identity columns are coloured, and only from the
+		// non-semantic palette ui.Identity draws on. Model is deliberately
+		// left plain: painting opus red to mean "expensive" would collide
+		// with failure and make a correct roster read as a fault. Cost is
+		// carried by the model's own name, which is a word.
+		id := roster[i].ID
+		line := ui.Identity(out, id, column(r[0], w[0])) + "  " +
+			ui.Identity(out, id, column(r[1], w[1])) + "  " +
+			joinColumns(r[2:], w[2:])
+		fmt.Fprintln(out, strings.TrimRight(line, " "))
+	}
+
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, ui.Dim(out, "overridden  the fields "+path+" decides for that actor;"))
+	fmt.Fprintln(out, ui.Dim(out, "            every other value on the row is a shipped default"))
+	fmt.Fprintln(out, ui.Dim(out, "-           not set. No name renders the actor as its job title alone;"))
+	fmt.Fprintln(out, ui.Dim(out, "            no model means Orion itself, which is Go rather than an agent;"))
+	fmt.Fprintln(out, ui.Dim(out, "            no effort leaves the claude CLI's own level in force"))
+	return nil
+}
+
+// orNotSet renders an absent value as a word-free marker that still reads
+// when the colour is stripped. The legend under the table says what "not
+// set" means for each column, because it means something different in each.
+func orNotSet(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+func joinColumns(cells []string, w []int) string {
+	parts := make([]string, len(cells))
+	for i, c := range cells {
+		parts[i] = column(c, w[i])
+	}
+	return strings.TrimRight(strings.Join(parts, "  "), " ")
+}
+
+// column pads to n display columns counting RUNES rather than bytes, and is
+// applied BEFORE any colour: an escape code has a byte length and no width,
+// so padding a painted string leaves every coloured cell short of its
+// column.
+func column(s string, n int) string {
+	if d := n - utf8.RuneCountInString(s); d > 0 {
+		return s + strings.Repeat(" ", d)
+	}
+	return s
 }

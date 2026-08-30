@@ -359,6 +359,8 @@ orion config show           what is set, where it came from, secrets masked
 orion config path           print the config file location
 orion config agents         interactive: name, model and effort per agent, by menu
                              (global -- one roster, shared by every project)
+orion config agents --list  print the roster: every agent's effective model and
+                             effort, and which of them agents.json overrides
 orion config agents --reset [id...]   reset one, some, or every agent to shipped defaults
 orion config limits         show the circuit breakers and where each value came from
 orion config limits KEY N   set one, e.g. limits max_concurrent_tickets 3
