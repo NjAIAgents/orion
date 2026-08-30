@@ -1,6 +1,7 @@
 package work
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -126,6 +127,92 @@ func TestATrippedRunLeavesNoUncommittedTrackedChanges(t *testing.T) {
 	// found on the next collect tick is a slow way to learn this.
 	if !strings.Contains(sent, "left the worktree dirty") {
 		t.Errorf("the operator was not told; only the run log was:\n%s", sent)
+	}
+}
+
+// OR-207. A tripped run that is still holding work must COMMIT it, and must
+// say on the ticket that it did.
+//
+// OR-189 and OR-191 both finished their implementation, both had it green,
+// and both ended orion-failed with every line uncommitted -- 258 and 439
+// lines, recovered by hand. Both looked like ordinary failures until someone
+// opened the worktree, which is why the ticket has to carry the fact.
+func TestATrippedRunCommitsTheWorkItWasHoldingAndSaysSoOnTheTicket(t *testing.T) {
+	home := project(t, cfg)
+	var sent string
+	bindSlack(t, home, &sent)
+
+	j := &fakeJira{}
+	var out strings.Builder
+	var jobPath string
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				dir := ws.RepoDir()
+				jobPath = dir
+				if err := os.WriteFile(filepath.Join(dir, "impl.go"), []byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, dir, "add", ".")
+				git(t, dir, "commit", "-q", "-m", "feat: implement")
+				// The finished work: an edit to a tracked file and a NEW test
+				// file, neither committed, and the trip on the next call.
+				if err := os.WriteFile(filepath.Join(dir, "impl.go"), []byte("package x\n\nfunc F() {}\n"), 0o644); err != nil {
+					return nil, err
+				}
+				if err := os.WriteFile(filepath.Join(dir, "impl_test.go"), []byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				// The breaker's own stop-note, written at the moment of the
+				// trip (OR-194).
+				if err := os.MkdirAll(filepath.Join(dir, "plans"), 0o755); err != nil {
+					return nil, err
+				}
+				if err := os.WriteFile(filepath.Join(dir, "plans", "BLOCKED.md"),
+					[]byte("## breaker/loop tripped\n"), 0o644); err != nil {
+					return nil, err
+				}
+				tripIn(t, dir, "sess-impl", "breaker/loop", "Read repeated 4 times")
+				return &supervisor.Result{ExitCode: 1, Reason: "tripped"}, errors.New("the agent stopped: breaker tripped")
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	// The work is on the branch, not in the bin.
+	if log := git(t, jobPath, "log", "--oneline"); !strings.Contains(log, "wip: snapshot") {
+		t.Errorf("the work the run was holding was not committed:\n%s", log)
+	}
+	files := git(t, jobPath, "show", "--name-only", "--format=", "HEAD")
+	for _, want := range []string{"impl.go", "impl_test.go"} {
+		if !strings.Contains(files, want) {
+			t.Errorf("the snapshot is missing %q:\n%s", want, files)
+		}
+	}
+	// Not the breaker's own note about the trip: that is written for whoever
+	// opens the worktree and is not part of the change (OR-194).
+	if strings.Contains(files, "BLOCKED.md") {
+		t.Errorf("plans/BLOCKED.md rode along on the branch:\n%s", files)
+	}
+	if strings.Contains(files, ".orion") {
+		t.Errorf("Orion's own runtime directory was committed:\n%s", files)
+	}
+	// And the rebase collect will attempt is still possible.
+	if dirty, _ := workspace.DirtyTracked(jobPath); dirty != "" {
+		t.Errorf("the worktree is still dirty:\n%s", dirty)
+	}
+
+	// Said in the run output, and on the TICKET, in those words.
+	if o := out.String(); !strings.Contains(o, "uncommitted work") {
+		t.Errorf("the run output does not say what it was holding:\n%s", o)
+	}
+	comments := strings.Join(j.comments, "\n---\n")
+	for _, want := range []string{"orion-failed", "uncommitted file(s)", "breaker/loop"} {
+		if !strings.Contains(comments, want) {
+			t.Errorf("the ticket does not say %q:\n%s", want, comments)
+		}
 	}
 }
 
