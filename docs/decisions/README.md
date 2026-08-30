@@ -14,3 +14,4 @@ already have been decided against, on purpose.
 - [0008](0008-parallelism-level-ordering.md) — Parallelism ships level 3, then level 1, then level 2
 - [0009](0009-canonical-slug-one-name.md) — One canonical slug names the Jira project, workspace and git repo
 - [0010](0010-routing-vocabulary-is-a-published-contract.md) — The routing vocabulary is a published contract, and five actors are routable
+- [0011](0011-orion-owns-the-landing-queue.md) — Orion owns the landing queue; GitHub's merge queue is not adopted
