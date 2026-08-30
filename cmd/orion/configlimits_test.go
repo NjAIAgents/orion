@@ -256,6 +256,153 @@ func TestSetLimitCoversTheOtherLimitsToo(t *testing.T) {
 	}
 }
 
+// A non-numeric value must be refused, not silently coerced to zero, and
+// nothing should be written.
+func TestSetLimitRefusesANonNumericValue(t *testing.T) {
+	home := t.TempDir()
+	src := registeredProject(t, home, "OR", adoptedConfig)
+	path := filepath.Join(src, "orion.json")
+	before := readFile(t, path)
+
+	var out bytes.Buffer
+	err := configLimits(home, src, &out, []string{"max_concurrent_tickets", "four"})
+	if err == nil {
+		t.Fatal(`"four" was accepted as a limit value`)
+	}
+	if got := readFile(t, path); got != before {
+		t.Errorf("the file was written despite the refusal:\n%s", got)
+	}
+}
+
+// A negative value has no meaning for any of these limits and must be
+// refused rather than stored.
+func TestSetLimitRefusesANegativeValue(t *testing.T) {
+	home := t.TempDir()
+	src := registeredProject(t, home, "OR", adoptedConfig)
+	path := filepath.Join(src, "orion.json")
+	before := readFile(t, path)
+
+	var out bytes.Buffer
+	err := configLimits(home, src, &out, []string{"max_tool_calls", "-1"})
+	if err == nil {
+		t.Fatal("-1 was accepted as a limit value")
+	}
+	if got := readFile(t, path); got != before {
+		t.Errorf("the file was written despite the refusal:\n%s", got)
+	}
+}
+
+// A file with no "limits" block at all -- not just a block missing one key --
+// has nowhere for the patcher to write, and must say so rather than silently
+// doing nothing or corrupting the file.
+func TestSetLimitErrorsWhenTheFileHasNoLimitsBlock(t *testing.T) {
+	home := t.TempDir()
+	const noLimits = `{
+  "version": 1,
+  "tracker": { "enabled": true, "provider": "jira", "project_key": "OR" }
+}
+`
+	src := registeredProject(t, home, "OR", noLimits)
+	path := filepath.Join(src, "orion.json")
+	before := readFile(t, path)
+
+	var out bytes.Buffer
+	err := configLimits(home, src, &out, []string{"max_concurrent_tickets", "3"})
+	if err == nil {
+		t.Fatal("expected an error when orion.json has no limits block")
+	}
+	if got := readFile(t, path); got != before {
+		t.Errorf("the file was written despite having no limits block:\n%s", got)
+	}
+}
+
+// An unregistered project -- no tracker.project_key, so no registry entry --
+// still has to work: the local root is the only file there is, and it must
+// be both read and written, not silently skipped.
+func TestSetLimitWorksOnAnUnregisteredProject(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	const noTracker = `{
+  "version": 1,
+  "limits": { "max_tool_calls": 400 }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "orion.json"), []byte(noTracker), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := configLimits(home, dir, &out, []string{"max_concurrent_tickets", "2"}); err != nil {
+		t.Fatalf("configLimits: %v", err)
+	}
+	if got := config.Load(dir).Limits.ConcurrentTickets(); got != 2 {
+		t.Fatalf("ConcurrentTickets() = %d, want 2", got)
+	}
+	if !strings.Contains(readFile(t, filepath.Join(dir, "orion.json")), `"max_concurrent_tickets": 2`) {
+		t.Errorf("the key was not written for the unregistered project")
+	}
+}
+
+// Wrong argument counts (one bare key, or three tokens) are a usage error,
+// not a silent no-op or a partial write.
+func TestConfigLimitsRejectsBadArgumentCounts(t *testing.T) {
+	home := t.TempDir()
+	src := registeredProject(t, home, "OR", adoptedConfig)
+
+	for _, args := range [][]string{
+		{"max_concurrent_tickets"},
+		{"max_concurrent_tickets", "3", "extra"},
+	} {
+		var out bytes.Buffer
+		if err := configLimits(home, src, &out, args); err == nil {
+			t.Errorf("args %v were accepted; expected a usage error", args)
+		}
+	}
+}
+
+// Run outside any Orion project (no orion.json above the given directory)
+// must be refused with a clear message, never a panic or a write to some
+// other file it happens to find.
+func TestConfigLimitsErrorsOutsideAnOrionProject(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir() // no orion.json anywhere above this
+
+	var out bytes.Buffer
+	err := configLimits(home, dir, &out, nil)
+	if err == nil {
+		t.Fatal("expected an error outside an Orion project")
+	}
+}
+
+// A key that is not one of config.Limits' own fields must be refused with
+// the known keys listed, matching the mistyped-key case but for a name that
+// never existed at all.
+func TestSetLimitRefusesAnUnknownKey(t *testing.T) {
+	home := t.TempDir()
+	src := registeredProject(t, home, "OR", adoptedConfig)
+
+	var out bytes.Buffer
+	err := configLimits(home, src, &out, []string{"max_bananas", "3"})
+	if err == nil || !strings.Contains(err.Error(), "max_concurrent_tickets") {
+		t.Fatalf("an unknown key must be refused and the known keys listed, got %v", err)
+	}
+}
+
+// Setting the value to zero restores the shipped default -- it must say so,
+// since zero could otherwise read as "unlimited" or "disabled".
+func TestSetLimitToZeroSaysItRestoresTheDefault(t *testing.T) {
+	home := t.TempDir()
+	src := registeredProject(t, home, "OR", adoptedConfig)
+
+	var out bytes.Buffer
+	if err := configLimits(home, src, &out, []string{"max_tool_calls", "0"}); err != nil {
+		t.Fatalf("configLimits: %v", err)
+	}
+	if !strings.Contains(out.String(), "restores the shipped default") {
+		t.Errorf("setting to zero must say it restores the default:\n%s", out.String())
+	}
+}
+
 // lineWith returns the first line of out containing s.
 func lineWith(out, s string) string {
 	for _, l := range strings.Split(out, "\n") {
