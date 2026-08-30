@@ -234,6 +234,14 @@ func planWorkspace(out io.Writer, p tracker.Project, slug string, opts planOptio
 	}
 	ws.Task.Tracker = raw
 	ws.Task.Stage = planStages[0].Stage
+
+	// The project channel follows the workspace, which is now born here rather
+	// than in `orion new` (docs/decisions/0013). Failure is reported and never
+	// fatal: a workspace without a channel is usable, while refusing to
+	// provision because Slack was unreachable is not.
+	if ch := createProjectChannel(ws); ch != nil {
+		ws.Task.Slack = ch
+	}
 	if err := ws.SaveTask(); err != nil {
 		return nil, err
 	}

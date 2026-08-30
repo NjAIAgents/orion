@@ -1,0 +1,247 @@
+package main
+
+// `orion new "<idea>"` is the INTERACTIVE front half of the two sequential
+// phases docs/decisions/0006 describes.
+//
+// Input is flat text from a human. Output is a named tracker project carrying
+// a real description, which is the handoff artifact `orion plan` consumes --
+// it already reads that description as the idea it designs from.
+//
+// IT PROVISIONS NO WORKSPACE. That is the question OR-148 left open and
+// docs/decisions/0013 settles: `orion plan` provisions the workspace as its
+// first action, keyed on the canonical slug, and a tracker project gets
+// exactly one workspace (docs/decisions/0012). A `new` that also made one
+// would leave two workspaces per project, which is the state 0012 exists to
+// refuse. So `new` leaves nothing on disk and the elaborated idea lives in the
+// project description until `plan` runs.
+//
+// THE INTERROGATION IS SYNCHRONOUS, and this is the one place in the system
+// where that is right, because a human is present by definition.
+// internal/discovery exists because the intent stage runs through `claude -p`
+// and there was nobody to ask; that constraint does not reach here. So the
+// questions are asked and answered now, in the terminal, rather than written
+// into a file for a later stage to be blocked by.
+//
+// CREATION GOES THROUGH adopt.RemotePlan's describe-then-confirm gate, the
+// same one `orion init` uses. A Jira project cannot be deleted without admin
+// rights, and that gate is the only place that sentence is said before
+// somebody agrees. A second confirmation pattern beside it would be one more
+// prompt to train people to skim.
+
+import (
+	"bufio"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/orion-sdlc/orion/internal/adopt"
+	"github.com/orion-sdlc/orion/internal/tracker"
+	"github.com/orion-sdlc/orion/internal/ui"
+	"github.com/orion-sdlc/orion/internal/workspace"
+)
+
+// newQuestion is one thing a flat-text idea does not say.
+//
+// The set is taken from what internal/discovery already judges a thin idea to
+// be missing -- "who it is for, what is out of scope and what success means
+// are all unstated" -- so the conversation here answers the same questions the
+// async gate would otherwise have to block on later.
+type newQuestion struct {
+	Heading string // how the answer is labelled in the description
+	Ask     string // what the human is asked
+}
+
+var newQuestions = []newQuestion{
+	{"For", "Who is this for? The people whose problem it is."},
+	{"Problem", "What is wrong for them today?"},
+	{"Success", "How will you know it worked?"},
+	{"Out of scope", "What is explicitly NOT part of this?"},
+	{"Constraints", "Anything it must or must not do -- systems, deadlines, technologies?"},
+}
+
+type newOptions struct {
+	Idea string
+	Site string // the tracker's base URL, for the plan and the browse link
+	In   io.Reader
+	Out  io.Writer
+	// Confirm is the describe-then-confirm gate. Injected so a test can drive
+	// both answers, and so the terminal check stays in the wiring rather than
+	// in the logic.
+	Confirm func(prompt string) bool
+}
+
+func runNew(idea string, rest []string) {
+	// These shaped a WORKSPACE, and this command no longer makes one. Ignoring
+	// them silently would create a project and quietly drop the repo the user
+	// asked to start from, which reads as success.
+	for _, f := range []string{"--from", "--template", "--container", "--skip-discovery"} {
+		if hasFlag(rest, f) || argFlag(rest, f, "") != "" {
+			exitOn(fmt.Errorf("%s provisioned a workspace, and `orion new` no longer does (docs/decisions/0013).\n"+
+				"  It creates the tracker project; `orion plan <KEY>` creates the workspace.", f))
+		}
+	}
+
+	if !isTerminal(os.Stdin) {
+		exitOn(fmt.Errorf("orion new needs a terminal: it interviews you about the idea.\n" +
+			"  For an idea already written down, create the tracker project by hand\n" +
+			"  and run: orion plan <KEY>"))
+	}
+
+	j, err := tracker.NewJiraFromEnv()
+	exitOn(err)
+
+	exitOn(newRun(j, newOptions{
+		Idea:    idea,
+		Site:    j.BaseURL,
+		In:      os.Stdin,
+		Out:     os.Stdout,
+		Confirm: confirm,
+	}))
+}
+
+// newRun is the whole command with the tracker and the terminal injected.
+func newRun(t tracker.Tracker, opts newOptions) error {
+	out := opts.Out
+	idea := strings.TrimSpace(opts.Idea)
+	if idea == "" {
+		return fmt.Errorf("an idea is required: orion new \"what you want built\"")
+	}
+
+	// The permission is checked BEFORE the interview, not after it. Finding out
+	// that the account cannot create a project is cheap; finding out after five
+	// questions have been answered wastes the one resource this command spends,
+	// which is the human's attention.
+	cap, err := t.Probe()
+	if err != nil {
+		return err
+	}
+	if !cap.Authenticated {
+		return fmt.Errorf("not authenticated to the tracker: %s\n  Fix it with: orion config", cap.Detail)
+	}
+	if cap.AccountID == "" {
+		return fmt.Errorf("could not resolve the authenticated account, and a project cannot be created without a lead.\n" +
+			"  Check the credentials with: orion doctor")
+	}
+	if !cap.CanCreateProject && !cap.Undetermined {
+		return fmt.Errorf("this account cannot create a tracker project: %s\n"+
+			"  Create one by hand and design from it instead: orion plan <KEY>", cap.Detail)
+	}
+
+	r := bufio.NewReader(opts.In)
+
+	fmt.Fprintln(out, ui.Heading(out, "The idea"))
+	fmt.Fprintf(out, "  %s\n\n", idea)
+	fmt.Fprintln(out, "Five questions. Every later stage runs non-interactively, so this is the")
+	fmt.Fprintln(out, "last point at which anything can be asked. Enter leaves one unanswered.")
+	fmt.Fprintln(out)
+
+	description := elaborate(r, out, idea)
+
+	name, err := askName(r, out)
+	if err != nil {
+		return err
+	}
+	slug := workspace.Slugify(name)
+	key, err := tracker.ResolveKey(t, tracker.DeriveKey(slug))
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintln(out, ui.Heading(out, "Project description"))
+	for _, line := range strings.Split(description, "\n") {
+		fmt.Fprintf(out, "  %s\n", line)
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "  slug %s  %s\n", slug,
+		ui.Dim(out, "(will name the workspace and the git repo)"))
+	fmt.Fprintln(out)
+
+	// The gate. One prompt, and it is adopt's, because that is where the
+	// sentence about deletion lives.
+	plan := adopt.RemotePlan{ProjectName: name, JiraKey: key, JiraSite: opts.Site}
+	fmt.Fprint(out, plan.Describe())
+	if opts.Confirm == nil || !opts.Confirm("Proceed?") {
+		fmt.Fprintln(out, "cancelled: nothing was created")
+		return nil
+	}
+
+	b, err := t.CreateProject(key, name, description, cap.AccountID)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintln(out)
+	ui.Ok(out, "created", "%s project %s  %s/browse/%s", t.Name(), b.Key, opts.Site, b.Key)
+	fmt.Fprintf(out, "\nnext: orion plan %s\n", b.Key)
+	return nil
+}
+
+// elaborate turns the flat text plus the answers into the description the
+// project will carry.
+//
+// An unanswered question is NAMED rather than dropped. The description is the
+// only artifact this command produces, so a later stage designing from it
+// should be able to tell "nobody decided this" from "this does not apply" --
+// silence collapses the two, and the stage invents the answer.
+func elaborate(r *bufio.Reader, out io.Writer, idea string) string {
+	var b strings.Builder
+	b.WriteString(idea)
+
+	// Input ending part-way through is not special-cased: ask answers blank
+	// from then on, so the rest of the questions land in `unstated` and the
+	// description still says which ones nobody answered.
+	var unstated []string
+	for _, q := range newQuestions {
+		a, _ := ask(r, out, q.Ask)
+		if a == "" {
+			unstated = append(unstated, strings.ToLower(q.Heading))
+			continue
+		}
+		fmt.Fprintf(&b, "\n\n%s: %s", q.Heading, a)
+	}
+	if len(unstated) > 0 {
+		fmt.Fprintf(&b, "\n\nNot stated when this project was created: %s.", strings.Join(unstated, ", "))
+	}
+	return b.String()
+}
+
+// askName loops until there is a name, because there is nothing sensible to
+// default to.
+//
+// Deliberately NOT derived from the idea. A slug of "customers should see
+// claim status in the portal" makes a project called "Customers Should See
+// Claim", which somebody accepts by pressing Enter and then lives with in
+// three places (docs/decisions/0009). Asking costs one line of typing.
+func askName(r *bufio.Reader, out io.Writer) (string, error) {
+	fmt.Fprintln(out, ui.Heading(out, "The name"))
+	fmt.Fprintln(out, "  One name will label the tracker project, the workspace and the git repo.")
+	for {
+		n, ok := ask(r, out, "Project name?")
+		if n != "" {
+			return n, nil
+		}
+		// A required prompt has to give up when there is nothing left to read,
+		// or a closed stdin spins here forever printing the same line.
+		if !ok {
+			return "", fmt.Errorf("no project name given, and there is no input left to ask for one")
+		}
+		fmt.Fprintln(out, "  A name is required.")
+	}
+}
+
+// ask puts one question and reads one line. The second return is false once
+// the input is exhausted, which is what stops a required prompt looping.
+func ask(r *bufio.Reader, out io.Writer, question string) (string, bool) {
+	fmt.Fprintf(out, "%s\n  > ", question)
+	line, err := r.ReadString('\n')
+	fmt.Fprintln(out)
+	return strings.TrimSpace(line), err == nil
+}
+
+// isTerminal is confirm's own check, hoisted so the refusal happens before the
+// interview rather than at the first prompt nobody can answer.
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
