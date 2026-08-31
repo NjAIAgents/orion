@@ -68,6 +68,16 @@ func enabled(w io.Writer) bool {
 	if os.Getenv("TERM") == "dumb" {
 		return false
 	}
+	return isTerminal(w)
+}
+
+// isTerminal reports whether a writer is a character device.
+//
+// The same test golang.org/x/term makes, without the dependency: Orion has no
+// third-party modules and this is a Stat call. Shared with the live region
+// (live.go), which asks the same question for a different reason -- colour is
+// unreadable off a terminal, and cursor control is corruption.
+func isTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	if !ok {
 		return false

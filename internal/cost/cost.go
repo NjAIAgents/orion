@@ -33,6 +33,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/ui"
 )
 
 // Detail keys on the usage event. Named here, next to the code that reads
@@ -132,6 +133,11 @@ type Run struct {
 // lock -- a caller reports it and carries on, because losing an accounting
 // row must not lose the work.
 func Record(log *events.Log, home, actor, key string, r Run) error {
+	// The live region's session total (OR-240). Pushed from the one place
+	// every run's spend already funnels through, rather than pulled by
+	// re-summing the append-only history four times a second -- a number in a
+	// header must not be the most expensive thing on the screen.
+	ui.LiveSpend(r.CostUSD)
 	if log != nil {
 		log.Emit(events.Event{
 			Kind: events.KindUsage, Actor: actor, Key: key,
