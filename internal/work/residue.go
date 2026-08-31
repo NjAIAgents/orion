@@ -81,9 +81,9 @@ func settleTripResidue(jobPath, branch, key, summary, issueURL string, runFailed
 	// The trip is read for what it lets this SAY, not for permission to act,
 	// so a run with no trip on record carries empty strings through and is
 	// settled exactly the same way.
-	var kind, detail, snapshot string
+	var kind, detail, snapshot, session string
 	if sess, tripped := state.New(stateDirOf(jobPath, cfg)).AnyTripped(); tripped {
-		kind, detail, snapshot = sess.Tripped, sess.TrippedDetail, sess.TripSnapshot
+		kind, detail, snapshot, session = sess.Tripped, sess.TrippedDetail, sess.TripSnapshot, sess.ID
 	}
 
 	dirty, err := workspace.DirtyTracked(jobPath)
@@ -93,7 +93,13 @@ func settleTripResidue(jobPath, branch, key, summary, issueURL string, runFailed
 		return
 	}
 	if dirty == "" && snapshot == "" {
-		return // it left nothing behind. Nothing to report here.
+		// It left nothing behind. Nothing to report here, and deliberately not
+		// even the trip: a run that spent its cleanup allowance, committed and
+		// opened its pull request has ENDED, and there is no parked session for
+		// an operator to release. Saying "the breaker tripped, run orion reset"
+		// on a healthy ending would be the first line they learn to ignore, and
+		// the OR-232 lines below are the ones that have to be read.
+		return
 	}
 
 	// A trip that the breaker already snapshotted still gets said out loud.
@@ -131,7 +137,8 @@ func settleTripResidue(jobPath, branch, key, summary, issueURL string, runFailed
 	}
 
 	ui.Say(w, key, events.ActorOrion, verb,
-		"%s and this run ends with uncommitted work; %s", tripPhrase(kind, detail), outcome)
+		"%s and this run ends with uncommitted work; %s%s",
+		tripPhrase(kind, detail), outcome, resumeWith(session))
 	switch {
 	case unresolved:
 		// Every one of them by name, and the command that clears them: a
@@ -165,6 +172,19 @@ func settleTripResidue(jobPath, branch, key, summary, issueURL string, runFailed
 		Level: notify.Warning, Workspace: ws.ID, Actor: events.ActorOrion,
 		Title: title, Body: body,
 	})
+}
+
+// resumeWith puts the recovery command on the operator's surface, or adds
+// nothing when there is no session to name.
+//
+// A CLAUSE on the line that already exists rather than a line of its own: the
+// fault this repairs is not that the operator had too little to read, it is
+// that what they read never named the remedy (OR-232).
+func resumeWith(session string) string {
+	if cmd := state.ResetCommand(session); cmd != "" {
+		return "; resume it with: " + cmd
+	}
+	return ""
 }
 
 // tripPhrase names what tripped, or says plainly that nothing did.

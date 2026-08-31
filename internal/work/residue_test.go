@@ -141,8 +141,18 @@ func TestATrippedRunLeavesNoUncommittedTrackedChanges(t *testing.T) {
 		t.Errorf("the run's commits were destroyed:\n%s", log)
 	}
 
-	if o := out.String(); !strings.Contains(o, "breaker tripped") {
+	o := out.String()
+	if !strings.Contains(o, "breaker tripped") {
 		t.Errorf("a run that ends tripped and dirty must say so:\n%s", o)
+	}
+	// OR-232. And with the command that resolves it, on the line the operator
+	// is already reading. Until this, `orion reset --session <id>` existed in
+	// the agent's own session, in plans/BLOCKED.md inside a hashed path under
+	// ORION_HOME, and in `orion --help` -- three places, none of them a surface
+	// anybody watches. The OR-217 operator found it by reading BLOCKED.md off
+	// disk by hand.
+	if !strings.Contains(o, "orion reset --session sess-qa") {
+		t.Errorf("the run says a breaker tripped and never says what to type about it:\n%s", o)
 	}
 	// And where somebody who was not watching will see it. A blocked rebase
 	// found on the next collect tick is a slow way to learn this.

@@ -59,6 +59,16 @@ type requestFile struct {
 	// hold is that waiting longer earns the next turn: the branch that has
 	// been behind longest is precisely the one starvation reaches first.
 	Waiting map[string]time.Time `json:"waiting"`
+	// Reminded is when a ticket already handed to a person was last mentioned
+	// again, so the reminder can be periodic rather than per-poll (OR-232).
+	//
+	// Beside Conflicts rather than folded into it because the two answer
+	// different questions: Conflicts is "has this HEAD been announced", which
+	// must stay keyed on the commit so a pushed rebase is announced afresh;
+	// this is "when did we last say nothing had changed", which is a clock. A
+	// branch announced afresh clears it, so the reminder cadence starts over
+	// with the situation it is reminding about.
+	Reminded map[string]time.Time `json:"reminded"`
 }
 
 func requestPath(wsDir string) string {
@@ -68,7 +78,7 @@ func requestPath(wsDir string) string {
 func emptyRequests() requestFile {
 	return requestFile{Version: 1, Requests: map[string]Request{},
 		Conflicts: map[string]string{}, Rebases: map[string]int{},
-		Waiting: map[string]time.Time{}}
+		Waiting: map[string]time.Time{}, Reminded: map[string]time.Time{}}
 }
 
 func loadRequests(wsDir string) requestFile {
@@ -93,6 +103,9 @@ func loadRequests(wsDir string) requestFile {
 	}
 	if f.Waiting == nil {
 		f.Waiting = map[string]time.Time{}
+	}
+	if f.Reminded == nil {
+		f.Reminded = map[string]time.Time{}
 	}
 	return f
 }
@@ -171,9 +184,14 @@ func leader(f requestFile, pass []string) string {
 
 // markConflict records that this ticket's conflict has been announced at
 // this commit, so the next pass does not announce it again.
+//
+// The reminder clock is cleared with it: this announcement IS the most recent
+// word on the branch, and leaving a stale timestamp behind would silence the
+// first reminder after a branch was announced afresh.
 func markConflict(wsDir, key, head string) error {
 	f := loadRequests(wsDir)
 	f.Conflicts[key] = head
+	delete(f.Reminded, key)
 	return writeRequests(wsDir, f)
 }
 
@@ -181,10 +199,13 @@ func markConflict(wsDir, key, head string) error {
 // afresh rather than being mistaken for the same unresolved problem.
 func clearConflict(wsDir, key string) error {
 	f := loadRequests(wsDir)
-	if _, ok := f.Conflicts[key]; !ok {
+	_, conflicted := f.Conflicts[key]
+	_, reminded := f.Reminded[key]
+	if !conflicted && !reminded {
 		return nil
 	}
 	delete(f.Conflicts, key)
+	delete(f.Reminded, key)
 	return writeRequests(wsDir, f)
 }
 
