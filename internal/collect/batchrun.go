@@ -163,6 +163,93 @@ func (liveObserver) Settled(landed, ejected, culprits, deferred []string) {
 	ui.LiveBatchPhase(ui.BatchDone)
 }
 
+// resumeBatch acts on a batch that was already proved green and is waiting on
+// an approver, without spending CI again.
+//
+// Returns done=false whenever anything at all has changed -- a different set
+// of members, a base that moved, a record from another work branch -- so the
+// caller assembles and tests from scratch. The bar for reusing a proof is
+// that NOTHING relevant differs, because the failure mode on the other side
+// is merging a set nobody tested.
+//
+// The record is cleared on every path that does not resume, so a stale file
+// never survives to be compared against a second time.
+func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
+	deps Deps, g repoGit, ws *workspace.Workspace, log *events.Log, w io.Writer) ([]Result, bool) {
+
+	st, ok := loadBatchState(ws.Dir)
+	if !ok {
+		return nil, false
+	}
+	base := cfg.VCS.WorkBranch
+	baseSHA, err := g.SHAOf(base)
+	if err != nil || !st.resumable(base, baseSHA, members) {
+		if st.BaseSHA != "" && baseSHA != "" && st.BaseSHA != baseSHA {
+			ui.Warn(w, "%s moved since the batch was proved green; "+
+				"reassembling and testing again rather than merging a result "+
+				"that was not proved against it", base)
+		}
+		clearBatchState(ws.Dir)
+		return nil, false
+	}
+
+	approve := batchApprover(cfg, opts, deps, ws, log, w)
+	if approve == nil {
+		// The gate was removed while a batch waited on it. Landing without
+		// asking is the configured behaviour now, and the proof still stands.
+		return landResumed(st, members, g, ws, w), true
+	}
+	okd, err := approve(st.Ref, st.Members)
+	if err != nil {
+		return []Result{{Err: err}}, true
+	}
+	if !okd {
+		// Still waiting, or declined. Either way nothing merges and the ref
+		// stays exactly as the approver last saw it.
+		var out []Result
+		for _, m := range members {
+			out = append(out, Result{Key: m.Key, Verdict: VerdictStale})
+		}
+		return out, true
+	}
+	return landResumed(st, members, g, ws, w), true
+}
+
+// landResumed merges a proof recorded on an earlier pass.
+//
+// The base is re-read one final time even though resumable() just compared
+// it: approval is a human-length gap, and the whole point of ADR 0016's
+// precondition is that the base can move in exactly such a gap.
+func landResumed(st batchState, members []Member, g repoGit,
+	ws *workspace.Workspace, w io.Writer) []Result {
+
+	now, err := g.SHAOf(st.Base)
+	if err != nil || now != st.BaseSHA {
+		ui.Warn(w, "%s moved between the approval and the merge; "+
+			"nothing was merged and the batch will be assembled again", st.Base)
+		clearBatchState(ws.Dir)
+		var out []Result
+		for _, m := range members {
+			out = append(out, Result{Key: m.Key, Verdict: VerdictStale})
+		}
+		return out
+	}
+	if _, err := g.LandRef(st.Ref, st.Base); err != nil {
+		return []Result{{Err: fmt.Errorf("landing the approved batch %s: %w", st.Ref, err)}}
+	}
+	clearBatchState(ws.Dir)
+	_ = g.DropRef(st.Ref)
+	_ = g.DeleteRemoteRef(st.Ref)
+
+	ui.Say(w, "", events.ActorOrion, ui.VerbOK,
+		"landed %d approved branch(es) as one, with no further CI run", len(members))
+	var out []Result
+	for _, m := range members {
+		out = append(out, Result{Key: m.Key, Verdict: VerdictMerged, Changed: true})
+	}
+	return out
+}
+
 // runBatch lands the pass as one set.
 //
 // Returns a Result per ticket so the caller's contract is unchanged: the
@@ -229,21 +316,53 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		return nil
 	}
 
+	// RESUME BEFORE REASSEMBLING. A batch that is green and waiting on a
+	// person is finished with CI: re-cutting the ref would force-push a new
+	// merge commit, replace the pull request the approver is reading, and buy
+	// another CI run to re-prove what is already proved -- once per tick, for
+	// as long as they take to look.
+	if res, done := resumeBatch(ref, members, cfg, opts, deps, g, ws, log, w); done {
+		return res
+	}
+
 	ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
 		"assembling %d branch(es) into %s", len(members), ref)
 
 	t := batchTester{git: g, status: deps.Status, openPR: deps.OpenPR,
 		dir: ws.CloneDir(), base: cfg.VCS.WorkBranch,
 		wait: 30 * time.Minute, out: w, log: log}
-	b, err := Land(g, t, ref, cfg.VCS.WorkBranch, members, liveObserver{})
+	b, err := Land(g, t, ref, cfg.VCS.WorkBranch, members, liveObserver{},
+		WithApproval(batchApprover(cfg, opts, deps, ws, log, w)))
 
 	// Local ref and its worktree, then the published branch. Both, and only
 	// here: Test used to drop the remote ref as it returned, which cannot
 	// stand now that LandRef merges the ref Test proved. Asked for explicitly
 	// on 2026-08-31 -- a surviving orion/batch is force-pushed over by the
 	// next batch and misleads anyone reading the remote in between.
-	_ = g.DropRef(ref)
-	_ = g.DeleteRemoteRef(ref)
+	//
+	// EXCEPT WHILE A PERSON IS BEING ASKED. A batch waiting on approval is
+	// finished with CI and not finished with the ref: dropping it here would
+	// have the next pass reassemble the same members, open another pull
+	// request and buy another CI run to re-prove what is already proved --
+	// and it would delete the very pull request the approver is looking at.
+	if b.AwaitingApproval {
+		// Written now so the next pass resumes instead of re-proving. A
+		// failure to record it is reported rather than fatal: the batch is
+		// green either way, and the cost of the record being lost is one
+		// repeated CI run, not a wrong merge -- resumable() still refuses
+		// anything it cannot verify.
+		if err := saveBatchState(ws.Dir, batchState{
+			Ref: ref, Base: cfg.VCS.WorkBranch, Members: keysOf(members),
+			Status: batchValidated, BaseSHA: b.BaseSHA, ValidatedSHA: b.ValidatedSHA,
+		}); err != nil {
+			ui.Warn(w, "the batch is green but its record could not be written (%v); "+
+				"the next pass will test it again", err)
+		}
+	} else {
+		clearBatchState(ws.Dir)
+		_ = g.DropRef(ref)
+		_ = g.DeleteRemoteRef(ref)
+	}
 
 	// Closed after the report is written, so the summary the observer left on
 	// screen is the last thing the region showed before the scrollback takes
