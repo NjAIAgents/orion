@@ -29,6 +29,49 @@ var exemptSubjects = regexp.MustCompile(`(?i)^(docs: assemble|chore\(release\)|m
 
 var ticketKey = regexp.MustCompile(`\b([A-Z][A-Z0-9]+-\d+)\b`)
 
+// promotionTarget is the branch a promotion lands on, and so the far end of
+// the range being promoted. It matches what the command prints ("promoting X
+// onto main").
+const promotionTarget = "main"
+
+// unattributedCommits lists commits this promotion would put on `onto` that
+// name no ticket at all.
+//
+// Both halves of that sentence were wrong before OR-238, and the two faults
+// hid each other:
+//
+// The RANGE was <last tag>..develop, which walks commits already on main and
+// therefore not part of this promotion at all. The tell was a count larger
+// than the promotion itself -- 188 findings on a 30-commit range.
+//
+// The CRITERION was "carries a key belonging to THIS version", so a commit
+// correctly keyed to OR-190 and shipped in an earlier release was reported as
+// carrying no ticket key. A commit belonging to an earlier milestone is not a
+// defect, and scoping the range alone would not have fixed that.
+//
+// This matters more than the noise it made: a gate that always fires a large
+// warning teaches the operator to skim past the channel where a real finding
+// would eventually appear.
+func unattributedCommits(root, onto, base string) []string {
+	var out []string
+	rng := "origin/" + onto + "..origin/" + base
+	for _, line := range strings.Split(gitOut(root, "log", "--format=%h %s", rng), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		subject := line
+		if i := strings.Index(line, " "); i > 0 {
+			subject = line[i+1:]
+		}
+		if exemptSubjects.MatchString(subject) || ticketKey.MatchString(subject) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
 // gitOut lives in main.go and is reused rather than redeclared: two helpers
 // that shell out to git with different error handling is how two callers get
 // different answers to the same question.
@@ -83,10 +126,8 @@ func runReleaseVerify(args []string) {
 	exitOn(err)
 
 	tickets := make([]changelog.Ticket, 0, len(issues))
-	inVersion := map[string]bool{}
 	for _, is := range issues {
 		tickets = append(tickets, changelog.Ticket{Key: is.Key, Done: is.Resolved()})
-		inVersion[is.Key] = true
 	}
 	rec := changelog.Reconcile(version, fragments, tickets, collated)
 
@@ -120,35 +161,7 @@ func runReleaseVerify(args []string) {
 		in.OpenPullRequests = strings.Fields(out)
 	}
 
-	// Commits on the range being promoted that name no ticket in the version.
-	prev := gitOut(root, "describe", "--tags", "--abbrev=0", "origin/"+base)
-	rng := "origin/" + base
-	if prev != "" && !strings.Contains(prev, "fatal") {
-		rng = prev + "..origin/" + base
-	}
-	for _, line := range strings.Split(gitOut(root, "log", "--format=%h %s", rng), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		subject := line
-		if i := strings.Index(line, " "); i > 0 {
-			subject = line[i+1:]
-		}
-		if exemptSubjects.MatchString(subject) {
-			continue
-		}
-		attributed := false
-		for _, m := range ticketKey.FindAllStringSubmatch(subject, -1) {
-			if inVersion[m[1]] {
-				attributed = true
-				break
-			}
-		}
-		if !attributed {
-			in.UnattributedCommits = append(in.UnattributedCommits, line)
-		}
-	}
+	in.UnattributedCommits = unattributedCommits(root, promotionTarget, base)
 
 	v := promote.Verify(in)
 	w := os.Stdout
