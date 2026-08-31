@@ -142,3 +142,107 @@ func TestReleaseProcessCommitsStayExempt(t *testing.T) {
 		t.Fatalf("expected only the unattributed commit, got %v", got)
 	}
 }
+
+// A commit naming several keys is attributed the moment one of them is well
+// formed, even if a sibling key on the same line is malformed.
+func TestMultipleKeysAttributedIfAnyOneIsWellFormed(t *testing.T) {
+	dir := promotionRepo(t, []string{"chore: seed main"}, []string{
+		"fix(OR-1, or-2): mixed well-formed and malformed keys",
+	})
+
+	if got := unattributedCommits(dir, "main", "develop"); len(got) != 0 {
+		t.Fatalf("a commit with one well-formed key among several was reported: %v", got)
+	}
+}
+
+// A key that is only partially formed -- missing digits, missing the letter
+// prefix, or wrong case -- does not satisfy the pattern and must be treated
+// as no key at all.
+func TestMalformedOnlyKeysAreUnattributed(t *testing.T) {
+	cases := []string{
+		"fix(OR-): trailing dash, no digits",
+		"fix(-123): no letter prefix",
+		"fix(or-123): lowercase key",
+	}
+	for _, subject := range cases {
+		t.Run(subject, func(t *testing.T) {
+			dir := promotionRepo(t, []string{"chore: seed main"}, []string{subject})
+
+			got := unattributedCommits(dir, "main", "develop")
+			if len(got) != 1 || !strings.Contains(got[0], subject) {
+				t.Fatalf("expected the malformed-key commit to be reported, got %v", got)
+			}
+		})
+	}
+}
+
+// Exempt-subject matching does not care about case: a hand-typed subject in
+// caps or mixed case is still the release process's own commit.
+func TestExemptSubjectMatchingIsCaseInsensitive(t *testing.T) {
+	dir := promotionRepo(t, []string{"chore: seed main"}, []string{
+		"DOCS: ASSEMBLE the v0.8.4 changelog",
+		"Chore(Release): cut v0.8.4",
+		"MERGE branch 'develop'",
+	})
+
+	if got := unattributedCommits(dir, "main", "develop"); len(got) != 0 {
+		t.Fatalf("differently-cased exempt subjects were reported: %v", got)
+	}
+}
+
+// The three exempt-subject forms named by the ticket, tested individually so
+// a regression in one does not hide behind the other two passing.
+func TestEachExemptSubjectFormIsExempt(t *testing.T) {
+	cases := []string{
+		"docs: assemble the v0.8.4 changelog",
+		"chore(release): cut v0.8.4",
+		"merge pull request #42 from origin/feature",
+		"merge branch 'develop' into main",
+	}
+	for _, subject := range cases {
+		t.Run(subject, func(t *testing.T) {
+			dir := promotionRepo(t, []string{"chore: seed main"}, []string{subject})
+
+			if got := unattributedCommits(dir, "main", "develop"); len(got) != 0 {
+				t.Fatalf("exempt subject %q was reported: %v", subject, got)
+			}
+		})
+	}
+}
+
+// The pattern must fire wherever the key sits in the subject, and must find
+// every key on a line with more than one.
+func TestTicketKeyMatchesAtAnyPositionInTheSubject(t *testing.T) {
+	dir := promotionRepo(t, []string{"chore: seed main"}, []string{
+		"OR-1: key at the very start",
+		"a change that ends with OR-2",
+		"fix: something in the middle OR-3 of the subject",
+		"OR-4 and OR-5 both named",
+	})
+
+	if got := unattributedCommits(dir, "main", "develop"); len(got) != 0 {
+		t.Fatalf("a keyed commit was reported regardless of where the key sits: %v", got)
+	}
+}
+
+// An empty promotion range -- develop at the same commit as main -- must not
+// manufacture a finding out of nothing.
+func TestEmptyPromotionRangeReportsNothing(t *testing.T) {
+	dir := promotionRepo(t, []string{"chore: seed main"}, nil)
+
+	if got := unattributedCommits(dir, "main", "develop"); len(got) != 0 {
+		t.Fatalf("an empty promotion range reported findings: %v", got)
+	}
+}
+
+// A promotion of exactly one commit, keyed, must warn about nothing -- the
+// boundary the ticket calls out by name.
+func TestSingleKeyedCommitPromotionReportsNothing(t *testing.T) {
+	dir := promotionRepo(t, []string{"chore: seed main"}, []string{
+		"feat(OR-238): the only commit in this promotion",
+	})
+
+	if got := unattributedCommits(dir, "main", "develop"); len(got) != 0 {
+		t.Fatalf("a single keyed commit was reported: %v", got)
+	}
+}
