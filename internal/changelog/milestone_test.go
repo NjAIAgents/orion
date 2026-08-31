@@ -243,6 +243,65 @@ func TestFragmentStillCountsAfterTheVersionIsCollated(t *testing.T) {
 	}
 }
 
+// A missing CHANGELOG.md is the ordinary state of a fresh checkout, not an
+// error -- and it must read the same as "no section for this version": the
+// version is uncollated.
+func TestMissingChangelogFileIsUncollatedNotAnError(t *testing.T) {
+	root := t.TempDir() // no CHANGELOG.md written at all
+
+	col, err := LoadCollated(root, "v0.9.0")
+	if err != nil {
+		t.Fatalf("a missing CHANGELOG.md was treated as an error: %v", err)
+	}
+	if col.Found {
+		t.Fatal("a missing CHANGELOG.md was reported as a found section")
+	}
+}
+
+// The section header match tolerates case and surrounding whitespace, because
+// nothing enforces exact casing or spacing on a hand-edited `## v0.8.1`
+// heading, and a strict match would silently fall back to "uncollated" on a
+// released version for no reason a reader could see.
+func TestCollatedSectionMatchIsCaseAndWhitespaceTolerant(t *testing.T) {
+	root := repo(t, "# Changelog\n\n##   V0.8.1  \n\n- Shipped (OR-1).\n", nil)
+
+	col, err := LoadCollated(root, "v0.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !col.Found {
+		t.Fatal("a section differing only in case and surrounding whitespace was not matched")
+	}
+	if !col.Names("OR-1") {
+		t.Error("did not read the matched section's body")
+	}
+}
+
+// Both locations can document the same ticket at once -- a fragment left on
+// disk for a version whose CHANGELOG.md section also happens to name it by
+// key, e.g. mid-way through a manual collation. Reconcile must not choke on
+// redundant evidence; it counts the ticket documented either way.
+func TestBothLocationsDocumentingTheSameTicketCountsAsDocumented(t *testing.T) {
+	root := repo(t, `# Changelog
+
+## v0.8.1
+
+- Shipped this (OR-190).
+`, nil)
+	col, err := LoadCollated(root, "v0.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := Reconcile("v0.8.1", frags("OR-190"), []Ticket{{Key: "OR-190", Done: true}}, col)
+	if len(r.TicketsWithoutFragment)+len(r.TicketsNotNamedInChangelog) != 0 {
+		t.Errorf("a ticket documented in BOTH places was reported undocumented: %+v", r)
+	}
+	if !r.Clean() {
+		t.Errorf("doubly-documented ticket made the milestone unclean: %+v", r)
+	}
+}
+
 // Against this repository's own CHANGELOG.md, not a fixture. v0.8.1 is tagged,
 // published to three channels and marked released; `release verify v0.8.1`
 // reported it unsafe to promote, and would have gone on doing so forever. The
