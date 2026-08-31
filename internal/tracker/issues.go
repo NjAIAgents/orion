@@ -417,7 +417,22 @@ const QueueLabelDefault = "ORION"
 const (
 	LabelWorking = "orion-working"
 	LabelCIWait  = "orion-ci-wait"
-	LabelFailed  = "orion-failed"
+	// LabelReady is the integration queue's inbox (OR-253): the agent
+	// finished, QA gave its verdict, the branch is pushed, and NOTHING is
+	// running. The next batch takes it.
+	//
+	// A third state rather than reusing ci-wait, because the two mean
+	// opposite things to a reader. ci-wait says a machine is working and the
+	// answer is patience; ready says nothing is working and the ticket is
+	// waiting on the integration queue's next pass. Reporting one as the
+	// other would have an operator waiting on a build nobody started.
+	//
+	// It is NOT a claim. orion-working is the mutual-exclusion lock and it is
+	// released before this is set: a ready ticket holds no job slot, which is
+	// the whole point of separating the coding queue from the integration
+	// queue.
+	LabelReady  = "orion-ready"
+	LabelFailed = "orion-failed"
 )
 
 // StatusCategoryDone is Jira's terminal category. Every workflow has one,
@@ -438,7 +453,7 @@ func (i Issue) Resolved() bool {
 // Managed are every label Orion owns, for the queue query and for clearing
 // state when a ticket is finished or requeued.
 func Managed(queueLabel string) []string {
-	return []string{queueLabel, LabelWorking, LabelCIWait, LabelFailed}
+	return []string{queueLabel, LabelWorking, LabelCIWait, LabelReady, LabelFailed}
 }
 
 // StaleLocks returns the keys of issues that are FINISHED but still carry

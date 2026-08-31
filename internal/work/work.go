@@ -57,7 +57,12 @@ import (
 type Outcome string
 
 const (
-	OutcomeCIWait  Outcome = "ci-wait" // pushed, PR open, CI running
+	OutcomeCIWait Outcome = "ci-wait" // pushed, PR open, CI running
+	// OutcomeReady: pushed, no pull request, waiting for the integration
+	// queue to batch it (OR-253). Distinct from ci-wait because nothing is
+	// running: ci-wait means a machine is working, and reporting this as that
+	// would have the operator waiting on a build nobody started.
+	OutcomeReady   Outcome = "ready"
 	OutcomeBlocked Outcome = "blocked" // ran cleanly, produced nothing, asked something
 	OutcomeFailed  Outcome = "failed"  // the run or a step after it failed
 	OutcomeSkipped Outcome = "skipped" // preflight refused before spending
@@ -874,6 +879,23 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}
 	log.Emitf(events.KindPush, events.ActorOrion, "pushed %s", job.Branch)
 
+	// UNDER BATCH INTEGRATION THE BRANCH STOPS HERE (OR-253).
+	//
+	// A pull request per ticket is what made batching cost MORE than the path
+	// it replaced: `ci.yml` builds every `pull_request`, so N tickets bought N
+	// CI runs before the batch had run at all, and then each individual merge
+	// left the others behind the work branch to be rebased and rebuilt. The
+	// batch's own pull request is the single run and the single review
+	// surface for the whole set.
+	//
+	// The branch is pushed either way. What changes is that nothing opens a
+	// pull request for it and nothing waits on its checks: the ticket becomes
+	// READY, and the integration queue picks it up when it assembles the next
+	// batch.
+	if cfg.Collect.BatchIntegration {
+		return readyForBatch(res, key, issue, job, cfg, opts, deps, ws, log, w)
+	}
+
 	// Boundary four: the branch is on the remote and a pull request is next.
 	// Orion holds both sides, so it says it continues rather than handing to
 	// itself. The pushed branch is the detail.
@@ -932,6 +954,54 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	handoff(w, log, deps, opts, ui.Handoff{Key: key, From: "pull request", To: "ci",
 		By: events.ActorOrion, Next: events.ActorCI, Detail: "the job slot is free"})
 	res.Outcome = OutcomeCIWait
+	return res
+}
+
+// readyForBatch ends a run whose branch is pushed and whose ticket now waits
+// for the integration queue (OR-253).
+//
+// The pull-request path's ending, minus the pull request. Everything that
+// makes the state durable is still done, and for the same reason: the claim
+// is released, the ticket says what it is waiting for, and the job slot is
+// freed. A crash after this point must not leave a ticket that looks claimed
+// but has no agent, which is the failure orion-working exists to prevent.
+//
+// NO PULL REQUEST, and no CI. That is the whole change: N tickets used to buy
+// N pull-request runs plus a rebase for every merge after the first, before
+// the batch had proved anything. The batch's own pull request is the one run
+// and the one review surface for the set.
+func readyForBatch(res Result, key string, issue *tracker.Issue, job *workspace.Job,
+	cfg config.Config, opts Options, deps Deps, ws *workspace.Workspace,
+	log *events.Log, w io.Writer) Result {
+
+	// The claim goes, the readiness arrives, in one request. Two requests
+	// would leave a window where the ticket is neither claimed nor ready, and
+	// a watcher reconciling in that window would see free work and start a
+	// second agent on it.
+	if err := deps.Jira.SetLabels(key, []string{tracker.LabelReady},
+		append([]string{tracker.LabelWorking}, actors.StageLabels()...)); err != nil {
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+			"could not mark it ready for the batch: %v", err)
+	}
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion,
+		"pushed "+job.Branch+". Waiting for the integration queue: it will be "+
+			"assembled into the next batch, tested with it, and land with it."))
+	_ = deps.Jira.TransitionTo(key, "In Review")
+
+	ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+		"ready for the next batch on %s; no pull request, no CI run of its own", job.Branch)
+	log.Emitf(events.KindNote, events.ActorOrion,
+		"ready for batch integration on %s", job.Branch)
+
+	// The next party is Orion's integration queue, not CI and not an agent.
+	// Naming CI here would say a build is running when none is, which is the
+	// same defect boundary five exists to avoid, pointed at a different
+	// audience.
+	handoff(w, log, deps, opts, ui.Handoff{Key: key, From: "push", To: "ready",
+		By: events.ActorOrion, Next: events.ActorOrion,
+		Detail: "the job slot is free; waiting for the integration queue"})
+
+	res.Outcome = OutcomeReady
 	return res
 }
 

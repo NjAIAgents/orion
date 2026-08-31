@@ -133,8 +133,16 @@ func TestANoChangeRunIsNotAFailure(t *testing.T) {
 	if strings.Contains(j.labelLog(), "add:"+tracker.LabelFailed) {
 		t.Errorf("a no-op run was labelled failed: %s", j.labelLog())
 	}
-	if !strings.Contains(j.labelLog(), "remove:ORION,orion-working,orion-ci-wait,orion-failed") {
-		t.Errorf("the claim was not released: %s", j.labelLog())
+	// Every label Orion owns must come off, and the list is asked for rather
+	// than spelled out: a literal here passes or fails on the ORDER and
+	// SPELLING of a set that grows (orion-ready arrived with OR-253), which
+	// tests the string rather than the behaviour. The property is that a
+	// finished ticket carries none of Orion's state.
+	for _, want := range tracker.Managed("ORION") {
+		if !strings.Contains(j.labelLog(), want) {
+			t.Errorf("the claim was not fully released: %q is still set: %s",
+				want, j.labelLog())
+		}
 	}
 	if len(j.transitions) == 0 || j.transitions[len(j.transitions)-1] != "Done" {
 		t.Errorf("transitions = %v, want it moved off In Progress", j.transitions)

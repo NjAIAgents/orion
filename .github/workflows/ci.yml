@@ -5,15 +5,13 @@ on:
   # must run there too. Triggering only on main meant every commit between
   # releases was unverified by CI.
   #
-  # orion/batch is the ephemeral ref batch integration (OR-236) assembles and
-  # tests. It is pushed directly, with no pull request, so `pull_request:`
-  # below never matches it and this list is the ONLY thing that can build it.
-  # Without the entry, batchTester.Test polls a ref no workflow ever ran
-  # against, waits out its 30-minute deadline and fails with "refusing to read
-  # silence as green" -- the guard behaving correctly on a batch that could
-  # never have been tested. Batch integration cannot work in this repository
-  # without this line.
-  push: { branches: [main, develop, 'orion/batch'] }
+  # orion/batch is deliberately NOT here. The batch opens a pull request for
+  # its ref (OR-253), so `pull_request:` below builds it; listing the ref here
+  # as well would match both events and run the batch's single CI run twice,
+  # which is the exact cost the batch exists to remove. It was listed here for
+  # a few hours on 2026-08-31, when the batch pushed the ref and opened no
+  # pull request for it -- the reading side of the same bug.
+  push: { branches: [main, develop] }
   # branches-ignore: [main] excludes the develop-to-main PROMOTION pull
   # request, and only that one. Feature pull requests target develop, so
   # they still build here.

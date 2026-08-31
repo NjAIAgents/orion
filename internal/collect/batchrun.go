@@ -34,7 +34,9 @@ import (
 type batchTester struct {
 	git    repoGit
 	status func(dir, branch string) (PR, error)
+	openPR func(dir, branch, title, body, base string) (string, error)
 	dir    string
+	base   string
 	wait   time.Duration
 	out    io.Writer
 	log    *events.Log
@@ -53,8 +55,33 @@ func (t batchTester) Test(ref string) (bool, error) {
 	if err := t.git.PushRef(ref); err != nil {
 		return false, err
 	}
-	defer func() { _ = t.git.DeleteRemoteRef(ref) }()
 
+	// The pull request is what makes the run both HAPPEN and be READABLE.
+	// `ci.yml` triggers on pull_request; a bare push to an ephemeral ref
+	// matches no trigger, so without this nothing builds. And prStatus asks
+	// `gh pr view`, so without this the checks cannot be read even when they
+	// do run -- which is exactly what happened twice on 2026-08-31: CI green
+	// on the ref, Orion reading "no pull requests found" and waiting out the
+	// full deadline before refusing to call silence green.
+	//
+	// Opened before the poll rather than lazily, because the poll's whole
+	// premise is that a result will eventually appear, and nothing would
+	// produce one.
+	if t.openPR != nil {
+		title := fmt.Sprintf("batch: %s", ref)
+		body := "Assembled by Orion and tested as one set (OR-253). " +
+			"This pull request is the batch's single CI run and its review surface."
+		if _, err := t.openPR(t.dir, ref, title, body, t.base); err != nil &&
+			!strings.Contains(strings.ToLower(err.Error()), "already exists") {
+			return false, fmt.Errorf("opening the batch pull request for %s: %w", ref, err)
+		}
+	}
+
+	// NOT deleted on the way out any more. The ref has to survive Test for
+	// LandRef to merge the thing that was tested; dropping it here was safe
+	// only while a green batch handed its members back to the per-branch path
+	// to merge individually, which is the behaviour OR-253 removes. Cleanup
+	// is the caller's, after landing.
 	deadline := time.Now().Add(t.wait)
 	for {
 		pr, err := t.status(t.dir, ref)
@@ -148,6 +175,10 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	// that did not finish, and nothing finishes that was not allowed to run.
 	size := cfg.Limits.ConcurrentTickets()
 
+	// Built before the membership loop, which now asks git what is ready
+	// rather than asking the forge whether a pull request exists.
+	g := repoGit{ws: ws, merge: deps.Merge, openPR: deps.OpenPR}
+
 	var members []Member
 	for _, key := range pass {
 		if len(members) >= size {
@@ -161,18 +192,37 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		if !recorded {
 			branch = branchFor(cfg.VCS.BranchPrefix, key)
 		}
-		pr, err := deps.Status(ws.CloneDir(), branch)
-		if err != nil || pr.URL == "" || pr.Verdict == VerdictMerged {
-			continue // not ready to land; the per-branch path still reports it
+		// READINESS IS THE BRANCH BEING ON THE REMOTE, not a pull request
+		// existing (OR-253).
+		//
+		// Requiring a pull request was what forced the work pipeline to open
+		// one per ticket, which is what bought N CI runs before the batch had
+		// tested anything. The branch being pushed is the same fact without
+		// the cost: the agent finished, QA gave its verdict, and the commits
+		// are somewhere the batch can merge from.
+		//
+		// A branch that resolves nowhere is simply not ready yet -- the agent
+		// may still be running, or the push may have failed and been
+		// reported elsewhere. Skipped in silence here, and the per-branch
+		// path still has something to say about it.
+		head, err := g.SHAOf(branch)
+		if err != nil || head == "" {
+			continue
 		}
-		members = append(members, Member{Key: key, Branch: branch, Head: pr.Head})
+		// Already in the base is not a member, it is history. Without this a
+		// merged branch would be assembled into every later batch, each time
+		// contributing nothing and each time widening the set that has to be
+		// bisected when something else fails.
+		if merged, err := g.ContainsRef(cfg.VCS.WorkBranch, branch); err == nil && merged {
+			continue
+		}
+		members = append(members, Member{Key: key, Branch: branch, Head: head})
 	}
 	if len(members) == 0 {
 		return nil
 	}
 
 	ref := "orion/batch"
-	g := repoGit{ws: ws}
 	if opts.DryRun {
 		ui.Ok(w, "would", "assemble %d branch(es) into %s and test once: %s",
 			len(members), ref, strings.Join(pass[:len(members)], " "))
@@ -182,10 +232,18 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
 		"assembling %d branch(es) into %s", len(members), ref)
 
-	t := batchTester{git: g, status: deps.Status, dir: ws.CloneDir(),
+	t := batchTester{git: g, status: deps.Status, openPR: deps.OpenPR,
+		dir: ws.CloneDir(), base: cfg.VCS.WorkBranch,
 		wait: 30 * time.Minute, out: w, log: log}
 	b, err := Land(g, t, ref, cfg.VCS.WorkBranch, members, liveObserver{})
+
+	// Local ref and its worktree, then the published branch. Both, and only
+	// here: Test used to drop the remote ref as it returned, which cannot
+	// stand now that LandRef merges the ref Test proved. Asked for explicitly
+	// on 2026-08-31 -- a surviving orion/batch is force-pushed over by the
+	// next batch and misleads anyone reading the remote in between.
 	_ = g.DropRef(ref)
+	_ = g.DeleteRemoteRef(ref)
 
 	// Closed after the report is written, so the summary the observer left on
 	// screen is the last thing the region showed before the scrollback takes
@@ -207,10 +265,14 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		res := Result{Key: r.Key, Changed: true}
 		switch r.Outcome {
 		case Landed:
-			// Green as a SET. The existing per-branch pass now takes it
-			// through approval and merge, which keeps the irreversible step
-			// where it already lives.
-			res.Verdict = VerdictPassing
+			// ALREADY MERGED, as part of the set that was tested. Not
+			// VerdictPassing any more: that meant "green, now let the
+			// per-branch path merge it", and merging members one at a time is
+			// what left every other member behind the work branch and paid
+			// for a rebase and a fresh CI run each (OR-253). The thing that
+			// was tested is the thing that merged, so there is nothing left
+			// to do with it.
+			res.Verdict = VerdictMerged
 		case Culprit:
 			res.Verdict = VerdictFailing
 		default:
