@@ -107,11 +107,13 @@ type Deps struct {
 	// Work starts one ticket.
 	Work func(opts work.Options) []work.Result
 	// Queued returns the issues waiting to be started, in the order the
-	// tracker ranked them.
+	// tracker ranked them, AND the labelled ones the queue is holding back.
 	//
 	// Issues rather than keys, because the choice of WHICH n to start
-	// together needs more than a name: see pick.
-	Queued func(home string, projects []string, label string) ([]tracker.Issue, error)
+	// together needs more than a name: see pick. Held travels with them
+	// because the tick that decides to start nothing is exactly the tick
+	// that has to say why (OR-221).
+	Queued func(home string, projects []string, label string) (Queue, error)
 	// InFlight returns the tickets already claimed somewhere. The claim label
 	// is the lock, so this reads the tracker rather than any state this
 	// process holds -- a watcher restarted mid-job, or a second watcher
@@ -455,10 +457,15 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 	}
 
 	// 3. Start the next tickets.
-	queued, err := deps.Queued(opts.Home, opts.Projects, opts.QueueLabel)
+	q, err := deps.Queued(opts.Home, opts.Projects, opts.QueueLabel)
 	if err != nil {
 		return unfinished, err
 	}
+	// Before the empty check, because "nothing is queued" and "everything
+	// queued is unschedulable" are the two states this most has to tell
+	// apart, and the second one prints nothing at all without this.
+	reportHeld(w, q.Held)
+	queued := q.Ready
 	if len(queued) == 0 {
 		return unfinished, nil
 	}
@@ -485,6 +492,37 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 		p.dispatch(deps, opts, w, key)
 	}
 	return unfinished, nil
+}
+
+// reportHeld names the labelled tickets the queue refused, and why.
+//
+// ONE LINE PER REASON, listing the keys, rather than one line per ticket.
+// The console collapses a run of identical lines into a count (OR-217), and
+// that only works while the line does not change: two held tickets printing
+// alternate lines would defeat it and put two lines on screen every tick all
+// night. Grouped, the whole thing is one line that repeats identically and
+// therefore collapses -- and the reason sentence deliberately carries no
+// version names so it stays groupable.
+//
+// Keyed to no ticket, because it is about several.
+func reportHeld(w io.Writer, held []HeldTicket) {
+	if len(held) == 0 {
+		return
+	}
+	// Insertion order preserved: it is the tracker's own ranking, and
+	// re-sorting would make the line jump around between ticks for no reason
+	// a reader could see.
+	var reasons []string
+	keys := map[string][]string{}
+	for _, h := range held {
+		if _, seen := keys[h.Reason]; !seen {
+			reasons = append(reasons, h.Reason)
+		}
+		keys[h.Reason] = append(keys[h.Reason], h.Key)
+	}
+	for _, r := range reasons {
+		ui.Say(w, "", events.ActorOrion, ui.VerbWarn, "%s: %s", strings.Join(keys[r], ", "), r)
+	}
 }
 
 // slots is one tick's slot arithmetic: the cap, everything that took a slot,
@@ -865,27 +903,70 @@ func (s *syncWriter) Write(b []byte) (int, error) {
 	return s.w.Write(b)
 }
 
+// Queue is one tick's view of the labelled work: what may be started, and
+// what is being kept back.
+//
+// Held is carried alongside Ready rather than dropped because a ticket that
+// silently never runs is indistinguishable from a broken watcher. The queue
+// gate is allowed to refuse work; it is not allowed to refuse it quietly.
+type Queue struct {
+	Ready []tracker.Issue
+	Held  []HeldTicket
+}
+
+// HeldTicket is one labelled ticket the queue will not claim, and the reason
+// in the words an operator will see.
+type HeldTicket struct {
+	Key    string
+	Reason string
+}
+
 // Queued lists tickets carrying the queue label, in the tracker's order.
 //
 // Scoped to registered projects. An unscoped query would match a label
 // somebody applied by hand in an unrelated project, and this is the function
 // that decides what an agent is turned loose on.
-func Queued(j *tracker.Jira, home string, projects []string, label string) ([]tracker.Issue, error) {
+func Queued(j *tracker.Jira, home string, projects []string, label string) (Queue, error) {
 	keys, err := scope(home, projects)
 	if err != nil || len(keys) == 0 {
-		return nil, err
+		return Queue{}, err
 	}
-	issues, err := j.Search(queuedJQL(keys, label), 25)
+	// The open milestones per project, read before the query rather than
+	// applied to its results: see tracker/schedule.go. An error here stops
+	// the tick, which the loop retries -- not knowing whether a ticket is
+	// scheduled must not resolve to "claim it".
+	sched, err := tracker.LoadSchedules(j, keys)
 	if err != nil {
-		return nil, err
+		return Queue{}, err
 	}
-	return dropClaimedChildren(issues), nil
+	issues, err := j.Search(queuedJQL(keys, label, sched), 25)
+	if err != nil {
+		return Queue{}, err
+	}
+	q := Queue{Ready: dropClaimedChildren(issues)}
+
+	// The second query runs only where the gate is actually enforced, so a
+	// project that does not use versions costs nothing extra.
+	held := heldJQL(keys, label, sched)
+	if held == "" {
+		return q, nil
+	}
+	hs, err := j.Search(held, 25)
+	if err != nil {
+		return Queue{}, err
+	}
+	for _, i := range hs {
+		if reason := sched.HoldReason(i, label); reason != "" {
+			q.Held = append(q.Held, HeldTicket{Key: i.Key, Reason: reason})
+		}
+	}
+	return q, nil
 }
 
 // queuedJQL is the claim criterion: what a watcher will turn an agent loose
 // on. Split from Queued so it can be read in a test -- Queued itself needs a
 // live Jira, and this is the part that decides what gets worked.
-func queuedJQL(keys []string, label string) string {
+func queuedJQL(keys []string, label string, sched tracker.Schedules) string {
 	if label == "" {
 		label = tracker.QueueLabelDefault
 	}
@@ -900,8 +981,34 @@ func queuedJQL(keys []string, label string) string {
 	// queue and spent an agent re-investigating a bug that was already fixed
 	// on the trunk. Nothing here filtered on status, and the merged-branch
 	// guard could not help: a hand fix lands on a branch Orion never named.
+	//
+	// The project clause carries the milestone requirement (OR-221): the
+	// label says a ticket is READY, a fixVersion says it is SCHEDULED, and
+	// only both together make it claimable. In the JQL rather than after the
+	// fetch, so an unschedulable ticket never enters the candidate set and
+	// cannot be claimed in a race.
 	return tracker.JQLAnd(
-		tracker.JQLIn("project", keys...),
+		sched.Scope(keys),
+		tracker.JQLEq("labels", label),
+		tracker.JQLNotIn("labels", tracker.LabelWorking, tracker.LabelCIWait, tracker.LabelFailed),
+		tracker.JQLNotDone(),
+	) + " ORDER BY priority DESC, Rank ASC"
+}
+
+// heldJQL is queuedJQL with the milestone requirement inverted: the tickets
+// that would have been claimed but for their release. Empty when no project
+// in scope enforces the gate, which is how a project that does not use
+// versions avoids a second query it can have no answers to.
+func heldJQL(keys []string, label string, sched tracker.Schedules) string {
+	if label == "" {
+		label = tracker.QueueLabelDefault
+	}
+	held := sched.HeldScope(keys)
+	if held == "" {
+		return ""
+	}
+	return tracker.JQLAnd(
+		held,
 		tracker.JQLEq("labels", label),
 		tracker.JQLNotIn("labels", tracker.LabelWorking, tracker.LabelCIWait, tracker.LabelFailed),
 		tracker.JQLNotDone(),
