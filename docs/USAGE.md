@@ -274,6 +274,8 @@ Everything lives in `orion.json` at the repo root, reviewable like code.
 | `limits.max_session_minutes` | 90 | wall-clock runaway |
 | `limits.max_files_touched` | 60 | blast radius |
 | `limits.max_concurrent_tickets` | 4 | how many tickets `orion watch` works at once |
+| `qa.max_rounds` | 3 | QA and the developer arguing until the budget runs out |
+| `ci.max_fix_attempts` | 3 | an agent re-fixing a red build all night |
 | `gates.require_plan_before_edit` | true | implementation before a written plan |
 | `gates.protect_tests_during_fix` | true | an agent weakening the test that defines "fixed" |
 | `gates.production_requires_authorization` | true | an unauthorised production deploy |
@@ -282,6 +284,46 @@ Everything lives in `orion.json` at the repo root, reviewable like code.
 
 A limit of `0` restores the default rather than meaning unlimited. "No limit"
 is never a safe reading of an absent value in a circuit breaker.
+
+**Set them with the command, not by hand.** `orion config limits` lists every
+bound with its effective value and where that value came from — `orion.json` or
+the shipped default — and `orion config limits KEY VALUE` writes one. It edits
+the file the runner actually reads, which is not always the one you are standing
+in, and it leaves the `_comment_*` keys where they are. The two fix-round
+ceilings take their block as a prefix, because that is where they live in the
+JSON:
+
+```
+orion config limits                        # every bound, with provenance
+orion config limits qa.max_rounds 3
+orion config limits ci.max_fix_attempts 3
+```
+
+### The two fix-round ceilings
+
+`qa.max_rounds` and `ci.max_fix_attempts` are the same bet made twice: an agent
+is handed what went wrong and asked to try again, and the number bounds how many
+times that is worth paying for. Both default to **3**, raised from 2.
+
+That number is a decision with a cost, not a constant. A second fix round has
+demonstrably been productive here, and stopping at two escalates to a person
+work that one more exchange would have finished — but three raises the **worst
+case by half** on every ticket that fails to converge, and that spend lands on
+the implementer, the actor that dominates per-ticket cost. Set them to `2` to
+buy the old ceiling back.
+
+For the CI loop the ceiling is the **outer** bound, not the usual stop. An
+identical repeated failure ends that loop immediately, on the reasoning that an
+agent handed back a byte-identical error has learned nothing — so a third
+attempt is only ever reached by a run producing a *different* failure each
+round, which is the only kind of run a further attempt can help. Raising the
+ceiling does not reach past that brake.
+
+Neither is clamped from above. A value beyond 5 is confirmed rather than
+refused: too high is the expensive direction, so `orion config limits` states
+what it costs and asks, because a repository whose failures genuinely take four
+exchanges to converge is not something Orion can tell apart from a typo — and
+the person typing the number can.
 
 `limits.max_concurrent_tickets` is the one that bounds how many agents exist
 rather than what one agent may do, so it is also clamped from above: **5 is a

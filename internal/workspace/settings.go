@@ -258,8 +258,13 @@ const defaultProjectConfig = `{
   },
   "qa": {
     "enabled": true,
-    "max_rounds": 2,
+    "max_rounds": 3,
     "e2e_base_url": ""
+  },
+  "ci": {
+    "auto_fix": false,
+    "max_fix_attempts": 3,
+    "require_up_to_date": true
   },
   "delegation": {
     "enabled": true,

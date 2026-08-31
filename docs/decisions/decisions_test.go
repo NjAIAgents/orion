@@ -46,6 +46,12 @@ var expectedDecisions = []string{
 	// and instead removes the only gate on develop, on a fleet where branch
 	// protection returns 403.
 	"0015-ci-authority-under-a-merge-ref.md",
+	// OR-230. Load-bearing: without it, "ownership is per file, that is finer
+	// grained and therefore better" reads as an obvious improvement and
+	// reintroduces both failures the package boundary exists to prevent --
+	// a child testing against its peers' half-written files, and a call site
+	// written against a signature another child is still changing.
+	"0016-fan-implementation-by-go-package.md",
 }
 
 func TestEveryDecisionHasContextDecisionConsequences(t *testing.T) {
@@ -164,6 +170,20 @@ func TestDecisionContentMatchesTicket(t *testing.T) {
 			// next reader thinking either answer is still available.
 			"0013-new-creates-the-tracker-project-not-a-workspace.md",
 			[]string{"OR-148", "OR-149", "0012", "no workspace", "CreateProject"},
+		},
+		{
+			// The three rules are the substance, and each is worth less
+			// without the others. A file that kept the sections but lost the
+			// per-file rejection would leave "ownership per file is finer
+			// grained" available as an obvious improvement; one that lost the
+			// enforcement argument would read as though a prompt clause were
+			// enough to stop a child running the suite.
+			"0016-fan-implementation-by-go-package.md",
+			[]string{
+				"OR-230", "OR-229", "compilation unit", "import edge",
+				"go list", "Deps", "max_concurrent_children",
+				"Per-file ownership", "allowedTools", "only the parent",
+			},
 		},
 		{
 			// Which actors are routable, and why the rest are not, is the

@@ -367,6 +367,88 @@ func ExplorePrompt(question string) string {
 	)
 }
 
+// FanChildPrompt instructs one subagent working one Go package while its
+// peers work others in the same worktree (OR-230).
+//
+// The ownership clause is first and is absolute, because it is the only thing
+// standing between this and the failure the design exists to avoid. Orion's
+// validator has already established that no two assigned packages import one
+// another; that guarantee is worth nothing if a child edits outside its own.
+//
+// The no-commands clause is stated even though it is enforced by the tool
+// list, and the reason is stated with it. An agent that discovers it cannot
+// run the suite and is not told why concludes the environment is broken and
+// spends its turns working around it -- which is how a restriction meant to
+// save a suite run costs several.
+func FanChildPrompt(pkg, task string) string {
+	return join(
+		"You are one of several subagents changing this repository at the same",
+		"time. Each of us owns exactly one Go package.",
+		"",
+		"YOU OWN: "+pkg,
+		"Edit files in that package and nowhere else -- not a caller, not a test",
+		"in another package, not a shared helper. Another subagent owns every",
+		"other package being changed right now, and an edit outside yours will",
+		"either overwrite their work or be overwritten by it, silently, with no",
+		"conflict marker to warn anyone.",
+		"",
+		"WHAT TO CHANGE",
+		quote(task),
+		"",
+		"YOU HAVE NO SHELL",
+		"You cannot build, test, lint, or commit, and this is deliberate rather",
+		"than a fault to work around: the tree you are in is being written by",
+		"your peers right now, so a suite run here would report failures that",
+		"are not yours. The parent run builds and tests ONCE, after every",
+		"subagent has landed.",
+		"",
+		"WHEN YOU FINISH",
+		"Say what you changed, file by file, and name anything you could not do",
+		"or that needs a change outside your package. The parent acts on that",
+		"list; anything you leave out of it is lost.",
+	)
+}
+
+// fanOffer tells the implementer that independent packages can be worked
+// concurrently, and that Orion decides whether they are independent.
+//
+// The split matters more than the speedup. An agent asked to judge its own
+// fan width judges it optimistically, and a wrong guess here does not fail --
+// it corrupts a tree quietly and is discovered at merge. So the agent
+// proposes and a deterministic check disposes, in the same shape as the
+// plan-before-edit gate.
+//
+// Conditional on there being a go.mod, for the same reason testEnv's lines
+// are conditional: naming a Go-only mechanism in a repository that has no Go
+// in it teaches the agent to distrust the instruction and go exploring, which
+// costs more than saying nothing.
+func fanOffer(repoPath string) string {
+	if repoPath == "" {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, "go.mod")); err != nil {
+		return ""
+	}
+	return "\n\n" + join(
+		"WORKING SEVERAL PACKAGES AT ONCE",
+		"When this change touches Go packages that do not import one another, you",
+		"can have them written concurrently instead of working them in file order.",
+		"Write the assignment to a file -- one package each, and the task in full,",
+		"because the subagent is given that text and nothing else:",
+		`  {"assignments": [{"package": "./internal/a", "task": "..."},`,
+		`                   {"package": "./internal/b", "task": "..."}]}`,
+		"then run: orion fan <that file>",
+		"Orion checks it -- no package assigned twice, the width within this",
+		"project's limit, and no import edge between the packages assigned, from",
+		"go list. Any failure and it tells you to work serially. That is not a",
+		"negotiation and there is no better argument to make; just do the work.",
+		"The subagents can only read and edit. They cannot run anything, so",
+		"nothing is built or tested until they have all landed and YOU run the",
+		"suite once, yourself. At most two rounds of fixing what it reports, then",
+		"stop and say what is still red.",
+	)
+}
+
 // AIOpsNonePrefix is how the triage subagent says the leftover events are
 // all explainable and nothing should be filed.
 //
@@ -433,6 +515,102 @@ func AIOpsPrompt(key, lines string) string {
 		"the word \"failed\" rather than judging, and none of them will be read.",
 	)
 }
+
+// DonePrompt asks a subagent the ONE question about a finished, green run
+// that no rule in internal/done expresses: does this diff do what the ticket
+// asked for?
+//
+// Everything mechanical is settled before this runs -- whether QA reached a
+// verdict, whether a test is stranded in a worktree, whether the new tests
+// survive -count=2 are each a pure function over evidence that already
+// exists, and all three of the 2026-08-30 cases this pass was built from are
+// caught by them. What is left is the part that is not expressible as a rule,
+// and the reason a model is here at all.
+//
+// Three clauses carry it.
+//
+// THE DIFF IS THE ONLY EVIDENCE. Not the ticket's status, not the branch
+// name, not a commit message claiming the work is done. The failure this pass
+// exists to catch is precisely a run that SAYS it is finished, so the agent
+// is told which of the two to believe.
+//
+// DONE IS THE EXPECTED ANSWER. Most changes are what they say they are, and
+// an agent that hands work back on a hunch produces a verdict people learn to
+// wave through -- at which point the pass is worse than not running. So the
+// bar is a criterion it can NAME and cannot find, not a feeling of
+// incompleteness.
+//
+// MISSING EVIDENCE IS NOT MISSING WORK. A truncated diff is the ordinary case
+// for a large change, and "I could not see it" and "it is not there" are
+// different claims. Only the second is a hand-back.
+func DonePrompt(key, summary, criteria, stat, patch string, truncated bool) string {
+	lines := []string{
+		"A run working " + key + " has finished and its checks are green. Before a",
+		"person is asked to approve the merge, answer one question about it.",
+		"",
+		"THE TICKET",
+		quote(summary),
+		"",
+		"WHAT IT ASKED FOR",
+		quote(criteria),
+		"",
+		"WHAT THE BRANCH ACTUALLY CARRIES",
+		quote(stat),
+		"",
+		"THE DIFF",
+		quote(patch),
+	}
+	if truncated {
+		lines = append(lines, "",
+			"THIS DIFF IS TRUNCATED. Parts of it are not shown to you. A criterion",
+			"you cannot find may simply be in the part that was cut.")
+	}
+	lines = append(lines,
+		"",
+		"THE QUESTION: does each thing the ticket asked for correspond to",
+		"something in this diff?",
+		"",
+		"JUDGE THE DIFF, NOT THE CLAIM",
+		"A green check says the build compiles and the existing tests pass. A",
+		"commit message says what somebody meant to do. Neither is evidence that",
+		"the ticket was implemented, and a run that only LOOKS done is exactly",
+		"what you are here to catch.",
+		"",
+		"DONE IS THE EXPECTED ANSWER, AND USUALLY THE RIGHT ONE",
+		"Most changes are what they say they are. Say NOT DONE only when you can",
+		"NAME a specific thing the ticket asked for and point at its absence from",
+		"the diff. Not because the change looks small, not because you would have",
+		"written it differently, not because you would like more tests, and not",
+		"because something adjacent could also be improved. A hand-back on a",
+		"hunch costs a person a ticket and teaches everybody that this verdict",
+		"means nothing.",
+		"",
+		"IF YOU CANNOT SEE IT, THAT IS NOT THE SAME AS IT NOT BEING THERE",
+		"An unreadable or truncated diff is missing evidence, not missing work.",
+		"Answer "+doneReplyDone+" and let the checks that DO have evidence stand.",
+		"",
+		"DO NOT CHANGE ANYTHING",
+		"Do not edit a file, commit, merge, approve, comment on the ticket, or run",
+		"any command that would. You are reporting a verdict; Orion acts on it.",
+		"",
+		"ANSWER WITH ONE LINE AND NOTHING ELSE",
+		"  "+doneReplyDone,
+		"or",
+		"  "+doneReplyNotDone+" <the criterion the ticket asked for, and what the diff",
+		"  does not contain, in one sentence>",
+	)
+	return join(lines...)
+}
+
+// The reply contract for DonePrompt. Stated here rather than imported from
+// internal/done, so this package -- which every stage in Orion runs through --
+// takes no dependency on the one that parses its output. The coupling is real
+// either way, so it is pinned by a test that asserts the prompt states exactly
+// the markers internal/done reads.
+const (
+	doneReplyDone    = "DONE"
+	doneReplyNotDone = "NOT DONE:"
+)
 
 // TicketPrompt is the instruction for implementing one tracker issue.
 //
@@ -549,6 +727,7 @@ func TicketPromptWithChildren(key, summary, description, url, repoPath string,
 	b.WriteString(testEnv(repoPath))
 	b.WriteString(waitingForALongCommand())
 	b.WriteString(exploreOffer())
+	b.WriteString(fanOffer(repoPath))
 	b.WriteString(changelogFragment(repoPath, key))
 	b.WriteString(join(
 		"",

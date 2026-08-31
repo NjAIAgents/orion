@@ -127,6 +127,9 @@ GUARDRAILS
 FOR AN AGENT INSIDE A RUN
   orion explore "<question>"  answer one question about this repository in a
                               subagent's context, citing the paths (--repo DIR)
+  orion fan <plan.json>       write several independent Go packages at once, one
+                              subagent each. Refuses -- and says work serially --
+                              unless the packages are genuinely independent
 
 DEPENDENCIES
   orion njagents status       where nj-agents is, which commit, how stale
@@ -271,6 +274,8 @@ func main() {
 		runFix(os.Args[2])
 	case "explore":
 		runExplore(os.Args[2:])
+	case "fan":
+		runFan(os.Args[2:])
 	case "njagents", "nj-agents":
 		runNJAgents(os.Args[2:])
 	case "report":

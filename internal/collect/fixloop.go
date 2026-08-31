@@ -45,14 +45,18 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 
 	fp := Fingerprint(pr.Detail)
 	state := loadFixes(ws.Dir).States[key]
-	max := cfg.CI.MaxFixAttempts
-	if max <= 0 {
-		max = 3
-	}
+	// The ceiling comes from config with zero meaning the shipped default,
+	// the same shape QA's own ceiling reads by (config.QA.Rounds). The
+	// fallback used to be spelled out here, which made the two numbers look
+	// unrelated and left this one unsettable.
+	max := cfg.CI.Attempts()
 
-	// Brake one: the same failure twice means the last attempt achieved
-	// nothing. Spending the remaining attempts would prove only that it can
-	// fail identically three times.
+	// Brake one, and it is checked BEFORE the ceiling on purpose: the same
+	// failure twice means the last attempt achieved nothing. Spending the
+	// remaining attempts would prove only that it can fail identically three
+	// times. Raising the ceiling does not reach past this -- an attempt beyond
+	// the second is only ever reached by a run presenting a DIFFERENT failure
+	// each round, which is the only kind of run a further attempt can help.
 	if state.Repeating(fp) {
 		giveUp(key, ws, log, w, fmt.Sprintf(
 			"the last fix produced an identical failure, so it is not making progress (attempt %d)",

@@ -181,8 +181,24 @@ func defaults() map[string]Actor {
 		// the exact failure this pass exists to avoid. Opus is not warranted:
 		// the input is a few dozen structured lines, not a codebase.
 		events.ActorAIOps: {ID: events.ActorAIOps, Name: "Baba", Designation: "AIOps engineer", Model: "sonnet"},
-		events.ActorCI:    {ID: events.ActorCI, Designation: "ci"},
-		events.ActorHuman: {ID: events.ActorHuman, Designation: "you"},
+		// Done triage reads a run whose checks have gone green, against the
+		// diff and the ticket, and answers one question before a person is
+		// asked to approve it: is this genuinely done, or does it only look
+		// done (OR-244)? Almost all of that reading is rules -- a QA stage
+		// that crashed, a test left in a worktree, a suite that fails at
+		// -count=2 are each mechanical -- so this actor is reserved for the
+		// part no rule expresses: whether the change matches its intent.
+		//
+		// Sonnet, the same argument as AIOps rather than the cheap readers
+		// above it. This one decides whether to hand finished work BACK, and
+		// both directions of error are expensive: a model that says done too
+		// readily buys nothing, and one that says not-done too readily costs
+		// a person a ticket and teaches them the verdict is noise. Opus is
+		// not warranted -- the input is one ticket and one diff, not a
+		// codebase.
+		events.ActorDoneTriage: {ID: events.ActorDoneTriage, Name: "Hema", Designation: "delivery triage", Model: "sonnet"},
+		events.ActorCI:         {ID: events.ActorCI, Designation: "ci"},
+		events.ActorHuman:      {ID: events.ActorHuman, Designation: "you"},
 	}
 }
 

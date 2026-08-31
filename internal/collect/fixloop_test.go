@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/lessons"
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -28,8 +29,18 @@ func (f *fixSpy) fix(_ *workspace.Workspace, _, _, failure string, _ *events.Log
 	return f.pushed, f.summary, f.denied, f.err
 }
 
-// ciRepo builds a bound project with the fix loop switched on.
+// ciRepo builds a bound project with the fix loop switched on and an explicit
+// ceiling.
 func ciRepo(t *testing.T, maxAttempts int) (home, wsDir string) {
+	t.Helper()
+	return ciRepoWithCI(t, `"auto_fix":true,"max_fix_attempts":`+itoa(maxAttempts))
+}
+
+// ciRepoWithCI is the same, with the "ci" block's contents supplied verbatim,
+// so a test can leave max_fix_attempts ABSENT rather than only setting it to
+// something. Absent and zero are the two cases the shipped default has to
+// cover, and neither can be written through ciRepo.
+func ciRepoWithCI(t *testing.T, ciBlock string) (home, wsDir string) {
 	t.Helper()
 	home = t.TempDir()
 	t.Setenv("ORION_HOME", home)
@@ -42,7 +53,7 @@ func ciRepo(t *testing.T, maxAttempts int) (home, wsDir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := `{"ci":{"auto_fix":true,"max_fix_attempts":` + itoa(maxAttempts) + `},
+	cfg := `{"ci":{` + ciBlock + `},
 	         "vcs":{"work_branch":"develop","branch_prefix":"orion/"}}`
 	if err := os.WriteFile(filepath.Join(src, "orion.json"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
@@ -123,6 +134,47 @@ func TestTheLoopStopsAtTheAttemptCeiling(t *testing.T) {
 	}
 }
 
+// A repository that never mentions max_fix_attempts still gets a ceiling, and
+// it is the shipped three (OR-226). Absent must not read as unlimited, and it
+// must not read as the old two either -- a default nobody sets is the value
+// almost every repository actually runs on, so it is the one worth pinning.
+func TestAnUnsetCeilingIsTheShippedDefault(t *testing.T) {
+	home, _ := ciRepoWithCI(t, `"auto_fix":true`)
+	f := &fixSpy{pushed: true}
+
+	// Four rounds, each a DIFFERENT failure so the repeat brake never engages
+	// and the ceiling is the only thing that can stop this.
+	for _, detail := range []string{"failure A", "failure B", "failure C", "failure D"} {
+		runFix(t, home, f, detail, Options{})
+	}
+
+	if f.calls != config.FixRounds {
+		t.Fatalf("an unset ceiling allowed %d attempts, want the shipped %d",
+			f.calls, config.FixRounds)
+	}
+	if config.FixRounds != 3 {
+		t.Fatalf("the shipped fix-round ceiling is %d; OR-226 set it to 3 and the "+
+			"cost of changing it is stated on config.FixRounds", config.FixRounds)
+	}
+}
+
+// Zero is indistinguishable from absent in JSON, so it restores the default
+// rather than meaning no attempts. A fix loop with no attempts is auto_fix
+// switched off by a value nobody read as switching anything off.
+func TestAZeroCeilingMeansTheDefaultNotNoAttempts(t *testing.T) {
+	home, _ := ciRepo(t, 0)
+	f := &fixSpy{pushed: true}
+
+	_, out := runFix(t, home, f, "failure A", Options{})
+
+	if f.calls != 1 {
+		t.Fatalf("zero attempts were made; zero must mean the default, not none")
+	}
+	if !strings.Contains(out, "attempt 1 of 3") {
+		t.Errorf("the ceiling in force must be the shipped three: %s", out)
+	}
+}
+
 // The brake that matters most. An agent that pushes a fix and gets back a
 // byte-identical failure has learned nothing; spending the remaining
 // attempts proves only that it can fail the same way three times.
@@ -139,6 +191,34 @@ func TestAnIdenticalFailureStopsTheLoopImmediately(t *testing.T) {
 	}
 	if !strings.Contains(out, "not making progress") {
 		t.Errorf("the reason must distinguish this from the ceiling: %s", out)
+	}
+}
+
+// Raising the ceiling from two to three must not buy a repeating run a third
+// attempt (OR-226). The budget is the outer bound; the repeat brake is what
+// usually stops the loop, and the whole case for a higher ceiling rests on it
+// only ever being reached by a run making DIFFERENT progress each round.
+//
+// Distinct from the test above, which pins an explicit ceiling of five. This
+// one runs on the shipped default, which is the number that just changed and
+// therefore the one that could have swallowed the brake.
+func TestARepeatedFailureStopsBeforeTheRaisedDefaultCeiling(t *testing.T) {
+	home, _ := ciRepoWithCI(t, `"auto_fix":true`)
+	f := &fixSpy{pushed: true}
+	same := "test_impact.py::test_delta FAILED\nassert 100 == 99"
+
+	// Three rounds of the same failure. With the brake gone, the ceiling of
+	// three would let all three through and this would read as passing.
+	runFix(t, home, f, same, Options{})
+	runFix(t, home, f, same, Options{})
+	_, out := runFix(t, home, f, same, Options{})
+
+	if f.calls != 1 {
+		t.Fatalf("a repeating failure got %d attempts under the raised default; "+
+			"the ceiling must never be reachable by a run repeating itself", f.calls)
+	}
+	if !strings.Contains(out, "not making progress") {
+		t.Errorf("it stopped for the wrong reason: %s", out)
 	}
 }
 
