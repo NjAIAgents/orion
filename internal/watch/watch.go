@@ -137,6 +137,11 @@ type Deps struct {
 // costs every ticket the queue would have finished.
 const maxLimitSleep = 30 * time.Minute
 
+// claimsPage is how many claimed tickets one sweep asks for. Jira caps a page
+// at 100, so this asks for the most it can get in one call rather than a
+// number that has to be revisited whenever concurrency changes.
+const claimsPage = 100
+
 // DefaultInterval is the gap between ticks when none is given.
 //
 // The tick is the latency floor on every transition Orion notices rather
@@ -1080,11 +1085,16 @@ func InFlight(j LockAPI, home string, projects []string, w io.Writer) ([]string,
 		tracker.JQLIn("project", keys...),
 		tracker.JQLEq("labels", tracker.LabelWorking),
 	)
-	// Comfortably above the concurrency ceiling. Asking for exactly the cap
-	// would let a handful of stale claims fill the answer and hide a live one
-	// behind them -- and the stale ones are cleared below, so a short page
-	// would also mean they were never cleared.
-	issues, err := j.Search(jql, config.MaxConcurrentTicketsCeiling+5)
+	// A generous page, deliberately unrelated to the concurrency setting.
+	//
+	// It used to be the concurrency ceiling plus five, which only worked while
+	// a ceiling existed; concurrency is now whatever the operator configured,
+	// so sizing this from it would make the page shrink or grow with a number
+	// that has nothing to do with how many STALE claims are lying around.
+	// Asking for too few is the harmful direction: stale claims would fill the
+	// answer, hide a live one behind them, and -- since the stale ones are
+	// cleared below -- never be cleared either.
+	issues, err := j.Search(jql, claimsPage)
 	if err != nil {
 		return nil, err
 	}

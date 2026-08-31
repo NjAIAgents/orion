@@ -31,7 +31,8 @@ type Limits struct {
 	// time. Unlike the limits above it does not bound one agent's behaviour;
 	// it bounds how many agents exist.
 	//
-	// Four by default, and never more than MaxConcurrentTicketsCeiling.
+	// Four by default. There is no maximum: a larger value is confirmed at
+	// the point it is set, not refused.
 	//
 	// It was two first, deliberately: every hazard concurrency introduces --
 	// concurrent git against one shared clone, a budget checkpoint sailed past
@@ -42,9 +43,10 @@ type Limits struct {
 	// (v0.8.0 and the v0.8.1 queue), so this is that raise rather than a
 	// change of mind about the hazards.
 	//
-	// Four and not the ceiling of five, because the ceiling has to stay
-	// reachable only by an explicit choice. A default that equals the maximum
-	// leaves nothing to opt into and hides the fact that a limit exists.
+	// Four as a default rather than a maximum: there is no maximum. A value
+	// above ConcurrencyWarnAbove is confirmed rather than refused, because the
+	// hazards scale with a machine, a repository and a rate limit that Orion
+	// cannot measure from here.
 	//
 	// Note this multiplies with MaxConcurrentChildren above rather than
 	// capping it: four tickets each fanning out to subagents is a different
@@ -53,24 +55,38 @@ type Limits struct {
 	MaxConcurrentTickets int `json:"max_concurrent_tickets"`
 }
 
-// MaxConcurrentTicketsCeiling is the highest value limits.max_concurrent_tickets
-// may ask for. A hard ceiling rather than advice: the cost of being wrong about
-// this number is paid by a queue of half-finished branches and a bill, neither
-// of which is visible until afterwards.
-const MaxConcurrentTicketsCeiling = 5
-
-// ConcurrentTickets is the cap actually enforced: the configured value,
-// clamped to [1, MaxConcurrentTicketsCeiling], with 0 meaning the default.
+// ConcurrencyWarnAbove is where `orion config limits` stops accepting a value
+// silently and asks the operator to confirm it.
 //
-// Clamped here rather than at the call site so every reader gets the same
-// answer -- a watcher that read the raw field would honour a hand-edited 40.
+// A confirmation, not a ceiling. The old hard cap of five refused a number the
+// operator had deliberately chosen, on a machine Orion cannot measure: the
+// hazards below scale with the machine, the repository and the rate limit, and
+// none of those is knowable from here. Refusing was Orion asserting it knew
+// better about a thing it cannot see.
+//
+// Ten because that is where the costs stop being linear. Conflicts grow with
+// the SQUARE of the number in flight -- six pairs at four, forty-five at ten --
+// and on this project one pair in six collided, so ten is roughly where a
+// batch would eject most of itself. It is a threshold for a conversation, not
+// a verdict.
+const ConcurrencyWarnAbove = 10
+
+// ConcurrentTickets is the cap actually enforced: the configured value, with
+// zero meaning the shipped default.
+//
+// No upper clamp. There used to be one, and it produced a file that disagreed
+// with behaviour: a config saying 40 while the watcher ran 5, with nothing in
+// either place explaining the gap. A configured number is now honoured, and
+// the place to argue about it is where it is SET -- `orion config limits`
+// asks for confirmation above ConcurrencyWarnAbove -- rather than silently at
+// every read.
+//
+// Zero still means the default rather than unlimited. An absent value must
+// never widen a control, which is this package's rule for every field.
 func (l Limits) ConcurrentTickets() int {
 	n := l.MaxConcurrentTickets
 	if n <= 0 {
 		n = Defaults().Limits.MaxConcurrentTickets
-	}
-	if n > MaxConcurrentTicketsCeiling {
-		n = MaxConcurrentTicketsCeiling
 	}
 	return n
 }
@@ -848,13 +864,11 @@ func normalize(c *Config) {
 	if c.Limits.MaxConcurrentChildren <= 0 {
 		c.Limits.MaxConcurrentChildren = d.Limits.MaxConcurrentChildren
 	}
-	// Clamped rather than defaulted, because too HIGH is the dangerous
-	// direction here and the ceiling has to survive a hand edit.
+	// Defaulted when absent, and NOT clamped when present. A configured
+	// number is honoured: the argument about whether it is wise happens where
+	// it is set, not silently on every read.
 	if c.Limits.MaxConcurrentTickets <= 0 {
 		c.Limits.MaxConcurrentTickets = d.Limits.MaxConcurrentTickets
-	}
-	if c.Limits.MaxConcurrentTickets > MaxConcurrentTicketsCeiling {
-		c.Limits.MaxConcurrentTickets = MaxConcurrentTicketsCeiling
 	}
 	if c.Paths.State == "" {
 		c.Paths.State = d.Paths.State

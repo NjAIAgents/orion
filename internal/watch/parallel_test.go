@@ -132,14 +132,16 @@ func TestConcurrencyTakesTheSmallestCapAcrossWatchedProjects(t *testing.T) {
 	}
 }
 
-// A hand-edited config asking for forty gets the ceiling, not forty.
-func TestConcurrencyClampsAConfiguredValueToTheCeiling(t *testing.T) {
+// A config asking for forty gets forty. There is no ceiling: the watcher
+// honours what the operator set, and `orion config limits` is where a large
+// number is questioned.
+func TestConcurrencyHonoursALargeConfiguredValue(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ORION_HOME", home)
 	withProjectCap(t, home, "OR", 40)
 
-	if n, _ := Concurrency(home, []string{"OR"}); n != config.MaxConcurrentTicketsCeiling {
-		t.Fatalf("Concurrency = %d, want the ceiling %d", n, config.MaxConcurrentTicketsCeiling)
+	if n, _ := Concurrency(home, []string{"OR"}); n != 40 {
+		t.Fatalf("Concurrency = %d, want the configured 40", n)
 	}
 }
 

@@ -113,6 +113,40 @@ func showLimits(home string, out io.Writer, path, key string) error {
 	return nil
 }
 
+// confirmConcurrency states what a large number costs and asks for a yes.
+//
+// Every hazard here has been observed on this project rather than imagined,
+// which is why they are worth reading rather than clicking past.
+// confirmIn is where the answer is read. A variable so a test can supply one:
+// reading os.Stdin directly made this unreachable from a test, which for a
+// prompt that guards an unattended setting is the wrong thing to leave
+// unverified.
+var confirmIn io.Reader = os.Stdin
+
+func confirmConcurrency(out io.Writer, n int) bool {
+	fmt.Fprintf(out, "\n%s\n", ui.Heading(out, fmt.Sprintf("%d tickets at once", n)))
+	for _, line := range []string{
+		"conflicts grow with the SQUARE of this number, not with it: six pairs at four, " +
+			"forty-five at ten. One pair in six collided on this project.",
+		"every run holds a worktree off ONE shared clone, and git serialises on it.",
+		"one rate limit is shared by all of them; the more that run, the sooner they wait.",
+		"a budget checkpoint is only read between runs, so N runs already in flight " +
+			"sail past it together.",
+		"approvals do NOT parallelise: N tickets finishing means N approvals waiting " +
+			"on one person.",
+	} {
+		fmt.Fprintf(out, "  %s %s\n", ui.Dim(out, "-"), ui.Dim(out, line))
+	}
+	fmt.Fprintf(out, "\nSet it to %d anyway? [y/N] ", n)
+	var answer string
+	_, _ = fmt.Fscanln(confirmIn, &answer)
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	// Anything that is not an explicit yes is a no, including EOF. A prompt
+	// that no one answered has not been agreed to, and defaulting to yes when
+	// stdin is closed would let a script set a number nobody chose.
+	return answer == "y" || answer == "yes"
+}
+
 func setLimit(home string, out io.Writer, path, key, name, value string) error {
 	if _, ok := limitField(name); !ok {
 		return fmt.Errorf("%q is not a limit.\n  Known: %s", name, strings.Join(limitNames(), ", "))
@@ -121,16 +155,17 @@ func setLimit(home string, out io.Writer, path, key, name, value string) error {
 	if err != nil || n < 0 {
 		return fmt.Errorf("%q is not a whole number of zero or more", value)
 	}
-	// Refused, not clamped. ConcurrentTickets() clamps to the ceiling at read
-	// time, so storing 40 would leave the file saying 40 while the watcher ran
-	// 5 -- a file that disagrees with behaviour, the same class of problem as
-	// the slot arithmetic nobody could see in OR-196. Saying no costs one
-	// re-run and leaves nothing to misread.
-	if name == "max_concurrent_tickets" && n > config.MaxConcurrentTicketsCeiling {
-		return fmt.Errorf("limits.max_concurrent_tickets is capped at %d, so %d would be run as %d.\n"+
-			"  Nothing was written. Ask for %d or less.",
-			config.MaxConcurrentTicketsCeiling, n, config.MaxConcurrentTicketsCeiling,
-			config.MaxConcurrentTicketsCeiling)
+	// Confirmed, not refused. This used to reject anything above a hard
+	// ceiling of five, which meant Orion overruling a number the operator had
+	// chosen for a machine it cannot measure. The hazards below are real, and
+	// they scale with the machine, the repository and the rate limit -- so the
+	// right move is to state them and let the person decide.
+	if name == "max_concurrent_tickets" && n > config.ConcurrencyWarnAbove {
+		if !confirmConcurrency(out, n) {
+			return fmt.Errorf("not confirmed, so nothing was written; "+
+				"%d is above the point (%d) where this asks",
+				n, config.ConcurrencyWarnAbove)
+		}
 	}
 
 	b, err := os.ReadFile(path)

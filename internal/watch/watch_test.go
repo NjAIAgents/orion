@@ -11,7 +11,6 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/collect"
-	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/work"
@@ -398,8 +397,11 @@ func TestTheConcurrencyCapIsClampedToTheCeiling(t *testing.T) {
 	s.mu.Lock()
 	peak := s.peak
 	s.mu.Unlock()
-	if peak > config.MaxConcurrentTicketsCeiling {
-		t.Fatalf("ran %d at once; the ceiling is %d", peak, config.MaxConcurrentTicketsCeiling)
+	// Bounded by what was ASKED for, not by a ceiling Orion imposes. The
+	// hard cap of five is gone: a configured number is honoured, and a large
+	// one is questioned where it is set rather than silently reduced here.
+	if peak > 40 {
+		t.Fatalf("ran %d at once, above the configured 40", peak)
 	}
 }
 

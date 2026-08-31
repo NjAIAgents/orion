@@ -121,22 +121,49 @@ func TestSetLimitLeavesTheRestOfTheBlockAndItsCommentsAlone(t *testing.T) {
 // Asking for forty gets a refusal naming the ceiling, not a file that says
 // forty while the watcher runs five. A stored value the reader silently
 // overrides is a file disagreeing with behaviour.
-func TestSetLimitRefusesAboveTheCeilingRatherThanClampingSilently(t *testing.T) {
+func TestSetLimitAsksBeforeWritingALargeConcurrency(t *testing.T) {
 	home := t.TempDir()
 	src := registeredProject(t, home, "OR", adoptedConfig)
 	path := filepath.Join(src, "orion.json")
 	before := readFile(t, path)
 
+	// Nothing on stdin: the prompt goes unanswered, which is not a yes.
+	confirmIn = strings.NewReader("")
+	t.Cleanup(func() { confirmIn = os.Stdin })
+
 	var out bytes.Buffer
 	err := configLimits(home, src, &out, []string{"max_concurrent_tickets", "40"})
 	if err == nil {
-		t.Fatal("40 was accepted; the ceiling has to be reported, not applied behind the operator")
-	}
-	if !strings.Contains(err.Error(), "5") {
-		t.Errorf("the refusal must name the ceiling, got %q", err)
+		t.Fatal("40 was written without an answer; an unanswered prompt is not consent")
 	}
 	if got := readFile(t, path); got != before {
-		t.Errorf("the file was written despite the refusal:\n%s", got)
+		t.Errorf("the file was written despite no confirmation:\n%s", got)
+	}
+	// The hazards have to be stated, or the prompt is a speed bump rather
+	// than a decision.
+	for _, want := range []string{"conflicts", "rate limit", "approvals"} {
+		if !strings.Contains(strings.ToLower(out.String()), want) {
+			t.Errorf("the prompt must mention %q so the choice is informed:\n%s", want, out.String())
+		}
+	}
+}
+
+// And a yes writes it. There is no ceiling any more: a number the operator
+// confirmed is theirs to choose, on a machine Orion cannot measure.
+func TestSetLimitWritesALargeConcurrencyOnceConfirmed(t *testing.T) {
+	home := t.TempDir()
+	src := registeredProject(t, home, "OR", adoptedConfig)
+	path := filepath.Join(src, "orion.json")
+
+	confirmIn = strings.NewReader("y\n")
+	t.Cleanup(func() { confirmIn = os.Stdin })
+
+	var out bytes.Buffer
+	if err := configLimits(home, src, &out, []string{"max_concurrent_tickets", "40"}); err != nil {
+		t.Fatalf("a confirmed 40 must be written: %v", err)
+	}
+	if !strings.Contains(readFile(t, path), "40") {
+		t.Errorf("40 was confirmed but not written:\n%s", readFile(t, path))
 	}
 }
 

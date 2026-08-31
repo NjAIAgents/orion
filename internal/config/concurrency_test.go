@@ -22,11 +22,17 @@ func TestAnAbsentConcurrencyCapDefaultsRatherThanUnbounding(t *testing.T) {
 	}
 }
 
-// The ceiling is a ceiling, and it has to survive a hand-edited file rather
-// than only the menu that writes one.
-func TestAConfiguredConcurrencyCapIsClampedToTheCeiling(t *testing.T) {
-	if got := (Limits{MaxConcurrentTickets: 40}).ConcurrentTickets(); got != MaxConcurrentTicketsCeiling {
-		t.Fatalf("ConcurrentTickets() = %d, want the ceiling %d", got, MaxConcurrentTicketsCeiling)
+// A configured value is HONOURED, however large.
+//
+// This used to assert the opposite: forty was clamped to a ceiling of five.
+// That produced a file saying forty while the watcher ran five, with nothing
+// in either place explaining the gap -- so the config could not be trusted to
+// describe behaviour. The argument about whether a number is wise now happens
+// where it is set (`orion config limits` confirms above
+// ConcurrencyWarnAbove), which is the only place with a person to ask.
+func TestAConfiguredConcurrencyCapIsHonouredHoweverLarge(t *testing.T) {
+	if got := (Limits{MaxConcurrentTickets: 40}).ConcurrentTickets(); got != 40 {
+		t.Fatalf("ConcurrentTickets() = %d, want the configured 40", got)
 	}
 
 	dir := t.TempDir()
@@ -34,22 +40,26 @@ func TestAConfiguredConcurrencyCapIsClampedToTheCeiling(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "orion.json"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Clamped on LOAD too, not only through the accessor: anything reading the
-	// field directly must not see 40 either.
-	if got := Load(dir).Limits.MaxConcurrentTickets; got != MaxConcurrentTicketsCeiling {
-		t.Fatalf("the loaded config carries %d; a hand edit must not widen the control", got)
+	// Honoured on LOAD too, not only through the accessor: a caller reading
+	// the field directly must see the same number the file states.
+	if got := Load(dir).Limits.MaxConcurrentTickets; got != 40 {
+		t.Fatalf("the loaded config carries %d; it must agree with the file", got)
 	}
 }
 
-// A value inside the range is honoured exactly -- the point of the setting is
-// that an operator who has proved it at two can raise it.
-func TestAConfiguredConcurrencyCapInRangeIsHonoured(t *testing.T) {
-	dir := t.TempDir()
-	body := `{"version":1,"limits":{"max_concurrent_tickets":4}}`
-	if err := os.WriteFile(filepath.Join(dir, "orion.json"), []byte(body), 0o600); err != nil {
-		t.Fatal(err)
+// Zero still means the shipped default and never "unlimited". An absent value
+// must not widen a control -- the rule every field in this package follows.
+func TestZeroStillMeansTheDefaultRatherThanUnlimited(t *testing.T) {
+	if got := (Limits{MaxConcurrentTickets: 0}).ConcurrentTickets(); got != Defaults().Limits.MaxConcurrentTickets {
+		t.Fatalf("ConcurrentTickets() = %d for zero, want the shipped default", got)
 	}
-	if got := Load(dir).Limits.ConcurrentTickets(); got != 4 {
-		t.Fatalf("ConcurrentTickets() = %d, want 4", got)
+}
+
+// The warning threshold has to sit above the shipped default, or every
+// operator is asked to confirm a number Orion itself chose.
+func TestTheWarningThresholdIsAboveTheShippedDefault(t *testing.T) {
+	if ConcurrencyWarnAbove <= Defaults().Limits.MaxConcurrentTickets {
+		t.Fatalf("ConcurrencyWarnAbove (%d) must exceed the default (%d), or the default prompts",
+			ConcurrencyWarnAbove, Defaults().Limits.MaxConcurrentTickets)
 	}
 }
