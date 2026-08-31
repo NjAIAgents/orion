@@ -3,6 +3,7 @@ package agentcfg
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -59,6 +60,7 @@ func cfgWith(root string, inherit ...string) config.Config {
 // directory exists, it holds the toolkit Orion depends on, and the flag that
 // removes the operator's MCP servers is passed.
 func TestACuratedRunGetsTheToolkitAndNoMCPServers(t *testing.T) {
+	requireCuration(t)
 	isolate(t)
 	home := t.TempDir()
 
@@ -98,6 +100,7 @@ func TestACuratedRunGetsTheToolkitAndNoMCPServers(t *testing.T) {
 // loaded however it is enabled -- so what matters is that nothing arrived
 // there that Orion did not put there.
 func TestTheCuratedDirectoryHoldsNothingOrionDidNotPutThere(t *testing.T) {
+	requireCuration(t)
 	isolate(t)
 	home := t.TempDir()
 	operator := t.TempDir()
@@ -181,6 +184,7 @@ func TestAnOperatorCanOptOneStageOrOneActorIn(t *testing.T) {
 // The default is off. An unrelated stage named in the list changes nothing
 // for the one actually running.
 func TestAnUnrelatedOptInLeavesTheRunCurated(t *testing.T) {
+	requireCuration(t)
 	isolate(t)
 	r, err := For(t.TempDir(), cfgWith(toolkit(t), "review"), "build", "implementer")
 	if err != nil {
@@ -195,6 +199,7 @@ func TestAnUnrelatedOptInLeavesTheRunCurated(t *testing.T) {
 // left in the directory by hand must survive. Deleting a file Orion did not
 // create is how a tool becomes one nobody can leave anything in.
 func TestRebuildingDropsStaleLinksAndKeepsRealFiles(t *testing.T) {
+	requireCuration(t)
 	isolate(t)
 	home := t.TempDir()
 	root := toolkit(t)
@@ -228,6 +233,7 @@ func TestRebuildingDropsStaleLinksAndKeepsRealFiles(t *testing.T) {
 // radius on the one machine least likely to be watching for it; `orion
 // doctor` is what grades the missing toolkit, and it grades it FAIL.
 func TestAMissingToolkitWarnsAndStaysCurated(t *testing.T) {
+	requireCuration(t)
 	isolate(t)
 	home := t.TempDir()
 	empty := t.TempDir()
@@ -244,5 +250,61 @@ func TestAMissingToolkitWarnsAndStaysCurated(t *testing.T) {
 	}
 	if len(r.Warnings) == 0 {
 		t.Error("a run with no delegated skills must say so")
+	}
+}
+
+// OR-239. A curated CLAUDE_CONFIG_DIR cannot authenticate on macOS: the CLI
+// wants .claude.json INSIDE the directory while the operator's lives outside
+// it, and the Keychain is not reached for a non-default directory. v0.8.3
+// shipped the curated directory anyway and every supervised run on macOS
+// failed at the first call.
+//
+// The contract is therefore platform-dependent, and the test asserts the
+// contract rather than the platform: wherever curation cannot authenticate,
+// For MUST inherit deliberately and MUST say so. A silent inherit would be
+// the worse failure -- an operator believing their runs are curated when the
+// whole plugin surface is in scope.
+func TestForInheritsWhenACuratedDirectoryCannotAuthenticate(t *testing.T) {
+	r, err := agentcfgFor(t)
+	if err != nil {
+		t.Fatalf("For() = %v, want a usable run", err)
+	}
+	if curationAuthenticates() {
+		if r.Dir == "" {
+			t.Fatal("a platform that CAN authenticate a curated directory must get one")
+		}
+		return
+	}
+	if r.Dir != "" {
+		t.Errorf("Dir = %q, want empty: a curated directory that cannot log in is not a run", r.Dir)
+	}
+	if !r.Inherited {
+		t.Error("Inherited = false; the operator's configuration was used and the record must say so")
+	}
+	if r.OptIn != "platform:"+runtime.GOOS {
+		t.Errorf("OptIn = %q, want the platform recorded as the reason", r.OptIn)
+	}
+	if len(r.Warnings) == 0 {
+		t.Fatal("no warning: a run that is NOT capability-curated must never be silent about it")
+	}
+}
+
+func agentcfgFor(t *testing.T) (*Run, error) {
+	t.Helper()
+	return For(t.TempDir(), config.Defaults(), "implementing", "implementer")
+}
+
+// requireCuration skips a test that can only hold where a curated
+// CLAUDE_CONFIG_DIR authenticates.
+//
+// A SKIP rather than a weakened assertion: "the run stays curated" is still
+// exactly right on Linux and in CI, and softening it there to accommodate
+// macOS would delete the coverage that OR-213 exists for. The platform gap
+// is asserted by TestForInheritsWhenACuratedDirectoryCannotAuthenticate
+// instead, so neither side of the branch is untested.
+func requireCuration(t *testing.T) {
+	t.Helper()
+	if !curationAuthenticates() {
+		t.Skipf("a curated config directory cannot authenticate on %s (OR-239)", runtime.GOOS)
 	}
 }
