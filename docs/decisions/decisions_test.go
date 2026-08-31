@@ -41,6 +41,11 @@ var expectedDecisions = []string{
 	// simplification that reads as tidying up and silently hands every run a
 	// write handle to the tracker again.
 	"0014-supervised-runs-get-a-curated-config-directory.md",
+	// OR-237. Load-bearing: without it, "CI runs on the merge ref now, so the
+	// per-branch check is redundant -- drop it" reads as removing a duplicate
+	// and instead removes the only gate on develop, on a fleet where branch
+	// protection returns 403.
+	"0015-ci-authority-under-a-merge-ref.md",
 }
 
 func TestEveryDecisionHasContextDecisionConsequences(t *testing.T) {
@@ -136,6 +141,21 @@ func TestDecisionContentMatchesTicket(t *testing.T) {
 		{
 			"0009-canonical-slug-one-name.md",
 			[]string{"OR-149"},
+		},
+		{
+			// WHICH of OR-237's three options was taken, and the two facts that
+			// decided it, are the whole substance. A file that kept the sections
+			// but lost the post-merge backstop would read as "Orion is the gate
+			// now", which is the option this record declined to take alone; one
+			// that lost the empty-rollup guard would leave OR-236 free to ship a
+			// merge ref that reports every member pull request green on no
+			// evidence at all.
+			"0015-ci-authority-under-a-merge-ref.md",
+			[]string{
+				"OR-237", "OR-236", "merge ref", "post-merge",
+				"no checks are configured", "require_checks",
+				"protected_branches", "403",
+			},
 		},
 		{
 			// WHICH way the open question went, and the reason it was not a
