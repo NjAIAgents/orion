@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/actors"
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 )
 
@@ -556,6 +557,170 @@ func TestHeaderReportsSpendAndCI(t *testing.T) {
 			t.Errorf("header is missing %q: %q", want, got)
 		}
 	}
+}
+
+// A run that never made a tool call is quiet from DISPATCH time, not from
+// some notion of "first activity" that never happened -- a run that has done
+// nothing at all is the most suspicious kind of quiet, not the least.
+func TestQuietMeasuredFromDispatchWhenNeverActive(t *testing.T) {
+	now := time.Date(2026, 8, 30, 23, 47, 12, 0, time.UTC)
+	r := run("OR-237", events.ActorImplementer, "starting", now.Add(-90*time.Second))
+	// r.last is left at its zero value: no tool call has ever been recorded.
+
+	notes := r.notes(now)
+	if len(notes) != 1 || !strings.Contains(notes[0], "quiet 1m30s") {
+		t.Errorf("a run with no activity must be quiet from its dispatch time: %+v", notes)
+	}
+}
+
+// The quiet threshold is exactly 60 seconds: one tick short must not say it,
+// and the instant it is reached must.
+func TestQuietThresholdIsExactlySixtySeconds(t *testing.T) {
+	start := time.Date(2026, 8, 30, 23, 0, 0, 0, time.UTC)
+	r := run("OR-237", events.ActorImplementer, "implementing", start)
+	r.last = start
+
+	notAt59 := r.notes(start.Add(59 * time.Second))
+	if len(notAt59) != 0 {
+		t.Errorf("59 seconds of silence must not be reported quiet: %+v", notAt59)
+	}
+	atExactly60 := r.notes(start.Add(60 * time.Second))
+	if len(atExactly60) == 0 || !strings.Contains(atExactly60[0], "quiet") {
+		t.Errorf("exactly 60 seconds of silence must be reported quiet: %+v", atExactly60)
+	}
+}
+
+// NO_COLOR degrades every glyph, not just the spinner: the bar and the
+// sparkline must also fall back to their ASCII forms.
+func TestNoColorDegradesBarAndSparklineGlyphs(t *testing.T) {
+	now := time.Date(2026, 8, 30, 23, 47, 12, 0, time.UTC)
+	r := run("OR-237", events.ActorImplementer, "implementing", now.Add(-time.Minute))
+	r.median = 10 * time.Minute
+	r.calls = 3
+	r.buckets[bucketIndex(r.newest)] = 2
+
+	t.Setenv("NO_COLOR", "1")
+	var b bytes.Buffer
+	row := renderRow(&b, *r, now, 0)
+
+	if strings.ContainsAny(row, barFullGlyph+barHeadGlyph+barEmptyGlyph+sparkGlyphs) {
+		t.Errorf("NO_COLOR must drop the unicode bar and sparkline glyphs: %q", row)
+	}
+	if !strings.ContainsAny(row, barFullASCII+barHeadASCII) {
+		t.Errorf("the bar must degrade to its ASCII form under NO_COLOR: %q", row)
+	}
+	if !strings.ContainsAny(row, sparkASCII) {
+		t.Errorf("the sparkline must degrade to its ASCII form under NO_COLOR: %q", row)
+	}
+}
+
+// An actor name longer than its column is clipped and marked, so the reader
+// knows it was cut rather than that it is simply short.
+func TestLongActorNameIsClippedWithAMarker(t *testing.T) {
+	t.Cleanup(actors.Reset)
+	long := "Alexandria-Superlongname"
+	if err := actors.Configure(map[string]config.Agent{
+		events.ActorImplementer: {Name: &long},
+	}); err != nil {
+		t.Fatalf("configuring the actor: %v", err)
+	}
+
+	now := time.Date(2026, 8, 30, 23, 47, 12, 0, time.UTC)
+	r := run("OR-237", events.ActorImplementer, "implementing", now.Add(-time.Minute))
+
+	var b bytes.Buffer
+	row := renderRow(&b, *r, now, 200) // wide enough to keep every column
+	if strings.Contains(row, long) {
+		t.Errorf("an overlong actor name must be clipped, not shown in full: %q", row)
+	}
+	if !strings.Contains(row, "…") {
+		t.Errorf("a clipped name must carry the ellipsis marker: %q", row)
+	}
+
+	t.Setenv("NO_COLOR", "1")
+	rowNoColor := renderRow(&b, *r, now, 200)
+	if !strings.Contains(rowNoColor, ".") {
+		t.Errorf("under NO_COLOR the clip marker degrades to a period: %q", rowNoColor)
+	}
+	if strings.Contains(rowNoColor, "…") {
+		t.Errorf("NO_COLOR must not still show the unicode ellipsis: %q", rowNoColor)
+	}
+}
+
+// The header states the current time in HH:MM:SS, which is what makes a
+// screenshot or a scrollback line dateable on its own.
+func TestHeaderShowsTimeInHHMMSS(t *testing.T) {
+	LiveReset()
+	t.Cleanup(LiveReset)
+	LiveStart("OR-237")
+
+	var b bytes.Buffer
+	now := time.Date(2026, 8, 30, 9, 5, 3, 0, time.Local)
+	got := renderHeader(&b, liveSnapshot(), now)
+	if !strings.Contains(got, "09:05:03") {
+		t.Errorf("header must show HH:MM:SS, got %q", got)
+	}
+}
+
+// "X in CI" and the spend figure are both conditional: a fact that is not
+// true must not be printed as though it were.
+func TestHeaderOmitsCIAndSpendWhenZero(t *testing.T) {
+	LiveReset()
+	t.Cleanup(LiveReset)
+	LiveStart("OR-237")
+
+	var b bytes.Buffer
+	got := renderHeader(&b, liveSnapshot(), time.Date(2026, 8, 30, 23, 47, 12, 0, time.UTC))
+	if strings.Contains(got, "in CI") {
+		t.Errorf("with nothing pending in CI the header must not mention it: %q", got)
+	}
+	if strings.Contains(got, "this session") {
+		t.Errorf("with no spend recorded the header must not print a dollar figure: %q", got)
+	}
+}
+
+// A write that has not closed its line holds the redraw, and the region draws
+// once the line is finally closed. Splicing a row into the middle of an
+// unfinished write is exactly the corruption this guards against.
+func TestPendingWriteHoldsRedrawUntilLineCloses(t *testing.T) {
+	LiveReset()
+	t.Cleanup(LiveReset)
+	LiveStart("OR-237")
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+
+	if _, err := l.Write([]byte("no newline yet")); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+	if !l.pending {
+		t.Fatal("a write with no trailing newline must be marked pending")
+	}
+	if l.drawn != 0 {
+		t.Errorf("the region must not draw while a line is still open, got %d rows drawn", l.drawn)
+	}
+
+	if _, err := l.Write([]byte(" and now it closes\n")); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+	if l.pending {
+		t.Error("the pending flag must clear once the line closes")
+	}
+	if l.drawn == 0 {
+		t.Error("the region should redraw once the line has closed")
+	}
+}
+
+// Close is documented safe to call twice -- once when the watcher wraps up
+// deliberately and once from a deferred cleanup that runs regardless.
+func TestCloseIsIdempotent(t *testing.T) {
+	LiveReset()
+	t.Cleanup(LiveReset)
+
+	var b bytes.Buffer
+	l := NewLive(&b)
+	l.Close()
+	l.Close() // must not panic, block, or double-erase
 }
 
 func TestElapsedString(t *testing.T) {
