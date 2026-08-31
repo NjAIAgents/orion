@@ -117,11 +117,29 @@ func worktreeOrRepo(ws *workspace.Workspace, branch string) string {
 	if ws == nil {
 		return ""
 	}
-	wt := filepath.Join(ws.Dir, "worktrees", strings.ReplaceAll(branch, "/", "-"))
-	if _, err := os.Stat(wt); err == nil {
+	if wt := jobTree(ws, branch); wt != "" {
 		return wt
 	}
 	return ws.RepoDir()
+}
+
+// jobTree is a ticket's OWN checkout, or "" when it has none -- the same
+// question worktreeOrRepo asks, without the fallback.
+//
+// The distinction matters wherever the answer is about this ticket rather
+// than about somewhere convenient to run git: the shared clone's uncommitted
+// files belong to whatever else is using it, so reading them as this
+// ticket's residue would report somebody else's mess against this branch
+// (see internal/collect/done.go).
+func jobTree(ws *workspace.Workspace, branch string) string {
+	if ws == nil {
+		return ""
+	}
+	wt := filepath.Join(ws.Dir, "worktrees", strings.ReplaceAll(branch, "/", "-"))
+	if _, err := os.Stat(wt); err != nil {
+		return ""
+	}
+	return wt
 }
 
 // remindEvery is how often a branch already handed to a person is mentioned

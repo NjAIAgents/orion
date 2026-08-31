@@ -69,6 +69,16 @@ type requestFile struct {
 	// branch announced afresh clears it, so the reminder cadence starts over
 	// with the situation it is reminding about.
 	Reminded map[string]time.Time `json:"reminded"`
+	// Triaged maps a ticket to the HEAD commit that has already been read
+	// against its diff and found genuinely done (OR-244).
+	//
+	// Keyed on the commit rather than a bare flag, for the same reason
+	// Conflicts is: a branch somebody has pushed to is a different change and
+	// has to be triaged afresh. What this buys is that the pass -- which runs
+	// a test suite at -count=2 and may run a model -- happens once per commit
+	// rather than once per poll, so a ticket waiting a day for an approval
+	// does not pay for both every tick.
+	Triaged map[string]string `json:"triaged"`
 }
 
 func requestPath(wsDir string) string {
@@ -78,7 +88,8 @@ func requestPath(wsDir string) string {
 func emptyRequests() requestFile {
 	return requestFile{Version: 1, Requests: map[string]Request{},
 		Conflicts: map[string]string{}, Rebases: map[string]int{},
-		Waiting: map[string]time.Time{}, Reminded: map[string]time.Time{}}
+		Waiting: map[string]time.Time{}, Reminded: map[string]time.Time{},
+		Triaged: map[string]string{}}
 }
 
 func loadRequests(wsDir string) requestFile {
@@ -106,6 +117,9 @@ func loadRequests(wsDir string) requestFile {
 	}
 	if f.Reminded == nil {
 		f.Reminded = map[string]time.Time{}
+	}
+	if f.Triaged == nil {
+		f.Triaged = map[string]string{}
 	}
 	return f
 }

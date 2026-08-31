@@ -118,6 +118,16 @@ type Deps struct {
 	// Takes the event log so the fix run's activity is attributed and recorded
 	// the same way every other supervised run's is (OR-176).
 	Fix func(ws *workspace.Workspace, key, branch, failure string, log *events.Log) (pushed bool, summary string, denied *PolicyDenial, err error)
+	// Judge puts ONE question to a model about a finished, green run: does
+	// this diff do what the ticket asked for (OR-244)? It returns the reply
+	// verbatim; internal/done parses it.
+	//
+	// Nil disables only the intent question, never the whole triage. The
+	// mechanical checks -- did QA reach a verdict, is a test stranded in the
+	// worktree, do the new tests survive -count=2 -- read evidence that
+	// already exists, cost nothing and cannot hallucinate, so they are the
+	// part that must not depend on a model being configured.
+	Judge func(ws *workspace.Workspace, key, prompt string) (string, error)
 	// Slack reads approvals. Nil disables the approval path entirely, which
 	// is the correct behaviour when the extra OAuth scopes are not granted:
 	// Orion then reports that checks pass and waits for a human to merge.
@@ -459,6 +469,17 @@ func one(key string, pass []string, opts Options, deps Deps) (res Result) {
 		return res
 
 	case VerdictPassing:
+		// Green is not done (OR-244). Before anybody is asked to approve
+		// this, read the run against the diff -- three times on 2026-08-30 a
+		// green pull request was evidence of nothing, and each time a person
+		// caught it by reading rather than by looking at the status.
+		//
+		// Ahead of BOTH endings below, not only the Slack one: a repository
+		// without approvals still offers the branch to a human to merge, and
+		// "checks pass" is exactly the sentence this pass exists to qualify.
+		if ok, r := triageDone(res, key, pr, cfg, branch, opts, deps, ws, log, w); !ok {
+			return r
+		}
 		// Green but unmerged. Orion still does not decide this: it either
 		// asks a person in Slack and acts on their answer, or says the
 		// checks pass and waits. What it never does is merge on its own
@@ -640,6 +661,9 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	// later must not start with either allowance already spent.
 	_ = clearFixes(ws.Dir, key)
 	_ = clearRebases(ws.Dir, key)
+	// And the triage verdict, for the same reason: it is a statement about a
+	// commit nobody would be approving any more.
+	_ = clearTriaged(ws.Dir, key)
 	// The branch the PR actually merged into, per its BaseRef; config is only
 	// the fallback when the forge did not say. Everything below that talks
 	// about WHERE the merge went uses this, because a message built from
