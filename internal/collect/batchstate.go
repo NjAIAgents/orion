@@ -1,7 +1,7 @@
 package collect
 
 // What a batch proved, written down so a later pass does not buy it again
-// (ADR 0016, OR-253).
+// (ADR 0017, OR-253).
 //
 // WHY THIS EXISTS AT ALL. A batch that is green and waiting on a human is
 // finished with CI and not finished with the ref. Without a record, the next
@@ -11,7 +11,7 @@ package collect
 // An approval gate that costs a CI run per minute of human latency is worse
 // than no gate.
 //
-// A FILE, not a database (ADR 0016). It sits beside the approval requests in
+// A FILE, not a database (ADR 0017). It sits beside the approval requests in
 // the workspace directory and is written the same way, so the whole of a
 // batch's durable state is greppable, diffable, and inspectable after a crash
 // without a client.
@@ -94,7 +94,7 @@ func clearBatchState(wsDir string) { _ = os.Remove(batchStatePath(wsDir)) }
 //     nothing about this one.
 //   - the same members, exactly: a member added since was never tested, and
 //     one missing means the set that was proved is not the set being landed.
-//   - the same base commit: this is ADR 0016's precondition. If the base
+//   - the same base commit: this is ADR 0017's precondition. If the base
 //     moved, the proof belongs to a tree that no longer exists.
 func (s batchState) resumable(base, baseSHA string, members []Member) bool {
 	if s.Status != batchValidated || s.Base != base {

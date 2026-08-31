@@ -8,10 +8,15 @@ package collect
 // flag is off, and interleaving the two would make the old path's behaviour
 // depend on a feature that is not enabled. Off, nothing here is reached.
 //
-// What this does NOT do is merge. Land() reports which members a green batch
-// would land, and the existing approval and merge path acts on that, so the
-// one irreversible step in this package stays in the one place that already
-// owns it.
+// IT MERGES, and that is the change OR-253 made. This file used to end by
+// reporting which members a green batch WOULD land, handing them back to the
+// per-branch path to merge one at a time -- which left every remaining member
+// behind the work branch, rebased each one, and bought a CI run per rebase.
+// The batch now lands the ref it tested, so the work branch moves exactly once
+// and nothing is ever behind it.
+//
+// The irreversible step still has one implementation: Deps.Merge, the same
+// seam the per-branch path uses. What changed is what is handed to it.
 
 import (
 	"fmt"
@@ -218,7 +223,7 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 // landResumed merges a proof recorded on an earlier pass.
 //
 // The base is re-read one final time even though resumable() just compared
-// it: approval is a human-length gap, and the whole point of ADR 0016's
+// it: approval is a human-length gap, and the whole point of ADR 0017's
 // precondition is that the base can move in exactly such a gap.
 func landResumed(st batchState, members []Member, g repoGit,
 	ws *workspace.Workspace, w io.Writer) []Result {

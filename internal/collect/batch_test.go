@@ -17,7 +17,7 @@ type fakeGit struct {
 
 	// sha is what SHAOf answers, per ref. A base that "moves" during a batch
 	// is modelled by writing a new value here between calls, which is how the
-	// ADR 0016 precondition is tested without a repository.
+	// ADR 0017 precondition is tested without a repository.
 	sha map[string]string
 	// landed records what LandRef merged, in order, so a test can assert that
 	// the ref that was TESTED is the ref that merged -- the property the whole
@@ -79,7 +79,7 @@ type fakeTester struct {
 	tested map[string]bool
 	// onTest runs during a test, standing in for the world changing while CI
 	// is in flight -- a person pushing to the base being the case that
-	// matters (ADR 0016).
+	// matters (ADR 0017).
 	onTest func()
 }
 
@@ -265,7 +265,7 @@ func TestAProvenSoundSetLandsWithoutAnotherRun(t *testing.T) {
 //
 // [A,B] green and [C] green does not prove [A,B,C]; merging on those two
 // results would put C on a base containing A and B that C was never tested
-// against -- the unvalidated-base merge ADR 0016 exists to refuse.
+// against -- the unvalidated-base merge ADR 0017 exists to refuse.
 func TestTheSoundSetIsTestedAsASetBeforeItLands(t *testing.T) {
 	g := newFakeGit()
 	tr := &fakeTester{g: g, bad: map[string]bool{"orion/or-3": true}}
@@ -288,7 +288,7 @@ func TestTheSoundSetIsTestedAsASetBeforeItLands(t *testing.T) {
 	}
 }
 
-// ADR 0016: a green result may only merge into the base it was validated
+// ADR 0017: a green result may only merge into the base it was validated
 // against. If the base moved while CI ran, the proof belongs to a tree that no
 // longer exists, and merging anyway is how a validated result silently becomes
 // an unvalidated one.

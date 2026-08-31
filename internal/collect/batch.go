@@ -72,7 +72,7 @@ type Batch struct {
 	// estimated afterwards.
 	Runs int
 
-	// The SHAs a landing decision rests on (ADR 0016). Recorded rather than
+	// The SHAs a landing decision rests on (ADR 0017). Recorded rather than
 	// re-derived, because the question they answer -- "was this result proven
 	// against the thing it merged into?" -- cannot be answered afterwards
 	// from a repository that has already moved on.
@@ -130,7 +130,7 @@ type Git interface {
 	DropRef(ref string) error
 
 	// SHAOf resolves a ref or branch to a commit. Used to stamp what a
-	// result was validated against (ADR 0016), so a merge can refuse a base
+	// result was validated against (ADR 0017), so a merge can refuse a base
 	// that has moved since.
 	SHAOf(ref string) (string, error)
 
@@ -391,7 +391,7 @@ func Land(g Git, t Tester, ref, base string, members []Member, o Observer,
 	}
 
 	// The base as it stood when this set was assembled, recorded BEFORE the
-	// run rather than read again after it (ADR 0016). What CI proves is "this
+	// run rather than read again after it (ADR 0017). What CI proves is "this
 	// ref, on top of this base"; a merge into any other base is a result
 	// carried somewhere it was never earned.
 	baseSHA, err := g.SHAOf(base)
@@ -454,7 +454,7 @@ func Land(g Git, t Tester, ref, base string, members []Member, o Observer,
 	// green and [D] culprit -- so [A,B] and [C] are each proven and [A,B,C]
 	// never was. Landing them on the strength of separate proofs would merge
 	// [C] onto a base containing [A,B] that it was never tested against,
-	// which is the same unvalidated-base merge ADR 0016's SHA check exists to
+	// which is the same unvalidated-base merge ADR 0017's SHA check exists to
 	// refuse. One confirming run buys the guarantee the whole design rests
 	// on, and it is spent only on batches that were already red.
 	if len(innocent) > 0 {
@@ -531,7 +531,7 @@ func (b *Batch) landInnocent(g Git, t Tester, ref, base string,
 // land merges the tested ref into base, once, and records every member as
 // landed.
 //
-// THE BASE IS RE-READ AND COMPARED FIRST (ADR 0016). CI proved this ref on
+// THE BASE IS RE-READ AND COMPARED FIRST (ADR 0017). CI proved this ref on
 // top of the base recorded before the run; if base has moved since -- which,
 // with a single integration worker, means a person pushed directly -- then
 // the green result belongs to a tree that no longer exists. Merging anyway is
