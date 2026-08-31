@@ -603,8 +603,8 @@ func changelogFragment(repoPath, key string) string {
 	)
 }
 
-// exploreOffer tells the implementer that questions about unfamiliar code can
-// be asked instead of read for, and asked ALL AT ONCE.
+// exploreOffer tells the implementer that a narrow question about unfamiliar
+// code can be asked instead of read for.
 //
 // This clears the bar testEnv sets for a fixed prefix -- a line here is
 // re-sent on every turn for the life of the ticket -- because what it
@@ -612,15 +612,6 @@ func changelogFragment(repoPath, key string) string {
 // thing is defined can take a dozen greps and reads, and every file opened on
 // the way stays in context afterwards, re-sent every turn, to have said one
 // sentence once.
-//
-// Asked as a PHASE rather than one at a time is what OR-229 adds, and the
-// wording is the mechanism. An agent told it may ask "one narrow question"
-// asks at most one, then greps for the rest: a question at a time serialises
-// the run behind subagents it is not doing anything while it waits for, so
-// reading for itself is genuinely the faster move and it takes it. Asked
-// together they run concurrently under supervisor.Fan and the run waits once
-// -- at which point the cheap path is also the fast one, which is the only
-// version of this an agent actually follows.
 //
 // The fallback is stated in the same breath as the command, because a
 // subagent that fails and leaves the implementer waiting for permission to
@@ -630,19 +621,12 @@ func exploreOffer() string {
 		"",
 		"",
 		"FINDING YOUR WAY AROUND THIS REPOSITORY",
-		"Start by working out what you do NOT know -- where a thing is defined,",
-		"whether a pattern already exists, what a config actually holds -- and ask",
-		"all of it in ONE call, before you start reading:",
-		"  orion explore \"<question>\" \"<question>\" \"<question>\"",
-		"Each question is answered in a subagent's own context and the answers come",
-		"back citing the files they were read out of, so what those subagents read",
-		"never enters your context. They run concurrently, so asking four costs you",
-		"about what asking one costs -- ask them together rather than one at a time.",
-		"Batch any later questions the same way.",
-		"Your own greps and file reads are the expensive path: each one stays in",
-		"your context and is re-sent on every turn for the rest of this ticket.",
-		"An answer citing no file is unproven: confirm it before building on it. If",
-		"the command fails, just read for yourself.",
+		"For ONE narrow question about code you have not read -- where a thing is",
+		"defined, whether a pattern already exists, what a config actually holds --",
+		"run: orion explore \"<question>\"",
+		"It answers from a subagent's own context and cites the files, so what it",
+		"read does not stay in yours. An answer citing no file is unproven: confirm",
+		"it before building on it. If the command fails, just read for yourself.",
 	)
 }
 

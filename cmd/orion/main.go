@@ -117,9 +117,8 @@ GUARDRAILS
                               rebase again (--dry-run to look first)
 
 FOR AN AGENT INSIDE A RUN
-  orion explore "<q>" ["<q>"] answer questions about this repository, each in a
-                              subagent's context, citing the paths. Several run
-                              concurrently, so ask them together (--repo DIR)
+  orion explore "<question>"  answer one question about this repository in a
+                              subagent's context, citing the paths (--repo DIR)
 
 DEPENDENCIES
   orion njagents status       where nj-agents is, which commit, how stale
