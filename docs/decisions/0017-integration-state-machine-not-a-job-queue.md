@@ -1,4 +1,4 @@
-# 0016: The integration state machine is the sophisticated part; the queue is channels and JSON
+# 0017: The integration state machine is the sophisticated part; the queue is channels and JSON
 
 - Status: Accepted (by Navjyot, 2026-08-31)
 - Date: 2026-08-31
