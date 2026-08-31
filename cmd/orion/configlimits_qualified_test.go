@@ -312,6 +312,53 @@ func TestSettingAFixCeilingToZeroSaysItRestoresTheDefault(t *testing.T) {
 	}
 }
 
+// The prompt accepts a full "yes" too, not only the single-letter "y" the
+// other confirm test uses. Both existing large-ceiling tests only ever supply
+// "y\n" or an empty reader, so neither would catch the "yes" branch of
+// confirmFixRounds regressing (e.g. a future rewrite that keeps "y" but drops
+// its sibling).
+func TestALargeFixCeilingAcceptsAFullYes(t *testing.T) {
+	home := t.TempDir()
+	src := registeredProject(t, home, "OR", qaAndCIConfig)
+
+	confirmIn = strings.NewReader("yes\n")
+	t.Cleanup(func() { confirmIn = os.Stdin })
+
+	var out bytes.Buffer
+	if err := configLimits(home, src, &out, []string{"qa.max_rounds", "40"}); err != nil {
+		t.Fatalf("a \"yes\" answer must be accepted: %v", err)
+	}
+	if got := config.Load(src).QA.Rounds(); got != 40 {
+		t.Fatalf("QA.Rounds() = %d after answering \"yes\" to 40", got)
+	}
+}
+
+// An explicit refusal -- not just an unanswered prompt -- must also leave the
+// file untouched. TestSettingALargeFixCeilingAsksFirst only covers EOF; a
+// person who actually types "n" is a different code path through
+// strings.ToLower/TrimSpace and deserves its own case.
+func TestALargeFixCeilingIsRefusedOnExplicitNo(t *testing.T) {
+	home := t.TempDir()
+	src := registeredProject(t, home, "OR", qaAndCIConfig)
+	path := filepath.Join(src, "orion.json")
+	before := readFile(t, path)
+
+	confirmIn = strings.NewReader("n\n")
+	t.Cleanup(func() { confirmIn = os.Stdin })
+
+	var out bytes.Buffer
+	err := configLimits(home, src, &out, []string{"ci.max_fix_attempts", "40"})
+	if err == nil {
+		t.Fatal("an explicit \"n\" was accepted")
+	}
+	if got := readFile(t, path); got != before {
+		t.Errorf("the file was written despite an explicit refusal:\n%s", got)
+	}
+	if got := config.Load(src).CI.Attempts(); got != 3 {
+		t.Errorf("CI.Attempts() = %d; nothing should have changed", got)
+	}
+}
+
 // blockBody returns the text between one top-level block's braces, so a test
 // can assert a field landed in the right place rather than merely somewhere in
 // the file.
