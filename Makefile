@@ -91,9 +91,10 @@ packaging: dist
 # elsewhere and cannot see your credentials.
 #   make release TAG=v0.1.0
 #   make release TAG=v0.1.0 DRY=1
+#   make release TAG=v0.1.0-beta.1 BETA=1   prerelease, no tap, no bucket
 release:
-	@[ -n "$(TAG)" ] || { echo "usage: make release TAG=v0.1.0 [DRY=1]" >&2; exit 64; }
-	@scripts/release.sh "$(TAG)" $(if $(DRY),--dry-run,)
+	@[ -n "$(TAG)" ] || { echo "usage: make release TAG=v0.1.0 [BETA=1] [DRY=1]" >&2; exit 64; }
+	@scripts/release.sh "$(TAG)" $(if $(BETA),--beta,) $(if $(DRY),--dry-run,)
 
 clean:
 	rm -rf bin dist
