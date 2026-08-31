@@ -44,6 +44,17 @@ type Describer func(dir, model, effort, prompt string) (string, error)
 // opens with a plainer description is enormously better than one that does
 // not open at all -- the branch is already pushed, the work is already done,
 // and refusing to open the PR would strand it for a cosmetic reason.
+// DescribePR is describePR for callers outside this package.
+//
+// `orion release ship` opens the promotion pull request, and OR-116 asks for
+// the same describer on the same seam as a ticket's: a promotion whose body
+// was written by a template would be the one pull request in the repository
+// a reviewer cannot read the delta out of. subject takes the ticket key's
+// place -- "release v0.9.0" -- because a promotion has no ticket.
+func DescribePR(run Describer, dir, subject, fallbackTitle, fallbackBody string) (string, string, bool) {
+	return describePR(run, dir, subject, fallbackTitle, fallbackBody)
+}
+
 func describePR(run Describer, dir, key, fallbackTitle, fallbackBody string) (string, string, bool) {
 	if run == nil {
 		return fallbackTitle, fallbackBody, false
