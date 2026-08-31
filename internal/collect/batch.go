@@ -36,6 +36,7 @@ package collect
 import (
 	"fmt"
 	"sort"
+	"time"
 )
 
 // Member is one branch offered to a batch.
@@ -84,6 +85,16 @@ type Batch struct {
 	BaseSHA      string
 	ValidatedSHA string
 	LandedSHA    string
+
+	// Elapsed is wall clock from the first merge into the ephemeral ref to
+	// the last member landing, isolation rounds included (OR-250).
+	//
+	// THE NUMBER THE OPERATOR CAME WITH. Runs is the cost model ADR 0015
+	// argued in; this is the minutes between "the agents finished" and "the
+	// work is on the work branch", which is what anybody watching is actually
+	// asking about. Isolation is inside it rather than timed separately: a
+	// batch that went red and bisected cost what it cost.
+	Elapsed time.Duration
 
 	// AwaitingApproval is set when the batch is green and proved but a person
 	// has not said yes yet. Distinct from a failure in every direction: the
@@ -358,7 +369,29 @@ type Approver func(ref string, members []string) (bool, error)
 // callers and tests that do not care.
 type LandOption func(*landOpts)
 
-type landOpts struct{ approve Approver }
+type landOpts struct {
+	approve Approver
+	// now is the clock, injectable so a test can assert an elapsed figure
+	// without sleeping for it. Defaults to time.Now via landOpts.clock.
+	clock func() time.Time
+}
+
+// now reads the clock, defaulting to the real one. A method rather than a
+// field set at construction, so every option combination gets it without each
+// caller remembering to.
+func (o landOpts) now() time.Time {
+	if o.clock == nil {
+		return time.Now()
+	}
+	return o.clock()
+}
+
+// WithClock replaces the clock. For tests: elapsed is a headline number now,
+// so it needs a test, and a test that sleeps to produce one is a test nobody
+// runs.
+func WithClock(f func() time.Time) LandOption {
+	return func(o *landOpts) { o.clock = f }
+}
 
 // WithApproval gates the merge on a human. Absent, a green batch lands as
 // soon as it is proved -- which is correct for an unattended pipeline and
@@ -367,8 +400,14 @@ func WithApproval(a Approver) LandOption {
 	return func(o *landOpts) { o.approve = a }
 }
 
+// NAMED RESULTS, because the elapsed timer is a deferred write.
+//
+// With unnamed results, `return b, nil` copies b into the result before the
+// deferred function runs, so a defer that sets b.Elapsed sets it on a value
+// nobody sees. Every caller would read zero, and the test that caught it is
+// the only reason this comment exists rather than a silently missing number.
 func Land(g Git, t Tester, ref, base string, members []Member, o Observer,
-	opts ...LandOption) (Batch, error) {
+	opts ...LandOption) (out Batch, err error) {
 
 	var lo landOpts
 	for _, opt := range opts {
@@ -376,6 +415,14 @@ func Land(g Git, t Tester, ref, base string, members []Member, o Observer,
 	}
 	ob := observe(o)
 	b := Batch{Base: base, Ref: ref, approve: lo.approve}
+
+	// Started before assembly, not before testing: merging N branches into the
+	// ref is part of what a batch costs, and a timer that skipped it would
+	// report a number smaller than the thing being measured. Stopped on every
+	// return, including the failures -- a batch that died after twenty minutes
+	// cost twenty minutes, and hiding that would only flatter the feature.
+	started := lo.now()
+	defer func() { out.Elapsed = lo.now().Sub(started) }()
 	if len(members) == 0 {
 		return b, nil
 	}
