@@ -436,6 +436,18 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		log.Emitf(events.KindClaimed, events.ActorOrion, "claimed %s: %s", key, issue.Summary)
 		ui.Say(w, key, events.ActorOrion, ui.VerbWorking, "claimed: %s -> %s",
 			cfg.Tracker.QueueLabel, tracker.LabelWorking)
+		// Which actor holds it, from the instant it is held. Orion is the
+		// honest answer here: routing has picked an actor but the worktree
+		// does not exist yet, so nothing is spending. Boundary one below
+		// swaps this for the actor that actually takes the run.
+		//
+		// A SEPARATE request from the claim above, never bundled into it. The
+		// claim is the lock; a cosmetic label rejected by the tracker must not
+		// be able to fail it (OR-225).
+		if err := setStage(deps, key, actors.StageLabel(events.ActorOrion), ""); err != nil {
+			ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+				"the board will not say which actor holds it: %v", err)
+		}
 	}
 
 	// From here a failure must hand the ticket back, or it is stuck in
@@ -446,7 +458,11 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		}
 		if res.Outcome == OutcomeFailed || res.Outcome == OutcomeBlocked {
 			label := tracker.LabelFailed
-			_ = deps.Jira.SetLabels(key, []string{label}, []string{tracker.LabelWorking})
+			// The stage goes with the lock, in the same request. A ticket that
+			// still said orion-stage-implementer while wearing orion-failed
+			// would name an actor that stopped working it (OR-225).
+			_ = deps.Jira.SetLabels(key, []string{label},
+				append([]string{tracker.LabelWorking}, actors.StageLabels()...))
 		}
 	}()
 
@@ -543,7 +559,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// Boundary one: Orion has finished deciding and an agent starts spending.
 	// Marked here rather than at the routing decision above, because routing
 	// picks the actor and this is the moment it actually takes the run.
-	ui.Stage(w, log, ui.Handoff{Key: key, From: "routing", To: "implementing",
+	handoff(w, log, deps, opts, ui.Handoff{Key: key, From: "routing", To: "implementing",
 		By: events.ActorOrion, Next: actorID, Detail: "on " + job.Branch})
 
 	log.Emitf(events.KindRunStart, actorID, "implementing %s", key)
@@ -751,7 +767,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if !cfg.QA.On() {
 		nextStage, nextActor = "push", events.ActorOrion
 	}
-	ui.Stage(w, log, ui.Handoff{Key: key, From: "implementing", To: nextStage,
+	handoff(w, log, deps, opts, ui.Handoff{Key: key, From: "implementing", To: nextStage,
 		By: actorID, Next: nextActor,
 		Detail: fmt.Sprintf("%d commit(s) on %s", commits, job.Branch)})
 
@@ -779,7 +795,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// otherwise, and announcing a stage nobody entered is the same lie in
 	// reverse.
 	if qa.Ran {
-		ui.Stage(w, log, ui.Handoff{Key: key, From: "qa", To: "push",
+		handoff(w, log, deps, opts, ui.Handoff{Key: key, From: "qa", To: "push",
 			By: events.ActorQA, Next: events.ActorOrion, Detail: qa.Verdict()})
 	}
 
@@ -800,7 +816,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// Boundary four: the branch is on the remote and a pull request is next.
 	// Orion holds both sides, so it says it continues rather than handing to
 	// itself. The pushed branch is the detail.
-	ui.Stage(w, log, ui.Handoff{Key: key, From: "push", To: "pull request",
+	handoff(w, log, deps, opts, ui.Handoff{Key: key, From: "push", To: "pull request",
 		By: events.ActorOrion, Next: events.ActorOrion, Detail: "pushed " + job.Branch})
 
 	title := key + ": " + issue.Summary
@@ -827,8 +843,13 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// state lives on the ticket so a crash here does not lose the fact that
 	// a pull request exists -- otherwise a retry would run the agent again
 	// and open a second one.
+	//
+	// The stage label goes with it. ci-wait already says everything true of
+	// this state -- a pull request is open, no agent is running -- and a
+	// stage naming an actor who has finished would outlive the work it
+	// describes (OR-225).
 	if err := deps.Jira.SetLabels(key, []string{tracker.LabelCIWait},
-		[]string{tracker.LabelWorking}); err != nil {
+		append([]string{tracker.LabelWorking}, actors.StageLabels()...)); err != nil {
 		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not mark it as awaiting CI: %v", err)
 	}
 	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion,
@@ -847,7 +868,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// operator watching an agent apparently work for the length of the CI
 	// run, which is the same defect this line exists to fix, pointed the
 	// other way (OR-189). ui.Handoff says "no agent is running" for it.
-	ui.Stage(w, log, ui.Handoff{Key: key, From: "pull request", To: "ci",
+	handoff(w, log, deps, opts, ui.Handoff{Key: key, From: "pull request", To: "ci",
 		By: events.ActorOrion, Next: events.ActorCI, Detail: "the job slot is free"})
 	res.Outcome = OutcomeCIWait
 	return res

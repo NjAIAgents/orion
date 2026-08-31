@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/registry"
@@ -778,9 +779,25 @@ type fakeLock struct {
 	issues  []tracker.Issue
 	removed map[string][]string
 	err     error
+	// searches records the JQL, so a test can assert that the lock is still
+	// matched EXACTLY and by nothing else (OR-225).
+	searches []string
 }
 
-func (f *fakeLock) Search(string, int) ([]tracker.Issue, error) { return f.issues, nil }
+func (f *fakeLock) Search(jql string, _ int) ([]tracker.Issue, error) {
+	f.searches = append(f.searches, jql)
+	return f.issues, nil
+}
+
+// containsLabel reports whether a label is in a recorded add/remove list.
+func containsLabel(labels []string, want string) bool {
+	for _, l := range labels {
+		if l == want {
+			return true
+		}
+	}
+	return false
+}
 
 func (f *fakeLock) SetLabels(key string, _, remove []string) error {
 	if f.err != nil {
@@ -827,8 +844,18 @@ func TestAHandClosedTicketDoesNotHoldTheQueue(t *testing.T) {
 	}
 	// Cleared, not merely ignored: ignoring it would re-diagnose the same
 	// ticket every tick forever, and `orion queue` reads the label too.
-	if got := j.removed["OR-124"]; len(got) != 1 || got[0] != tracker.LabelWorking {
+	//
+	// The stage label goes with it (OR-225). A ticket closed outside Orion
+	// keeps whatever stage it was wearing, so a clear that took only the lock
+	// would leave the board naming an actor for work that ended hours ago.
+	got := j.removed["OR-124"]
+	if !containsLabel(got, tracker.LabelWorking) {
 		t.Errorf("the stale lock was not cleared, removed = %v", j.removed)
+	}
+	for _, l := range actors.StageLabels() {
+		if !containsLabel(got, l) {
+			t.Errorf("clearing a stale lock left %s behind, removed = %v", l, got)
+		}
 	}
 	if out := b.String(); !strings.Contains(out, "OR-124") ||
 		!strings.Contains(out, tracker.LabelWorking) {
