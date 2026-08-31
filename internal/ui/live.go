@@ -611,7 +611,28 @@ func keep(cols, col int) bool {
 // The spend is here because it is the least deniable liveness signal there
 // is. A spinner says a goroutine is alive; a number that goes up says work is
 // actually being done.
+// hintFor names the key that changes what is on screen right now.
+//
+// ONE hint, and only when there is something to do with it. Listing both keys
+// always would spend header width on an instruction that is wrong half the
+// time -- "ctrl-o collapses" is untrue while collapsed -- and a status line
+// that says something inaccurate is worse than one that says less. Nothing at
+// all when there are no rows: there is nothing to collapse.
+func hintFor(st liveState, collapsed bool) string {
+	if len(st.rows) == 0 {
+		return ""
+	}
+	if collapsed {
+		return "ctrl-o expands"
+	}
+	return "ctrl-o collapses"
+}
+
 func renderHeader(w io.Writer, st liveState, now time.Time) string {
+	return renderHeaderAt(w, st, now, false)
+}
+
+func renderHeaderAt(w io.Writer, st liveState, now time.Time, collapsed bool) string {
 	parts := []string{now.Local().Format("15:04:05")}
 	if p := projectsOf(st.rows); p != "" {
 		parts = append(parts, p)
@@ -622,6 +643,9 @@ func renderHeader(w io.Writer, st liveState, now time.Time) string {
 	}
 	if st.spend > 0 {
 		parts = append(parts, fmt.Sprintf("$%.2f this session", st.spend))
+	}
+	if h := hintFor(st, collapsed); h != "" {
+		parts = append(parts, h)
 	}
 	return Dim(w, strings.Join(parts, "  "+liveSep+"  "))
 }
@@ -656,6 +680,21 @@ func projectsOf(rows []liveRun) string {
 // then one row per run. Empty when nothing is running, which is what makes a
 // tick with nothing to do print nothing at all.
 func renderRegion(w io.Writer, st liveState, now time.Time, cols int) []string {
+	return renderRegionAt(w, st, now, cols, false)
+}
+
+// renderRegionAt is renderRegion with the collapsed state made explicit.
+//
+// COLLAPSED KEEPS THE HEADER AND THE BATCH, and drops only the per-ticket
+// rows. The header is the status line, which is pinned and must never
+// disappear -- collapsing to nothing would answer "too many rows" with "no
+// information", and the operator's next move would be to expand it again. The
+// batch line stays because a batch is one thing however many tickets are in
+// it, so it is not what made the region tall.
+//
+// What is dropped is exactly what grows with max_concurrent_tickets, which is
+// the thing being made survivable (OR-249).
+func renderRegionAt(w io.Writer, st liveState, now time.Time, cols int, collapsed bool) []string {
 	// A batch keeps the region alive with no rows of its own. The members'
 	// agents have finished by the time a batch assembles, so their rows are
 	// gone -- and a batch waiting up to thirty minutes on one CI run is
@@ -669,12 +708,21 @@ func renderRegion(w io.Writer, st liveState, now time.Time, cols int) []string {
 	}
 	out := []string{
 		Dim(w, strings.Repeat(r, liveRuleWidth)),
-		renderHeader(w, st, now),
+		renderHeaderAt(w, st, now, collapsed),
 		"",
 	}
 	// The batch above the rows: it is the thing the rows are members OF, and
 	// reading the set after its members inverts the containment.
 	out = append(out, renderBatch(w, st.batch, now, cols)...)
+	if collapsed {
+		// Said, rather than left to be inferred from rows that vanished. An
+		// operator who collapsed the region ten minutes ago and came back to
+		// a quiet screen needs to know the runs are hidden, not finished.
+		if n := len(st.rows); n > 0 {
+			out = append(out, Dim(w, fmt.Sprintf("    %d run(s) hidden · ctrl-o expands", n)))
+		}
+		return out
+	}
 	for _, row := range st.rows {
 		out = append(out, renderRow(w, row, now, cols))
 	}
@@ -848,6 +896,11 @@ type Live struct {
 	// into the terminal's own scrollback -- the behaviour every caller had
 	// before the window existed.
 	full bool
+	// collapsed hides the per-ticket rows, leaving the batch line and the
+	// status line (OR-249). A DISPLAY state and nothing more: events.jsonl
+	// records identically either way, which is the same contract the window
+	// keeps -- what scrolls out is unshown, never unrecorded.
+	collapsed bool
 	done chan struct{}
 	wg   sync.WaitGroup
 }
@@ -905,18 +958,55 @@ func (l *Live) Full() {
 // process with SIGTTIN. The Go runtime ignores that signal by default, so the
 // read fails instead and this goroutine exits -- `orion watch &` keeps running,
 // simply with no key to press.
+// Keys the region answers to. Control characters rather than letters, so
+// nothing typed at a prompt behind the watcher is mistaken for a command.
+const (
+	keyCollapse = 0x0F // ctrl-o: collapse the region to its summary, and back
+	keyFullLog  = 0x12 // ctrl-r: drop the window's cap and print the full log
+)
+
 func (l *Live) watchInput(r io.Reader) {
 	var b [64]byte
 	for {
 		n, err := r.Read(b[:])
-		if n > 0 {
-			l.Full()
-			return
+		// EVERY byte in the read, not just the first. A terminal delivers a
+		// paste or a fast double-press as one read, and answering only b[0]
+		// would silently swallow the second key.
+		for _, c := range b[:n] {
+			switch c {
+			case keyCollapse:
+				l.ToggleCollapsed()
+			case keyFullLog:
+				l.Full()
+			}
 		}
 		if err != nil {
 			return
 		}
 	}
+}
+
+// ToggleCollapsed switches the region between every ticket row and a summary.
+//
+// THE RELEASE VALVE FOR A LONG QUEUE. OR-246 removed the ceiling on
+// max_concurrent_tickets and asks above ten instead; at ten the pinned rows
+// are taller than many terminals and there is no way to shrink them. Expanded
+// stays the default -- "you should never have to ask to see what is running"
+// -- and this is the other half of that rule, which shipped without it.
+//
+// A TOGGLE, not a one-way door. The key handling this replaces dropped the
+// window's cap on ANY keystroke and could not be undone: a stray arrow key
+// ended the frozen window for the rest of the run. A control the operator
+// cannot reverse is one they learn not to touch.
+func (l *Live) ToggleCollapsed() {
+	l.lock.Lock()
+	defer l.lock.Unlock()
+	if !l.cursor {
+		return
+	}
+	l.eraseLocked()
+	l.collapsed = !l.collapsed
+	l.drawLocked()
 }
 
 // cursorControl reports whether the destination can be redrawn in place.
@@ -1068,7 +1158,7 @@ func (l *Live) drawLocked() {
 		return
 	}
 	cols := columns()
-	region := renderRegion(l.w, liveSnapshot(), time.Now(), cols)
+	region := renderRegionAt(l.w, liveSnapshot(), time.Now(), cols, l.collapsed)
 	drawn := 0
 	if !l.full {
 		// Trimmed to what is shown, so the window is the buffer: a line that
