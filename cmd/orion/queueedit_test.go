@@ -123,6 +123,28 @@ func TestPlanQueueAddOnAFailedTicketNeedsReset(t *testing.T) {
 	}
 }
 
+// --reset overrides the failed-state refusal but not the fixVersion gate: a
+// ticket with no milestone is refused whether or not --reset is passed, since
+// the flag exists to requeue a failed ticket, not to bypass OR-221's claim
+// requirement.
+func TestPlanQueueAddRefusesNoFixVersionEvenWithReset(t *testing.T) {
+	current := map[string]tracker.Issue{
+		"OR-100": issueIn("OR-100", nil), // no labels, no fixVersion
+	}
+
+	p := planQueueAdd([]string{"OR-100"}, current, qLabel, true)
+
+	if p.writes() != 0 {
+		t.Fatalf("a versionless ticket was queued via --reset: %+v", p)
+	}
+	if len(p.Blocked) != 1 || p.Blocked[0].Key != "OR-100" {
+		t.Fatalf("Blocked = %+v, want OR-100", p.Blocked)
+	}
+	if !strings.Contains(strings.Join(p.Blocked[0].Reasons, " "), "fixVersion") {
+		t.Errorf("--reset silently dropped the fixVersion refusal: %v", p.Blocked[0].Reasons)
+	}
+}
+
 // A failed ticket that ALSO carries no milestone has two problems, and hearing
 // about one of them sends the operator back for a second run to be told about
 // the other.

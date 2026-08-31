@@ -363,9 +363,88 @@ func TestCLIQueueRemoveLeavesStatusAndFixVersionAlone(t *testing.T) {
 	}
 	// --reset has no meaning here, and quietly ignoring it is how an operator
 	// comes to believe a remove resets a failed ticket.
-	if _, _, code := runQueueCmd(t, bin, srv.URL, queueProject(t),
-		"remove", "OR-140", "--reset"); code == 0 {
+	_, resetErr, code := runQueueCmd(t, bin, srv.URL, queueProject(t),
+		"remove", "OR-140", "--reset")
+	if code == 0 {
 		t.Error("`queue remove --reset` was accepted")
+	}
+	if !strings.Contains(resetErr, "--reset") || !strings.Contains(resetErr, "queue add") {
+		t.Errorf("the refusal does not explain --reset belongs to `queue add`: %s", resetErr)
+	}
+}
+
+// Remove's preview prints before the first write, and skipped tickets are
+// reported as "not queued" -- not "already", which is add's word for the same
+// idea and would misdescribe a ticket that was never in the queue.
+func TestCLIQueueRemovePreviewsBeforeWriting(t *testing.T) {
+	bin := orionBinary(t)
+	f := &fakeQueueJira{tickets: map[string]*queueTicket{
+		"OR-140": {status: "In Progress", labels: []string{"ORION"}, versions: []string{"v0.8.6"}},
+		"OR-141": {status: "To Do", versions: []string{"v0.8.6"}}, // not queued
+	}}
+	srv := f.server(t)
+
+	out, errOut, code := runQueueCmd(t, bin, srv.URL, queueProject(t),
+		"remove", "OR-140", "OR-141")
+	if code != 0 {
+		t.Fatalf("expected success, got exit %d: %s%s", code, out, errOut)
+	}
+	if !strings.Contains(out, "not queued") {
+		t.Errorf("the preview does not report OR-141 as not queued: %s", out)
+	}
+	planAt := strings.Index(out, "plan")
+	writeAt := strings.Index(out, "-> ORION removed")
+	if planAt < 0 || writeAt < 0 || planAt > writeAt {
+		t.Errorf("the plan was not printed before the first write (plan at %d, first "+
+			"write at %d): %s", planAt, writeAt, out)
+	}
+}
+
+// Re-running a remove over a set that is already unqueued writes nothing and
+// says so, the same as add: a remove that errors on a re-run cannot safely be
+// retried.
+func TestCLIQueueRemoveIsIdempotent(t *testing.T) {
+	bin := orionBinary(t)
+	f := &fakeQueueJira{tickets: map[string]*queueTicket{
+		"OR-100": {status: "To Do", versions: []string{"v0.8.6"}}, // never queued
+	}}
+	srv := f.server(t)
+
+	out, errOut, code := runQueueCmd(t, bin, srv.URL, queueProject(t), "remove", "OR-100")
+	if code != 0 {
+		t.Fatalf("a re-run failed instead of being a no-op: exit %d: %s%s", code, out, errOut)
+	}
+	if len(f.labelWrites) != 0 {
+		t.Errorf("a re-run wrote %v; it must change nothing", f.labelWrites)
+	}
+	if !strings.Contains(out, "unchanged") {
+		t.Errorf("the re-run does not report that nothing changed: %s", out)
+	}
+}
+
+// A blocked ticket in the same invocation as writeable ones does not stop the
+// writes that are safe to make: they complete, and the command exits 1
+// afterwards because the operator did not get everything they asked for.
+func TestCLIQueueAddCompletesWritesThenExitsOneOnBlocked(t *testing.T) {
+	bin := orionBinary(t)
+	f := &fakeQueueJira{tickets: map[string]*queueTicket{
+		"OR-100": ready("v0.8.6"),
+		"OR-101": {status: "In Progress", labels: []string{"orion-working"}, versions: []string{"v0.8.6"}},
+	}}
+	srv := f.server(t)
+
+	out, errOut, code := runQueueCmd(t, bin, srv.URL, queueProject(t), "add", "OR-100", "OR-101")
+	if code == 0 {
+		t.Fatalf("a run with a blocked ticket exited 0: %s%s", out, errOut)
+	}
+	if got := strings.Join(f.labelWrites, "|"); got != "OR-100 add:ORION" {
+		t.Errorf("the writeable ticket was not written despite the blocked one: %v", f.labelWrites)
+	}
+	if !strings.Contains(out, "<- ORION") {
+		t.Errorf("the successful write was not reported: %s", out)
+	}
+	if !strings.Contains(out+errOut, "orion-working") {
+		t.Errorf("the blocked ticket's reason is missing: %s", out+errOut)
 	}
 }
 
