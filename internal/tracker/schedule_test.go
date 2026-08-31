@@ -139,6 +139,68 @@ func TestHoldReasonNamesWhichOfTheTwoFailuresItIs(t *testing.T) {
 	}
 }
 
+// A ticket with SEVERAL fixVersions is claimable if ANY of them is an open
+// milestone -- a ticket scheduled to both a past and a future release is
+// still scheduled, and refusing it over the closed one would be wrong.
+func TestHoldReasonClaimsATicketIfAnyFixVersionIsOpen(t *testing.T) {
+	s := Schedules{"OR": {"v0.8.6"}}
+
+	got := s.HoldReason(Issue{Key: "OR-1", FixVersions: []string{"v0.8.0", "v0.8.6"}}, "ORION")
+	if got != "" {
+		t.Errorf("a ticket scheduled to an open milestone among others must be claimable, got %q", got)
+	}
+
+	// Order must not matter.
+	got = s.HoldReason(Issue{Key: "OR-2", FixVersions: []string{"v0.8.6", "v0.8.0"}}, "ORION")
+	if got != "" {
+		t.Errorf("a ticket scheduled to an open milestone among others must be claimable, got %q", got)
+	}
+}
+
+// A project with SEVERAL open milestones claims a ticket scheduled to any one
+// of them, not only the first.
+func TestHoldReasonClaimsATicketAgainstAnyOpenMilestone(t *testing.T) {
+	s := Schedules{"OR": {"v0.8.6", "v0.9.0"}}
+
+	if got := s.HoldReason(Issue{Key: "OR-1", FixVersions: []string{"v0.9.0"}}, "ORION"); got != "" {
+		t.Errorf("a ticket on the second open milestone must be claimable, got %q", got)
+	}
+}
+
+// A milestone name with spaces or punctuation must survive quoting intact --
+// JQLQuote handles the escaping, and the whole point of routing every value
+// through it is that a caller never has to think about this per name.
+func TestScopeHandlesMilestoneNamesWithSpacesAndQuotes(t *testing.T) {
+	s := Schedules{"OR": {`Sprint 42 "GA"`}}
+
+	got := s.Scope([]string{"OR"})
+
+	if !strings.Contains(got, `fixVersion IN ("Sprint 42 \"GA\"")`) {
+		t.Errorf("a milestone name with spaces/quotes was not preserved: %s", got)
+	}
+}
+
+// A project absent from the map entirely -- never assigned an entry, not
+// merely one with a nil slice -- must read exactly as unenforced. LoadSchedules
+// only ever writes an entry for a project it was asked to read, so a project
+// out of scope has no key at all.
+func TestClaimableOnAProjectAbsentFromTheMapIsUnenforced(t *testing.T) {
+	s := Schedules{}
+
+	if got := s.Claimable("OR"); len(got) != 0 {
+		t.Errorf("a project never read has no schedule, got %v", got)
+	}
+	if s.Enforced([]string{"OR"}) {
+		t.Error("a project absent from the map must not be enforced")
+	}
+	if got, want := s.Scope([]string{"OR"}), `project IN ("OR")`; got != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+	if got := s.HeldScope([]string{"OR"}); got != "" {
+		t.Errorf("a project absent from the map can hold nothing back, got %s", got)
+	}
+}
+
 // The rule is applied per PROJECT, and an issue carries its project in its
 // key. A lookup that missed on case would report a project as unenforced and
 // claim exactly the work this refuses.

@@ -2,13 +2,28 @@ package watch
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
 )
+
+// registerProject writes a registry binding a project key to a fake
+// repository, which is all Queued needs to resolve its scope in a test.
+func registerProject(t *testing.T, home, key string) {
+	t.Helper()
+	if err := registry.Save(home, &registry.File{Repos: map[string]registry.Entry{
+		strings.ToUpper(key): {Key: strings.ToUpper(key), Source: t.TempDir()},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // A labelled ticket with no fixVersion must never be claimed, and the
 // condition must be in the JQL rather than applied after the fetch.
@@ -147,5 +162,69 @@ func TestHeldTicketsSharingAReasonAreReportedOnOneLine(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "OR-300, OR-301") {
 		t.Errorf("tickets sharing a reason were not grouped:\n%s", buf.String())
+	}
+}
+
+// End-to-end through the REAL Queued function, not just the JQL builders: a
+// scheduled ticket comes back Ready, an unscheduled one comes back Held with
+// its reason, against a fake Jira that answers both the search and the
+// versions endpoint.
+func TestQueuedGatesOnScheduleEndToEnd(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/project/OR/versions"):
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": "1", "name": "v0.8.6"}})
+		case strings.Contains(r.URL.Path, "/search/jql"):
+			jql := r.URL.Query().Get("jql")
+			if strings.Contains(jql, "NOT IN (\"v0.8.6\")") || strings.Contains(jql, "IS EMPTY") {
+				// The held query: an unscheduled ticket.
+				_, _ = w.Write([]byte(`{"issues":[{"key":"OR-2","fields":{"labels":["ORION"]}}]}`))
+				return
+			}
+			// The claim query: a scheduled ticket.
+			_, _ = w.Write([]byte(`{"issues":[{"key":"OR-1","fields":{"labels":["ORION"],` +
+				`"fixVersions":[{"name":"v0.8.6"}]}}]}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	registerProject(t, home, "OR")
+
+	q, err := Queued(&tracker.Jira{BaseURL: srv.URL}, home, []string{"OR"}, "ORION")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.Ready) != 1 || q.Ready[0].Key != "OR-1" {
+		t.Errorf("the scheduled ticket was not claimed: %+v", q.Ready)
+	}
+	if len(q.Held) != 1 || q.Held[0].Key != "OR-2" {
+		t.Errorf("the unscheduled ticket was not held: %+v", q.Held)
+	}
+	if len(q.Held) == 1 && !strings.Contains(q.Held[0].Reason, "not attached to a release") {
+		t.Errorf("wrong hold reason: %q", q.Held[0].Reason)
+	}
+}
+
+// A version read that fails must stop the tick rather than degrade to
+// unenforced -- the loop above retries on the next one, which is the correct
+// response to not knowing whether a ticket is scheduled.
+func TestQueuedStopsRatherThanDegradesWhenTheScheduleCannotBeRead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/project/OR/versions") {
+			w.WriteHeader(500)
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	registerProject(t, home, "OR")
+
+	if _, err := Queued(&tracker.Jira{BaseURL: srv.URL}, home, []string{"OR"}, "ORION"); err == nil {
+		t.Fatal("a failed schedule read must be an error, not a silently open gate")
 	}
 }
