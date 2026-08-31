@@ -52,6 +52,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/cost"
@@ -1096,7 +1097,11 @@ func InFlight(j LockAPI, home string, projects []string, w io.Writer) ([]string,
 		// Best effort. A tracker that refuses the write leaves the queue
 		// exactly as wedged as before, which is worth a line but not worth
 		// failing the tick over.
-		if err := j.SetLabels(i.Key, nil, []string{tracker.LabelWorking}); err != nil {
+		// The stage label goes with the lock. A ticket closed outside Orion
+		// keeps whatever it was wearing, so clearing only the lock would
+		// leave the board naming an actor for finished work (OR-225).
+		if err := j.SetLabels(i.Key, nil,
+			append([]string{tracker.LabelWorking}, actors.StageLabels()...)); err != nil {
 			ui.Say(w, i.Key, events.ActorOrion, ui.VerbWarn,
 				"is %s but still holds the %s lock, and it could not be cleared: %v"+
 					" -- remove the label by hand or it keeps a slot",

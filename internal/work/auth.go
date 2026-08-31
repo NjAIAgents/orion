@@ -17,6 +17,7 @@ package work
 import (
 	"io"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
@@ -50,7 +51,10 @@ func notAuthenticated(res Result, key, reason string, cfg config.Config,
 	if queue == "" {
 		queue = tracker.QueueLabelDefault
 	}
-	if err := deps.Jira.SetLabels(key, []string{queue}, []string{tracker.LabelWorking}); err != nil {
+	// And the stage label with it: a queued ticket that still named an actor
+	// would say somebody is working what nothing has started (OR-225).
+	if err := deps.Jira.SetLabels(key, []string{queue},
+		append([]string{tracker.LabelWorking}, actors.StageLabels()...)); err != nil {
 		ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
 			"could not requeue it; remove its %s label by hand or nothing will pick it up: %v",
 			tracker.LabelWorking, err)

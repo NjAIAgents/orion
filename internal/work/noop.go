@@ -153,7 +153,8 @@ func noChange(res Result, key, actorID, why string, cfg config.Config,
 func release(comment, key, actorID string, cfg config.Config, deps Deps,
 	ws *workspace.Workspace, log *events.Log, w io.Writer, res Result) {
 
-	if err := deps.Jira.SetLabels(key, nil, tracker.Managed(cfg.Tracker.QueueLabel)); err != nil {
+	if err := deps.Jira.SetLabels(key, nil,
+		append(tracker.Managed(cfg.Tracker.QueueLabel), actors.StageLabels()...)); err != nil {
 		ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
 			"nothing to do, but its labels could not be cleared: %v", err)
 	}
