@@ -44,6 +44,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -62,9 +63,43 @@ const DirName = "agent-config"
 // config directory. On Linux this file IS the CLI's authentication; moving
 // CLAUDE_CONFIG_DIR without it would leave every run unable to log in. It is
 // symlinked rather than copied, so a refreshed token stays valid and no
-// secret is duplicated onto disk. (macOS keeps credentials in the keychain,
-// where this is a no-op.)
+// secret is duplicated onto disk.
 const credentialsFile = ".credentials.json"
+
+// curationAuthenticates reports whether a run under a curated
+// CLAUDE_CONFIG_DIR can still authenticate on this platform.
+//
+// It cannot on macOS, and that is not a bug we can carry over the way Linux
+// carries .credentials.json. Two separate mechanisms defeat it (OR-239):
+//
+//	the CLI requires .claude.json INSIDE CLAUDE_CONFIG_DIR, while the
+//	operator's own lives at ~/.claude.json, OUTSIDE ~/.claude/ -- so even
+//	pointing the variable at the operator's own directory fails
+//
+//	credentials live in the Keychain and are not reached for a non-default
+//	config directory, so supplying .claude.json is necessary and still not
+//	sufficient: a full copy of ~/.claude plus that file still reports the
+//	login as expired
+//
+// The original comment here assumed the Keychain made this a no-op on macOS.
+// It shipped in v0.8.3 and made EVERY supervised run on macOS fail
+// immediately, while the operator's own CLI stayed authenticated.
+//
+// So: no curated directory on darwin. This is a real loss -- the run gets the
+// operator's whole plugin surface, which is the blast radius this package
+// exists to remove -- and it is reported as a warning on every run rather
+// than taken quietly, because an operator who thinks their runs are curated
+// when they are not is worse off than one who knows they are not.
+func curationAuthenticates() bool { return runtime.GOOS != "darwin" }
+
+// CurationAuthenticates is curationAuthenticates for other packages.
+//
+// Exported for two callers that must agree with this one rather than restate
+// the rule: `orion doctor`, which has to grade what a RUN will get instead of
+// what the operator's own shell gets, and the tests in cmd/orion and
+// internal/supervisor that assert a curated run and cannot hold where
+// curation is unavailable. One predicate, so the answer cannot drift.
+func CurationAuthenticates() bool { return curationAuthenticates() }
 
 // Run is the configuration one child run was given, and the record of it.
 type Run struct {
@@ -91,6 +126,21 @@ type Run struct {
 func For(orionHome string, cfg config.Config, stage, actor string) (*Run, error) {
 	if via := optIn(cfg.Delegation.InheritOperatorConfig, stage, actor); via != "" {
 		return &Run{Inherited: true, OptIn: via}, nil
+	}
+
+	// A curated directory that cannot log in is not a safer run, it is no run
+	// at all. Inherit deliberately and say so, rather than handing the child a
+	// directory that fails at the first call (OR-239).
+	if !curationAuthenticates() {
+		return &Run{
+			Inherited: true,
+			OptIn:     "platform:" + runtime.GOOS,
+			Warnings: []string{
+				"this run inherited YOUR Claude Code configuration -- plugins, MCP servers and " +
+					"subagents included -- because a curated config directory cannot authenticate " +
+					"on " + runtime.GOOS + ". The run is not capability-curated. See OR-239.",
+			},
+		}, nil
 	}
 
 	dir := filepath.Join(orionHome, DirName)
@@ -237,7 +287,15 @@ func prune(dir string) {
 func linkCredentials(dir string, r *Run) {
 	src := filepath.Join(operatorDir(), credentialsFile)
 	if _, err := os.Lstat(src); err != nil {
-		return // nothing to carry over; macOS keeps these in the keychain
+		// Not silent. This used to return quietly on the assumption that an
+		// absent file meant the platform kept credentials elsewhere and all
+		// was well; on macOS that assumption was wrong and every run failed
+		// to authenticate with nothing said here (OR-239). A child that
+		// cannot log in is a setup fault, so say so where it happened.
+		r.Warnings = append(r.Warnings, fmt.Sprintf(
+			"no %s in %s, so this run has nothing to authenticate with; check: orion doctor",
+			credentialsFile, operatorDir()))
+		return
 	}
 	dst := filepath.Join(dir, credentialsFile)
 	if _, err := os.Lstat(dst); err == nil {

@@ -45,6 +45,12 @@ func read(t *testing.T, path string) string {
 // the operator's entire ~/.claude -- 179 tools, 148 of them MCP tools with
 // write access to whatever SaaS accounts were connected that day.
 func TestASupervisedRunIsLaunchedWithOrionsOwnConfiguration(t *testing.T) {
+	if !agentcfg.CurationAuthenticates() {
+		// A curated config directory cannot authenticate on this platform, so
+		// there is no curated run to assert (OR-239). Skipped rather than
+		// softened: this assertion is still exactly right on Linux and in CI.
+		t.Skip("curation unavailable on this platform (OR-239)")
+	}
 	w := ws(t, "")
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "operators-own"))

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/orion-sdlc/orion/internal/agentcfg"
 	"os"
 	"path/filepath"
 	"strings"
@@ -182,6 +183,12 @@ func fakeClaude(t *testing.T) (argsFile string) {
 // internal/supervisor, so it needs the same curation -- and would otherwise
 // keep the write handle to the tracker that OR-213 exists to remove.
 func TestTheDescriberGetsNoMCPServers(t *testing.T) {
+	if !agentcfg.CurationAuthenticates() {
+		// A curated config directory cannot authenticate on this platform, so
+		// there is no curated run to assert (OR-239). Skipped rather than
+		// softened: this assertion is still exactly right on Linux and in CI.
+		t.Skip("curation unavailable on this platform (OR-239)")
+	}
 	argsFile := fakeClaude(t)
 
 	if _, err := describeRunner(t.TempDir(), "", "", "describe it"); err != nil {
@@ -237,6 +244,12 @@ func TestTheDescriberPassesNoFlagForAnUnsetModelOrEffort(t *testing.T) {
 // runs with the operator's whole plugin surface and 148 unused MCP tool
 // definitions re-sent on every turn unless it goes through agentcfg too.
 func TestTheChangelogRunnerGetsNoMCPServersAndACuratedConfigDir(t *testing.T) {
+	if !agentcfg.CurationAuthenticates() {
+		// A curated config directory cannot authenticate on this platform, so
+		// there is no curated run to assert (OR-239). Skipped rather than
+		// softened: this assertion is still exactly right on Linux and in CI.
+		t.Skip("curation unavailable on this platform (OR-239)")
+	}
 	argsFile := fakeClaude(t)
 	operator := filepath.Join(t.TempDir(), "operators-own")
 	if err := os.MkdirAll(operator, 0o755); err != nil {
