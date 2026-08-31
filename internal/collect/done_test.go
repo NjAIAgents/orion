@@ -116,6 +116,45 @@ func TestARerunThatCouldNotCheckOutIsSkippedNotFailed(t *testing.T) {
 	}
 }
 
+// The re-run has to happen in a fresh checkout of origin/<branch>, never in
+// whatever the passed-in directory has lying around uncommitted -- the job
+// worktree is exactly where the branch's OWN uncommitted residue (what
+// strandedTests looks for) sits, and testing it would test something the
+// pull request does not carry.
+//
+// Dirtying the passed-in repository's working tree with a file that would
+// break the build if it rode along proves the re-run used a clean checkout
+// rather than the directory it was given.
+func TestARerunAtCountTwoUsesAFreshCheckoutNotTheGivenDirsWorkingTree(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("no Go toolchain on PATH")
+	}
+	_, clone, files := branchWithATest(t, `package x
+
+import "testing"
+
+func TestAddsUp(t *testing.T) {
+	if Add(2, 2) != 4 {
+		t.Fatal("2 + 2")
+	}
+}
+`)
+	// Uncommitted, and syntactically broken: if rerunAtCountTwo ran the
+	// suite against clone's own working tree instead of an ephemeral
+	// checkout of origin/orion/x-2, this alone would fail the build.
+	write(t, clone, "internal/x/broken_test.go", "package x\n\nfunc this is not valid go {\n")
+
+	res := rerunAtCountTwo(clone, "develop", "orion/x-2", done.Diff{Files: files})
+
+	if res.Skipped != "" {
+		t.Fatalf("the re-run declined to run: %s", res.Skipped)
+	}
+	if res.Failed {
+		t.Fatalf("the re-run picked up an uncommitted file from the given directory "+
+			"instead of a clean checkout of the branch:\n%s", res.Output)
+	}
+}
+
 func TestGoTestPackagesMapsChangedTestFilesToTheirPackages(t *testing.T) {
 	got := goTestPackages([]string{
 		"internal/x/x.go",
@@ -294,6 +333,107 @@ func TestAPushedCommitIsTriagedAfresh(t *testing.T) {
 
 	if asked != 2 {
 		t.Errorf("the model was asked %d times across two different commits, want 2", asked)
+	}
+}
+
+// A merged ticket's triage record is a statement about a commit nobody would
+// be approving any more, and merged() is supposed to forget it (OR-244,
+// alongside clearFixes and clearRebases). Without this, a ticket reopened
+// later and pushed to the SAME commit hash by coincidence -- or one whose
+// workspace state was never cleaned up -- would read as already triaged and
+// skip straight past the gate.
+func TestAMergedTicketForgetsItsTriageRecord(t *testing.T) {
+	home, ws, _ := boundWithAJobWorktree(t)
+	if err := markTriaged(ws.Dir, "FCIA-6", "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadRequests(ws.Dir).Triaged["FCIA-6"]; got != "abc123" {
+		t.Fatalf("fixture did not record the triage: %q", got)
+	}
+
+	jira := newTracker()
+	slack := &slackSpy{}
+	collectOnce(t, home, jira, slack, nil,
+		PR{Verdict: VerdictMerged, Head: "abc123", URL: "https://example/pr/1"})
+
+	if got, ok := loadRequests(ws.Dir).Triaged["FCIA-6"]; ok {
+		t.Errorf("a merged ticket kept its triage record: %q", got)
+	}
+}
+
+// The gate sits between a PASSING verdict and the approval request, and
+// nowhere else. A red build, a still-running check, a closed pull request or
+// a fresh merge each end the pass through a different branch of the verdict
+// switch -- none of them should pay for a test rerun or a model call that
+// exists to answer a question none of them are asking.
+func TestTheGateDoesNotRunOnNonGreenVerdicts(t *testing.T) {
+	for _, v := range []Verdict{VerdictPending, VerdictFailing, VerdictClosed, VerdictMerged} {
+		t.Run(string(v), func(t *testing.T) {
+			home, _, _ := boundWithAJobWorktree(t)
+			jira := newTracker()
+			slack := &slackSpy{}
+			asked := 0
+			judge := func(*workspace.Workspace, string, string) (string, error) {
+				asked++
+				return done.ReplyDone, nil
+			}
+
+			collectOnce(t, home, jira, slack, judge,
+				PR{Verdict: v, Head: "abc123", URL: "https://example/pr/1"})
+
+			if asked != 0 {
+				t.Errorf("verdict %s asked the intent question %d time(s); the gate only "+
+					"runs on VerdictPassing", v, asked)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// supervisorDonePrompt: what the model is actually handed.
+// ---------------------------------------------------------------------------
+
+// Absent input is stated as absent, not left blank. A model handed an empty
+// "WHAT IT ASKED FOR" section invents a plausible requirement and judges the
+// diff against that -- which is a hand-back nobody can trace to anything.
+func TestSupervisorDonePromptStatesAbsentCriteriaAsAbsent(t *testing.T) {
+	p := supervisorDonePrompt(done.Evidence{Key: "OR-1"})
+
+	if !strings.Contains(p, "could not be read") {
+		t.Errorf("absent criteria were not declared as absent:\n%s", p)
+	}
+	if !strings.Contains(p, done.ReplyDone) {
+		t.Errorf("the fallback for absent criteria does not point the model at %q:\n%s",
+			done.ReplyDone, p)
+	}
+}
+
+// Same reasoning for an unreadable diff: the model has to be told it is
+// looking at a hole, not at a ticket with no changes.
+func TestSupervisorDonePromptStatesAbsentDiffAsAbsent(t *testing.T) {
+	p := supervisorDonePrompt(done.Evidence{Key: "OR-1", Criteria: "does a thing"})
+
+	if !strings.Contains(p, "could not be read") {
+		t.Errorf("an absent diff was not declared as absent:\n%s", p)
+	}
+}
+
+// The model needs the ticket's key, its summary, its criteria, the file
+// summary, and the patch itself -- an intent check with any of these missing
+// is judging the diff against nothing.
+func TestSupervisorDonePromptCarriesEveryField(t *testing.T) {
+	ev := done.Evidence{
+		Key: "OR-1", Summary: "add the --json flag",
+		Criteria: "the CLI accepts --json and emits JSON",
+		Diff:     done.Diff{Stat: "1 file changed", Patch: "diff --git a/x b/x"},
+	}
+	p := supervisorDonePrompt(ev)
+
+	for _, want := range []string{"OR-1", "add the --json flag",
+		"the CLI accepts --json", "1 file changed", "diff --git a/x b/x"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the prompt does not carry %q:\n%s", want, p)
+		}
 	}
 }
 
