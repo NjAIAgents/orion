@@ -30,7 +30,7 @@ import (
 // missing from it is the day that actor's claims stop excluding the ticket
 // from the queue.
 func TestTheQueueQueryNeverMentionsAStageLabel(t *testing.T) {
-	jql := queuedJQL([]string{"OR"}, "ORION")
+	jql := queuedJQL([]string{"OR"}, "ORION", nil)
 	if strings.Contains(jql, actors.StageLabelPrefix) {
 		t.Fatalf("the queue query enumerates stage labels, so a new actor would "+
 			"silently widen the lock's blind spot: %s", jql)
