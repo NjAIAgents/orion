@@ -270,6 +270,120 @@ func TestAKeystrokeDropsTheCap(t *testing.T) {
 	}
 }
 
+// Once the cap is dropped it cannot be re-applied: a second keystroke, or a
+// second call to Full, must be a no-op rather than re-arming the window with
+// whatever has accumulated since -- that would leave the operator's screen
+// mid-log with no way to tell which lines the window had eaten.
+func TestCannotRecapOnceDropped(t *testing.T) {
+	t.Setenv("LINES", "")
+	t.Setenv("COLUMNS", "")
+	LiveReset()
+	t.Cleanup(LiveReset)
+	LiveStart("OR-237")
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	if _, err := fmt.Fprintln(l, "before"); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+	l.Full()
+	if !l.full {
+		t.Fatal("Full must drop the cap")
+	}
+
+	b.Reset()
+	l.Full() // second call: must not erase or redraw a second time
+	if got := b.String(); got != "" {
+		t.Errorf("a second Full must be a no-op, wrote:\n%q", got)
+	}
+	if !l.full {
+		t.Error("the cap must stay dropped")
+	}
+}
+
+// A run that ends after only a couple of lines shows those lines, not a blank
+// screen padded to nothing and not a screen that pretends five lines happened
+// when only two did.
+func TestEndingOnFewWritesShowsThoseLinesNotBlank(t *testing.T) {
+	t.Setenv("LINES", "")
+	t.Setenv("COLUMNS", "")
+	LiveReset()
+	t.Cleanup(LiveReset)
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	if _, err := fmt.Fprintln(l, "only-line"); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+
+	frame := lastFrame(b.String())
+	if !strings.Contains(frame, "only-line") {
+		t.Errorf("a single line must still be on screen, got:\n%q", frame)
+	}
+	if len(l.window) != 1 {
+		t.Errorf("the window holds %d lines, want 1", len(l.window))
+	}
+}
+
+// A blank line is still a line: whitespace-only output must survive into the
+// window rather than being swallowed as if it were nothing.
+func TestWhitespaceOnlyLinesAreKept(t *testing.T) {
+	t.Setenv("LINES", "")
+	t.Setenv("COLUMNS", "")
+	LiveReset()
+	t.Cleanup(LiveReset)
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	if _, err := fmt.Fprintln(l, "   "); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+	if _, err := fmt.Fprintln(l, "after"); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+
+	if len(l.window) != 2 || l.window[0] != "   " {
+		t.Errorf("a whitespace-only line must be kept as its own entry, got %q", l.window)
+	}
+}
+
+// A line ending \r\n is normalised to end at \n, matching what a terminal
+// does with a carriage return before a newline. A \r that is not at the end
+// of the line is content, not a line ending, and must not be touched.
+func TestCarriageReturnAtLineEndIsStripped(t *testing.T) {
+	t.Setenv("LINES", "")
+	t.Setenv("COLUMNS", "")
+	LiveReset()
+	t.Cleanup(LiveReset)
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	if _, err := fmt.Fprint(l, "crlf-line\r\nmid\rline\n"); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+
+	if got := strings.Join(l.window, "|"); got != "crlf-line|mid\rline" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// terminalRows() only trusts LINES when it parses to at least 10; anything
+// else -- unset, non-numeric, negative, zero, or too small to be a real
+// terminal -- must report "unknown" so the window falls back to its floor
+// rather than guessing a height that could push the region off screen.
+func TestTerminalRowsRejectsInvalidValues(t *testing.T) {
+	for _, v := range []string{"", "not-a-number", "-5", "0", "9"} {
+		t.Setenv("LINES", v)
+		if got := terminalRows(); got != 0 {
+			t.Errorf("LINES=%q: terminalRows() = %d, want 0 (unknown)", v, got)
+		}
+	}
+	t.Setenv("LINES", "10")
+	if got := terminalRows(); got != 10 {
+		t.Errorf("LINES=10: terminalRows() = %d, want 10", got)
+	}
+}
+
 // A writer is a byte stream: one Write can carry three lines or half of one.
 // A window that counted writes instead of lines would cap at five of whichever
 // it happened to be handed.
