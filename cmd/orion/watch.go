@@ -128,8 +128,12 @@ func runWatch(args []string) {
 				Jira: mustJira(), Supervise: supervisor.Run, Advise: adviseRunner,
 				Describe: describeRunner,
 				Push:     pushBranch, OpenPR: openPR, Merged: mergedBranch,
+				Slack: slackForHold(), Preflight: preflightEnv,
 			})
 		},
+		// How a hold gets released without anyone running a command: the
+		// reaction is read here, and the doctor check re-run, on every tick.
+		Release: work.ReleaseDeps{Slack: slackForHold(), Recheck: recheckEnv},
 		Queued: func(home string, ps []string, label string) ([]tracker.Issue, error) {
 			return watch.Queued(j, home, ps, label)
 		},

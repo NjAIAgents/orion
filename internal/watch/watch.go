@@ -122,6 +122,13 @@ type Deps struct {
 	InFlight func(home string, projects []string) ([]string, error)
 	Sleep    func(d time.Duration) bool // returns false if interrupted
 	Now      func() time.Time
+	// Release decides whether a standing environmental fault has been fixed.
+	//
+	// A struct rather than a function because its zero value is already the
+	// honest answer: no Slack to read a confirmation from, and no way to
+	// re-check, so nothing is verifiable. What that means for each fault is
+	// work.Release's to decide, not this loop's.
+	Release work.ReleaseDeps
 }
 
 // maxLimitSleep caps how long one rate-limit reading may park the watcher.
@@ -236,21 +243,18 @@ func Run(opts Options, deps Deps) error {
 		// because it frees slots, and because a finished job may carry the
 		// rate-limit verdict that decides whether anything starts at all.
 		jobsUnfinished := false
-		loggedOut := ""
+		faulted := ""
 		for _, r := range p.reap() {
 			reportFinished(w, r)
-			// Remembered, not acted on here: the stop belongs after the whole
+			// Remembered, not acted on here: the check belongs after the whole
 			// batch has been reaped, or a second job finishing in the same tick
 			// would go unreported.
 			//
 			// Deliberately NOT excluded from the job count below. An earlier
 			// version skipped it, reasoning that a run which spent nothing must
-			// not be charged against --max-jobs -- true, and unobservable: the
-			// loop breaks unconditionally a few lines down, so `started` is
-			// never read again. Untestable code asserting a behaviour is worse
-			// than no code, so the claim is gone rather than left to rot.
-			if r.Outcome == work.OutcomeNoAuth {
-				loggedOut = r.Note
+			// not be charged against --max-jobs -- true, and unobservable.
+			if r.Outcome == work.OutcomeHeld {
+				faulted = r.Note
 			}
 			if r.Outcome != work.OutcomeSkipped {
 				started++
@@ -263,19 +267,43 @@ func Run(opts Options, deps Deps) error {
 			}
 		}
 
-		// A missing login stops the watcher, rather than being waited out like a
-		// quota wall. There is nothing to wait FOR: every subsequent ticket
-		// fails identically until a human signs in, and continuing to claim
-		// them converts one fixable problem into a queue of released tickets
-		// and a channel full of the same message (OR-212).
+		// An environmental fault holds the queue rather than killing the
+		// watcher.
 		//
-		// Between reaping and dispatching, so the deferred drain still waits for
-		// the jobs already running -- they hold claims, and this must not be the
-		// one exit that abandons them.
-		if loggedOut != "" {
-			ui.Say(w, "", events.ActorOrion, ui.VerbFail, "%s", loggedOut)
+		// It used to break the loop, which was right about the immediate
+		// danger -- every subsequent ticket fails identically until a human
+		// signs in, so claiming them converts one fixable problem into a queue
+		// of released tickets and a channel full of the same message (OR-212)
+		// -- and wrong about the remedy. Exiting means the fix ALSO requires
+		// noticing the watcher died, so a thirty-second repair is only picked
+		// up whenever somebody next looks. Holding keeps that property (no
+		// ticket is claimed while the fault stands) and drops the cost: the
+		// re-check runs on every tick, and the tick that finds the environment
+		// healthy releases the hold and resumes.
+		//
+		// Between reaping and dispatching, so the jobs already running are
+		// unaffected -- they hold claims, and this must never abandon them.
+		// It takes the SLOTS, not the tick. Collect still runs below:
+		// reconciling work that is already paid for -- closing a merged
+		// ticket, reading an approval -- neither spends anything nor depends
+		// on whatever broke, and stopping it would leave finished work
+		// unclosed for the duration of a fault it has nothing to do with.
+		held := work.Release(opts.Home, deps.Release, w)
+
+		// A fault that could not be RECORDED falls back to OR-212's stop.
+		//
+		// The hold is the file: it is what gates the slots below, what a
+		// reaction is read against, and what `orion reset --held` clears.
+		// Without it there is nothing to release the queue and nothing to
+		// bound the retry, so the next tick would claim into the same fault
+		// and the tick after that would do it again. Stopping is the honest
+		// end -- and it is the one case where a watcher going quiet is better
+		// than one that looks alive.
+		if faulted != "" && len(work.Holds(opts.Home)) == 0 {
+			ui.Say(w, "", events.ActorOrion, ui.VerbFail, "%s", faulted)
 			ui.Say(w, "", events.ActorOrion, ui.VerbWaiting,
-				"stopping: every queued ticket would fail the same way. "+
+				"stopping: the hold could not be recorded, so nothing would release it. "+
+					"Every queued ticket would fail the same way. "+
 					"Nothing was spent and nothing is labelled failed.")
 			break
 		}
@@ -292,6 +320,12 @@ func Run(opts Options, deps Deps) error {
 			}
 		}
 		if s.free > 0 && deps.Now().Before(pausedUntil) {
+			s.free = 0
+		}
+		// A standing fault claims nothing. Same shape as the rate-limit pause
+		// above and for the same reason: the condition belongs to the machine,
+		// so the queue waits rather than draining into it (OR-214).
+		if len(held) > 0 {
 			s.free = 0
 		}
 

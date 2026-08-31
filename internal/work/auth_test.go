@@ -40,8 +40,8 @@ func TestALoggedOutCLIRequeuesTheTicketRatherThanFailingIt(t *testing.T) {
 			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
 		})
 
-	if res[0].Outcome != OutcomeNoAuth {
-		t.Fatalf("outcome = %q, want %q", res[0].Outcome, OutcomeNoAuth)
+	if res[0].Outcome != OutcomeHeld {
+		t.Fatalf("outcome = %q, want %q", res[0].Outcome, OutcomeHeld)
 	}
 	if strings.Contains(j.labelLog(), "orion-failed") {
 		t.Errorf("the ticket was labelled failed for a problem that never touched it: %s", j.labelLog())
