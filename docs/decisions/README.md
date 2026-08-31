@@ -19,3 +19,4 @@ already have been decided against, on purpose.
 - [0013](0013-new-creates-the-tracker-project-not-a-workspace.md) — `orion new` creates the tracker project and no workspace
 - [0014](0014-supervised-runs-get-a-curated-config-directory.md) — a supervised run gets a config directory Orion curates, and no MCP servers
 - [0015](0015-ci-authority-under-a-merge-ref.md) — under a merge ref Orion is the gate on landing, and `develop` keeps a post-merge check as the backstop
+- [0016](0016-integration-state-machine-not-a-job-queue.md) — the integration state machine carries the sophistication; the queue is Go channels and JSON, with a git SHA recorded at every transition
