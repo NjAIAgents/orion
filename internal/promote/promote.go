@@ -8,7 +8,7 @@
 //  2. Fragments and the version reconcile in both directions (OR-187).
 //  3. The integration branch is green ON THE EXACT SHA being promoted.
 //  4. No open pull requests target the integration branch.
-//  5. Every commit in the range is attributable to a ticket in the version.
+//  5. Every commit in the promotion range is attributable to some ticket.
 //
 // CHECK 5 WILL FIRE ON REAL WORK, and that is intended rather than a defect
 // to tune away. On 2026-08-29 a workflow fix and two changelog assemblies
@@ -177,11 +177,16 @@ func Verify(in Inputs) Verdict {
 	// 5. Attribution warns by design: hand-pushed docs and changelog assembly
 	// are normal, and blocking on them makes the gate a nuisance that gets
 	// bypassed, which costs more than it saves.
+	//
+	// The question is whether a commit names A ticket, not whether it names one
+	// of THIS version's (OR-238). Work keyed to an earlier milestone is
+	// attributed work; reporting it made the warning fire on every promotion,
+	// which is how a channel stops being read.
 	if len(in.UnattributedCommits) > 0 {
 		v.Checks = append(v.Checks, Check{
 			Name: "every commit belongs to a ticket",
-			Detail: fmt.Sprintf("%d commit(s) carry no ticket key from %s: %s",
-				len(in.UnattributedCommits), in.Version, list(in.UnattributedCommits)),
+			Detail: fmt.Sprintf("%d commit(s) in the promotion range carry no ticket key: %s",
+				len(in.UnattributedCommits), list(in.UnattributedCommits)),
 		})
 	}
 
