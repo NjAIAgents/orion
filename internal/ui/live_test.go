@@ -345,8 +345,10 @@ func TestTermDumbGetsNoCursorControl(t *testing.T) {
 	}
 }
 
-// The scrollback above the region stays untouched: a write erases the region,
-// emits the line, and redraws below it. Every line in order, nothing spliced.
+// The window above the region keeps its lines in order, and every redraw
+// erases exactly the block it drew -- window rows included. An erase measured
+// against the region alone would leave a window row stranded on screen at every
+// write, and the strandings would walk the region down the terminal.
 func TestScrollbackSurvivesTheRegion(t *testing.T) {
 	LiveReset()
 	t.Cleanup(LiveReset)
@@ -369,17 +371,20 @@ func TestScrollbackSurvivesTheRegion(t *testing.T) {
 	if !(fi < si && si < ti) {
 		t.Errorf("scrollback came out of order:\n%q", got)
 	}
-	// Every redraw erased exactly the region it had drawn -- four lines: rule,
-	// header, blank, one row -- so an erase can never reach up into the
-	// scrollback above it. The first write had nothing yet to erase, so three
-	// writes and a Close make three erases.
-	if n := strings.Count(got, "\x1b[4A\x1b[0J"); n != 3 {
-		t.Errorf("expected an erase before every redraw and one at Close, got %d:\n%q", n, got)
+	// The region is four lines -- rule, header, blank, one row -- and the window
+	// grows by one at each write, so the block is 5, then 6, then 7 rows and
+	// each erase names the one before it. The first write had nothing yet to
+	// erase; Close erases the last block.
+	for _, want := range []string{"\x1b[5A\x1b[0J", "\x1b[6A\x1b[0J", "\x1b[7A\x1b[0J"} {
+		if n := strings.Count(got, want); n != 1 {
+			t.Errorf("expected exactly one %q erase, got %d:\n%q", want, n, got)
+		}
 	}
-	// And Close is the last thing in the stream, so the region is gone and
-	// the scrollback is all that is left on screen.
-	if !strings.HasSuffix(got, "\x1b[4A\x1b[0J") {
-		t.Errorf("Close must end by clearing the region:\n%q", got)
+	// Close commits the window rather than erasing it with the region: those
+	// three lines are the only ones the terminal has not seen, and ending a run
+	// on a blank screen answers "what just happened" worse than they do.
+	if !strings.HasSuffix(got, "\x1b[7A\x1b[0Jfirst\nsecond\nthird\n") {
+		t.Errorf("Close must clear the region and leave the window on screen:\n%q", got)
 	}
 	if l.drawn != 0 {
 		t.Errorf("Close left %d rows recorded as drawn", l.drawn)
@@ -424,9 +429,17 @@ func TestConcurrentWritesAndRedrawsDoNotSplice(t *testing.T) {
 	wg.Wait()
 
 	// Every sentinel came out whole, and none of them has a region row spliced
-	// into the middle of it.
-	if n := strings.Count(b.String(), "SENTINEL-line\n"); n != 8*40 {
-		t.Errorf("expected 320 whole sentinel lines, got %d", n)
+	// into the middle of it. A line is redrawn for as long as it stays in the
+	// window, so the count is a floor rather than an equality -- but a line that
+	// was ever spliced is a line that does not end where it should.
+	got := b.String()
+	if n := strings.Count(got, "SENTINEL-line\n"); n < 8*40 {
+		t.Errorf("expected at least 320 whole sentinel lines, got %d", n)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "SENTINEL") && !strings.HasSuffix(line, "SENTINEL-line") {
+			t.Fatalf("a sentinel was spliced: %q", line)
+		}
 	}
 }
 
