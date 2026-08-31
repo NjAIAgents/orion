@@ -34,6 +34,7 @@ func runCollect(args []string) {
 		Prune:   pruneBranch,
 		Merge:   mergePR,
 		Fix:     fixRun,
+		Judge:   doneJudge,
 		Slack:   slackForApproval(),
 	})
 
