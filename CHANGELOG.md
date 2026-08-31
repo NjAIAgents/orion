@@ -6,6 +6,113 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.8.8
+
+### Added
+
+- An environmental fault now HOLDS the tickets it stopped instead of failing
+  them. When a run dies without taking a turn — an expired `claude` login, a
+  quota wall whose reset time the provider never stated, an unreachable tracker
+  or forge, a missing nj-agents — the ticket keeps its queue label, goes back to
+  To Do, and its empty worktree and branch are removed so the retry starts
+  clean. A worktree with anything in it is kept and reported, as prune already
+  does. A run that spent a turn and failed is still `orion-failed`, unchanged.
+- Orion asks about the fault in Slack: one message per fault naming the exact
+  remedy and which tickets are waiting, not one message per ticket. A ✅ from
+  someone on `slack.merge_approvers` is treated as a claim, not a fact — the
+  matching `orion doctor` check is re-run before anything is released, and a fix
+  that did not take is reported in the same thread. One automatic retry per
+  ticket per fault; a second identical fault escalates instead of asking again.
+- `orion reset --held [fault]` re-checks the environment and releases held
+  tickets immediately, for an operator who has just fixed something and does not
+  want to wait for the next tick.
+
+- **`orion config collect`** shows how work lands and sets the switches that
+  decide it, so `batch_integration` and `auto_rebase` are reachable by command
+  rather than by hand-editing `orion.json`. `auto_rebase` never had one.
+- Turning a switch ON prints what it costs before you walk away from it. A
+  toggle whose consequences are unstated is one people flip to see what
+  happens.
+- It writes the `collect` block if the file has none, which every config
+  written before this does. Telling an operator to add one by hand would be
+  the command instructing them to do the exact thing it exists to replace.
+
+- **Batch integration is wired into `orion collect`.** With
+  `collect.batch_integration` on, a pass assembles its ready branches into one
+  ephemeral ref, tests that once, and reports each member as landed, ejected,
+  a culprit, or deferred. Off, the flag is a config read and the per-branch
+  path is untouched.
+- **An empty check rollup no longer reads as green.** The existing per-branch
+  path treats "no checks are configured on this repository" as PASSING, which
+  is right for a repository without CI and catastrophic for a ref whose checks
+  have not started: every member of a batch would land on no evidence at all.
+  The batch tester waits instead, and gives up with a reason rather than
+  reading silence as success.
+- The batch does not merge. A green batch reports its members as passing and
+  the existing approval and merge path acts on that, so the only irreversible
+  step in the package stays where it already lives.
+
+- `orion watch` now draws a batch as a batch. The pinned region gains a batch
+  mode that follows a set from assembly through CI to isolation, so a batch
+  waiting up to thirty minutes on one CI run is no longer silent. Assembly
+  shows membership, testing shows one bar for the shared run, and a red batch
+  draws the bisection tree with the run count — the tree because it is the only
+  rendering that explains why finding a culprit cost four runs rather than one.
+- An ejected branch is now visually and verbally distinct from a culprit. An
+  ejection is yellow, carries its own glyph, and says the branch returns to the
+  queue; a culprit is red. They read alike in the first cut, which sends an
+  operator to debug a branch with nothing wrong with it.
+- The runs-per-branch figure — the entire argument for batching — is a headline
+  rather than the last line printed.
+
+### Changed
+
+- `orion watch` no longer exits when the CLI is logged out. It holds the queue —
+  claiming nothing, still reconciling work already in flight — and resumes on the
+  first tick whose check finds the environment healthy. It still stops outright
+  in the one case where nothing could release it: a fault it failed to record.
+
+- The pinned region survives on a batch alone. It previously drew nothing
+  without a running row, and by the time a batch assembles its members' agents
+  have finished, so the whole CI wait rendered blank.
+- Off a TTY a batch is one plain line per tick naming the phase, the member
+  counts and the run number. No bar, no spinner, no cursor control, the same
+  contract the per-run rows already met.
+
+- **`limits.max_concurrent_tickets` has no ceiling.** It was capped at five,
+  refused above that, and clamped on read. Orion was overruling a number the
+  operator chose for a machine it cannot measure.
+- **Above ten it asks instead.** `orion config limits max_concurrent_tickets 12`
+  states what the number costs and waits for a yes: conflicts grow with the
+  SQUARE of it, every run holds a worktree off one shared clone that git
+  serialises on, one rate limit is shared by all of them, a budget checkpoint
+  is only read between runs so those already in flight sail past it together,
+  and approvals do not parallelise — N tickets finishing is N approvals
+  waiting on one person.
+- An unanswered prompt is a no, including when stdin is closed. Defaulting to
+  yes would let a script set a number nobody chose.
+- **A configured value is now honoured on read.** The old clamp produced a
+  file saying forty while the watcher ran five, with nothing in either place
+  explaining the gap. Zero still means the shipped default and never
+  unlimited.
+
+### Removed
+
+- `collect.batch_size`. A batch can only hold branches that finished, and no
+  more can finish than `limits.max_concurrent_tickets` allowed to run, so a
+  second number could only ever disagree with the first about the same thing.
+
+### Fixed
+
+- A bare `502`, `503` or `504` from the tracker or the forge is now classified
+  as unreachable. The connectivity table required the reason phrase, so a
+  gateway that returned an empty body left only the status code and the outage
+  was reported as a ticket failure. Bounded so it cannot fire on an issue key,
+  a token count or a duration.
+- Two tickets meeting the same fault in the same tick can no longer both decide
+  they created the hold, which posted the same Slack message twice, nor race on
+  a shared temp file and lose one of the two writes entirely.
+
 ## v0.8.7
 
 ### Added
