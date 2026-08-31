@@ -210,6 +210,120 @@ func TestAStageLabelThatCannotBeWrittenDoesNotFailTheRun(t *testing.T) {
 	}
 }
 
+// RELEASING A CLAIM THROUGH THE NO-OP PATH ALSO CLEARS THE STAGE. The CI-wait
+// and failed endings are covered above; release() is the third path off a
+// claim -- a no-op or an already-merged ticket -- and it shares the same
+// obligation: a stage label that survives the release names an actor for
+// work nobody is doing.
+func TestReleasingANoOpClearsTheStageLabel(t *testing.T) {
+	home := project(t, cfg)
+	j := &fakeJira{}
+	var out strings.Builder
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(*workspace.Workspace, supervisor.Options) (*supervisor.Result, error) {
+				return &supervisor.Result{ExitCode: 0,
+					Final: "I read parse.go and the guard is already there.\n\n" +
+						"NOTHING TO DO: it already rejects the key at parse time."}, nil
+			},
+			Push:   func(string, string) error { t.Fatal("pushed an empty branch"); return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	var release string
+	for _, call := range j.labelCalls {
+		if strings.HasPrefix(call, "add: remove:") {
+			release = call
+		}
+	}
+	if release == "" {
+		t.Fatalf("the claim was never released: %s", j.labelLog())
+	}
+	if !strings.Contains(release, tracker.LabelWorking) {
+		t.Fatalf("the lock was not released: %s", release)
+	}
+	for _, l := range actors.StageLabels() {
+		if !strings.Contains(release, l) {
+			t.Errorf("a no-op release left %s behind: %s", l, release)
+		}
+	}
+}
+
+// A TICKET RE-QUEUED AFTER ORION'S OWN CREDENTIAL EXPIRED ALSO LOSES ITS
+// STAGE. Nothing was attempted, so the ticket goes back to the queue rather
+// than orion-failed -- but the stage label set at claim time (Orion, holding
+// it until the implementer took over) must not survive: a queued ticket
+// naming an actor says work is underway that never started (OR-225).
+func TestRequeuingAfterAnAuthFailureClearsTheStageLabel(t *testing.T) {
+	home := project(t, cfg)
+	j := &fakeJira{}
+	var out strings.Builder
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(*workspace.Workspace, supervisor.Options) (*supervisor.Result, error) {
+				return loggedOutRun()
+			},
+			Push:   func(string, string) error { t.Fatal("pushed after a run that never started"); return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	var requeue string
+	for _, call := range j.labelCalls {
+		if strings.HasPrefix(call, "add:ORION") {
+			requeue = call
+		}
+	}
+	if requeue == "" {
+		t.Fatalf("the ticket was never requeued: %s", j.labelLog())
+	}
+	for _, l := range actors.StageLabels() {
+		if !strings.Contains(requeue, l) {
+			t.Errorf("requeuing after an auth failure left %s behind: %s", l, requeue)
+		}
+	}
+}
+
+// DRY RUN WRITES NO STAGE LABEL. A rehearsal must not mutate a shared
+// system: nothing is claimed, so there is nothing for a stage label to
+// describe, and the whole point of --dry-run is that everything after the
+// free steps is skipped, not merely made cosmetic.
+func TestDryRunWritesNoStageLabel(t *testing.T) {
+	home := project(t, cfg)
+	j := &fakeJira{}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home, DryRun: true},
+		Deps{Jira: j})
+
+	if len(res) != 1 || res[0].Outcome != OutcomeSkipped {
+		t.Fatalf("result = %+v", res)
+	}
+	if len(j.labelCalls) != 0 {
+		t.Fatalf("a dry run wrote to the tracker: %s", j.labelLog())
+	}
+}
+
+// A HANDOFF BETWEEN THE SAME ACTOR DOES NOT REWRITE THE STAGE LABEL. Orion
+// holds both sides of the push -> pull-request boundary, and a write there
+// would remove and re-add the identical label for no reason -- one party
+// holding both sides of a boundary is not a change of stage.
+func TestASameActorHandoffDoesNotRewriteTheStageLabel(t *testing.T) {
+	log := stageRun(t).labelLog()
+
+	orionStage := actors.StageLabel(events.ActorOrion)
+	// A same-actor write would show the label removing and re-adding itself
+	// in one call, which is exactly what setStage's add == remove guard
+	// exists to skip. The push -> pull-request boundary (Orion -> Orion) is
+	// the one live case of it in this run.
+	if strings.Contains(log, "add:"+orionStage+" remove:"+orionStage) {
+		t.Errorf("a same-actor handoff rewrote its own stage label: %s", log)
+	}
+}
+
 // refuseStage is a fakeJira that rejects any write adding a stage label.
 type refuseStage struct{ fakeJira }
 
