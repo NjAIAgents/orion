@@ -241,3 +241,46 @@ func TestGoListResolvesThisRepositorysOwnPackages(t *testing.T) {
 		t.Error("GoList resolved a package that does not exist")
 	}
 }
+
+// The acceptance criterion end to end: the validator, the real `go list`, and
+// this repository's own import graph, rather than a graph written to make the
+// point. The hand-written cases above prove the rules; this proves they are
+// fed the truth -- a resolver returning direct imports, the wrong field, or
+// nothing at all would pass every one of them and admit a coupled plan here.
+//
+// The pairs are chosen for what they are rather than for the answer they
+// give. cmd/orion imports internal/supervisor, which is Orion's own common
+// shape: a change running down a layer, one bucket, serial. internal/match
+// and internal/procsafe import nothing of Orion's at all, so if THEY were
+// refused the check would be refusing everything and the fan would be dead
+// code that never runs.
+func TestTheRealImportGraphDecidesTheVerdict(t *testing.T) {
+	root := GoList("../..")
+	if _, err := root("./internal/fanout"); err != nil {
+		t.Skipf("no usable Go toolchain here: %v", err)
+	}
+
+	coupled := Validate(plan("./cmd/orion", "./internal/supervisor"), 4, root)
+	if !coupled.Serial {
+		t.Errorf("cmd/orion and internal/supervisor were fanned out, but the first "+
+			"imports the second: %v", coupled.Packages)
+	}
+	if !strings.Contains(coupled.Reason, "depends on") {
+		t.Errorf("reason %q does not name the import edge that decided it", coupled.Reason)
+	}
+
+	independent := Validate(plan("./internal/match", "./internal/procsafe"), 4, root)
+	if independent.Serial {
+		t.Fatalf("two packages that import nothing of Orion's were refused: %s",
+			independent.Reason)
+	}
+	want := []string{
+		"github.com/orion-sdlc/orion/internal/match",
+		"github.com/orion-sdlc/orion/internal/procsafe",
+	}
+	for i := range want {
+		if independent.Packages[i] != want[i] {
+			t.Errorf("packages[%d] = %q, want %q", i, independent.Packages[i], want[i])
+		}
+	}
+}
