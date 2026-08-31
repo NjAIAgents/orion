@@ -475,3 +475,19 @@ func columns() int {
 	}
 	return n
 }
+
+// terminalRows reads the terminal height from LINES, the counterpart to
+// columns() and limited the same way: it is the only source available without
+// a dependency, and a shell that does not export it leaves the height unknown.
+//
+// Absent means "do not grow". The frozen window (live.go) falls back to its
+// floor, which is the safe answer in a way that a guessed height is not: guess
+// too tall and the region goes off the top of the screen, which is the thing
+// the window exists to prevent.
+func terminalRows() int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("LINES")))
+	if err != nil || n < 10 {
+		return 0
+	}
+	return n
+}
