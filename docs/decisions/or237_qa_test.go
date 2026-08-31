@@ -96,15 +96,29 @@ func TestADR0015CrossReferencesResolve(t *testing.T) {
 
 // The changelog fragment is a separate artifact from the ADR with its own
 // acceptance criteria; nothing in decisions_test.go reads it at all.
+//
+// It is read from EITHER place, because a fragment is not permanent: `orion
+// changelog` collates fragments into CHANGELOG.md and deletes them, which is
+// the whole point of the .changelog.d/ design. Asserting only on the fragment
+// made this test fail on develop the first time the release it documents was
+// cut -- a test that breaks on every release by construction. What is worth
+// asserting is that the facts are documented SOMEWHERE a reader will find
+// them, so look in the fragment first and in the collated changelog after.
 func TestChangelogFragmentOR237(t *testing.T) {
 	path := "../../.changelog.d/OR-237.md"
 	b, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("%s: %v", path, err)
+		path = "../../CHANGELOG.md"
+		if b, err = os.ReadFile(path); err != nil {
+			t.Fatalf("OR-237 is documented in neither the fragment nor %s: %v", path, err)
+		}
 	}
 	body := string(b)
 
-	if !strings.HasPrefix(strings.TrimSpace(body), "### Added") {
+	// The "### Added" heading only means something in the fragment; once
+	// collated it sits under the version's own section among others.
+	if strings.HasSuffix(path, "OR-237.md") &&
+		!strings.HasPrefix(strings.TrimSpace(body), "### Added") {
 		t.Errorf("%s: expected the fragment to open with an \"### Added\" section", path)
 	}
 	for _, fact := range []string{
