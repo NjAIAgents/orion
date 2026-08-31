@@ -215,13 +215,14 @@ func msgResidue(key, summary, kind, detail, branch, dirty, issueURL, outcome str
 	)
 	if unresolved {
 		lines = append(lines,
-			"Orion could *not* preserve it:",
+			"Orion could *not* commit it:",
 			quote(outcome),
 			"",
-			"Work may have been lost, and until the worktree is clean `orion collect`",
-			"cannot rebase `"+branch+"`. Settle it with `orion settle "+key+"` — that",
-			"reports what is blocking and commits it — and open the worktree before you",
-			"assume this was an ordinary failure.",
+			"*Nothing was reverted* — every file above is still in the worktree, exactly",
+			"as the run left it. Until the tree is clean `orion collect` cannot rebase",
+			"`"+branch+"`. Settle it with `orion settle "+key+"` — that reports what is",
+			"blocking and commits it — and open the worktree before you assume this was",
+			"an ordinary failure.",
 		)
 	} else {
 		verified := "Nothing in it has been verified"
