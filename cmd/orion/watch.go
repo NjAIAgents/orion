@@ -30,7 +30,11 @@ func watchBanner(w io.Writer, projects []string, interval time.Duration, maxJobs
 		scope = strings.Join(projects, ", ")
 	}
 	fmt.Fprintf(w, "  %s\n", ui.Dim(w, "scope     "+scope))
-	fmt.Fprintf(w, "  %s\n", ui.Dim(w, "queue     tickets labelled "+tracker.QueueLabelDefault))
+	// Both halves of the claim criterion, because half of it is new (OR-221)
+	// and a ticket held back for the second half is otherwise a ticket that
+	// looks labelled and never runs.
+	fmt.Fprintf(w, "  %s\n", ui.Dim(w, "queue     tickets labelled "+tracker.QueueLabelDefault+
+		", and -- where the project uses releases -- attached to an open one"))
 	fmt.Fprintf(w, "  %s\n", ui.Dim(w, "interval  "+interval.String()))
 	// Said up front, with its source, because it is the setting that decides
 	// how much money is in flight at once and it is read from a file the
@@ -130,7 +134,7 @@ func runWatch(args []string) {
 				Push:     pushBranch, OpenPR: openPR, Merged: mergedBranch,
 			})
 		},
-		Queued: func(home string, ps []string, label string) ([]tracker.Issue, error) {
+		Queued: func(home string, ps []string, label string) (watch.Queue, error) {
 			return watch.Queued(j, home, ps, label)
 		},
 		InFlight: func(home string, ps []string) ([]string, error) {
