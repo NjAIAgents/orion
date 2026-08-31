@@ -2,6 +2,7 @@ package collect
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -63,7 +64,7 @@ func TestAGreenBatchCostsOneRunForEveryMember(t *testing.T) {
 	g := newFakeGit()
 	tr := &fakeTester{g: g, bad: map[string]bool{}}
 
-	b, err := Land(g, tr, "batch", "develop", members("OR-1", "OR-2", "OR-3", "OR-4"))
+	b, err := Land(g, tr, "batch", "develop", members("OR-1", "OR-2", "OR-3", "OR-4"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +85,7 @@ func TestAConflictingBranchIsEjectedBeforeAnythingIsTested(t *testing.T) {
 	g := newFakeGit("orion/or-2")
 	tr := &fakeTester{g: g, bad: map[string]bool{}}
 
-	b, err := Land(g, tr, "batch", "develop", members("OR-1", "OR-2", "OR-3"))
+	b, err := Land(g, tr, "batch", "develop", members("OR-1", "OR-2", "OR-3"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestABatchThatFullyConflictsTestsNothing(t *testing.T) {
 	g := newFakeGit("orion/or-1", "orion/or-2")
 	tr := &fakeTester{g: g, bad: map[string]bool{}}
 
-	b, err := Land(g, tr, "batch", "develop", members("OR-1", "OR-2"))
+	b, err := Land(g, tr, "batch", "develop", members("OR-1", "OR-2"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +128,7 @@ func TestOneCulpritIsIsolatedAndTheRestAreOfferedAgain(t *testing.T) {
 	tr := &fakeTester{g: g, bad: map[string]bool{"orion/or-6": true}}
 
 	b, err := Land(g, tr, "batch", "develop",
-		members("OR-1", "OR-2", "OR-3", "OR-4", "OR-5", "OR-6", "OR-7", "OR-8"))
+		members("OR-1", "OR-2", "OR-3", "OR-4", "OR-5", "OR-6", "OR-7", "OR-8"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +153,7 @@ func TestBothCulpritsAreFoundRatherThanTheFirst(t *testing.T) {
 	tr := &fakeTester{g: g, bad: map[string]bool{"orion/or-2": true, "orion/or-7": true}}
 
 	b, err := Land(g, tr, "batch", "develop",
-		members("OR-1", "OR-2", "OR-3", "OR-4", "OR-5", "OR-6", "OR-7", "OR-8"))
+		members("OR-1", "OR-2", "OR-3", "OR-4", "OR-5", "OR-6", "OR-7", "OR-8"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,14 +173,14 @@ func TestBothCulpritsAreFoundRatherThanTheFirst(t *testing.T) {
 func TestABatchOfOneBehavesLikeASingleBranch(t *testing.T) {
 	g := newFakeGit()
 	tr := &fakeTester{g: g, bad: map[string]bool{}}
-	b, _ := Land(g, tr, "batch", "develop", members("OR-1"))
+	b, _ := Land(g, tr, "batch", "develop", members("OR-1"), nil)
 	if !b.Green() || b.Runs != 1 {
 		t.Fatalf("green=%v runs=%d, want a single green run", b.Green(), b.Runs)
 	}
 
 	g2 := newFakeGit()
 	t2 := &fakeTester{g: g2, bad: map[string]bool{"orion/or-1": true}}
-	b2, _ := Land(g2, t2, "batch", "develop", members("OR-1"))
+	b2, _ := Land(g2, t2, "batch", "develop", members("OR-1"), nil)
 	if got := b2.Members(Culprit); len(got) != 1 || got[0] != "OR-1" {
 		t.Fatalf("culprit = %v, want the only member blamed", got)
 	}
@@ -189,11 +190,82 @@ func TestABatchOfOneBehavesLikeASingleBranch(t *testing.T) {
 func TestAnEmptyBatchDoesNothing(t *testing.T) {
 	g := newFakeGit()
 	tr := &fakeTester{g: g, bad: map[string]bool{}}
-	b, err := Land(g, tr, "batch", "develop", nil)
+	b, err := Land(g, tr, "batch", "develop", nil, nil)
 	if err != nil || b.Runs != 0 || len(b.Results) != 0 {
 		t.Fatalf("empty batch: err=%v runs=%d results=%d", err, b.Runs, len(b.Results))
 	}
 	if b.Green() {
 		t.Error("an empty batch is not green; there is nothing to land")
+	}
+}
+
+// recorder captures the observer calls in order.
+type recorder struct{ calls []string }
+
+func (r *recorder) Assembling(ref, base string, keys []string) {
+	r.calls = append(r.calls, "assembling "+strings.Join(keys, " "))
+}
+func (r *recorder) Merged(key string)     { r.calls = append(r.calls, "merged "+key) }
+func (r *recorder) Ejected(key, _ string) { r.calls = append(r.calls, "ejected "+key) }
+func (r *recorder) Testing(run int)       { r.calls = append(r.calls, "testing") }
+func (r *recorder) Split(keys []string, green bool, depth, runs int, culprit bool) {
+	v := "red"
+	if green {
+		v = "green"
+	}
+	c := ""
+	if culprit {
+		c = " culprit"
+	}
+	r.calls = append(r.calls,
+		fmt.Sprintf("split [%s] %s d%d r%d%s", strings.Join(keys, " "), v, depth, runs, c))
+}
+func (r *recorder) Settled(landed, ejected, culprits, deferred []string) {
+	r.calls = append(r.calls, fmt.Sprintf("settled landed=%v ejected=%v culprit=%v deferred=%v",
+		landed, ejected, culprits, deferred))
+}
+
+// The display is only worth anything if Land actually drives it. A renderer
+// that is correct and wired to nothing passes every test in internal/ui and
+// still shows an empty region for thirty minutes.
+func TestLandDrivesTheObserverThroughEveryPhase(t *testing.T) {
+	g := newFakeGit("orion/or-2") // OR-2 conflicts, so it is ejected
+	tr := &fakeTester{g: g, bad: map[string]bool{"orion/or-3": true}}
+	r := &recorder{}
+
+	if _, err := Land(g, tr, "batch", "develop", members("OR-1", "OR-2", "OR-3"), r); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(r.calls, "\n")
+
+	for _, want := range []string{
+		"assembling OR-1 OR-2 OR-3",
+		"merged OR-1",
+		"ejected OR-2",
+		"testing",
+		"settled",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the observer never saw %q:\n%s", want, got)
+		}
+	}
+	// The isolation tree has to be reported DURING the search, or the display
+	// has nothing to draw while the runs are being spent.
+	if !strings.Contains(got, "split") {
+		t.Errorf("no split was reported, so the tree could not be drawn:\n%s", got)
+	}
+	// Assembling must come first: the display opens the batch on it, and a
+	// member reported before the batch exists is dropped.
+	if r.calls[0] != "assembling OR-1 OR-2 OR-3" {
+		t.Errorf("the first call is %q, not the batch being opened", r.calls[0])
+	}
+}
+
+// A nil observer must be safe, because every existing caller passes one.
+func TestANilObserverIsSafe(t *testing.T) {
+	g := newFakeGit()
+	tr := &fakeTester{g: g, bad: map[string]bool{}}
+	if _, err := Land(g, tr, "batch", "develop", members("OR-1"), nil); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -259,6 +259,29 @@ func Run(opts Options, deps Deps) []Result {
 	for i, key := range keys {
 		pass[i] = strings.ToUpper(strings.TrimSpace(key))
 	}
+	// Batch integration (OR-236), when the repository has turned it on.
+	//
+	// Checked here rather than inside one(): the per-branch path below is what
+	// every repository uses today, and threading a flag through it would make
+	// its behaviour depend on a feature that is not enabled. Off, this block
+	// is a config read and nothing else changes.
+	//
+	// The config comes from the FIRST ticket's workspace. Every ticket in a
+	// pass belongs to one registered project in practice, and a batch spanning
+	// two repositories is not a thing that can be assembled anyway -- so
+	// reading one and using it for the set is honest rather than convenient.
+	if ws, log, w, cfg, ok := batchContext(pass, opts, deps); ok && cfg.Collect.BatchIntegration {
+		if log != nil {
+			defer log.Close()
+		}
+		if res := runBatch(pass, cfg, opts, deps, ws, log, w); res != nil {
+			return res
+		}
+		// Nothing was assemblable -- no pull requests open yet, say. Fall
+		// through rather than reporting an empty pass, so a ticket that the
+		// per-branch path CAN say something about still gets said.
+	}
+
 	var out []Result
 	for _, key := range pass {
 		out = append(out, one(key, pass, opts, deps))

@@ -151,6 +151,10 @@ var live struct {
 	// showing no bar. That is also what a fresh project looks like, and it is
 	// the honest rendering of both.
 	median func(actor string) time.Duration
+	// batch is the batch in flight, or nil. One at a time: a batch is
+	// assembled from one pass in one repository's sandbox, so a second would
+	// mean two passes racing on one clone -- which collect does not do.
+	batch *liveBatch
 }
 
 // LiveMedians installs the median lookup. Called once by the watcher, which
@@ -267,6 +271,7 @@ func LiveReset() {
 	live.mu.Lock()
 	defer live.mu.Unlock()
 	live.runs, live.spend, live.ci, live.median = nil, 0, 0, nil
+	live.batch = nil
 }
 
 // liveState is one consistent read of the registry: rows in key order, plus
@@ -279,12 +284,20 @@ type liveState struct {
 	rows  []liveRun
 	spend float64
 	ci    int
+	// batch is a COPY, taken under the same lock as the rows, so the block and
+	// the rows below it describe the same instant. A pointer into the registry
+	// would let a member resolve between drawing the batch and drawing the
+	// ticket it belongs to.
+	batch *liveBatch
 }
 
 func liveSnapshot() liveState {
 	live.mu.Lock()
 	defer live.mu.Unlock()
 	st := liveState{spend: live.spend, ci: live.ci}
+	if live.batch != nil {
+		st.batch = live.batch.snapshotLocked()
+	}
 	for _, r := range live.runs {
 		st.rows = append(st.rows, *r)
 	}
@@ -618,7 +631,11 @@ func projectsOf(rows []liveRun) string {
 // then one row per run. Empty when nothing is running, which is what makes a
 // tick with nothing to do print nothing at all.
 func renderRegion(w io.Writer, st liveState, now time.Time, cols int) []string {
-	if len(st.rows) == 0 {
+	// A batch keeps the region alive with no rows of its own. The members'
+	// agents have finished by the time a batch assembles, so their rows are
+	// gone -- and a batch waiting up to thirty minutes on one CI run is
+	// exactly the silence this region exists to fill.
+	if len(st.rows) == 0 && st.batch == nil {
 		return nil
 	}
 	r := liveRuleGlyph
@@ -630,6 +647,9 @@ func renderRegion(w io.Writer, st liveState, now time.Time, cols int) []string {
 		renderHeader(w, st, now),
 		"",
 	}
+	// The batch above the rows: it is the thing the rows are members OF, and
+	// reading the set after its members inverts the containment.
+	out = append(out, renderBatch(w, st.batch, now, cols)...)
 	for _, row := range st.rows {
 		out = append(out, renderRow(w, row, now, cols))
 	}
@@ -646,6 +666,9 @@ func renderRegion(w io.Writer, st liveState, now time.Time, cols int) []string {
 // stream is not a record of anything.
 func renderPlain(st liveState, now time.Time) []string {
 	var out []string
+	if line := renderBatchPlain(st.batch, now); line != "" {
+		out = append(out, line)
+	}
 	for _, r := range st.rows {
 		line := fmt.Sprintf("%s  %s  %s  %s  %d calls",
 			now.Local().Format("15:04"), pad(r.key, liveKeyWidth),

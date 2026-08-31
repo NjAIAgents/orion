@@ -45,6 +45,18 @@ func (c *Client) PostTS(channelID, text string) (string, error) {
 	return out.TS, nil
 }
 
+// Reply posts into the thread under one message.
+//
+// An answer belongs with its question. A fault Orion asked about, confirmed
+// fixed and then found still broken has to say so where the person who
+// confirmed it is already looking -- a fresh message in the channel reads as
+// a second, separate problem, which is exactly the wrong impression.
+func (c *Client) Reply(channelID, threadTS, text string) error {
+	return c.call("chat.postMessage", map[string]any{
+		"channel": channelID, "text": text, "thread_ts": threadTS,
+	}, nil)
+}
+
 // React adds an emoji to a message, as an affordance for whoever must
 // answer it.
 //

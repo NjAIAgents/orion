@@ -117,22 +117,71 @@ type Tester interface {
 // that conflicts.
 //
 // Order is the caller's: whatever the queue decided. It matters because the
+
+// Observer is how a batch reports what it is doing, without knowing what
+// draws it.
+//
+// An interface rather than a ui import, because everything else in this file
+// is a pure function over a Git and a Tester -- that is what lets the whole
+// search be tested with no repository and no terminal. A display dependency
+// here would make the cheapest tests in the package need a writer.
+//
+// Every method is optional in practice: nopObserver implements them all as
+// no-ops and is substituted for a nil, so a caller that does not care passes
+// nothing and every call site stays unguarded.
+type Observer interface {
+	Assembling(ref, base string, keys []string)
+	Merged(key string)
+	Ejected(key, reason string)
+	Testing(run int)
+	Split(keys []string, green bool, depth, runs int, culprit bool)
+	Settled(landed, ejected, culprits, deferred []string)
+}
+
+type nopObserver struct{}
+
+func (nopObserver) Assembling(string, string, []string)            {}
+func (nopObserver) Merged(string)                                  {}
+func (nopObserver) Ejected(string, string)                         {}
+func (nopObserver) Testing(int)                                    {}
+func (nopObserver) Split([]string, bool, int, int, bool)           {}
+func (nopObserver) Settled([]string, []string, []string, []string) {}
+
+// observe substitutes the no-op for a nil, so no call site needs a guard.
+func observe(o Observer) Observer {
+	if o == nil {
+		return nopObserver{}
+	}
+	return o
+}
+
+func keysOf(members []Member) []string {
+	out := make([]string, 0, len(members))
+	for _, m := range members {
+		out = append(out, m.Key)
+	}
+	return out
+}
+
 // first branch in never conflicts, so the order chooses who pays when two
 // branches disagree -- and that is the queue's decision to make, not this
 // function's.
-func Assemble(g Git, ref, base string, members []Member) (kept []Member, ejected []MemberResult, err error) {
+func Assemble(g Git, ref, base string, members []Member, o Observer) (kept []Member, ejected []MemberResult, err error) {
+	ob := observe(o)
 	if err := g.CutRef(ref, base); err != nil {
 		return nil, nil, fmt.Errorf("cutting %s from %s: %w", ref, base, err)
 	}
 	for _, m := range members {
 		if err := g.MergeInto(ref, m.Branch); err != nil {
+			reason := "conflicts with the batch: " + firstLine(err.Error())
 			ejected = append(ejected, MemberResult{
-				Member: m, Outcome: Ejected,
-				Reason: "conflicts with the batch: " + firstLine(err.Error()),
+				Member: m, Outcome: Ejected, Reason: reason,
 			})
+			ob.Ejected(m.Key, reason)
 			continue
 		}
 		kept = append(kept, m)
+		ob.Merged(m.Key)
 	}
 	return kept, ejected, nil
 }
@@ -151,31 +200,48 @@ func Assemble(g Git, ref, base string, members []Member) (kept []Member, ejected
 // the set it was handed, it splits immediately -- re-confirming a result the
 // caller already has is a whole CI run bought for nothing, and at the top of
 // every search it is the single most expensive mistake available here.
-func Isolate(t Tester, g Git, refPrefix, base string, members []Member) (culprits []Member, runs int, err error) {
+func Isolate(t Tester, g Git, refPrefix, base string, members []Member, o Observer) (culprits []Member, runs int, err error) {
+	return isolate(t, g, refPrefix, base, members, observe(o), 0, new(int))
+}
+
+// isolate carries the depth and a shared run counter so the observer can draw
+// the search as the tree it is. depth is the indent; total is shared across
+// the whole recursion rather than summed on the way out, because the display
+// needs the run number DURING the search, not after it.
+func isolate(t Tester, g Git, refPrefix, base string, members []Member,
+	o Observer, depth int, total *int) (culprits []Member, runs int, err error) {
+
 	if len(members) <= 1 {
-		return members, 0, nil // already narrowed, and already known red
+		// Already narrowed, and already known red. Reported as a leaf so the
+		// tree names the branch the search settled on.
+		if len(members) == 1 {
+			o.Split(keysOf(members), false, depth, *total, true)
+		}
+		return members, 0, nil
 	}
 
 	half := len(members) / 2
 	for i, side := range [][]Member{members[:half], members[half:]} {
 		ref := fmt.Sprintf("%s-%d-%d", refPrefix, len(members), i)
-		kept, _, aerr := Assemble(g, ref, base, side)
+		kept, _, aerr := Assemble(g, ref, base, side, nil)
 		if aerr != nil {
 			return nil, runs, aerr
 		}
 		ok, terr := t.Test(ref)
 		runs++
+		*total++
 		_ = g.DropRef(ref)
 		if terr != nil {
 			return nil, runs, terr
 		}
+		o.Split(keysOf(kept), ok, depth, *total, false)
 		if ok {
 			continue // this half is sound; the fault is in the other
 		}
 		// Both halves are examined rather than stopping at the first red
 		// one: a batch can hold more than one culprit, and stopping early
 		// would land the second.
-		sub, r, serr := Isolate(t, g, ref, base, kept)
+		sub, r, serr := isolate(t, g, ref, base, kept, o, depth+1, total)
 		runs += r
 		if serr != nil {
 			return nil, runs, serr
@@ -191,13 +257,15 @@ func Isolate(t Tester, g Git, refPrefix, base string, members []Member) (culprit
 // It does not merge anything. Deciding to act on a green batch is the
 // caller's, which keeps this function total and testable, and keeps the
 // irreversible step in one place.
-func Land(g Git, t Tester, ref, base string, members []Member) (Batch, error) {
+func Land(g Git, t Tester, ref, base string, members []Member, o Observer) (Batch, error) {
+	ob := observe(o)
 	b := Batch{Base: base, Ref: ref}
 	if len(members) == 0 {
 		return b, nil
 	}
+	ob.Assembling(ref, base, keysOf(members))
 
-	kept, ejected, err := Assemble(g, ref, base, members)
+	kept, ejected, err := Assemble(g, ref, base, members, ob)
 	b.Results = append(b.Results, ejected...)
 	if err != nil {
 		return b, err
@@ -206,6 +274,7 @@ func Land(g Git, t Tester, ref, base string, members []Member) (Batch, error) {
 		return b, nil // everything conflicted; nothing to test
 	}
 
+	ob.Testing(1)
 	ok, err := t.Test(ref)
 	b.Runs++
 	if err != nil {
@@ -216,10 +285,11 @@ func Land(g Git, t Tester, ref, base string, members []Member) (Batch, error) {
 			b.Results = append(b.Results, MemberResult{Member: m, Outcome: Landed,
 				Reason: "the batch was green"})
 		}
+		b.report(ob)
 		return b, nil
 	}
 
-	culprits, runs, err := Isolate(t, g, ref+"-iso", base, kept)
+	culprits, runs, err := Isolate(t, g, ref+"-iso", base, kept, ob)
 	b.Runs += runs
 	if err != nil {
 		return b, err
@@ -237,7 +307,13 @@ func Land(g Git, t Tester, ref, base string, members []Member) (Batch, error) {
 		b.Results = append(b.Results, MemberResult{Member: m, Outcome: Deferred,
 			Reason: "sound, but batched with a failure; offer it again"})
 	}
+	b.report(ob)
 	return b, nil
+}
+
+// report tells the observer what became of every member, once, at the end.
+func (b Batch) report(o Observer) {
+	o.Settled(b.Members(Landed), b.Members(Ejected), b.Members(Culprit), b.Members(Deferred))
 }
 
 // Describe is the one-line report for each member, for the watch log.

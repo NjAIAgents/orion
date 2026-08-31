@@ -58,6 +58,8 @@ CONFIGURATION
   orion config agents         interactive: name, model and effort per agent, by menu
   orion config limits         show the circuit breakers and where each value came from
   orion config limits KEY N   set one, e.g. limits max_concurrent_tickets 3
+  orion config collect        show how work lands, and what each switch costs
+  orion config collect K B    set one, e.g. collect batch_integration true
                               (global -- one roster, shared by every project)
   orion config agents --reset [id...]   reset one, some, or every agent to shipped defaults
 
@@ -116,6 +118,7 @@ GUARDRAILS
   orion doctor [--fix]        preflight: tools, auth, sandbox, config
                               --fix fetches nj-agents if it is missing
   orion reset --session <id>  clear a tripped breaker after human review
+  orion reset --held [fault]  re-check the environment and release held tickets
   orion fix start|end         mark a bug fix, protecting the failing test
   orion settle <KEY>          unstick a ticket's worktree: report what is
                               blocking its branch and commit it, so collect can
@@ -418,8 +421,11 @@ func runConfig(args []string) {
 	case "limits":
 		runConfigLimits(args)
 
+	case "collect":
+		runConfigCollect(args)
+
 	default:
-		fmt.Fprintf(os.Stderr, "orion: unknown config subcommand %q (set|show|path|agents|limits)\n", sub)
+		fmt.Fprintf(os.Stderr, "orion: unknown config subcommand %q (set|show|path|agents|limits|collect)\n", sub)
 		os.Exit(64)
 	}
 }
@@ -948,6 +954,8 @@ func runWork(args []string) {
 		Push:      pushBranch,
 		OpenPR:    openPR,
 		Merged:    mergedBranch,
+		Slack:     slackForHold(),
+		Preflight: preflightEnv,
 	})
 
 	// Exit non-zero when anything needs a person, so a wrapper script or a
@@ -1617,9 +1625,21 @@ func refreshLessons(root string) string {
 func detectStack(root string) string { return lessons.DetectStack(root) }
 
 func runReset(args []string) {
+	// Two things can be blocked, and they are not the same thing. A tripped
+	// breaker belongs to one SESSION: an agent that stopped making progress,
+	// reviewed by a person. A hold belongs to the MACHINE and to every ticket
+	// waiting behind it. Same verb because the operator's sentence is the same
+	// -- "I have looked at it, carry on" -- and separate flags because
+	// clearing one must never clear the other.
+	if hasFlag(args, "--held") || argFlag(args, "--held", "") != "" {
+		runResetHeld(args)
+		return
+	}
 	sessionID := argFlag(args, "--session", "")
 	if sessionID == "" {
-		fmt.Fprintln(os.Stderr, "orion: reset needs --session <id> (the id is printed in the block message)")
+		fmt.Fprintln(os.Stderr,
+			"orion: reset needs --session <id> (the id is printed in the block message)\n"+
+				"       or --held [fault] to clear an environmental hold")
 		os.Exit(64)
 	}
 	root, err := config.FindRoot(".")
