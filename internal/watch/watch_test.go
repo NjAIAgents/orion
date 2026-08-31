@@ -23,6 +23,7 @@ type spy struct {
 	collects  int
 	worked    []string
 	queued    []tracker.Issue
+	held      []HeldTicket
 	queueErr  error
 	busy      []string
 	busyErr   error
@@ -98,10 +99,10 @@ func (s *spy) deps() Deps {
 			}
 			return []work.Result{{Key: o.Keys[0], Outcome: out}}
 		},
-		Queued: func(string, []string, string) ([]tracker.Issue, error) {
+		Queued: func(string, []string, string) (Queue, error) {
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			return s.queued, s.queueErr
+			return Queue{Ready: s.queued, Held: s.held}, s.queueErr
 		},
 		InFlight: func(string, []string) ([]string, error) {
 			s.mu.Lock()
@@ -630,8 +631,8 @@ func TestAPermanentErrorStopsTheWatcherRatherThanRetryingForever(t *testing.T) {
 	stopping.Store(false)
 	s := &spy{maxSleeps: 99}
 	d := s.deps()
-	d.Queued = func(string, []string, string) ([]tracker.Issue, error) {
-		return nil, errors.New(`not a registered project: FCRA`)
+	d.Queued = func(string, []string, string) (Queue, error) {
+		return Queue{}, errors.New(`not a registered project: FCRA`)
 	}
 
 	var buf bytes.Buffer
@@ -740,7 +741,7 @@ func TestParentMatchingIgnoresCase(t *testing.T) {
 // merged-branch guard did not catch it -- a hand fix lands on a branch Orion
 // never named -- so the status has to be in the query.
 func TestTheQueueExcludesResolvedTickets(t *testing.T) {
-	jql := queuedJQL([]string{"OR"}, "ORION")
+	jql := queuedJQL([]string{"OR"}, "ORION", nil)
 
 	if !strings.Contains(jql, `statusCategory != "Done"`) {
 		t.Errorf("a Done ticket is still claimable: %s", jql)
@@ -765,7 +766,7 @@ func TestTheQueueExcludesResolvedTickets(t *testing.T) {
 
 // An empty label falls back to the default rather than matching everything.
 func TestTheQueueDefaultsItsLabel(t *testing.T) {
-	if jql := queuedJQL([]string{"OR"}, ""); !strings.Contains(jql,
+	if jql := queuedJQL([]string{"OR"}, "", nil); !strings.Contains(jql,
 		`labels = "`+tracker.QueueLabelDefault+`"`) {
 		t.Errorf("got %s", jql)
 	}
