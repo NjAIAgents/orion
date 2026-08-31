@@ -278,6 +278,8 @@ func main() {
 		runFan(os.Args[2:])
 	case "njagents", "nj-agents":
 		runNJAgents(os.Args[2:])
+	case "dashboard":
+		runDashboard(os.Args[2:])
 	case "report":
 		runReport(os.Args[2:])
 	case "logs", "log":
