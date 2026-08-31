@@ -41,6 +41,13 @@ func ActivityLogger(log *events.Log, w io.Writer, key, actor string) func(superv
 			log.Emit(events.Event{Kind: events.KindRunStart, Actor: actor,
 				Model: a.Model, Msg: sessionOpen(a), Detail: capabilities(a)})
 		case "tool":
+			// The live region's only input. A tool call is the finest-grained
+			// evidence Orion has that a run is doing something, which is
+			// exactly what a sparkline needs and what a spinner cannot claim:
+			// the spinner says the watcher is alive, this says the AGENT is
+			// (OR-240). Counted whatever the verbosity -- the console filter
+			// below decides what is printed, not what happened.
+			ui.LiveActivity(key, actor)
 			msg := a.Tool
 			if a.Detail != "" {
 				msg += " " + a.Detail
