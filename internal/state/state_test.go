@@ -8,6 +8,19 @@ import (
 	"time"
 )
 
+// A command with a blank session id looks runnable and is not, which is worse
+// than saying nothing: it sends an operator to a terminal to be told the
+// command is malformed, at the moment they are already trying to work out what
+// went wrong (OR-232).
+func TestResetCommandIsEmptyForAnUnknownSession(t *testing.T) {
+	if got := ResetCommand(""); got != "" {
+		t.Errorf("ResetCommand of an unknown session = %q, want nothing at all", got)
+	}
+	if got := ResetCommand("4b6af93d"); got != "orion reset --session 4b6af93d" {
+		t.Errorf("ResetCommand = %q; the spelling is the one `orion --help` documents", got)
+	}
+}
+
 func TestUpdatePersists(t *testing.T) {
 	s := New(t.TempDir())
 	if _, err := s.Update("sess", func(x *Session) { x.ToolCalls = 5 }); err != nil {

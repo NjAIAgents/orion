@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
@@ -123,6 +124,21 @@ func worktreeOrRepo(ws *workspace.Workspace, branch string) string {
 	return ws.RepoDir()
 }
 
+// remindEvery is how often a branch already handed to a person is mentioned
+// again while nothing about it changes.
+//
+// The hand-over itself is still announced the moment it happens, and a branch
+// that MOVES is announced afresh -- neither is throttled, because both are
+// news. This bounds only the "still yours" reminder, whose whole content is
+// that nothing has happened.
+//
+// Fifteen minutes because that is the interval over which the fault was
+// observed: OR-217 produced 15+ identical lines in 15 minutes at a one-minute
+// poll, and one line in that window is the smallest change that turns the
+// reminder back into something a reader looks at. Long enough to stop being
+// wallpaper, short enough that a branch cannot go missing from the log.
+const remindEvery = 15 * time.Minute
+
 // stale reports a branch whose base has moved, and refuses the merge.
 //
 // Shaped exactly like conflicted(): announced once per HEAD, the ticket kept
@@ -159,10 +175,28 @@ func stale(res Result, key string, pr PR, branch string, cfg config.Config,
 	// unchanged every two minutes reads as boilerplate, and the reader stops
 	// seeing the one that is new. Said once, then a line to say it is still
 	// true and still theirs.
-	if already := loadRequests(ws.Dir).Conflicts[key]; already != "" && already == pr.Head {
+	//
+	// Quiet, and now also PERIODIC. Saying it once per poll made the reminder
+	// itself the noise: fifteen identical lines in fifteen minutes on OR-217,
+	// each reporting a symptom and none of them naming the breaker that had
+	// parked the worktree or the command that would have released it (OR-232).
+	// Fifteen copies of a line is not fifteen times the information, and a
+	// reader who has learned to skip it will skip the one that changes.
+	reqs := loadRequests(ws.Dir)
+	if already := reqs.Conflicts[key]; already != "" && already == pr.Head {
+		now := deps.Now()
+		if last, seen := reqs.Reminded[key]; seen && now.Sub(last) < remindEvery {
+			return res
+		}
+		reqs.Reminded[key] = now
+		// Unrecorded means the reminder comes again next poll, which is the
+		// behaviour that existed before this and is not worth a line of its own
+		// -- a warning about failing to suppress a warning is two lines where
+		// there was one.
+		_ = writeRequests(ws.Dir, reqs)
 		ui.Say(w, key, events.ActorOrion, ui.VerbWaiting,
-			"%s is still behind %s and still yours; nothing has moved since it was reported",
-			branch, base)
+			"%s is still behind %s and still yours; nothing has moved since it was reported%s",
+			branch, base, parkedNote(worktreeOrRepo(ws, branch), cfg))
 		return res
 	}
 

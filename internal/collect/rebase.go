@@ -171,11 +171,30 @@ func behind(res Result, key string, pass []string, pr PR, branch string, cfg con
 	err := rebaseOnto(dir, base, branch, pr.Head)
 	unlock()
 	if err != nil {
-		// Loud, and then exactly the old behaviour. The branch is unchanged,
-		// so the three commands are still the right ones to print.
-		ui.Warn(w, "%s: could not rebase %s automatically (%v)", key, branch, err)
-		log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorOrion,
-			Msg: "automatic rebase did not run: " + err.Error()})
+		// Loud ONCE, and then exactly the old behaviour. The branch is
+		// unchanged, so the three commands are still the right ones to print.
+		//
+		// Once per HEAD, like every other hand-over on this path. Said on every
+		// poll it read as fifteen identical notes in fifteen minutes on OR-217,
+		// which is how a reader learns to skim the block that was meant to get
+		// their attention -- the same fault the cap escalation above and stale()
+		// below were already fixed for (OR-206, OR-232).
+		//
+		// And it names WHY the worktree is dirty when a breaker parked it. "has
+		// uncommitted changes" is a true report of a downstream symptom; it sent
+		// the OR-217 operator looking for a person who had left work in a
+		// worktree, when what had happened was that a breaker stopped the run
+		// and the command to resume it was sitting in a file they had no reason
+		// to open.
+		if reqs.Conflicts[key] != pr.Head {
+			note := ""
+			if errors.Is(err, errDirtyWorktree) {
+				note = parkedNote(dir, cfg)
+			}
+			ui.Warn(w, "%s: could not rebase %s automatically (%v)%s", key, branch, err, note)
+			log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorOrion,
+				Msg: "automatic rebase did not run: " + err.Error() + note})
+		}
 		return stale(res, key, pr, branch, cfg, opts, deps, ws, log, w)
 	}
 
@@ -257,6 +276,17 @@ func rebaseOnto(dir, base, branch, head string) error {
 // itself.
 var errRebaseConflict = errors.New("the rebase does not apply cleanly")
 
+// errDirtyWorktree marks the refusal whose CAUSE is worth chasing.
+//
+// The other circumstances rebaseLocal declines on -- an unreachable remote, the
+// wrong branch checked out -- are about the git it just ran. A tree with
+// uncommitted tracked changes is about something that happened to the RUN, and
+// on OR-217 that something was a breaker trip whose recovery command existed in
+// three places, none of them the log the operator was reading (OR-232). Told
+// apart here rather than by matching on the error text, for the same reason
+// errRebaseConflict is: the text is a sentence, not an interface.
+var errDirtyWorktree = errors.New("uncommitted changes")
+
 // rebaseLocal replays branch onto the fetched tip of its base, touching
 // nothing on the remote, or changes nothing at all.
 //
@@ -293,7 +323,7 @@ func rebaseLocal(dir, base, branch string) error {
 		return fmt.Errorf("reading the state of %s: %w", dir, err)
 	}
 	if dirty != "" {
-		return fmt.Errorf("%s has uncommitted changes", dir)
+		return fmt.Errorf("%s has %w", dir, errDirtyWorktree)
 	}
 	// Proved before the rebase is attempted so that a base git cannot resolve
 	// reports itself as what it is. Without this, "invalid upstream" comes
