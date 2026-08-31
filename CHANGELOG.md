@@ -6,6 +6,185 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.8.3
+
+### Added
+
+- `orion doctor` checks that the Claude CLI is AUTHENTICATED, not merely
+  present. A logged-out CLI passed the old check and failed every run; it is now
+  a FAIL naming the account and the command that repairs it.
+
+- `delegation.inherit_operator_config` in `orion.json`: stages or actors whose
+  runs get your own Claude Code configuration, plugins and MCP servers
+  included. Empty by default; the choice is recorded in the event log.
+- The `run-start` event now states what the run was given — the tool count and
+  the MCP servers, read off the CLI's own init frame. Until now this could
+  only be discovered by reading a raw transcript.
+
+- `orion release add <version> <KEY>...` attaches tickets to a milestone from
+  the command line. It takes bare keys, comma- or space-separated, and
+  INCLUSIVE ranges — `orion release add v0.8.3 OR-100 OR-133 OR-140..OR-145` —
+  which is the point: attaching one work block of thirty-six consecutive
+  tickets previously meant a click each in the Jira UI or a scripted REST loop,
+  and a milestone that is expensive to maintain drifts. `release` could already
+  create a version and report on one; this is what puts something in it.
+- The command resolves every key before it writes any, and prints what it will
+  add, what it will MOVE (a ticket already on another milestone is leaving that
+  one, which is a different sentence from an add and is reported as such),
+  what is already on the target, and what names no ticket at all. A range can
+  quietly include a ticket you did not picture, so the plan is readable before
+  it is applied. Re-running is a no-op that says so, the same property
+  `release create` has.
+- Adding to an already-released version is refused unless `--force` is given:
+  it rewrites a history that has already shipped. A version that does not exist
+  is refused naming the versions that do, and a range whose ends are reversed
+  or that spans two projects is refused with the reason rather than silently
+  expanding to nothing.
+- `--project` is optional and inferred from the ticket keys, which say it
+  unambiguously; passing one that contradicts the keys is refused rather than
+  silently preferred.
+
+- `orion settle <KEY>` unsticks a ticket's worktree without you ever needing
+  its path. It finds the worktree for the ticket, reports what is holding the
+  branch, and commits it as an unverified snapshot so `orion collect` can
+  rebase again. Nothing is verified and nothing is pushed. Use `--dry-run` to
+  see what it would do first.
+
+  It refuses rather than guesses when the worktree is mid-merge, mid-rebase,
+  holding unmerged paths, or on a detached HEAD, and prints the command that
+  resolves each. Until now the only recovery from a worktree left dirty by a
+  killed process or a full disk was to `cd` into a hashed path under
+  `ORION_HOME` and run git against an agent's branch by hand.
+
+### Changed
+
+- `orion watch` and `orion work` now print the run rather than the agents'
+  tool-call transcript. At concurrency 4 the console was about 60% "read",
+  "ran" and "edited" lines, and the ten lines that decide whether a person
+  has to act were scattered through them. The default now prints stage
+  boundaries, outcomes, escalations, failures and anything awaiting a person
+  — on the order of 15 lines for a ticket instead of roughly 200. Add
+  `--verbose` for the full stream as before. **Nothing is removed from the
+  record**: the event log, the per-run log and `orion logs` are complete at
+  either level, so triage and history are unaffected.
+- A run of lines from the same actor on the same ticket states the name and
+  model once instead of on every line. The columns stay where they are, so
+  the layout is unchanged and the eye tracks the ticket key and the verb,
+  which are what vary. Any change of ticket, actor or model — and every
+  stage boundary — states the identity again.
+- Consecutive identical lines collapse to one line with a count
+  (`edited cmd/orion/aiops_test.go (x4)`) rather than repeating.
+- A long absolute path in a message prints as its file name
+  (`ran cat bxpkzaome.output`, not the full sandbox temp path, whose only
+  useful token was the part the line clipped away). The full path is in the
+  event log.
+
+- A branch is now rebased onto its integration branch immediately before its
+  first push, so it arrives on the remote current and the first CI run is the
+  one that counts. An agent run takes ten to forty minutes; at concurrency 4
+  something else usually merges inside that window, so the branch used to be
+  pushed at a base that had already moved, CI ran on it, and the landing pass
+  then rebased it and force-pushed — a second full CI run on a second commit,
+  for a reason that was avoidable. This narrows that window rather than
+  closing it: the base can still move between the rebase and the push, and
+  the landing queue still handles what gets through.
+- The pre-push rebase never refuses the push. If the branch does not replay
+  cleanly, the original is pushed and the pull request opens anyway, with the
+  conflict reported and the exact commands to resolve it — finished work
+  hidden behind an unresolved conflict leaves you with nothing to look at. A
+  worktree carrying `.orion-manual-lock` is never rewritten, and an
+  unreachable remote degrades to pushing as it stands rather than failing the
+  run. A branch that is already current costs one extra fetch and prints
+  nothing.
+
+- `slack.merge_approvers` accepts a Slack user ID, a username, a display name
+  or an email address, and each is resolved to the member ID a mention needs.
+  A name lookup needs the `users:read` scope and an email needs
+  `users:read.email`; without them the request still sends and still names
+  the person in plain text, and the run reports which approver could not be
+  mentioned. A user ID needs no scope at all, so it is the form that always
+  works. Each approver is resolved at most once per run.
+- Only the approval request mentions anybody. A merged notice, a CI report
+  and a cost report do not, and no message ever uses `@channel` or `@here` —
+  a room tagged for everything is a room that gets muted, and in a channel
+  created per project a broadcast reaches people with no standing to approve.
+
+### Fixed
+
+- `orion release status` and `orion release verify` no longer report every
+  ticket in an already-shipped release as undocumented. Collation writes the
+  fragments into `CHANGELOG.md` and deletes them, so `.changelog.d/` is the one
+  place a released version's notes are guaranteed not to be — and that was the
+  only place the check looked. Re-running `orion release verify` on a version
+  that is tagged, published and marked released reported it unsafe to promote,
+  and every past release stayed blocked from then on. The check now asks
+  whether the change is documented rather than whether a file exists: a
+  `## <version>` section in `CHANGELOG.md` counts, and so does an uncollated
+  fragment. Which state applies is read from `CHANGELOG.md` itself, so the
+  check needs no tracker call and answers the same offline. A version still
+  awaiting collation behaves exactly as before, and a done ticket the collated
+  section does not name is still reported — as a warning rather than a blocker,
+  because a note folded into another ticket's bullet reads identically and a
+  published release cannot be corrected by refusing it.
+
+- An expired Claude login is reported as what it is. A run that dies because
+  the CLI is not signed in now says `claude is not authenticated: <the CLI's own
+  reason>. Run: claude, sign in, then restart the watcher.` instead of
+  `claude exited 1`, which was indistinguishable from a crash, a bad prompt or a
+  sandbox denial.
+- Tickets are no longer labelled `orion-failed` for it. Nothing was attempted --
+  no turn, no token, no branch work -- so the claim is released and the ticket
+  goes back to the queue, the way the quota back-off already behaves.
+- The watcher stops instead of draining the queue. Every subsequent ticket would
+  fail identically until a human signs in, so continuing to claim them turned one
+  fixable problem into a queue of released tickets.
+
+- The Slack approval request now @-mentions the people on
+  `slack.merge_approvers`, so Slack actually notifies them. It named them in
+  plain text before — "Only navjyot can approve" — and Slack raises a
+  notification for the member-ID form `<@U012ABCDEF>` and for nothing else,
+  so a bare username was styled like any other word and reached nobody. The
+  merge then waited on a person who was never told, and the ticket sat in
+  `ci-wait` repeating "nobody has approved it yet".
+
+- A run that ends with uncommitted tracked changes in its worktree now
+  commits them as an unverified snapshot, whatever ended the run and whatever
+  the breaker says. The cleanup used to fire only when a breaker trip was
+  still flagged, and that flag is erased by several unrelated things — an
+  unverified-edits trip clears itself when a verify passes, `orion reset`
+  clears it by hand, and every agent session writes its own state file. On
+  OR-217 the flag had already self-cleared, so 163 lines of staged work were
+  left behind, `orion collect` refused to rebase the branch on every poll for
+  over fifteen minutes, and two healthy branches starved behind it in the
+  landing queue. A trip, where one is still on record, now decides only the
+  commit message and what is reported — not whether the cleanup happens.
+
+- The QA stage now commits the tests it wrote before it reports its verdict.
+  The QA prompt already asked for that commit and the agent did not reliably
+  make it — two consecutive tickets left 163 and 110 lines of test code
+  sitting in the worktree, once staged and once not — and everything after the
+  stage reads commits rather than the worktree. So an uncommitted test made the
+  red-before-green check report "QA did not add or change a test file", a false
+  negative on precisely the run where a test *was* written; it left a dirty
+  worktree, which is what `collect`'s rebase refuses; and the branch was pushed
+  without it, so CI could go green on a pull request whose own evidence was
+  still on disk. The commit happens on every exit from the stage, including
+  when findings are still open at the round ceiling: a red pull request is the
+  correct outcome for a change QA found a defect in, and must not be avoided by
+  leaving the failing test behind.
+
+### Security
+
+- A supervised run no longer inherits the operator's Claude Code
+  configuration. Every agent Orion launches now gets a config directory Orion
+  builds (`$ORION_HOME/agent-config`, holding the nj-agents skills and agents
+  and nothing else) and is started with `--strict-mcp-config`, so it has no
+  MCP servers. Runs previously loaded `~/.claude` in full: on a measured run
+  that was 179 tools, 148 of them MCP tools with write access to the
+  operator's own authenticated accounts — `createJiraIssue`, `editJiraIssue`,
+  `createConfluencePage` — none of which Orion's breaker, sandbox or approval
+  path could see.
+
 ## v0.8.2
 
 ### Added
