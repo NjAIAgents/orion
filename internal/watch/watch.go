@@ -54,6 +54,7 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/cost"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
@@ -173,6 +174,31 @@ func Run(opts Options, deps Deps) error {
 	// not interleave mid-word, which would not be.
 	w = &syncWriter{w: w}
 
+	// The live run region (OR-240). It wraps everything else, so EVERY line
+	// this watcher prints -- a stage boundary, an escalation, an agent's own
+	// prose -- passes through it and the region is erased and redrawn around
+	// it. A writer that bypassed this would be overdrawn by the next redraw
+	// and lost.
+	//
+	// Off a terminal it is a pass-through: no cursor control at all, one
+	// plain line per run per tick, because a redirected log has to stay a log.
+	live := ui.NewLive(w)
+	w = live
+	// Registered FIRST so it runs LAST: the drain below and the final "stopped"
+	// line are printed into the scrollback while the region is still live, and
+	// clearing it before them would leave the region's last frame stranded
+	// above their output.
+	defer live.Close()
+	// Published so the signal handler can reach the same writer. Its "press
+	// ctrl-c again to force" line is the one message that must not be
+	// overdrawn by a redraw, and it is written from a goroutine Run does not
+	// own -- the same shape of problem `running` below solves for the pool.
+	lw := io.Writer(live)
+	liveOut.Store(&lw)
+	defer liveOut.Store(nil)
+	ui.LiveReset()
+	ui.LiveMedians(medianFor(opts.Home, opts.Projects))
+
 	// The count for a run of identical lines is printed when the run ends;
 	// the watcher's last one ends when the watcher does (OR-217).
 	defer ui.Flush(w)
@@ -287,6 +313,13 @@ func Run(opts Options, deps Deps) error {
 			ui.Say(w, "", events.ActorOrion, ui.VerbWarn, "tick %d: %v", tick, err)
 		}
 
+		// The off-terminal heartbeat: one plain line per run. On a terminal
+		// this does nothing, because the region is already saying it four
+		// times a second; in a redirected log it is the whole display. With
+		// nothing running it prints nothing, which is the point -- a tick
+		// with nothing to say must say nothing (OR-240).
+		live.Tick()
+
 		// A dry run has nothing to learn from a second tick: it changes
 		// nothing, so every subsequent tick prints the identical thing
 		// forever. Rehearsing once is the whole point.
@@ -365,11 +398,13 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 	// is why the git it performs -- rebase, worktree removal, branch pruning --
 	// takes the shared-clone lock (workspace/gitlock.go).
 	if deps.Collect != nil {
+		inCI := 0
 		for _, r := range deps.Collect(collect.Options{
 			Out: w, Home: opts.Home, DryRun: opts.DryRun,
 			// A tick is not a person at a terminal. Without this the
 			// collector told the watcher's operator to run the very command
-			// the watcher is already running.
+			// the watcher is already running -- and, since OR-240, printed
+			// "nothing is waiting on CI" once a minute all night.
 			Unattended: true,
 		}) {
 			// Pending means CI is still running; passing means CI is green
@@ -378,7 +413,15 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 			if r.Verdict == collect.VerdictPending || r.Verdict == collect.VerdictPassing {
 				unfinished = true
 			}
+			// Only PENDING counts as "in CI" for the live header. A passing
+			// pull request is waiting on a person, and counting it as CI
+			// would tell the operator a machine is working when they are the
+			// one holding it up.
+			if r.Verdict == collect.VerdictPending {
+				inCI++
+			}
 		}
+		ui.LiveCI(inCI)
 	}
 
 	// 2. How much is already claimed? The label is the lock, and it lives on
@@ -674,6 +717,48 @@ func claimedElsewhere(claimed, mine []string) []string {
 	return out
 }
 
+// medianFor answers "how long does a run by this actor usually take here",
+// for the live region's progress bar.
+//
+// Read on demand rather than cached at startup. The lookup fires when a run
+// changes actor -- a handful of times per ticket -- so the file read is rare,
+// and a watcher started against a brand-new project would otherwise show no
+// bar for the rest of the day however many runs it completed.
+//
+// An unreadable history is not an error here. It means no median, the row
+// draws no bar, and the region says nothing it cannot support: the display is
+// an accessory to the run and must never be able to fail it.
+func medianFor(home string, projects []string) func(string) time.Duration {
+	return func(actor string) time.Duration {
+		rows, err := cost.ReadHistory(home)
+		if err != nil {
+			return 0
+		}
+		d, ok := cost.MedianSeconds(rows, projects, actor)
+		if !ok {
+			return 0
+		}
+		return d
+	}
+}
+
+// liveOut publishes the writer that owns the terminal, so the signal handler
+// prints THROUGH the live region rather than underneath it.
+//
+// Package-level for the same reason `running` is: Listen installs the handler
+// before Run builds anything, and the handler's first message -- how to force
+// a quit -- is the one line that must not be erased by the next redraw.
+var liveOut atomic.Pointer[io.Writer]
+
+// out is where a message from outside the loop should go: the live writer if
+// a watcher is running, else whatever the caller was given.
+func out(fallback io.Writer) io.Writer {
+	if p := liveOut.Load(); p != nil && *p != nil {
+		return *p
+	}
+	return fallback
+}
+
 // pool is the set of tickets this watcher has dispatched and not yet reaped.
 type pool struct {
 	cap  int
@@ -715,6 +800,10 @@ func (p *pool) dispatch(deps Deps, opts Options, w io.Writer, key string) {
 	p.mu.Lock()
 	p.live[key] = true
 	p.mu.Unlock()
+	// The row appears at DISPATCH, not at the first stage boundary. A ticket
+	// that is claimed and then spends forty seconds provisioning a worktree is
+	// exactly the window the live region exists to fill (OR-240).
+	ui.LiveStart(key)
 
 	p.wg.Add(1)
 	go func() {
@@ -729,6 +818,7 @@ func (p *pool) dispatch(deps Deps, opts Options, w io.Writer, key string) {
 		p.mu.Lock()
 		delete(p.live, key)
 		p.mu.Unlock()
+		ui.LiveEnd(key)
 		for _, r := range res {
 			p.done <- r
 		}
@@ -1055,10 +1145,14 @@ func listen(w io.Writer, exit func(int)) (stop func()) {
 func handle(w io.Writer, sig <-chan os.Signal, exit func(int)) {
 	<-sig
 	stopping.Store(true)
-	fmt.Fprintln(w, "\nstopping after the current step. Press ctrl-c again to force,\n"+
+	// Through the live writer when there is one. Written straight to stdout
+	// this line lands below the pinned region and the next redraw erases it,
+	// so the instruction for how to force a quit would vanish a quarter of a
+	// second after being printed (OR-240).
+	fmt.Fprintln(out(w), "\nstopping after the current step. Press ctrl-c again to force,\n"+
 		"which kills the running agents now and leaves their tickets claimed.")
 	<-sig
-	exit(forceQuit(w, supervisor.KillAll))
+	exit(forceQuit(out(w), supervisor.KillAll))
 }
 
 // forceQuit kills every agent this watcher started and reports what it left
