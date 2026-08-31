@@ -229,8 +229,8 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, w := range ac.Warnings {
-		fmt.Fprintf(os.Stderr, "orion: %s\n", w)
+	for _, warning := range ac.Warnings {
+		warnOnce(os.Stderr, warning)
 	}
 
 	overall := time.Now()
@@ -512,6 +512,29 @@ func recordTicketCost(ws *workspace.Workspace, opts Options, res *Result, out st
 			fmt.Fprintf(os.Stderr, "orion: could not append the usage history: %v\n", err)
 		}
 	}
+}
+
+// warned remembers which configuration warnings this process has already
+// said, so each is said once.
+//
+// Every warning agentcfg produces is a property of the MACHINE, not of the
+// ticket: the config directory is provisioned identically for every run, so
+// "a curated config directory cannot authenticate on darwin" is as true on
+// run one as on run forty. Repeating it per run taught the operator that the
+// line is boilerplate, which is the fastest way to make a real warning
+// invisible (OR-239, OR-240).
+//
+// Per PROCESS rather than per watcher session, which for `orion watch` are
+// the same thing and for a one-shot `orion work` is also once. Nothing here
+// resets it: a warning that came back would have to have changed, and it
+// cannot without the binary restarting.
+var warned sync.Map
+
+func warnOnce(w io.Writer, msg string) {
+	if _, seen := warned.LoadOrStore(msg, true); seen {
+		return
+	}
+	fmt.Fprintf(w, "orion: %s\n", msg)
 }
 
 func humanTokens(n int) string {

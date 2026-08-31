@@ -428,3 +428,28 @@ func TestPrintsBeforeSearchingForWaitingTickets(t *testing.T) {
 		t.Errorf("the checking line must come before the result, got: %s", out)
 	}
 }
+
+// OR-240: a watcher tick with nothing waiting on CI prints NOTHING.
+//
+// The pair OR-128 added above is right for a person who typed `orion
+// collect`, and wrong once a minute forever. On a tick it stated that the
+// system was idle -- "checking for tickets awaiting CI..." then "nothing is
+// waiting on CI." -- while two agents were working hard on two tickets, which
+// is worse than silence: it is a false claim about what the system is doing.
+func TestAnUnattendedPassWithNothingWaitingIsSilent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ORION_HOME", home)
+	if err := bindTo(home, "ws-1", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+
+	res := Run(Options{Home: home, Out: &buf, Unattended: true}, Deps{Jira: newTracker()})
+
+	if len(res) != 0 {
+		t.Errorf("expected no work, got %+v", res)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("a tick with nothing waiting must print nothing at all, got: %q", buf.String())
+	}
+}
