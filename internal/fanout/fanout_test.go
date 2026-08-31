@@ -193,6 +193,57 @@ func TestAnEmptyPackageForcesSerial(t *testing.T) {
 	}
 }
 
+// A plan refused for any reason must be refused for the SAME reason if
+// re-submitted unchanged: Validate is a pure function of its plan, cap and
+// resolver, and an implementer re-reading its own refusal has to see the
+// same sentence, not a coin flip between equally true explanations.
+func TestValidateIsDeterministicOnRepeatedSubmission(t *testing.T) {
+	coupled := graph{
+		"example.com/m/internal/a": {"fmt", "example.com/m/internal/b"},
+		"example.com/m/internal/b": {"fmt"},
+	}
+	p := plan("./internal/a", "./internal/b")
+
+	first := Validate(p, 4, coupled.resolve)
+	for i := 0; i < 5; i++ {
+		v := Validate(p, 4, coupled.resolve)
+		if v.Serial != first.Serial || v.Reason != first.Reason {
+			t.Fatalf("submission %d: verdict changed on an unchanged plan: %+v vs %+v", i, v, first)
+		}
+	}
+
+	admitted := Validate(plan("./internal/a", "./internal/b"), 4, independent.resolve)
+	for i := 0; i < 5; i++ {
+		v := Validate(plan("./internal/a", "./internal/b"), 4, independent.resolve)
+		if v.Serial != admitted.Serial || len(v.Packages) != len(admitted.Packages) {
+			t.Fatalf("submission %d: an admitted plan's verdict changed: %+v vs %+v", i, v, admitted)
+		}
+	}
+}
+
+// The import edge is caught wherever the coupled pair sits among an
+// otherwise-independent set, and whichever position the importer occupies --
+// not just first-vs-second in a two-package plan, which
+// TestTheImportEdgeIsCaughtInEitherDirection already covers.
+func TestTheImportEdgeIsCaughtAtAnyPositionInALargerPlan(t *testing.T) {
+	g := graph{
+		"example.com/m/internal/a": {"fmt"},
+		"example.com/m/internal/b": {"fmt"},
+		"example.com/m/internal/c": {"example.com/m/internal/a"},
+	}
+	orders := [][]string{
+		{"./internal/c", "./internal/a", "./internal/b"},
+		{"./internal/a", "./internal/c", "./internal/b"},
+		{"./internal/a", "./internal/b", "./internal/c"},
+	}
+	for _, order := range orders {
+		v := Validate(plan(order...), 4, g.resolve)
+		if !v.Serial {
+			t.Errorf("order %v: coupled pair admitted regardless of where it sits in the plan", order)
+		}
+	}
+}
+
 func TestParsePlanReadsWhatTheImplementerWrites(t *testing.T) {
 	p, err := ParsePlan([]byte(`{"assignments":[
 	  {"package":"./internal/a","task":"add the validator"},
@@ -206,6 +257,22 @@ func TestParsePlanReadsWhatTheImplementerWrites(t *testing.T) {
 	}
 	if _, err := ParsePlan([]byte("not json")); err == nil {
 		t.Error("ParsePlan accepted something that is not JSON")
+	}
+}
+
+// With no `go` on PATH at all, GoList must return an error -- never panic --
+// so the validator's fallback-to-serial contract holds even when this
+// repository's toolchain is entirely absent, not just when one package in it
+// fails to resolve.
+func TestGoListReturnsAnErrorRatherThanPanickingWithNoToolchain(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // a PATH containing no `go` at all
+	resolve := GoList(".")
+	if _, err := resolve("./anything"); err == nil {
+		t.Fatal("GoList resolved a package with no go toolchain on PATH")
+	}
+	v := Validate(plan("./a", "./b"), 4, resolve)
+	if !v.Serial {
+		t.Fatal("a plan was admitted despite every package failing to resolve")
 	}
 }
 
