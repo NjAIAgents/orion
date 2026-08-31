@@ -272,6 +272,23 @@ var qualifiedLimits = map[string]qualifiedLimit{
 				"per-ticket spend.",
 		},
 	},
+	"qa.verdict_minutes": {
+		block: "qa", field: "verdict_minutes",
+		// The FLOOR, which is what is stored and what this sets. The effective
+		// budget scales with the run being resumed, so a listing that showed
+		// the scaled figure would print a number that is true of one run and
+		// of no other.
+		value: func(c config.Config) int { return c.QA.VerdictFloor() },
+		hazards: []string{
+			"this bounds the verdict RE-ASK, not the QA run: one question put to a " +
+				"session that has already done the work.",
+			"the budget SCALES with the run it resumes, so this is the floor and the " +
+				"short case, not the ceiling -- raising it raises every re-ask.",
+			"too LOW is the expensive direction here, and the reason this is settable: " +
+				"a re-ask killed by the clock produces neither a verdict nor a fix " +
+				"round, just an unverified branch and a person sent to read it (OR-248).",
+		},
+	},
 	"ci.max_fix_attempts": {
 		block: "ci", field: "max_fix_attempts",
 		value: func(c config.Config) int { return c.CI.Attempts() },

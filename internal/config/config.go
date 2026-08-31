@@ -587,6 +587,26 @@ type QA struct {
 	// Not clamped from above; see CI.MaxFixAttempts for why, and
 	// FixRoundsWarnAbove for where the argument about a large number happens.
 	MaxRounds int `json:"max_rounds"`
+	// VerdictMinutes bounds the VERDICT RE-ASK, not the QA run (OR-252).
+	//
+	// When QA ends without a verdict and without findings, Orion resumes its
+	// session and asks once for one. That re-ask had a hardcoded five-minute
+	// cap, and on OR-248 it killed a re-ask against a session that had been
+	// running for thirty: the change reached a pull request with no QA
+	// opinion at all, which is the worst outcome available -- neither a
+	// verdict nor a fix round, just an unverified branch and a person sent to
+	// read it.
+	//
+	// The old comment's reasoning is still right for the ordinary case: one
+	// line is being asked for, from a session that has already done the work,
+	// and the short cap is what makes the claim true that a re-ask is cheaper
+	// than the fix round it replaces. What it missed is that resuming a large
+	// session and asking it to summarise its own findings is not a one-line
+	// job.
+	//
+	// So it SCALES: see QA.VerdictBudget. This is the floor and the setting,
+	// zero meaning the built-in default.
+	VerdictMinutes int `json:"verdict_minutes,omitempty"`
 	// E2EBaseURL is the explicit non-production target an end-to-end run may
 	// point at. EMPTY MEANS NO E2E, never "guess one": nj-agents
 	// CONVENTIONS-testing §T3 blocks an e2e execution without an explicit
@@ -598,6 +618,46 @@ type QA struct {
 
 // On reports whether the stage runs. See the Enabled comment: absent is on.
 func (q QA) On() bool { return q.Enabled == nil || *q.Enabled }
+
+// defaultVerdictMinutes is the floor for a verdict re-ask, and what a short
+// QA run gets. The value the re-ask was hardcoded to before OR-252.
+const defaultVerdictMinutes = 5
+
+// verdictShare is how much of the parent run's own time a re-ask may have.
+//
+// A fifth. Resuming a thirty-minute session and asking it to summarise gets
+// six minutes; a four-minute session still gets the five-minute floor. The
+// fraction rather than a bigger constant because the thing that makes a
+// re-ask expensive is the size of the session it resumes, and a constant
+// large enough for the worst case would be spent on every ordinary one.
+const verdictShare = 5
+
+// VerdictMinutes is the configured floor, or the built-in default.
+func (q QA) VerdictFloor() int {
+	if q.VerdictMinutes > 0 {
+		return q.VerdictMinutes
+	}
+	return defaultVerdictMinutes
+}
+
+// VerdictBudget is how long a re-ask may take, given how long the run it is
+// resuming took.
+//
+// PROPORTIONAL, FLOORED, NEVER SMALLER THAN THE FLOOR. A re-ask against a
+// long session is a different question from one against a short session, and
+// treating them the same is what produced an unverified pull request on
+// OR-248. The cheap case stays cheap: at or below the floor's worth of parent
+// time, this is exactly the floor.
+func (q QA) VerdictBudget(parentMinutes int) int {
+	floor := q.VerdictFloor()
+	if parentMinutes <= 0 {
+		return floor
+	}
+	if scaled := parentMinutes / verdictShare; scaled > floor {
+		return scaled
+	}
+	return floor
+}
 
 // Rounds is MaxRounds with the default applied. Zero means the shipped
 // default rather than no rounds: no rounds at all would escalate the first
