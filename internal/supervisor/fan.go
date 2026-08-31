@@ -56,7 +56,17 @@ type FanResult struct {
 // off-workspace run (jobWS := *ws); Fan is that pattern applied to N.
 func Fan(ws *workspace.Workspace, jobs []Options) []FanResult {
 	maxConcurrent := config.Load(ws.RepoDir()).Limits.MaxConcurrentChildren
-	announceFan(jobs, maxConcurrent)
+	// One child is not a fan-out, and §C and §R are both about a fan-out:
+	// what they exist to make legible is the multiplication, and there is
+	// none here. Announcing it anyway would put three lines of roster on
+	// every single-question `orion explore` -- a call that printed nothing
+	// before this and whose whole contract is that it behaves as it always
+	// did. Noise on the common path also costs the batch case, because a
+	// reader who has learned to skip these lines skips the ones that matter.
+	announce := len(jobs) > 1
+	if announce {
+		announceFan(jobs, maxConcurrent)
+	}
 
 	results := make([]FanResult, len(jobs))
 	sem := make(chan struct{}, maxConcurrent)
@@ -76,6 +86,9 @@ func Fan(ws *workspace.Workspace, jobs []Options) []FanResult {
 			childWS := *ws
 			res, err := Run(&childWS, o)
 			results[i] = FanResult{Result: res, Err: err}
+			if !announce {
+				return
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			landed++
