@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -347,6 +348,194 @@ func TestMergedRemoveStillRefusesUncommittedWork(t *testing.T) {
 	}
 }
 
+// CommitAll's excludes exist so Orion's own scratch never rides along in a
+// commit meant to carry someone else's work (OR-234): the breaker's
+// BLOCKED.md and whatever config.Paths.State points at must both be left
+// out even when they were touched during the run being committed.
+func TestCommitAllExcludesBlockedNoteAndStateDir(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/commit-excludes")
+	writeBlockedNote(t, j.Path)
+	if err := os.MkdirAll(filepath.Join(j.Path, ".orion", "state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(j.Path, ".orion", "state", "run.json"),
+		[]byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(j.Path, "real_test.go"),
+		[]byte("package fake\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := CommitAll(j.Path, "test commit", filepath.Join("plans", "BLOCKED.md"), ".orion/state")
+	if err != nil {
+		t.Fatalf("CommitAll: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("n = %d, want 1 (only real_test.go)", n)
+	}
+	tracked := gitOut(t, j.Path, "ls-tree", "-r", "--name-only", "HEAD")
+	if !strings.Contains(tracked, "real_test.go") {
+		t.Errorf("the real file was not committed:\n%s", tracked)
+	}
+	if strings.Contains(tracked, "BLOCKED.md") {
+		t.Errorf("the breaker's note was committed:\n%s", tracked)
+	}
+	if strings.Contains(tracked, "state/run.json") {
+		t.Errorf("the state directory was committed:\n%s", tracked)
+	}
+}
+
+// A worktree with nothing new must not produce an empty commit -- the whole
+// point of returning n so a caller can tell "nothing to do" from "did it".
+func TestCommitAllWithNothingToCommitMakesNoCommit(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/commit-nothing")
+	before := gitOut(t, j.Path, "rev-parse", "HEAD")
+
+	n, err := CommitAll(j.Path, "should never land")
+	if err != nil {
+		t.Fatalf("CommitAll: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("n = %d, want 0", n)
+	}
+	after := gitOut(t, j.Path, "rev-parse", "HEAD")
+	if before != after {
+		t.Errorf("HEAD moved with nothing to commit: %s -> %s", before, after)
+	}
+}
+
+// Filenames a shell or a naive quoting scheme would mangle -- spaces,
+// unicode, and shell metacharacters -- must survive `git add -A` the same as
+// any other name, since QA's own filenames are whatever the agent chose.
+func TestCommitAllHandlesUnusualFilenames(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/commit-unusual-names")
+	names := []string{
+		"has space_test.go",
+		"héllo_wörld_test.go",
+		"日本語_test.go",
+		`quote"star*_test.go`,
+	}
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(j.Path, n), []byte("package fake\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	n, err := CommitAll(j.Path, "unusual filenames")
+	if err != nil {
+		t.Fatalf("CommitAll: %v", err)
+	}
+	if n != len(names) {
+		t.Fatalf("n = %d, want %d", n, len(names))
+	}
+	// -z for NUL-separated, unquoted names -- git otherwise C-quotes any name
+	// holding a double-quote (unavoidable, since the quote itself would be
+	// ambiguous in quoted text output) on top of the non-ASCII escaping
+	// core.quotepath governs.
+	tracked := gitOut(t, j.Path, "ls-tree", "-r", "-z", "--name-only", "HEAD")
+	entries := strings.Split(strings.TrimRight(tracked, "\x00"), "\x00")
+	for _, name := range names {
+		found := false
+		for _, e := range entries {
+			if e == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%q is not on HEAD, entries: %q", name, entries)
+		}
+	}
+}
+
+// A 0-byte file is still a file QA wrote, and it must not be silently
+// dropped for having no content to diff.
+func TestCommitAllCommitsEmptyFiles(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/commit-empty-file")
+	if err := os.WriteFile(filepath.Join(j.Path, "empty_test.go"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := CommitAll(j.Path, "empty file")
+	if err != nil {
+		t.Fatalf("CommitAll: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("n = %d, want 1", n)
+	}
+	tracked := gitOut(t, j.Path, "ls-tree", "-r", "--name-only", "HEAD")
+	if !strings.Contains(tracked, "empty_test.go") {
+		t.Errorf("the empty file was not committed:\n%s", tracked)
+	}
+}
+
+// A large batch across several directories still lands in exactly one
+// commit -- the whole reason CommitAll exists is a single commit the pull
+// request and red-before-green can both read as one unit of QA's work.
+func TestCommitAllCommitsALargeBatchInOneCommit(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/commit-large-batch")
+	before := gitOut(t, j.Path, "rev-parse", "HEAD")
+
+	const want = 300
+	for i := 0; i < want; i++ {
+		rel := filepath.Join("pkg", fmt.Sprintf("d%d", i%10), fmt.Sprintf("f%d_test.go", i))
+		full := filepath.Join(j.Path, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("package fake\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	n, err := CommitAll(j.Path, "large batch")
+	if err != nil {
+		t.Fatalf("CommitAll: %v", err)
+	}
+	if n != want {
+		t.Fatalf("n = %d, want %d", n, want)
+	}
+	log := gitOut(t, j.Path, "log", "--oneline", before+"..HEAD")
+	if lines := strings.Count(log, "\n") + 1; lines != 1 {
+		t.Errorf("expected exactly one new commit for the whole batch, log shows:\n%s", log)
+	}
+}
+
+// CommitAll can fail -- OR-234's own commit message says the caller must
+// treat that as a warning, not a crash. A git failure it did not cause
+// (index.lock refused by the filesystem) must come back as an error rather
+// than a partial commit or a panic. Uses a plain repo rather than a linked
+// worktree because a linked worktree's ".git" is a file pointing elsewhere,
+// not the directory that actually holds the lockfile.
+func TestCommitAllReturnsAnErrorRatherThanPanicking(t *testing.T) {
+	repo := t.TempDir()
+	gitT(t, repo, "init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repo, "seed.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, repo, "add", ".")
+	gitT(t, repo, "commit", "-q", "-m", "seed")
+	if err := os.WriteFile(filepath.Join(repo, "new_test.go"), []byte("package fake\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitDir := filepath.Join(repo, ".git")
+	if err := os.Chmod(gitDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(gitDir, 0o755)
+
+	_, err := CommitAll(repo, "should fail")
+	if err == nil {
+		t.Fatal("expected an error when git cannot write its lockfile, got nil")
+	}
+}
+
 // The breaker's stop-note must not keep the worktree it was written in.
 //
 // OR-194 has the breaker write plans/BLOCKED.md at trip time, untracked by
@@ -660,6 +849,16 @@ func writeOrionRuntimeFile(t *testing.T, worktree, rel, body string) {
 	if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// gitOut runs git in dir and returns its output, failing the test on error.
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := git(dir, args...)
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return out
 }
 
 // gitT runs git in dir with a deterministic identity, failing the test on error.

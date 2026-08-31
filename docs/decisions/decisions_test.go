@@ -36,6 +36,11 @@ var expectedDecisions = []string{
 	// too, it is right there?" is a change that reads as a convenience and
 	// quietly reintroduces the two-workspaces-per-project state 0012 refuses.
 	"0013-new-creates-the-tracker-project-not-a-workspace.md",
+	// OR-213. Load-bearing: without it, "just point CLAUDE_CONFIG_DIR at the
+	// operator's own directory, the skills are already there" is a one-line
+	// simplification that reads as tidying up and silently hands every run a
+	// write handle to the tracker again.
+	"0014-supervised-runs-get-a-curated-config-directory.md",
 }
 
 func TestEveryDecisionHasContextDecisionConsequences(t *testing.T) {

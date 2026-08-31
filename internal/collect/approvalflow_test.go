@@ -128,6 +128,57 @@ func TestTheFirstPassAsksAndDoesNotMerge(t *testing.T) {
 	}
 }
 
+// The request has to NOTIFY the person it waits on, not merely name them.
+// Slack raises a notification for <@U012ABCDEF> and styles a bare username
+// like any other word, so the old message reached nobody and the ticket sat
+// in ci-wait repeating "nobody has approved it yet".
+func TestTheRequestMentionsTheApproverSoSlackNotifiesThem(t *testing.T) {
+	home, _ := approvalRepo(t, `"navjyot"`)
+	s, m := &slackSpy{}, &mergeSpy{}
+	s.ids = map[string]string{"navjyot": "U012ABCDEF"}
+
+	runApproval(t, home, s, m, PR{Verdict: VerdictPassing, URL: "https://pr/1"}, Options{})
+
+	if len(s.posted) != 1 {
+		t.Fatalf("expected one request, got %d", len(s.posted))
+	}
+	if !strings.Contains(s.posted[0], "<@U012ABCDEF>") {
+		t.Errorf("the request names the approver but never mentions them:\n%s", s.posted[0])
+	}
+	// Never the whole room. The allowlist says who may approve; everyone
+	// else being tagged is how a channel gets muted.
+	if strings.Contains(s.posted[0], "<!channel>") || strings.Contains(s.posted[0], "<!here>") {
+		t.Errorf("the request broadcasts:\n%s", s.posted[0])
+	}
+}
+
+// A lookup that fails must cost the mention and nothing else. The request
+// still goes out, still names the person, and the run says what was lost --
+// otherwise a typo in merge_approvers is a silent non-notification on top of
+// an approval nobody can give.
+func TestAnUnresolvableApproverStillGetsTheRequestSent(t *testing.T) {
+	home, _ := approvalRepo(t, `"navjyot"`)
+	s, m := &slackSpy{}, &mergeSpy{} // no ids: nothing resolves
+
+	res, out := runApproval(t, home, s, m, PR{Verdict: VerdictPassing, URL: "https://pr/1"}, Options{})
+
+	if res.Err != nil {
+		t.Fatalf("a failed lookup must not fail the request: %v", res.Err)
+	}
+	if len(s.posted) != 1 {
+		t.Fatalf("the request was not sent: %d posted", len(s.posted))
+	}
+	if !strings.Contains(s.posted[0], "navjyot") {
+		t.Errorf("the approver must still be named in plain text:\n%s", s.posted[0])
+	}
+	if strings.Contains(s.posted[0], "<@") {
+		t.Errorf("nothing resolved, so nothing may look like a mention:\n%s", s.posted[0])
+	}
+	if !strings.Contains(out, "could not mention") {
+		t.Errorf("the run must say the mention was lost:\n%s", out)
+	}
+}
+
 // Asking twice would put two requests in the channel and leave two messages
 // that could each carry an approval.
 func TestASecondPassDoesNotAskAgain(t *testing.T) {

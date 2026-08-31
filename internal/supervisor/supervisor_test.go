@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/agentcfg"
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -320,7 +321,7 @@ func TestChildEnvDropsSecretsAndInheritedAuthorship(t *testing.T) {
 	t.Setenv("GIT_AUTHOR_NAME", "someone-else")
 	t.Setenv("HARMLESS_VAR", "keep-me")
 
-	env := childEnv(w)
+	env := childEnv(w, &agentcfg.Run{})
 	joined := strings.Join(env, "\n")
 	for _, banned := range []string{"AWS_SECRET_ACCESS_KEY=", "GITHUB_TOKEN=", "GIT_AUTHOR_NAME=someone-else"} {
 		if strings.Contains(joined, banned) {

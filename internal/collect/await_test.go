@@ -2,6 +2,7 @@ package collect
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -50,6 +51,12 @@ func (s *turningSlack) UserName(id string) string {
 func (s *turningSlack) PostTS(string, string) (string, error) { return s.postTS, nil }
 func (s *turningSlack) React(string, string, string)          {}
 func (s *turningSlack) BotID() string                         { return bot }
+func (s *turningSlack) MemberID(who string) (string, error) {
+	if who == "navjyot" {
+		return "UNAV", nil
+	}
+	return "", fmt.Errorf("no Slack user is named %q", who)
+}
 
 func (s *turningSlack) count() int {
 	s.mu.Lock()

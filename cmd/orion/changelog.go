@@ -7,9 +7,11 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/orion-sdlc/orion/internal/agentcfg"
 	"github.com/orion-sdlc/orion/internal/changelog"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/ui"
+	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
 // orion changelog -- generate CHANGELOG.md with nj-agents' changelog skill.
@@ -141,9 +143,18 @@ func changelogRunner(dir, version string) (string, error) {
 			"Bash(git show:*)", "Bash(git status:*)",
 		}, ","),
 	}
+	// Curated like every other agent Orion launches: this one has write
+	// access to a file, and the operator's MCP servers have write access to
+	// their accounts. See internal/agentcfg (OR-213).
+	ac, err := agentcfg.For(workspace.Home(), config.Load(dir), "changelog", "changelog")
+	if err != nil {
+		return "", err
+	}
+	args = append(args, ac.Args()...)
+
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "ORION_ROLE=changelog")
+	cmd.Env = ac.Env(append(os.Environ(), "ORION_ROLE=changelog"))
 
 	raw, err := cmd.Output()
 	if err != nil {

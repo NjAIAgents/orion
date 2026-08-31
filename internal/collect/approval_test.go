@@ -1,6 +1,7 @@
 package collect
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -11,8 +12,13 @@ type fakeSlack struct {
 	reactions []slack.Reaction
 	replies   []slack.Message
 	names     map[string]string
-	rErr      error
-	pErr      error
+	// ids is the outward lookup a mention needs: a configured approver to
+	// the member id. Anything absent is unresolvable, which is the case the
+	// approval request has to survive rather than fail on.
+	ids     map[string]string
+	idCalls int
+	rErr    error
+	pErr    error
 }
 
 func (f *fakeSlack) Reactions(string, string) ([]slack.Reaction, error) {
@@ -26,6 +32,13 @@ func (f *fakeSlack) UserName(id string) string {
 		return n
 	}
 	return id
+}
+func (f *fakeSlack) MemberID(who string) (string, error) {
+	f.idCalls++
+	if id, ok := f.ids[who]; ok {
+		return id, nil
+	}
+	return "", fmt.Errorf("no Slack user is named %q", who)
 }
 
 const bot = "UBOT"

@@ -32,6 +32,7 @@ func TestBareReleaseNamesNoAction(t *testing.T) {
 func TestReleaseSubcommandsResolve(t *testing.T) {
 	cases := map[string]string{
 		"create": "create",
+		"add":    "add",
 		"close":  "close",
 		"list":   "list",
 		"ls":     "list",

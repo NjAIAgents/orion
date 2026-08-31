@@ -80,6 +80,12 @@ type Inputs struct {
 	TicketsWithoutFragment []string
 	FragmentsWithoutTicket []string
 
+	// TicketsNotNamedInChangelog is done work the already-collated section of
+	// CHANGELOG.md does not mention by key. Kept separate from
+	// TicketsWithoutFragment because it is weaker evidence and gets a weaker
+	// answer (OR-211).
+	TicketsNotNamedInChangelog []string
+
 	// HeadSHA is the commit being promoted; BuildSHA is the commit the build
 	// actually ran on, and BuildState is its conclusion as the forge gave it.
 	HeadSHA    string
@@ -113,6 +119,20 @@ func Verify(in Inputs) Verdict {
 			Detail:   fmt.Sprintf("done with no changelog fragment: %s", list(in.TicketsWithoutFragment)),
 		})
 	}
+	// Once the version is collated the fragments are gone by design, so the
+	// same absence proves much less: the note is in CHANGELOG.md, and whether
+	// it names the ticket depends on how it was written. OR-105's work shipped
+	// inside v0.8.0 folded into another ticket's bullet. Blocking on that would
+	// make every past release permanently unpromotable, which is the opposite
+	// of what this check exists to say (OR-211).
+	if len(in.TicketsNotNamedInChangelog) > 0 {
+		v.Checks = append(v.Checks, Check{
+			Name: "every shipped ticket is named in the release notes",
+			Detail: fmt.Sprintf("%s already has a CHANGELOG.md section, and it does not name: %s",
+				in.Version, list(in.TicketsNotNamedInChangelog)),
+		})
+	}
+
 	// The other direction warns: a fragment staged early for the next release
 	// is legitimate, and deleting it would be the worse error.
 	if len(in.FragmentsWithoutTicket) > 0 {

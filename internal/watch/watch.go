@@ -173,6 +173,10 @@ func Run(opts Options, deps Deps) error {
 	// not interleave mid-word, which would not be.
 	w = &syncWriter{w: w}
 
+	// The count for a run of identical lines is printed when the run ends;
+	// the watcher's last one ends when the watcher does (OR-217).
+	defer ui.Flush(w)
+
 	p := newPool(opts.MaxConcurrent)
 	// Published for the signal handler, which has to name what it abandons
 	// if it is forced to quit (OR-195). Cleared on the way out so a later
@@ -206,8 +210,22 @@ func Run(opts Options, deps Deps) error {
 		// because it frees slots, and because a finished job may carry the
 		// rate-limit verdict that decides whether anything starts at all.
 		jobsUnfinished := false
+		loggedOut := ""
 		for _, r := range p.reap() {
 			reportFinished(w, r)
+			// Remembered, not acted on here: the stop belongs after the whole
+			// batch has been reaped, or a second job finishing in the same tick
+			// would go unreported.
+			//
+			// Deliberately NOT excluded from the job count below. An earlier
+			// version skipped it, reasoning that a run which spent nothing must
+			// not be charged against --max-jobs -- true, and unobservable: the
+			// loop breaks unconditionally a few lines down, so `started` is
+			// never read again. Untestable code asserting a behaviour is worse
+			// than no code, so the claim is gone rather than left to rot.
+			if r.Outcome == work.OutcomeNoAuth {
+				loggedOut = r.Note
+			}
 			if r.Outcome != work.OutcomeSkipped {
 				started++
 			}
@@ -217,6 +235,23 @@ func Run(opts Options, deps Deps) error {
 			if until, paused := limitPause(w, r, deps.Now()); paused && until.After(pausedUntil) {
 				pausedUntil = until
 			}
+		}
+
+		// A missing login stops the watcher, rather than being waited out like a
+		// quota wall. There is nothing to wait FOR: every subsequent ticket
+		// fails identically until a human signs in, and continuing to claim
+		// them converts one fixable problem into a queue of released tickets
+		// and a channel full of the same message (OR-212).
+		//
+		// Between reaping and dispatching, so the deferred drain still waits for
+		// the jobs already running -- they hold claims, and this must not be the
+		// one exit that abandons them.
+		if loggedOut != "" {
+			ui.Say(w, "", events.ActorOrion, ui.VerbFail, "%s", loggedOut)
+			ui.Say(w, "", events.ActorOrion, ui.VerbWaiting,
+				"stopping: every queued ticket would fail the same way. "+
+					"Nothing was spent and nothing is labelled failed.")
+			break
 		}
 
 		// Read the pool ONCE. free and here are two halves of one sentence --

@@ -36,6 +36,17 @@ func watchBanner(w io.Writer, projects []string, interval time.Duration, maxJobs
 	// how much money is in flight at once and it is read from a file the
 	// operator may not have opened.
 	fmt.Fprintf(w, "  %s\n", ui.Dim(w, fmt.Sprintf("at once   %d ticket(s) (%s)", concurrent, concurrentFrom)))
+	// What is on screen, and what is being kept back. An operator who is not
+	// told the console is filtered reads a quiet run as a stalled one -- and
+	// the answer to "where did the rest go" has to be on screen before the
+	// question is asked (OR-217).
+	if ui.Verbose() {
+		fmt.Fprintf(w, "  %s\n", ui.Dim(w, "printing  --verbose: every tool call the agents make"))
+	} else {
+		fmt.Fprintf(w, "  %s\n", ui.Dim(w,
+			"printing  stages, outcomes and anything awaiting you; --verbose adds "+
+				"the agents' tool calls (always in the event log: orion logs KEY)"))
+	}
 	switch {
 	case dry:
 		fmt.Fprintf(w, "  %s\n", ui.Dim(w, "limit     --dry-run: nothing will be started"))

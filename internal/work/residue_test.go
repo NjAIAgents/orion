@@ -32,6 +32,26 @@ func tripIn(t *testing.T, worktree, session, kind, detail string) {
 	}
 }
 
+// clearedTripIn writes what a session looks like AFTER its unverified-edits
+// trip self-cleared on a passing verify (internal/hook/breaker.go).
+//
+// Written as the JSON that shape actually produces, omitempty and all: the
+// session file is still there, still readable, and no longer says anything
+// tripped. That is the state OR-217 was in -- session 4b6af93d had cleared
+// itself, so a cleanup gated on the flag saw a healthy run and left 163 lines
+// of staged work to block the rebase.
+func clearedTripIn(t *testing.T, worktree, session string) {
+	t.Helper()
+	dir := filepath.Join(worktree, ".orion", "state")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"id":"` + session + `","tool_calls":41,"edits_since_verify":0}`
+	if err := os.WriteFile(filepath.Join(dir, session+".json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // bindSlack gives the workspace a channel and captures what would be posted,
 // so a test can assert the operator was told rather than only the run log.
 func bindSlack(t *testing.T, home string, sent *string) string {
@@ -254,11 +274,20 @@ func TestATripThatLeftNothingBehindIsNotReported(t *testing.T) {
 	}
 }
 
-// An untouched worktree left dirty by a run that did NOT trip is somebody's
-// work in progress, not residue. Reverting it would destroy the thing the
-// deletion guard in workspace.Dirty exists to protect.
-func TestUncommittedWorkIsKeptWhenNothingTripped(t *testing.T) {
+// OR-233. A run with NO trip on record that still ends dirty is settled too.
+//
+// The uncommitted tree is what breaks the system: rebaseOnto refuses it
+// whatever ended the run, so a branch left this way holds its place in the
+// landing queue and never takes a turn. Whether a breaker caused it is
+// incidental, and gating the cleanup on that produced OR-217.
+//
+// Settled means COMMITTED, not reverted -- the work is still there to read,
+// which is the whole reason the revert stopped being unconditional (OR-207).
+func TestUncommittedWorkIsSettledWhenNothingEverTripped(t *testing.T) {
 	home := project(t, cfg)
+	var sent string
+	bindSlack(t, home, &sent)
+
 	j := &fakeJira{}
 	var out strings.Builder
 	var jobPath string
@@ -274,6 +303,8 @@ func TestUncommittedWorkIsKeptWhenNothingTripped(t *testing.T) {
 				}
 				git(t, dir, "add", ".")
 				git(t, dir, "commit", "-q", "-m", "feat: implement")
+				// Left uncommitted, and no state file anywhere: nothing ever
+				// tripped in this run.
 				if err := os.WriteFile(filepath.Join(dir, "spec.md"), []byte("# spec\nin progress\n"), 0o644); err != nil {
 					return nil, err
 				}
@@ -285,11 +316,157 @@ func TestUncommittedWorkIsKeptWhenNothingTripped(t *testing.T) {
 			},
 		})
 
+	// The condition rebaseOnto actually tests. This is the whole point.
+	if dirty, _ := workspace.DirtyTracked(jobPath); dirty != "" {
+		t.Errorf("no trip was recorded, so the residue was left and the next rebase will refuse:\n%s", dirty)
+	}
+	// Committed, not reverted: the work still exists to be read.
 	b, err := os.ReadFile(filepath.Join(jobPath, "spec.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(b), "in progress") {
-		t.Error("uncommitted work was reverted without a trip to justify it")
+		t.Error("the uncommitted work was reverted rather than committed")
+	}
+	if files := git(t, jobPath, "show", "--name-only", "--format=", "HEAD"); !strings.Contains(files, "spec.md") {
+		t.Errorf("spec.md is not in the snapshot commit:\n%s", files)
+	}
+	// The trip decides the WORDING, and there was none, so the message must
+	// not claim one.
+	msg := git(t, jobPath, "log", "-1", "--format=%B")
+	if !strings.Contains(msg, "wip: snapshot") {
+		t.Errorf("the residue was not snapshotted:\n%s", msg)
+	}
+	if strings.Contains(msg, "breaker tripped") {
+		t.Errorf("the commit message invents a trip that never happened:\n%s", msg)
+	}
+	if o := out.String(); !strings.Contains(o, "no breaker trip was on record") ||
+		!strings.Contains(o, "uncommitted work") {
+		t.Errorf("the run output does not say what it settled or why:\n%s", o)
+	}
+}
+
+// OR-233, the case that actually happened. A trip that SELF-CLEARED on a
+// passing verify leaves a worktree indistinguishable from a healthy one to
+// anything reading the breaker flag -- and still full of staged work.
+//
+// On OR-217, session 4b6af93d had cleared itself, the worktree kept 163 lines
+// of staged QA tests, rebaseOnto refused the branch on every poll for over
+// fifteen minutes while two healthy branches starved behind it, and recovery
+// took an operator running git by hand in a hashed path under ORION_HOME.
+//
+// Every mechanism that erases that flag is individually correct, which is why
+// this must not be conditioned on it: the next one added would reintroduce
+// the bug in a new way.
+func TestASelfClearedTripStillHasItsResidueSettled(t *testing.T) {
+	home := project(t, cfg)
+	var sent string
+	bindSlack(t, home, &sent)
+
+	j := &fakeJira{}
+	var out strings.Builder
+	var jobPath string
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				dir := ws.RepoDir()
+				jobPath = dir
+				if err := os.WriteFile(filepath.Join(dir, "impl.go"), []byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, dir, "add", ".")
+				git(t, dir, "commit", "-q", "-m", "feat: implement")
+				// The QA tests, written and STAGED -- as on OR-217 -- and
+				// never committed.
+				if err := os.WriteFile(filepath.Join(dir, "qa_test.go"), []byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, dir, "add", "qa_test.go")
+				// The unverified-edits trip fired, then the verify passed and
+				// cleared it. The session file survives, saying nothing.
+				clearedTripIn(t, dir, "4b6af93d")
+				return &supervisor.Result{ExitCode: 0, Reason: "completed"}, nil
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	if dirty, _ := workspace.DirtyTracked(jobPath); dirty != "" {
+		t.Errorf("the self-cleared trip left its residue, so every rebase of this branch refuses:\n%s", dirty)
+	}
+	if files := git(t, jobPath, "show", "--name-only", "--format=", "HEAD"); !strings.Contains(files, "qa_test.go") {
+		t.Errorf("the staged QA tests were not committed:\n%s", files)
+	}
+	// And said where somebody who was not watching will see it -- the half of
+	// OR-217 that meant nobody knew for fifteen minutes.
+	if !strings.Contains(sent, "left the worktree dirty") {
+		t.Errorf("the operator was not told:\n%s", sent)
+	}
+}
+
+// The revert fallback, unchanged: when the commit itself fails, the residue is
+// still cleared so the branch can be rebased, and the loss is stated rather
+// than implied.
+//
+// Reverting is the worse outcome of the two and always was. It survives only
+// because a worktree left dirty helps nobody, and a run whose commit failed
+// must not be the one case that silently reintroduces the block.
+func TestResidueIsRevertedWhenTheCommitItselfFails(t *testing.T) {
+	home := project(t, cfg)
+	var sent string
+	bindSlack(t, home, &sent)
+
+	j := &fakeJira{}
+	var out strings.Builder
+	var jobPath string
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				dir := ws.RepoDir()
+				jobPath = dir
+				if err := os.WriteFile(filepath.Join(dir, "impl.go"), []byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, dir, "add", ".")
+				git(t, dir, "commit", "-q", "-m", "feat: implement")
+				if err := os.WriteFile(filepath.Join(dir, "spec.md"), []byte("# spec\nrisky\n"), 0o644); err != nil {
+					return nil, err
+				}
+				tripIn(t, dir, "sess-impl", "breaker/loop", "Bash repeated 4 times")
+				// Make the commit fail for a reason git owns, rather than
+				// stubbing workspace.CommitAll: what is under test is the
+				// fallback, and a hook that rejects the commit is the shape a
+				// real refusal arrives in.
+				hooks := filepath.Join(dir, "refusing-hooks")
+				if err := os.MkdirAll(hooks, 0o755); err != nil {
+					return nil, err
+				}
+				if err := os.WriteFile(filepath.Join(hooks, "pre-commit"),
+					[]byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+					return nil, err
+				}
+				git(t, dir, "config", "core.hooksPath", hooks)
+				return &supervisor.Result{ExitCode: 1, Reason: "tripped"}, errors.New("the agent stopped: breaker tripped")
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	// Cleared either way: a branch nobody can rebase is the outcome this
+	// exists to prevent, and it is the one the failed commit would leave.
+	if dirty, _ := workspace.DirtyTracked(jobPath); dirty != "" {
+		t.Errorf("the commit failed and nothing reverted, so the branch is still blocked:\n%s", dirty)
+	}
+	// And said plainly, in the words that distinguish destroyed from filed
+	// away.
+	if o := out.String(); !strings.Contains(o, "could NOT commit") || !strings.Contains(o, "reverted") {
+		t.Errorf("a run that destroyed work must say so:\n%s", o)
+	}
+	if !strings.Contains(sent, "could *not* preserve it") {
+		t.Errorf("the operator was not told the work may be lost:\n%s", sent)
 	}
 }

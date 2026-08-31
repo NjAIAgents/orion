@@ -109,6 +109,10 @@ func Stage(w io.Writer, log *events.Log, h Handoff) {
 	if h.At.IsZero() {
 		h.At = time.Now()
 	}
+	// A boundary is where a run of lines ends: any pending repeat count is
+	// printed before it rather than after, and the first line of the new
+	// stage states its actor in full (OR-217).
+	Reset(w)
 	fmt.Fprintln(w, RenderStage(w, h))
 	log.Emit(events.Event{
 		Kind: events.KindStage, Key: h.Key,

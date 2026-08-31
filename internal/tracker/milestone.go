@@ -1,6 +1,11 @@
 package tracker
 
-// Reading a milestone's ticket set.
+import (
+	"fmt"
+	"net/url"
+)
+
+// Reading a milestone's ticket set, and putting a ticket into one.
 //
 // Every clause goes through the JQL builders rather than fmt.Sprintf. That is
 // not style: OR is both a valid Jira project key and a JQL boolean operator,
@@ -32,6 +37,38 @@ func (j *Jira) IssuesWithoutVersion(projectKey string) ([]Issue, error) {
 		JQLNotDone(),
 	) + " ORDER BY key ASC"
 	return j.Search(jql, 100)
+}
+
+// SetFixVersion puts a ticket on exactly this milestone, by version ID.
+//
+// REPLACES rather than appends, and that is the whole semantics `release add`
+// reports as a MOVE: a ticket already carrying v0.8.2 leaves that milestone
+// when it joins v0.8.3. Appending instead would leave it counted in both, and
+// `release status` would then reconcile the same changelog fragment against
+// two versions and report a mismatch on whichever one did not ship it
+// (OR-222). A ticket that genuinely belongs to two milestones is not a case
+// this command has ever needed, and inventing multi-version bookkeeping for it
+// would make the common operation unreadable.
+//
+// The ID, not the name: FindVersion already resolved the name case-exactly and
+// the ID cannot then be re-resolved to a near-miss on the way to the write.
+func (j *Jira) SetFixVersion(key, versionID string) error {
+	payload := map[string]any{
+		"fields": map[string]any{
+			"fixVersions": []any{map[string]any{"id": versionID}},
+		},
+	}
+	code, body, err := j.do("PUT", "/rest/api/3/issue/"+url.PathEscape(key), payload)
+	if err != nil {
+		return err
+	}
+	if code == 403 {
+		return ErrNoPermission
+	}
+	if code >= 400 {
+		return fmt.Errorf("setting fixVersion on %s: %d %s", key, code, snippet(body))
+	}
+	return nil
 }
 
 // There is deliberately no Done() here. Issue.Resolved() already answers

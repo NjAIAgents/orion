@@ -17,3 +17,4 @@ already have been decided against, on purpose.
 - [0011](0011-orion-owns-the-landing-queue.md) — Orion owns the landing queue; GitHub's merge queue is not adopted
 - [0012](0012-one-workspace-per-tracker-project.md) — A tracker project gets one workspace; a second `orion plan` refuses
 - [0013](0013-new-creates-the-tracker-project-not-a-workspace.md) — `orion new` creates the tracker project and no workspace
+- [0014](0014-supervised-runs-get-a-curated-config-directory.md) — a supervised run gets a config directory Orion curates, and no MCP servers

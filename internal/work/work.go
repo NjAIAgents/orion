@@ -39,6 +39,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/advise"
 	"github.com/orion-sdlc/orion/internal/budget"
+	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
@@ -70,6 +71,14 @@ const (
 	// could not do the thing must not carry the same label, or orion-failed
 	// starts to mean "fine, actually" and stops carrying information.
 	OutcomeNoop Outcome = "no-op"
+	// OutcomeNoAuth: the CLI has no usable login, so the run never began.
+	//
+	// Distinct from failed because nothing was attempted -- no turn, no token,
+	// no branch work -- and the ticket is untouched. Labelling it orion-failed
+	// makes an operator hand-clear a label for a problem that never reached the
+	// ticket, and teaches them that the failure label sometimes means "the
+	// machine was logged out" (OR-212). See auth.go.
+	OutcomeNoAuth Outcome = "not-authenticated"
 )
 
 // Result is one job's ending.
@@ -171,6 +180,11 @@ func Run(opts Options, deps Deps) []Result {
 		opts.Home = workspace.Home()
 	}
 
+	// A run of identical lines is held back to be printed once with its
+	// count, so the last such run needs somewhere to land. Without this the
+	// count for whatever a ticket ended on is never printed at all (OR-217).
+	defer ui.Flush(opts.Out)
+
 	var results []Result
 	for _, key := range opts.Keys {
 		r := one(strings.ToUpper(strings.TrimSpace(key)), opts, deps)
@@ -179,6 +193,15 @@ func Run(opts Options, deps Deps) []Result {
 		// the next ticket while the reason the last one broke is still true,
 		// and a queue that keeps going after a failure produces several
 		// wrecks instead of one.
+		// The same stop, with the reason named. The heuristic below reaches its
+		// conclusion from CORRELATION -- one ticket failed, so the next probably
+		// will -- and it is right often enough to keep. When the reason is
+		// KNOWN, saying it is the difference between an operator diagnosing a
+		// queue of wrecks and an operator running one command (OR-212).
+		if r.Outcome == OutcomeNoAuth {
+			ui.Warn(opts.Out, "stopping the batch: %s", r.Note)
+			break
+		}
 		if r.Outcome == OutcomeFailed {
 			ui.Warn(opts.Out, "stopping the batch after %s failed; the next ticket would likely fail the same way", r.Key)
 			break
@@ -566,6 +589,13 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		}
 	}
 
+	// Checked BEFORE the failure path, and it has to be: the supervisor returns
+	// an error for any non-zero exit, so a run that never started for want of a
+	// login would otherwise be reported as the work failing.
+	if runRes != nil && runRes.Unauthenticated {
+		return notAuthenticated(res, key, runRes.Reason, cfg, opts, deps, ws, log, w)
+	}
+
 	if runErr != nil || (runRes != nil && runRes.ExitCode != 0) {
 		err := runErr
 		if err == nil {
@@ -659,6 +689,9 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			OnActivity: ActivityLogger(log, w, key, actorID),
 			Actor:      actorID, Key: key,
 		})
+		if runRes != nil && runRes.Unauthenticated {
+			return notAuthenticated(res, key, runRes.Reason, cfg, opts, deps, ws, log, w)
+		}
 		if runErr != nil || runRes == nil || runRes.ExitCode != 0 {
 			err := runErr
 			if err == nil {
@@ -749,6 +782,15 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		ui.Stage(w, log, ui.Handoff{Key: key, From: "qa", To: "push",
 			By: events.ActorQA, Next: events.ActorOrion, Detail: qa.Verdict()})
 	}
+
+	// Last thing before the branch leaves the machine: put it on top of what
+	// the base is NOW (OR-227). The base moved while the agent was running --
+	// at concurrency 4 it usually does -- and a branch pushed at the base it
+	// started from triggers a full CI run against a base that no longer
+	// exists, only for the landing pass to rebase it and trigger a second.
+	// This never refuses the push: a conflict, a locked worktree or an
+	// unreachable remote all end with the branch pushed as it stands.
+	collect.RebaseBeforePush(key, job.Path, job.Branch, cfg, ws, log, w)
 
 	if err := deps.Push(job.Path, job.Branch); err != nil {
 		return failAndTell(res, fmt.Errorf("pushing %s: %w", job.Branch, err), key, ws, log, w, deps)

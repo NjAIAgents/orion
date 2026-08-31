@@ -56,6 +56,25 @@ func TestShippedTicketWithNoFragmentBlocks(t *testing.T) {
 	}
 }
 
+// Once the version is collated the fragments are deleted by design, so a done
+// ticket the section does not name by key proves much less -- OR-105's work
+// shipped inside v0.8.0 folded into another ticket's bullet. Blocking here
+// made every already-published release permanently unpromotable, which is the
+// opposite of what this check exists to say (OR-211).
+func TestTicketNotNamedInACollatedChangelogOnlyWarns(t *testing.T) {
+	in := green()
+	in.Version = "v0.8.1"
+	in.TicketsNotNamedInChangelog = []string{"OR-105"}
+
+	v := Verify(in)
+	if v.Blocking() {
+		t.Fatalf("a shipped, collated release was reported unsafe to promote: %+v", v.Blockers())
+	}
+	if len(v.Warnings()) != 1 {
+		t.Fatalf("the ticket was not reported at all: %+v", v.Checks)
+	}
+}
+
 // The other direction must NOT block: a fragment staged early for the next
 // release is legitimate and deleting it is the worse error.
 func TestFragmentWithoutTicketOnlyWarns(t *testing.T) {

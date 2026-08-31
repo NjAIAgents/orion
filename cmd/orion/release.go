@@ -36,6 +36,13 @@ const releaseUsage = `orion release <command>
         Create an unreleased Jira version (a milestone). Safe to re-run:
         a version that already exists is reported, not an error.
 
+  add <version> <KEY|KEY..KEY>... [--project KEY] [--force]
+        Attach tickets to a milestone. Takes bare keys, comma- or
+        space-separated, and INCLUSIVE ranges (OR-140..OR-145). Prints what
+        it will add, move, leave alone and cannot find before it writes
+        anything. Safe to re-run: a ticket already on the version is
+        reported, not an error. Refuses a released version without --force.
+
   close <version> [--project KEY] [--date YYYY-MM-DD] [--force]
         Mark a milestone released -- the last step of a release. Dates it
         from the matching tag's commit unless --date says otherwise, and
@@ -71,6 +78,11 @@ func releaseAction(args []string) string {
 	switch args[0] {
 	case "create":
 		return "create"
+	// `add`, and deliberately not `attach`/`tag`/`set`: it sits next to
+	// `create` and `close` and says what it does to a milestone, and none of
+	// the reserved publish verbs is spent on it (OR-222).
+	case "add":
+		return "add"
 	// `close`, not `publish`/`cut`/`ship`: those stay reserved for whatever
 	// wraps scripts/release.sh, and must not be spent on the Jira-side verb
 	// (OR-209).
@@ -92,6 +104,8 @@ func runRelease(args []string) {
 	switch releaseAction(args) {
 	case "create":
 		runReleaseCreate(args[1:])
+	case "add":
+		runReleaseAdd(args[1:])
 	case "close":
 		runReleaseClose(args[1:])
 	case "list":
@@ -251,12 +265,14 @@ func runReleaseStatus(args []string) {
 	exitOn(err)
 	fragments, err := changelog.Load(root)
 	exitOn(err)
+	collated, err := changelog.LoadCollated(root, version)
+	exitOn(err)
 
 	tickets := make([]changelog.Ticket, 0, len(issues))
 	for _, is := range issues {
 		tickets = append(tickets, changelog.Ticket{Key: is.Key, Done: is.Resolved()})
 	}
-	r := changelog.Reconcile(version, fragments, tickets)
+	r := changelog.Reconcile(version, fragments, tickets, collated)
 
 	w := os.Stdout
 	ui.Ok(w, version, "%d ticket(s): %d done, %d not done",
@@ -267,6 +283,10 @@ func runReleaseStatus(args []string) {
 	}
 	for _, k := range r.TicketsWithoutFragment {
 		ui.Warn(w, "%s is done but has no changelog fragment; it would ship unmentioned", k)
+	}
+	for _, k := range r.TicketsNotNamedInChangelog {
+		ui.Warn(w, "%s is done and %s is already collated, but the section does not name it; "+
+			"its note may be folded into another entry", k, version)
 	}
 	for _, k := range r.FragmentsWithoutTicket {
 		ui.Warn(w, "fragment %s is not in %s; either it ships elsewhere or the ticket "+
@@ -295,6 +315,10 @@ func runReleaseStatus(args []string) {
 
 	if !r.Clean() {
 		os.Exit(1)
+	}
+	if r.Collated {
+		ui.Ok(w, "reconciled", "%s is collated into CHANGELOG.md; every done ticket has a note", version)
+		return
 	}
 	ui.Ok(w, "reconciled", "every done ticket has a fragment and every fragment has a ticket")
 }

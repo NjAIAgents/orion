@@ -122,12 +122,22 @@ func approvalFlow(res Result, key string, pr PR, cfg config.Config, branch strin
 			ui.Ok(w, "would", "%s: ask #%s to approve %s", key, channel, pr.URL)
 			return res
 		}
-		title, body := msgApprovalWanted(key, pr, branch, cfg.Slack.MergeApprovers)
+		// Resolve the approvers to member ids so the request TAGS them.
+		// Best effort by construction: whoever does not resolve is named in
+		// plain text exactly as before, and reported below rather than
+		// failing a request that is otherwise perfectly sendable.
+		tags, unresolved := approverTags(deps.Slack, cfg.Slack.MergeApprovers)
+		title, body := msgApprovalWanted(key, pr, branch, tags)
 		ts, err := deps.Slack.PostTS(channel, title+"\n"+body)
 		if err != nil {
 			res.Err = err
 			ui.Warn(w, "%s: could not ask for approval: %v", key, err)
 			return res
+		}
+		// After the post, not before: the request going out is the point, and
+		// a warning printed first would read as though it had stopped it.
+		for _, u := range unresolved {
+			ui.Warn(w, "%s: %s", key, u)
 		}
 		// The affordances, so a phone user taps rather than types. Orion's
 		// own reactions are excluded when the answer is read -- otherwise
