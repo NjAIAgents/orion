@@ -90,6 +90,52 @@ func noChecksYet(pr PR) bool {
 	return strings.Contains(strings.ToLower(pr.Detail), "no checks are configured")
 }
 
+// liveObserver forwards a batch's progress to the pinned region (OR-246).
+//
+// A thin adapter with no state of its own: everything it knows it was just
+// told, and everything it decides -- glyphs, colour, whether the terminal can
+// take cursor control -- belongs to ui. That is what keeps this file free of
+// rendering and batch.go free of both.
+type liveObserver struct{}
+
+func (liveObserver) Assembling(ref, base string, keys []string) {
+	ui.LiveBatchStart(ref, base, keys)
+	ui.LiveBatchPhase(ui.BatchAssembling)
+}
+
+func (liveObserver) Merged(key string) { ui.LiveBatchMember(key, ui.MemberMerged) }
+
+func (liveObserver) Ejected(key, _ string) { ui.LiveBatchMember(key, ui.MemberEjected) }
+
+func (liveObserver) Testing(int) { ui.LiveBatchPhase(ui.BatchTesting) }
+
+func (liveObserver) Split(keys []string, green bool, depth, runs int, culprit bool) {
+	ui.LiveBatchPhase(ui.BatchIsolating)
+	ui.LiveBatchSplit(keys, green, depth, runs, culprit)
+}
+
+// Settled draws the durable summary and leaves it: the phase moves to done
+// rather than the batch being closed, because the cost line and the per-member
+// outcomes are the part worth still being on screen when the tick ends.
+// runBatch closes it once it has reported.
+func (liveObserver) Settled(landed, ejected, culprits, deferred []string) {
+	for _, k := range landed {
+		ui.LiveBatchMember(k, ui.MemberLanded)
+	}
+	for _, k := range ejected {
+		ui.LiveBatchMember(k, ui.MemberEjected)
+	}
+	for _, k := range culprits {
+		ui.LiveBatchMember(k, ui.MemberCulprit)
+	}
+	// Deferred is deliberately left as it was. A deferred branch is sound and
+	// comes back, which is what "merged" already conveys here; giving it a
+	// state of its own would put a fourth mark on screen for a distinction the
+	// operator cannot act on differently from an ejection.
+	_ = deferred
+	ui.LiveBatchPhase(ui.BatchDone)
+}
+
 // runBatch lands the pass as one set.
 //
 // Returns a Result per ticket so the caller's contract is unchanged: the
@@ -138,8 +184,13 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 
 	t := batchTester{git: g, status: deps.Status, dir: ws.CloneDir(),
 		wait: 30 * time.Minute, out: w, log: log}
-	b, err := Land(g, t, ref, cfg.VCS.WorkBranch, members)
+	b, err := Land(g, t, ref, cfg.VCS.WorkBranch, members, liveObserver{})
 	_ = g.DropRef(ref)
+
+	// Closed after the report is written, so the summary the observer left on
+	// screen is the last thing the region showed before the scrollback takes
+	// over.
+	defer ui.LiveBatchEnd()
 
 	for _, line := range b.Describe() {
 		fmt.Fprintf(w, "          %s\n", ui.Dim(w, line))

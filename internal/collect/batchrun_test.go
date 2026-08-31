@@ -51,7 +51,7 @@ func TestSilenceIsNotGreen(t *testing.T) {
 func TestAnEmptyBatchFallsBackRatherThanReportingNothing(t *testing.T) {
 	g := newFakeGit()
 	tr := &fakeTester{g: g, bad: map[string]bool{}}
-	b, err := Land(g, tr, "orion/batch", "develop", nil)
+	b, err := Land(g, tr, "orion/batch", "develop", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestEveryOutcomeMapsOntoAVerdictTheWatcherKnows(t *testing.T) {
 func TestTheBatchReportNamesEveryMemberAndItsOutcome(t *testing.T) {
 	g := newFakeGit("orion/or-2")
 	tr := &fakeTester{g: g, bad: map[string]bool{"orion/or-3": true}}
-	b, err := Land(g, tr, "batch", "develop", members("OR-1", "OR-2", "OR-3"))
+	b, err := Land(g, tr, "batch", "develop", members("OR-1", "OR-2", "OR-3"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
