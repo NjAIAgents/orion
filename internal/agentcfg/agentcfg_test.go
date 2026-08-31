@@ -90,8 +90,15 @@ func TestACuratedRunGetsTheToolkitAndNoMCPServers(t *testing.T) {
 	if got := r.Args(); len(got) != 1 || got[0] != "--strict-mcp-config" {
 		t.Errorf("Args() = %v, want --strict-mcp-config so the run gets no MCP servers", got)
 	}
-	if len(r.Warnings) != 0 {
-		t.Errorf("unexpected warnings: %v", r.Warnings)
+	// The fixture isolates HOME and CLAUDE_CONFIG_DIR to empty temp dirs, so
+	// there is legitimately no .credentials.json to carry over and OR-239's
+	// warning about that fires. It is the one warning this fixture earns;
+	// anything else is a real finding and still fails the test.
+	for _, w := range r.Warnings {
+		if strings.Contains(w, credentialsFile) {
+			continue
+		}
+		t.Errorf("unexpected warning: %s", w)
 	}
 }
 
