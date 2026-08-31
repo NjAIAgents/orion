@@ -207,10 +207,18 @@ func runExplore(args []string) {
 
 	logExploreDispatch(&jobWS, key, questions)
 	asked := exploreAll(&jobWS, key, questions)
+	// Every question is recorded, answered or not, and BEFORE the give-up
+	// path below: a question that failed is a question that was asked and
+	// paid for, and one that leaves no event is indistinguishable afterwards
+	// from one nobody ever asked. In a batch that is the difference between
+	// "the third question came back empty" and "something about this run is
+	// missing an answer".
 	for _, q := range asked {
-		if q.Err == nil {
-			logExplore(&jobWS, key, q.Question, q.Answer)
+		if q.Err != nil {
+			logExploreFailure(&jobWS, key, q.Question, q.Err)
+			continue
 		}
+		logExplore(&jobWS, key, q.Question, q.Answer)
 	}
 	// Every question failed, so there is nothing to print and the caller has
 	// to go and read for itself -- the fallback this whole command rests on.
@@ -342,6 +350,32 @@ func logExplore(ws *workspace.Workspace, key, question string, ans exploreAnswer
 			"question": question,
 			"answer":   ans.Answer,
 			"paths":    ans.Paths,
+		},
+	})
+}
+
+// logExploreFailure records a question that came back with nothing, and why.
+//
+// Its own event rather than a line inside the dispatch record, so a reader
+// filtering on the question gets the same shape whether it was answered or
+// not: which question, and what happened to it. Without one, a batch of four
+// leaves three events and nothing saying which question is missing -- and a
+// question that failed is one that ran, took a subagent's turn and spent
+// money, so it is not the same thing as a question nobody asked.
+func logExploreFailure(ws *workspace.Workspace, key, question string, cause error) {
+	l, err := events.Open(events.Path(ws.Dir), events.Event{})
+	if err != nil {
+		return
+	}
+	defer func() { _ = l.Close() }()
+
+	l.Emit(events.Event{
+		Kind: events.KindNote, Actor: events.ActorExplore, Key: key,
+		Model: actors.Model(events.ActorExplore),
+		Msg:   "could not explore: " + oneLine(question) + " -- " + oneLine(cause.Error()),
+		Detail: map[string]any{
+			"question": question,
+			"error":    cause.Error(),
 		},
 	})
 }
