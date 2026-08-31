@@ -218,12 +218,20 @@ func Run(opts Options, deps Deps) []Result {
 	keys := opts.Keys
 	if len(keys) == 0 {
 		// A line before the search, not after it. The Jira client itself
-		// times out at 20s, but a person watching a freshly started
-		// `orion watch` has no way to tell "about to check" from "hung"
-		// until SOMETHING appears -- and this is the first network call
-		// every tick makes, before anything else has had a chance to print
-		// (OR-128).
-		fmt.Fprintln(w, "checking for tickets awaiting CI...")
+		// times out at 20s, but a person who typed `orion collect` has no way
+		// to tell "about to check" from "hung" until SOMETHING appears --
+		// and this is the first network call the pass makes (OR-128).
+		//
+		// NOT on a watcher tick. There, this pair -- "checking..." then
+		// "nothing is waiting on CI." -- printed every sixty seconds while
+		// two agents worked hard on two tickets, and it is worse than
+		// silence: it states that the system is idle when it is not. The
+		// watcher answers OR-128's question differently now, with a live
+		// region that says what each run is doing four times a second
+		// (OR-240), so the tick has no need of a line that says nothing.
+		if !opts.Unattended {
+			fmt.Fprintln(w, "checking for tickets awaiting CI...")
+		}
 		found, err := waiting(deps.Jira, opts.Home)
 		if err != nil {
 			ui.Fail(w, "%v", err)
@@ -232,7 +240,13 @@ func Run(opts Options, deps Deps) []Result {
 		keys = found
 	}
 	if len(keys) == 0 {
-		fmt.Fprintln(w, "nothing is waiting on CI.")
+		// Silence on a tick, deliberately: with nothing in flight and nothing
+		// awaiting CI there is nothing to report, and a watcher left running
+		// overnight must not bury the one line that matters under eight
+		// hundred saying nothing happened.
+		if !opts.Unattended {
+			fmt.Fprintln(w, "nothing is waiting on CI.")
+		}
 		return nil
 	}
 
