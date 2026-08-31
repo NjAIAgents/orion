@@ -92,6 +92,15 @@ const credentialsFile = ".credentials.json"
 // when they are not is worse off than one who knows they are not.
 func curationAuthenticates() bool { return runtime.GOOS != "darwin" }
 
+// CurationAuthenticates is curationAuthenticates for other packages.
+//
+// Exported for two callers that must agree with this one rather than restate
+// the rule: `orion doctor`, which has to grade what a RUN will get instead of
+// what the operator's own shell gets, and the tests in cmd/orion and
+// internal/supervisor that assert a curated run and cannot hold where
+// curation is unavailable. One predicate, so the answer cannot drift.
+func CurationAuthenticates() bool { return curationAuthenticates() }
+
 // Run is the configuration one child run was given, and the record of it.
 type Run struct {
 	// Dir is CLAUDE_CONFIG_DIR for the child. Empty means the operator's own
