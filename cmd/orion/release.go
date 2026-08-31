@@ -17,6 +17,12 @@ package main
 // accident. Whatever later wraps scripts/release.sh gets an explicit verb --
 // publish, cut, ship -- never the bare noun, and never `create`, which is now
 // taken by the harmless one (OR-190).
+//
+// `ship` IS THAT VERB, and OR-116 spent it. It is the one subcommand here
+// that promotes, tags and publishes; everything else on this list still only
+// moves a Jira milestone around. `publish` and `cut` stay unwired, so the
+// reserved words that remain are still one deliberate keystroke away from
+// nothing at all.
 
 import (
 	"fmt"
@@ -62,7 +68,19 @@ const releaseUsage = `orion release <command>
         nothing about to land, and every commit attributable to a ticket.
         Reports only; it does not merge, tag or publish.
 
-This manages MILESTONES in Jira. It does not build, tag or publish anything.
+  ship <version> [--beta] [--dry-run] [--wait D] [--project KEY]
+        THE ONE THAT PUBLISHES. Promotes the integration branch onto the
+        release branch behind a Slack approval, then tags, builds and
+        publishes, updating the Homebrew tap and the Scoop bucket.
+        --beta cuts vX.Y.Z-beta.N from the integration branch instead:
+        prerelease on the forge, no promotion, and NO tap or bucket, so
+        brew upgrade can never hand a beta to a production user.
+        --dry-run prints what would ship and stops.
+        Run by a person. orion watch has no path to it.
+
+Every subcommand except ship manages MILESTONES in Jira: it does not build,
+tag or publish anything. ship is the one that does all three, and it is the
+only irreversible command on this list.
 `
 
 // releaseAction names what a set of arguments asks for, without doing it.
@@ -94,6 +112,12 @@ func releaseAction(args []string) string {
 		return "status"
 	case "verify":
 		return "verify"
+	// `ship`, and only `ship`. It is the reserved publishing verb OR-190 set
+	// aside, now spent by OR-116. `publish` and `cut` stay unwired: keeping
+	// two of the three reserved means the guard rail still has slack in it,
+	// and a typo for one of them lands on usage rather than on a tag.
+	case "ship":
+		return "ship"
 	case "help", "--help", "-h":
 		return "help"
 	}
@@ -114,6 +138,8 @@ func runRelease(args []string) {
 		runReleaseStatus(args[1:])
 	case "verify":
 		runReleaseVerify(args[1:])
+	case "ship":
+		runReleaseShip(args[1:])
 	case "help":
 		fmt.Print(releaseUsage)
 	default:
