@@ -5,6 +5,32 @@ import (
 	"testing"
 )
 
+// OR-229: the offer has to ask for the questions TOGETHER, and say why.
+//
+// An implementer told it may ask "one narrow question" asks at most one and
+// greps for the rest, which is rational: a question at a time serialises the
+// run behind subagents it does nothing while waiting for, so reading for
+// itself really is faster. The batched form is the only version where the
+// cheap path is also the fast one, and it is the prompt -- not the command --
+// that decides which one the agent takes.
+func TestTicketPromptAsksForTheQuestionsInOneCall(t *testing.T) {
+	p := TicketPrompt("OR-229", "do the thing", "", "http://x/OR-229", "", nil)
+
+	if !strings.Contains(p, `orion explore "<question>" "<question>"`) {
+		t.Error("the prompt must show the MULTI-question form of the command; shown one " +
+			"placeholder, an agent asks one question at a time and greps for the rest")
+	}
+	lower := strings.ToLower(p)
+	if !strings.Contains(lower, "concurrently") {
+		t.Error("the prompt must say the questions run concurrently -- an agent that thinks " +
+			"four questions cost four waits will not ask four")
+	}
+	if !strings.Contains(lower, "before you start reading") {
+		t.Error("the prompt must place the asking BEFORE the reading; asked afterwards, the " +
+			"greps it was meant to replace have already happened and been paid for")
+	}
+}
+
 // The explore subagent shares a worktree with a run that is mid-change, and
 // nothing but the prompt stops it writing there -- there is no second
 // checkout to isolate it into (OR-183).

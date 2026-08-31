@@ -8,13 +8,15 @@ import (
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/actors"
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
-// `orion explore "<question>"` -- one narrow question about a repository,
-// answered by a subagent in its own context (OR-183).
+// `orion explore "<question>" ["<question>" ...]` -- narrow questions about a
+// repository, each answered by its own subagent in its own context (OR-183),
+// and all of them at once (OR-229).
 //
 // The caller here is not Orion. It is the agent Orion is already running: it
 // hits a thing it has not read, and instead of grepping until it finds out --
@@ -25,6 +27,14 @@ import (
 // Which is why this is a command and not a function. The asking run is a
 // separate process mid-flight; a Bash call is the only thing it can reach
 // Orion with.
+//
+// Several questions in one call rather than several calls is the whole of
+// OR-229. An implementer starting a ticket does not have one question, it has
+// four, and asked one at a time they cost four round trips of the asking run's
+// own wall clock while it sits idle waiting -- so in practice it greps
+// instead, which is the cost this command exists to remove. Dispatched
+// through supervisor.Fan they run concurrently under the project's own
+// max_concurrent_children cap, and the asking run pays for one wait.
 
 // Bounds for the explore subagent, tighter than any run that changes
 // something. This is a locate-and-report, and an explore that is still
@@ -54,6 +64,51 @@ func exploreOptions(key, question string) supervisor.Options {
 		Model:  actors.Model(events.ActorExplore),
 		Effort: actors.Effort(events.ActorExplore),
 	}
+}
+
+// exploredQuestion is one question and whatever came back for it: an answer,
+// or the reason there is none.
+//
+// Per question rather than per batch, because one child failing must not cost
+// the caller the siblings that succeeded -- that is the failure policy
+// supervisor.Fan already implements, and a caller that collapsed N results
+// into one error would throw away work already paid for.
+type exploredQuestion struct {
+	Question string
+	Answer   exploreAnswer
+	Err      error
+}
+
+// exploreAll asks every question at once and returns the answers in the order
+// they were asked, whatever order they came back in.
+//
+// One Options per question, each its own actor row in the ticket's cost
+// report exactly as a single explore already is: fanning out adds
+// concurrency, not a second accounting path.
+func exploreAll(ws *workspace.Workspace, key string, questions []string) []exploredQuestion {
+	jobs := make([]supervisor.Options, len(questions))
+	for i, q := range questions {
+		jobs[i] = exploreOptions(key, q)
+	}
+	out := make([]exploredQuestion, len(questions))
+	for i, r := range supervisor.Fan(ws, jobs) {
+		out[i] = exploredQuestion{Question: questions[i]}
+		switch {
+		case r.Result == nil:
+			out[i].Err = r.Err
+			if out[i].Err == nil {
+				out[i].Err = fmt.Errorf("the explore run produced no result at all")
+			}
+		case r.Result.ExitCode != 0:
+			out[i].Err = fmt.Errorf("the explore run returned nothing (exit %d): %s",
+				r.Result.ExitCode, r.Result.Reason)
+		case strings.TrimSpace(r.Result.Final) == "":
+			out[i].Err = fmt.Errorf("the explore run finished without writing an answer")
+		default:
+			out[i].Answer = parseExploreAnswer(r.Result.Final)
+		}
+	}
+	return out
 }
 
 // exploreAnswer is what crosses back: the answer, and the files it was read
@@ -109,20 +164,21 @@ func splitPaths(s string) []string {
 	return out
 }
 
-// runExplore answers one question about a repository and prints the answer.
+// runExplore answers the questions it is given and prints the answers.
 //
-// Every failure exits non-zero with the same instruction: read it yourself.
-// That is the fallback the whole design rests on -- this can only ever save
-// the caller reading, never prevent it -- and an error message that left the
-// caller wondering whether to wait would cost more than the subagent saves.
+// Failing EVERY question exits non-zero with the same instruction: read it
+// yourself. That is the fallback the whole design rests on -- this can only
+// ever save the caller reading, never prevent it -- and an error message that
+// left the caller wondering whether to wait would cost more than the subagent
+// saves.
 func runExplore(args []string) {
 	repo := argFlag(args, "--repo", ".")
-	rest := positional(args, "--repo", "--key")
-	if len(rest) == 0 {
-		fmt.Fprintln(os.Stderr, `orion: usage: orion explore [--repo DIR] "<question>"`)
+	questions := positional(args, "--repo", "--key")
+	if len(questions) == 0 {
+		fmt.Fprintln(os.Stderr,
+			`orion: usage: orion explore [--repo DIR] "<question>" ["<question>" ...]`)
 		os.Exit(64)
 	}
-	question := rest[0]
 
 	ws, err := exploreWorkspace()
 	if err != nil {
@@ -149,18 +205,62 @@ func runExplore(args []string) {
 			"this explore will not appear in any ticket's cost report")
 	}
 
-	res, err := supervisor.Run(&jobWS, exploreOptions(key, question))
-	if err != nil {
-		exploreGiveUp(err)
+	logExploreDispatch(&jobWS, key, questions)
+	asked := exploreAll(&jobWS, key, questions)
+	for _, q := range asked {
+		if q.Err == nil {
+			logExplore(&jobWS, key, q.Question, q.Answer)
+		}
 	}
-	if res.ExitCode != 0 || strings.TrimSpace(res.Final) == "" {
-		exploreGiveUp(fmt.Errorf("the explore run returned nothing (exit %d): %s",
-			res.ExitCode, res.Reason))
+	// Every question failed, so there is nothing to print and the caller has
+	// to go and read for itself -- the fallback this whole command rests on.
+	// One failure among several is NOT this: the answers that did arrive are
+	// worth more than the consistency of failing the batch.
+	if firstErr, all := exploreAllFailed(asked); all {
+		exploreGiveUp(firstErr)
 	}
+	printExploreAll(os.Stdout, asked)
+}
 
-	ans := parseExploreAnswer(res.Final)
-	logExplore(&jobWS, key, question, ans)
-	printExplore(os.Stdout, ans)
+// exploreAllFailed reports whether nothing came back at all, and the first
+// reason why.
+func exploreAllFailed(asked []exploredQuestion) (error, bool) {
+	var first error
+	for _, q := range asked {
+		if q.Err == nil {
+			return nil, false
+		}
+		if first == nil {
+			first = q.Err
+		}
+	}
+	return first, len(asked) > 0
+}
+
+// printExploreAll writes every answer back to whoever asked.
+//
+// A single question prints exactly as it always did -- the caller of one
+// explore is reading prose, not a report, and a header above one answer is
+// noise. Several are labelled with the question they answer, because answers
+// arrive in a batch and an unlabelled one belongs to whichever question the
+// reader guesses.
+func printExploreAll(w io.Writer, asked []exploredQuestion) {
+	if len(asked) == 1 && asked[0].Err == nil {
+		printExplore(w, asked[0].Answer)
+		return
+	}
+	for i, q := range asked {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintf(w, "Q: %s\n", q.Question)
+		if q.Err != nil {
+			fmt.Fprintf(w, "orion: this one could not be answered: %v\n"+
+				"Read it yourself; the other answers here are unaffected.\n", q.Err)
+			continue
+		}
+		printExplore(w, q.Answer)
+	}
 }
 
 // printExplore writes the answer back to whoever asked, and says plainly when
@@ -180,6 +280,40 @@ func printExplore(w io.Writer, ans exploreAnswer) {
 		return
 	}
 	fmt.Fprintf(w, "\n%s %s\n", supervisor.ExplorePathsPrefix, strings.Join(ans.Paths, ", "))
+}
+
+// logExploreDispatch records that a batch of questions went out together.
+//
+// The per-answer notes below say what each subagent came back with, but
+// nothing in them says the three ran AT ONCE rather than one after another,
+// and that is the property this exists to make queryable: an answer arriving
+// is the same event either way. Written before the fan-out rather than after,
+// so a run that dies mid-flight still shows what it had out.
+//
+// Only for a batch. A single question is the shape this command already had,
+// and a "dispatched 1 concurrently" line in the log for every one of them is
+// noise that makes the batches harder to find, not easier.
+func logExploreDispatch(ws *workspace.Workspace, key string, questions []string) {
+	if len(questions) < 2 {
+		return
+	}
+	l, err := events.Open(events.Path(ws.Dir), events.Event{})
+	if err != nil {
+		return
+	}
+	defer func() { _ = l.Close() }()
+
+	maxConcurrent := config.Load(ws.RepoDir()).Limits.MaxConcurrentChildren
+	l.Emit(events.Event{
+		Kind: events.KindNote, Actor: events.ActorExplore, Key: key,
+		Model: actors.Model(events.ActorExplore),
+		Msg: fmt.Sprintf("dispatched %d explore subagents concurrently (cap %d)",
+			len(questions), maxConcurrent),
+		Detail: map[string]any{
+			"questions":      questions,
+			"max_concurrent": maxConcurrent,
+		},
+	})
 }
 
 // logExplore writes the answer and its citations into the event log.
