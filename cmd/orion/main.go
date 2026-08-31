@@ -87,6 +87,11 @@ RUNNING
                               (--verbose adds the agent's tool-call lines;
                               they are in the event log either way)
   orion queue                 what the watcher would pick up, in order (read-only)
+  orion queue add <KEY>...    queue tickets: keys and inclusive ranges, e.g.
+                              OR-100 OR-140..OR-145 (--project KEY; --reset to
+                              requeue a failed ticket and return it to To Do)
+  orion queue remove <KEY>... take tickets out of the queue; status and
+                              fixVersion are left alone
   orion routes                which marker sends a ticket to which actor, and
                               which actors are reached another way (read-only)
   orion watch [PROJECT...]    run the queue by itself: work, collect, repeat
@@ -225,7 +230,15 @@ func main() {
 		mustArg(os.Args, 2, "orion work <KEY> [KEY...]")
 		runWork(os.Args[2:])
 	case "queue":
-		runQueue(os.Args[2:])
+		// Bare `queue` reads; `queue add|remove` writes (OR-223). A verb rather
+		// than a flag because reading the queue and changing it are different
+		// operations with different consequences, and the read has to stay the
+		// thing you get when you type the command with nothing after it.
+		if len(os.Args) > 2 && (os.Args[2] == "add" || os.Args[2] == "remove") {
+			runQueueEdit(os.Args[2], os.Args[3:])
+		} else {
+			runQueue(os.Args[2:])
+		}
 	case "routes":
 		runRoutes()
 	case "repos":
