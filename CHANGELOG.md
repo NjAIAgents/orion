@@ -6,6 +6,35 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.8.5
+
+### Fixed
+
+- `orion release verify` no longer reports commits that are already on `main` as
+  unattributed. The attribution check now inspects only the promotion range
+  (`main..develop`) and asks whether a commit names a ticket at all, rather than
+  a ticket from the version being promoted — so work correctly keyed to an
+  earlier milestone is no longer counted as carrying no ticket key. A clean
+  promotion verifies with zero warnings instead of a warning larger than the
+  promotion itself.
+
+- **`CommitAll` had never succeeded in a repository that gitignores a path the
+  caller also excludes**, which is Orion's own. `git add` treats an explicit
+  pathspec naming an ignored path as an error and refuses the whole
+  invocation, so `:(exclude).orion/state` against a `.gitignore` holding
+  `.orion/` exited 1 on every call, with a dirty tree or a clean one.
+- That made two v0.8.3 fixes inert on arrival. OR-233 settles a worktree a
+  stopped run left behind, and OR-234 commits the tests QA writes; both call
+  `CommitAll` and neither could ever have worked here. OR-211 lost a run to
+  the same error earlier, reported as a mystery.
+- The exclusion was redundant from the start: `add -A -- .` never stages an
+  ignored file. Orion now skips any exclusion git already ignores, so the
+  commit happens and the ignored directory still stays out of it.
+- The warning also fired when the worktree was clean, telling operators their
+  work had not reached the pull request when nothing had been left behind. A
+  control that reports loss where there is none is as harmful as one that
+  stays quiet where there is.
+
 ## v0.8.4
 
 ### Fixed

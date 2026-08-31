@@ -295,9 +295,33 @@ func CommitAll(path, message string, exclude ...string) (int, error) {
 	}
 	args := []string{"add", "-A", "--", "."}
 	for _, e := range exclude {
-		if e != "" {
-			args = append(args, ":(exclude)"+e)
+		if e == "" {
+			continue
 		}
+		// Skip an exclusion git already ignores. Naming a path inside an
+		// ignored directory is not a no-op to git: `add` treats an explicit
+		// pathspec for an ignored path as an error and refuses the WHOLE
+		// invocation --
+		//
+		//   The following paths are ignored by one of your .gitignore files:
+		//   .orion
+		//   hint: Use -f if you really want to add them.
+		//
+		// so :(exclude).orion/state against a .gitignore holding ".orion/"
+		// made every call here exit 1. That is exactly this repository, and
+		// it meant CommitAll had NEVER succeeded in it: OR-233's residue
+		// settle and OR-234's QA-test commit both shipped calling a function
+		// that could not work, and OR-211 lost a run to the same error
+		// reported as a mystery.
+		//
+		// The exclusion was always redundant for these paths -- git does not
+		// stage an ignored file under `add -A -- .` anyway -- so dropping it
+		// changes nothing about what gets committed and everything about
+		// whether the commit happens.
+		if _, err := git(path, "check-ignore", "-q", e); err == nil {
+			continue // already ignored; naming it would fail the add
+		}
+		args = append(args, ":(exclude)"+e)
 	}
 	if _, err := git(path, args...); err != nil {
 		return 0, fmt.Errorf("staging the work in %s: %w", path, err)
