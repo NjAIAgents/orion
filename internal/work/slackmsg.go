@@ -115,26 +115,58 @@ func msgNoop(key, summary, note, issueURL string) (string, string) {
 	return title, body
 }
 
-// msgNoAuth is for a run that never started because Orion could not sign in.
+// msgHeld is for a run the ENVIRONMENT stopped before it began.
 //
 // The title names the machine, not the ticket, because the ticket is fine: the
-// reader's job is to log in, not to look at a branch. And the fix goes in the
-// body verbatim -- this is the one failure notification where the remedy is
-// known exactly, and burying it under a log path would waste that.
-func msgNoAuth(key, summary, reason, issueURL string) (string, string) {
-	title := "Orion stopped: claude is not authenticated"
-	body := strings.Join([]string{
+// reader's job is to fix a login or a toolkit, not to look at a branch. And
+// the fix goes in the body verbatim -- this is the one class of failure where
+// the remedy is known exactly, and burying it under a log path would waste it.
+func msgHeld(key, summary string, h Hold, issueURL string) (string, string) {
+	title := "Orion is holding work: " + string(h.Kind)
+	lines := []string{
 		"*" + summary + "*",
 		"",
-		quote(reason),
+		quote(h.Cause),
+		"",
+		"*The fix*",
+		quote(h.Fix),
 		"",
 		"• ticket  " + link(issueURL, key),
 		"",
-		"_Nothing was attempted and nothing was spent. " + key + " is queued again_",
-		"_rather than marked failed. Every other ticket would fail the same way,_",
-		"_so the watcher stopped instead of draining the queue._",
+		"_Nothing was attempted and nothing was spent. " + key + " is held in the_",
+		"_queue rather than marked failed, and its empty branch has been removed._",
+	}
+	if h.Escalated {
+		lines = append(lines, "",
+			"_This is the SECOND time "+key+" has hit this, so the previous fix did not_",
+			"_work. Orion will not ask again — clear it with `orion reset --held "+
+				string(h.Kind)+"`._")
+	}
+	return title, strings.Join(lines, "\n")
+}
+
+// msgFaultAsk is the question itself: one message per FAULT, whatever number
+// of tickets it stopped.
+//
+// It has to say three things and no more -- what broke, exactly how to fix it,
+// and which tickets are waiting on that. A reaction answers it, and the
+// answer is re-checked before anything is released, which the message says
+// plainly: somebody who knows their tick will be verified reacts when they
+// have actually finished.
+func msgFaultAsk(h Hold) (string, string) {
+	title := "Orion is held: " + string(h.Kind)
+	return title, strings.Join([]string{
+		"*What broke*",
+		quote(h.Cause),
+		"",
+		"*The fix*",
+		quote(h.Fix),
+		"",
+		"• held  " + strings.Join(h.Keys, ", "),
+		"",
+		"_React ✅ when it is fixed and Orion re-runs the check itself before_",
+		"_releasing anything. Nothing was spent and nothing is marked failed._",
 	}, "\n")
-	return title, body
 }
 
 // msgFailed is for something broken, as distinct from something undecided.

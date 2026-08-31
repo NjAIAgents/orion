@@ -126,6 +126,15 @@ type Result struct {
 	// labelled failed, and the watcher must stop rather than claim the next one
 	// (OR-212). Reason carries the sentence to say; this carries the fact.
 	Unauthenticated bool
+	// QuotaUnwaitable reports a quota wall the wait cannot be used on: the
+	// provider did not state when the limit clears, so there is no time to
+	// come back at -- only the backoff guess OR-192 is careful never to
+	// present as a fact.
+	//
+	// Its own field for the same reason Unauthenticated has one. A caller
+	// deciding whether to hold a ticket or fail it would otherwise have to
+	// pattern-match Reason, which is prose written for a person (OR-214).
+	QuotaUnwaitable bool
 	// Started reports that the CLI got far enough to emit a stream frame.
 	//
 	// False is the honest reading of "this never began": the process died in
@@ -275,6 +284,7 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 		appendLog(res.LogPath, "[orion] "+msg)
 
 		if opts.NoWait {
+			res.QuotaUnwaitable = !v.Parsed
 			res.Reason = "quota exhausted (--no-wait set, not waiting)"
 			notify.Send(notify.Event{
 				Level: notify.Blocked, Workspace: ws.ID, Channel: channelFor(ws),
@@ -288,6 +298,12 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 			// Too long to sit through, or out of attempts. Record when to
 			// come back and hand control to the human rather than holding a
 			// process open for hours.
+			//
+			// Unless nobody said when to come back. An unparsed reset means
+			// ResumeAt is backoff arithmetic, and a caller that treats a guess
+			// as an appointment waits for a moment that means nothing. Said as
+			// its own fact so the caller can hold the ticket instead (OR-214).
+			res.QuotaUnwaitable = !v.Parsed
 			res.ResumeAt = v.ResetAt
 			res.Reason = fmt.Sprintf("quota exhausted; resume after %s",
 				v.ResetAt.Local().Format("15:04 MST"))

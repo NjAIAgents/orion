@@ -71,14 +71,18 @@ const (
 	// could not do the thing must not carry the same label, or orion-failed
 	// starts to mean "fine, actually" and stops carrying information.
 	OutcomeNoop Outcome = "no-op"
-	// OutcomeNoAuth: the CLI has no usable login, so the run never began.
+	// OutcomeHeld: the ENVIRONMENT stopped this and no work was attempted.
 	//
 	// Distinct from failed because nothing was attempted -- no turn, no token,
 	// no branch work -- and the ticket is untouched. Labelling it orion-failed
 	// makes an operator hand-clear a label for a problem that never reached the
 	// ticket, and teaches them that the failure label sometimes means "the
-	// machine was logged out" (OR-212). See auth.go.
-	OutcomeNoAuth Outcome = "not-authenticated"
+	// machine was logged out" (OR-212).
+	//
+	// It sits BESIDE failure rather than replacing any part of it. A run that
+	// spent a turn and failed is still orion-failed, because somebody has to
+	// judge why before it costs that again (OR-214). See fault.go and hold.go.
+	OutcomeHeld Outcome = "held"
 )
 
 // Result is one job's ending.
@@ -91,6 +95,9 @@ type Result struct {
 	// Note is why nothing was done, on a no-op outcome. Separate from
 	// Question because it is not a question: nobody has to answer it.
 	Note string
+	// Fault is what stopped the environment, on a held outcome. Zero on
+	// every other one, so Outcome remains the thing to switch on.
+	Fault Fault
 	// Advice is the last verdict, when an advisor was consulted. A refusal
 	// here is the useful part of a blocked outcome: it says the DESIGN is
 	// incomplete, not that the agent failed.
@@ -133,7 +140,19 @@ type Deps struct {
 	// Injectable and optional for the same reason as everything else here: it
 	// shells out to gh, which needs auth and a network. Nil skips the check.
 	Merged func(dir, branch string) (bool, string, error)
-	Now    func() time.Time
+	// Slack asks about an environmental fault and reads the answer. Nil
+	// disables the question entirely, which is the A5 contract: the hold
+	// still happens, the fix is still printed, and the environment being
+	// healthy again is still what releases it. See hold.go.
+	Slack SlackAPI
+	// Preflight refuses to claim a ticket the environment cannot work, before
+	// anything is written to the tracker. Nil skips it.
+	//
+	// Injected rather than called directly because the checks it wraps shell
+	// out -- and a test that has no `claude` on PATH must not be told the
+	// machine is logged out.
+	Preflight func() (Fault, bool)
+	Now       func() time.Time
 }
 
 // TrackerAPI is the slice of the tracker this package needs. Narrow on
@@ -198,10 +217,16 @@ func Run(opts Options, deps Deps) []Result {
 		// will -- and it is right often enough to keep. When the reason is
 		// KNOWN, saying it is the difference between an operator diagnosing a
 		// queue of wrecks and an operator running one command (OR-212).
-		if r.Outcome == OutcomeNoAuth {
+		if r.Outcome == OutcomeHeld {
 			ui.Warn(opts.Out, "stopping the batch: %s", r.Note)
+			ui.Warn(opts.Out, "the rest of the queue is untouched and nothing is labelled failed; "+
+				"work resumes when %s is healthy again", r.Fault.Kind)
 			break
 		}
+		// The environment worked for this ticket, whatever the ticket did.
+		// Recorded so a fault it met months ago cannot make its next one
+		// escalate immediately (hold.go).
+		forgetFault(opts.Home, r.Key)
 		if r.Outcome == OutcomeFailed {
 			ui.Warn(opts.Out, "stopping the batch after %s failed; the next ticket would likely fail the same way", r.Key)
 			break
@@ -314,6 +339,13 @@ func one(key string, opts Options, deps Deps) (res Result) {
 
 	issue, err := deps.Jira.GetIssue(key)
 	if err != nil {
+		// A tracker nobody can reach is the machine's problem, and this is
+		// before the claim -- nothing was attempted and there is nothing to
+		// hand back. Anything else the tracker SAYS is an answer, and an
+		// answer is a failure a person has to read.
+		if f, env := unreachableFault(FaultTracker, err); env {
+			return held(res, key, f, nil, false, cfg, opts, deps, ws, log, w)
+		}
 		return fail(res, err)
 	}
 	res.Summary, res.IssueURL = issue.Summary, issue.URL
@@ -372,6 +404,16 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		merged, prURL, mErr := deps.Merged(ws.RepoDir(), branch)
 		switch {
 		case mErr != nil:
+			// An UNREACHABLE forge is held rather than warned past. The
+			// warning above is right for a gh that is absent or a repository
+			// it cannot see -- those degrade one check, and refusing every run
+			// over them would be the worse fault. A forge that cannot be
+			// connected to is different in kind: the push and the pull request
+			// at the end of this run need it too, so proceeding buys a full
+			// agent run that cannot possibly finish (OR-214).
+			if f, env := unreachableFault(FaultForge, mErr); env {
+				return held(res, key, f, nil, false, cfg, opts, deps, ws, log, w)
+			}
 			ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
 				"could not check whether %s has already merged: %v", branch, mErr)
 		case merged:
@@ -420,6 +462,19 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			turnsFor(opts.MaxTurns, len(children)), minutesFor(opts.MaxMinutes, len(children)), len(children))
 	}
 
+	// The environment, checked before the claim rather than discovered by the
+	// agent five seconds after it starts.
+	//
+	// Only the checks that are FREE and LOCAL belong here -- whether the CLI
+	// is signed in, whether nj-agents is installed -- because this runs once
+	// per ticket. A probe that needs a network would make every claim depend
+	// on a round trip to prove something the run itself will establish anyway.
+	if deps.Preflight != nil {
+		if f, env := deps.Preflight(); env {
+			return held(res, key, f, nil, false, cfg, opts, deps, ws, log, w)
+		}
+	}
+
 	// Claim it. This is the lock: two runs must not pick up one ticket, and
 	// the label is what makes that visible to anyone looking at the board.
 	//
@@ -431,6 +486,11 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if !opts.DryRun {
 		if err := deps.Jira.SetLabels(key, []string{tracker.LabelWorking},
 			[]string{cfg.Tracker.QueueLabel}); err != nil {
+			// The claim did not land, so the ticket still wears its queue
+			// label and sits in To Do: held, with nothing to hand back.
+			if f, env := unreachableFault(FaultTracker, err); env {
+				return held(res, key, f, nil, false, cfg, opts, deps, ws, log, w)
+			}
 			return fail(res, fmt.Errorf("claiming %s: %w", key, err))
 		}
 		log.Emitf(events.KindClaimed, events.ActorOrion, "claimed %s: %s", key, issue.Summary)
@@ -606,10 +666,11 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}
 
 	// Checked BEFORE the failure path, and it has to be: the supervisor returns
-	// an error for any non-zero exit, so a run that never started for want of a
-	// login would otherwise be reported as the work failing.
-	if runRes != nil && runRes.Unauthenticated {
-		return notAuthenticated(res, key, runRes.Reason, cfg, opts, deps, ws, log, w)
+	// an error for any non-zero exit, so a run that never started -- for want
+	// of a login, or against a quota wall with no stated reset -- would
+	// otherwise be reported as the work failing.
+	if f, env := faultOf(runRes); env {
+		return held(res, key, f, job, true, cfg, opts, deps, ws, log, w)
 	}
 
 	if runErr != nil || (runRes != nil && runRes.ExitCode != 0) {
@@ -705,8 +766,8 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			OnActivity: ActivityLogger(log, w, key, actorID),
 			Actor:      actorID, Key: key,
 		})
-		if runRes != nil && runRes.Unauthenticated {
-			return notAuthenticated(res, key, runRes.Reason, cfg, opts, deps, ws, log, w)
+		if f, env := faultOf(runRes); env {
+			return held(res, key, f, job, true, cfg, opts, deps, ws, log, w)
 		}
 		if runErr != nil || runRes == nil || runRes.ExitCode != 0 {
 			err := runErr

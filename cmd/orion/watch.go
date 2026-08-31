@@ -132,8 +132,16 @@ func runWatch(args []string) {
 				Jira: mustJira(), Supervise: supervisor.Run, Advise: adviseRunner,
 				Describe: describeRunner,
 				Push:     pushBranch, OpenPR: openPR, Merged: mergedBranch,
+				Slack: slackForHold(), Preflight: preflightEnv,
 			})
 		},
+		// How a hold gets released without anyone running a command: the
+		// reaction is read here, and the doctor check re-run, on every tick.
+		Release: work.ReleaseDeps{Slack: slackForHold(), Recheck: recheckEnv},
+		// watch.Queue, not []tracker.Issue: develop's return type, kept over
+		// the branch's older one. OR-214 only ever needed to ADD Release here
+		// -- it touched this line because it sits adjacent, not because the
+		// signature is its business.
 		Queued: func(home string, ps []string, label string) (watch.Queue, error) {
 			return watch.Queued(j, home, ps, label)
 		},
