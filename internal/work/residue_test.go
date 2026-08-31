@@ -544,3 +544,248 @@ func TestResidueIsKeptWhenTheCommitItselfFails(t *testing.T) {
 		t.Errorf("the ticket does not say what became of the work:\n%s", comments)
 	}
 }
+
+// OR-242. When the worktree holds no dirty tracked files, CommitAll is never
+// invoked -- there is nothing for it to fail on, and no snapshot commit
+// should appear pretending otherwise.
+func TestNoDirtyFilesMeansNoCommitIsAttempted(t *testing.T) {
+	home := project(t, cfg)
+	var sent string
+	bindSlack(t, home, &sent)
+
+	j := &fakeJira{}
+	var out strings.Builder
+	var jobPath string
+	var before string
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				dir := ws.RepoDir()
+				jobPath = dir
+				if err := os.WriteFile(filepath.Join(dir, "impl.go"), []byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, dir, "add", ".")
+				git(t, dir, "commit", "-q", "-m", "feat: implement")
+				before = git(t, dir, "log", "--oneline")
+				// Nothing left dirty, tracked or untracked, and no trip.
+				return &supervisor.Result{ExitCode: 0, Reason: "completed"}, nil
+			},
+			Push: func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) {
+				return "https://github.com/x/y/pull/12", nil
+			},
+		})
+
+	after := git(t, jobPath, "log", "--oneline")
+	if after != before {
+		t.Errorf("a commit happened over a clean worktree, where none was needed:\nbefore: %s\nafter:  %s", before, after)
+	}
+	if strings.Contains(after, "wip: snapshot") {
+		t.Errorf("a snapshot commit was recorded though nothing was dirty:\n%s", after)
+	}
+	if o := out.String(); strings.Contains(o, "uncommitted work") {
+		t.Errorf("residue settlement spoke up though the worktree was already clean:\n%s", o)
+	}
+}
+
+// OR-242. Staged, uncommitted changes must come through a failed commit
+// exactly as they were staged -- not merely present on disk, but still
+// staged, since that is part of what the agent left behind.
+func TestCommitFailureLeavesStagedChangesPreserved(t *testing.T) {
+	home := project(t, cfg)
+	var sent string
+	bindSlack(t, home, &sent)
+
+	j := &fakeJira{}
+	var out strings.Builder
+	var jobPath string
+	var beforeDiff, beforeStatusLine string
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				dir := ws.RepoDir()
+				jobPath = dir
+				if err := os.WriteFile(filepath.Join(dir, "impl.go"), []byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, dir, "add", ".")
+				git(t, dir, "commit", "-q", "-m", "feat: implement")
+				// A staged edit -- `git add` run, never committed.
+				if err := os.WriteFile(filepath.Join(dir, "impl.go"), []byte("package x\n\nfunc F() {}\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, dir, "add", "impl.go")
+				tripIn(t, dir, "sess-impl", "breaker/loop", "Bash repeated 4 times")
+
+				hooks := filepath.Join(dir, "refusing-hooks")
+				if err := os.MkdirAll(hooks, 0o755); err != nil {
+					return nil, err
+				}
+				if err := os.WriteFile(filepath.Join(hooks, "pre-commit"),
+					[]byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+					return nil, err
+				}
+				git(t, dir, "config", "core.hooksPath", hooks)
+				// Scoped to impl.go alone: CommitAll's own `add -A` also
+				// stages the newly-created refusing-hooks/ before the hook
+				// rejects the commit, which is beside the point here -- what
+				// this case is about is whether the PRE-EXISTING staged edit
+				// survives, not the whole index.
+				beforeDiff = git(t, dir, "diff", "--cached", "--", "impl.go")
+				for _, l := range strings.Split(git(t, dir, "status", "--porcelain"), "\n") {
+					if strings.HasSuffix(l, "impl.go") {
+						beforeStatusLine = l
+					}
+				}
+				return &supervisor.Result{ExitCode: 1, Reason: "tripped"}, errors.New("the agent stopped: breaker tripped")
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	if diff := git(t, jobPath, "diff", "--cached", "--", "impl.go"); diff != beforeDiff {
+		t.Errorf("the staged edit to impl.go changed across a failed commit:\nwant %q\ngot  %q", beforeDiff, diff)
+	}
+	var afterStatusLine string
+	for _, l := range strings.Split(git(t, jobPath, "status", "--porcelain"), "\n") {
+		if strings.HasSuffix(l, "impl.go") {
+			afterStatusLine = l
+		}
+	}
+	if afterStatusLine != beforeStatusLine {
+		t.Errorf("impl.go's staged/unstaged status changed across a failed commit:\nwant %q\ngot  %q", beforeStatusLine, afterStatusLine)
+	}
+	if !strings.HasPrefix(beforeStatusLine, "M  ") {
+		t.Fatalf("test setup did not actually leave impl.go staged: %q", beforeStatusLine)
+	}
+}
+
+// OR-242. A commit can also fail for reasons that have nothing to do with a
+// hook refusing it -- a git repository that cannot be written to, for
+// instance a permissions problem on .git/objects. The work must be kept
+// exactly the same way.
+func TestCommitFailureFromGitInfrastructureErrorLeavesFilesUntouched(t *testing.T) {
+	home := project(t, cfg)
+	var sent string
+	bindSlack(t, home, &sent)
+
+	j := &fakeJira{}
+	var out strings.Builder
+	var jobPath string
+	var before map[string]string
+	var objectsDir string
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				dir := ws.RepoDir()
+				jobPath = dir
+				if err := os.WriteFile(filepath.Join(dir, "impl.go"), []byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, dir, "add", ".")
+				git(t, dir, "commit", "-q", "-m", "feat: implement")
+				if err := os.WriteFile(filepath.Join(dir, "impl.go"), []byte("package x\n\nfunc F() {}\n"), 0o644); err != nil {
+					return nil, err
+				}
+				if err := os.WriteFile(filepath.Join(dir, "impl_test.go"), []byte("package x\n// finished, uncommitted\n"), 0o644); err != nil {
+					return nil, err
+				}
+				tripIn(t, dir, "sess-impl", "breaker/loop", "Bash repeated 4 times")
+
+				// A worktree keeps its own .git file pointing at the common
+				// git dir's objects; resolve it rather than assuming a
+				// simple repo layout.
+				top := git(t, dir, "rev-parse", "--git-common-dir")
+				if !filepath.IsAbs(top) {
+					top = filepath.Join(dir, top)
+				}
+				objectsDir = filepath.Join(top, "objects")
+				before = worktreeFiles(t, dir)
+				if err := os.Chmod(objectsDir, 0o500); err != nil {
+					t.Fatal(err)
+				}
+				return &supervisor.Result{ExitCode: 1, Reason: "tripped"}, errors.New("the agent stopped: breaker tripped")
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+	t.Cleanup(func() {
+		if objectsDir != "" {
+			_ = os.Chmod(objectsDir, 0o700)
+		}
+	})
+
+	after := worktreeFiles(t, jobPath)
+	for name, want := range before {
+		got, ok := after[name]
+		if !ok {
+			t.Errorf("%s was destroyed by the failed commit; it existed nowhere else", name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s was modified by the failed commit:\nwant %q\ngot  %q", name, want, got)
+		}
+	}
+	if log := git(t, jobPath, "log", "--oneline"); strings.Contains(log, "wip: snapshot") {
+		t.Errorf("the commit failed for an infrastructure reason, so nothing should have been recorded as saved:\n%s", log)
+	}
+	if o := out.String(); !strings.Contains(o, "could NOT commit") || !strings.Contains(o, "KEPT") {
+		t.Errorf("a run that could not commit for an infrastructure reason must say so plainly:\n%s", o)
+	}
+}
+
+// OR-242. workspace.RevertTracked no longer exists: nothing here may discard
+// an agent's uncommitted work to tidy a worktree. A source scan, not a
+// compile check, because the point being verified is that the function is
+// gone from the package's own source, not merely unreferenced.
+func TestRevertTrackedFunctionNoLongerExists(t *testing.T) {
+	entries, err := os.ReadDir("../workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join("../workspace", e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "func RevertTracked") {
+			t.Errorf("%s still defines RevertTracked; OR-242 requires it be deleted, not merely unused", e.Name())
+		}
+	}
+}
+
+// OR-242. No caller in internal/work or internal/hook may reach for
+// RevertTracked in response to a failed commit -- the whole point being that
+// a failed commit is handled by keeping the work, never by reverting it.
+func TestNoCallerInvokesRevertTrackedAfterCommitFailure(t *testing.T) {
+	for _, dir := range []string{".", "../hook"} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			// This test file itself names the call as a string to check for;
+			// that is not a call site.
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(b), "RevertTracked(") {
+				t.Errorf("%s/%s calls RevertTracked; a failed commit must keep the work, not revert it", dir, e.Name())
+			}
+		}
+	}
+}
