@@ -6,6 +6,158 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.8.7
+
+### Added
+
+- `orion queue` marks each labelled ticket the watcher will not claim as
+  `held`, with the reason on the line below it, and `orion watch` reports the
+  same reason on the tick that would otherwise start nothing. A ticket that
+  silently never runs is indistinguishable from a broken watcher.
+
+- `orion queue add` and `orion queue remove` put tickets into the queue and take
+  them out, so the most frequent write an operator performs no longer means
+  editing the ORION label by hand in the Jira UI, one ticket at a time. Both take
+  keys and inclusive ranges — `orion queue add OR-100 OR-140..OR-145` — parsed by
+  the same code as `orion release add`, and both print the whole plan before
+  writing anything. Re-running is a no-op that says so.
+- `orion queue add --reset` requeues a failed ticket in one command: it clears
+  `orion-failed` and returns the status to To Do together, rather than leaving a
+  ticket that has one but not the other and so never runs.
+
+- **`internal/reconcile`: compare what the repository says against what the
+  tracker says.** The tracker records intent, not evidence, and the two drift
+  apart silently. On 2026-08-30 OR-211 read In Progress for hours while its
+  finished work sat committed but never pushed: `develop` never received it,
+  the milestone counted it as included, and nothing noticed. A release cut on
+  the tracker's word would have shipped a changelog claiming a fix that was
+  not in the binary.
+- Three disagreements are detected: a ticket reported finished with no commit
+  on the integration branch, work on the branch whose ticket is still open,
+  and finished work on no milestone, which can appear in no release's notes.
+- Every finding carries the evidence that produced it, so a claim can be
+  checked without re-deriving it. Agreement produces silence, and a clean
+  report records how many tickets were compared so it can be told apart from
+  one where nothing was examined.
+- It reports and never edits the tracker. A reconciler that silently rewrites
+  status is a second source of drift rather than a cure for the first.
+
+- A claimed ticket now says WHICH actor holds it. Beside the `orion-working`
+  claim lock, Orion sets a second label naming the stage --
+  `orion-stage-implementer`, `orion-stage-qa`, `orion-stage-frontend` and so
+  on -- so implementation, QA and a fix round are distinguishable from the
+  Jira board rather than all reading as "somebody is on this". It moves at
+  every stage handoff and is cleared whenever the claim is, including on the
+  failed, requeued and stale-lock paths.
+
+  The stage label carries the actor's **id, not its display name**. A Jira
+  label is persisted data with no render step, so a name written into one
+  would be frozen at the moment it was written and drift from a roster that
+  `orion config agents` lets you rename at will. The run log keeps showing
+  your configured name; the tracker shows the durable role.
+
+  Nothing reads the new label for control flow: `orion-working` is unchanged
+  and still matched exactly, so claiming behaves precisely as before. A
+  ticket awaiting CI carries no stage label -- `orion-ci-wait` already says
+  a pull request is open and no agent is running.
+
+- **Batch integration (`internal/collect/batch.go`), the core of OR-236.**
+  Branches that are ready are merged into ONE ephemeral ref and tested once,
+  instead of each being rebased onto `develop` and tested on its own pull
+  request. Four green branches now cost one CI run rather than four.
+- Agent branches are never rewritten, so the design removes the rebase, the
+  force-push and the landing queue rather than tuning them.
+- **A branch that conflicts is ejected at assembly, before CI runs.** The ref
+  only ever holds branches that combined cleanly, so a red result is always a
+  real defect and never a merge problem. The ejected branch is reported with
+  the conflict and offered again; the fix has to land on the real branch,
+  because a resolution recorded in an ephemeral ref is thrown away.
+- **A red batch is bisected rather than abandoned.** Both halves are examined
+  at each split, not only the failing one, because a batch can hold more than
+  one culprit and stopping at the first would land the second. Members that
+  are sound are reported as deferred and offered again rather than blamed.
+- Every cycle records how many CI runs it actually consumed, so the saving is
+  measured rather than assumed.
+
+- **Not yet wired into `orion watch`.** The assembly, ejection and isolation logic
+  and its tests are in place; connecting it to the live landing path changes
+  how work merges, and that step is taken with someone watching.
+
+- `collect.batch_integration` in `orion.json` turns it on, and
+  `collect.batch_size` caps a batch (default: the concurrency limit). **Off by
+  default.** `auto_rebase` is safe to default on because it decides nothing --
+  git has already said the merge is clean. This decides what lands and in what
+  order, and a mistake mis-merges or strands every branch at once rather than
+  one at a time.
+- The repository side assembles into the SHARED SANDBOX CLONE, never a job
+  worktree, and holds the repo lock for every operation. `RepoDir()` silently
+  resolves to a per-job worktree when a run sets one, so using it would have
+  built batches inside a running agent's checkout.
+
+### Changed
+
+- A ticket is now claimable only when it carries BOTH the queue label and an
+  open `fixVersion`. The label means "ready to be worked"; a `fixVersion` means
+  "scheduled to ship in a named release", and neither implies the other. Work
+  that is ready but unscheduled is invisible to every part of Orion that
+  reconciles by version — `orion release close`, its release-note verify, and
+  `orion release status` — so its changelog fragment becomes an orphan and the
+  release it accidentally rides in cannot account for it. The condition is in
+  the queue's JQL, so an unschedulable ticket never enters the candidate set
+  and cannot be claimed in a race.
+- A `fixVersion` that is already released or archived does NOT make a ticket
+  claimable. It is scheduled for a train that has left, and working it would
+  file a changelog fragment against a milestone that has already been collated
+  and dated.
+- **Projects that do not use releases are unaffected.** Enforcement is
+  detected, not configured: a project with at least one open milestone is
+  gated, and a project with none — because it defines no versions, or because
+  every version it has is closed — is queried exactly as before.
+
+- `orion queue add` refuses a ticket that carries no fixVersion, naming the
+  missing version, and neither verb will touch a ticket labelled `orion-working`
+  or `orion-ci-wait` — those mean an agent or CI owns it right now, and
+  relabelling under a running job corrupts the claim. `orion queue remove` only
+  unqueues: it leaves status and fixVersion exactly as they were.
+
+- **A failed snapshot commit no longer reverts the worktree.** When a run ends
+  holding uncommitted work, Orion still tries to commit it; if that commit
+  fails, the work is now KEPT exactly where the agent left it rather than
+  discarded. A dirty worktree is a visible, recoverable problem — it blocks the
+  next rebase, loudly, with every file still in it. A revert is an invisible,
+  irrecoverable one.
+- The report on a failed commit now names every kept file, untracked ones
+  included, states the reason the commit failed, and prints `orion settle
+  <KEY>` as the way out. It is marked failed and unresolved, so it cannot be
+  mistaken for a clean finish. Anything the run committed itself is untouched,
+  as before.
+
+### Removed
+
+- `workspace.RevertTracked`, which had no other caller. Nothing in Orion
+  discards an agent's uncommitted work to tidy a worktree any more.
+
+### Fixed
+
+- A tripped breaker now says so on the surface you are actually watching. When a
+  breaker parks a run's worktree, the landing pass names the breaker, the ticket
+  and the exact `orion reset --session <id>` command in the watch log, instead of
+  reporting only that the worktree "has uncommitted changes" — a downstream
+  symptom whose cause and remedy lived in the agent's own session and in
+  `plans/BLOCKED.md` under `ORION_HOME`, neither of which an operator reads.
+- The "still behind and still yours" reminder is now said at most once every 15
+  minutes while nothing changes, rather than on every poll. A branch that is
+  pushed is still announced afresh immediately, and the hand-over itself is
+  unchanged; only the reminder that nothing has happened is throttled.
+- A run that ends holding uncommitted work after a breaker trip now prints the
+  recovery command with it.
+
+- **Work destroyed by the revert fallback.** The fallback was added on the
+  assumption that the commit would normally succeed; OR-241 established that
+  `CommitAll` had never worked in this repository, so it fired on every run.
+  On OR-116 it destroyed a finished test file — the `add` had failed before
+  staging, so no blob was written and the file was unrecoverable.
+
 ## v0.8.6
 
 ### Added

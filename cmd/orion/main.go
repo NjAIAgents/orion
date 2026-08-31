@@ -87,6 +87,11 @@ RUNNING
                               (--verbose adds the agent's tool-call lines;
                               they are in the event log either way)
   orion queue                 what the watcher would pick up, in order (read-only)
+  orion queue add <KEY>...    queue tickets: keys and inclusive ranges, e.g.
+                              OR-100 OR-140..OR-145 (--project KEY; --reset to
+                              requeue a failed ticket and return it to To Do)
+  orion queue remove <KEY>... take tickets out of the queue; status and
+                              fixVersion are left alone
   orion routes                which marker sends a ticket to which actor, and
                               which actors are reached another way (read-only)
   orion watch [PROJECT...]    run the queue by itself: work, collect, repeat
@@ -225,7 +230,15 @@ func main() {
 		mustArg(os.Args, 2, "orion work <KEY> [KEY...]")
 		runWork(os.Args[2:])
 	case "queue":
-		runQueue(os.Args[2:])
+		// Bare `queue` reads; `queue add|remove` writes (OR-223). A verb rather
+		// than a flag because reading the queue and changing it are different
+		// operations with different consequences, and the read has to stay the
+		// thing you get when you type the command with nothing after it.
+		if len(os.Args) > 2 && (os.Args[2] == "add" || os.Args[2] == "remove") {
+			runQueueEdit(os.Args[2], os.Args[3:])
+		} else {
+			runQueue(os.Args[2:])
+		}
 	case "routes":
 		runRoutes()
 	case "repos":
@@ -1111,6 +1124,13 @@ func runQueue(args []string) {
 			cfg.Tracker.QueueLabel, cfg.Tracker.ProjectKey)
 		return
 	}
+	// Why a labelled ticket will not be claimed, per ticket. Read here rather
+	// than filtered into the query on purpose: the WATCHER's query excludes
+	// an unscheduled ticket (OR-221), and if this command did the same the
+	// ticket would vanish from the one view whose entire job is to say what
+	// the watcher would do and why.
+	holds := queueHolds(w, j, cfg, issues)
+
 	// Group by queue state, not by Jira order. What is running and what
 	// broke are the two things you look for first; making them the top of
 	// the list is the difference between a report and a wall of text.
@@ -1132,7 +1152,17 @@ func runQueue(args []string) {
 			if tracker.State(i.Labels, cfg.Tracker.QueueLabel) != g.state {
 				continue
 			}
-			counts[g.state]++
+			verb := g.verb
+			// A held ticket is queued as far as the labels go and is not
+			// queued at all as far as the watcher is concerned. Counting it
+			// as queued would make this command's own summary disagree with
+			// what the watcher does next.
+			if hold := holds[i.Key]; hold != "" && g.state == "queued" {
+				verb = "held"
+				counts["held"]++
+			} else {
+				counts[g.state]++
+			}
 			n++
 			pr := i.Priority
 			if pr == "" {
@@ -1141,13 +1171,21 @@ func runQueue(args []string) {
 				pr = "none"
 			}
 			fmt.Fprintf(w, "  %2d. %s %-9s %-7s %-12s %s\n",
-				n, ui.Label(w, g.verb, ""), i.Key, pr, i.Status, i.Summary)
+				n, ui.Label(w, verb, ""), i.Key, pr, i.Status, i.Summary)
 			fmt.Fprintf(w, "      %s\n", ui.Dim(w, i.URL))
+			if hold := holds[i.Key]; hold != "" {
+				fmt.Fprintf(w, "      %s\n", ui.Dim(w, hold))
+			}
 		}
 	}
 
 	fmt.Fprintf(w, "\n  %d working, %d awaiting CI, %d queued, %d failed.\n",
 		counts["working"], counts["ci-wait"], counts["queued"], counts["failed"])
+	if counts["held"] > 0 {
+		ui.Warn(w, "%d labelled ticket(s) will NOT be claimed until they are scheduled.\n"+
+			"  Attach each to an open release: orion release add <version> <KEY>",
+			counts["held"])
+	}
 
 	// Where this work would go, before any of it runs. See routingSummary.
 	if summary, hint := routingSummary(issues); summary != "" {
@@ -1199,6 +1237,39 @@ func routingSummary(issues []tracker.Issue) (summary, hint string) {
 			"change that; they are set when the ticket is created, not here."
 	}
 	return summary, hint
+}
+
+// queueHolds says, per issue key, why the watcher will not claim that ticket.
+//
+// DEGRADES rather than fails. This command is read-only and its job is to
+// show the queue; a version read that 403s or times out must not turn that
+// into an error, so the hold column is dropped with a line saying it was
+// dropped. Silence would be the one outcome worse than either -- a reader
+// would take an unmarked ticket for a claimable one.
+func queueHolds(w io.Writer, j *tracker.Jira, cfg config.Config, issues []tracker.Issue) map[string]string {
+	key := strings.TrimSpace(cfg.Tracker.ProjectKey)
+	if key == "" {
+		return nil
+	}
+	sched, err := tracker.LoadSchedules(j, []string{key})
+	if err != nil {
+		ui.Warn(w, "could not read %s's releases (%v), so this list does not say which\n"+
+			"  tickets the watcher would hold back for having no fixVersion.", key, err)
+		return nil
+	}
+	holds := map[string]string{}
+	for _, i := range issues {
+		// Only the ones waiting to be claimed. A ticket already working, in
+		// CI or failed has been claimed already, and telling its reader it
+		// "will not be claimed" would be false.
+		if tracker.State(i.Labels, cfg.Tracker.QueueLabel) != "queued" {
+			continue
+		}
+		if r := sched.HoldReason(i, cfg.Tracker.QueueLabel); r != "" {
+			holds[i.Key] = r
+		}
+	}
+	return holds
 }
 
 // queueJQL builds the query from config, scoped to the bound project so a

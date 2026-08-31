@@ -387,6 +387,69 @@ func noDuplicateNames(in map[string]Actor) error {
 	return nil
 }
 
+// StageLabelPrefix begins every stage label. Its own constant because the
+// set path builds one label and the clear paths enumerate them all, and a
+// literal spelled out in two places is a literal that drifts.
+const StageLabelPrefix = "orion-stage-"
+
+// StageLabel is the tracker label that says WHICH actor holds a claimed
+// ticket. orion-working means only "somebody is on this"; orion-stage-qa
+// beside it says who, so implementation, QA and an advisory pass are
+// distinguishable from the board.
+//
+// A SECOND label rather than a rename of the first, and that is the whole
+// design. orion-working is not a status: it IS the mutual-exclusion lock,
+// and it is matched EXACTLY by the in-flight query and by the queue's NOT
+// IN. Jira Cloud cannot prefix-match a label, so a claim wearing
+// orion-working-qa would be invisible to both -- every claimed ticket would
+// read as free, and two watchers would work one branch. That is exactly the
+// race OR-138 and OR-144 exist to prevent, and it would surface as corrupted
+// work rather than as an error. Both queries are therefore untouched, and
+// NOTHING reads this label for control flow: it exists to be looked at.
+//
+// It carries the actor ID, never the display name. A Jira label is
+// persisted data with no render step between it and a human eye, so a name
+// written into one is frozen at the moment it was written. Names are an
+// operator setting (OR-131, OR-132): the QA actor appeared in this project's
+// own run logs as Sana, Anita and Brandon inside a single day, which would
+// have left three labels for one role with nothing saying they mean the
+// same thing. internal/cost settled the identical question the identical
+// way -- aggregate on the id, render the name -- so a renamed agent still
+// attributes correctly. The run log DOES have a renderer, which is why it
+// can keep saying "Anita · QA engineer" while the label says qa.
+//
+// Empty for ci and human, the two the roster refuses to name: neither ever
+// holds a claim, so neither ever has a stage to report.
+func StageLabel(id string) string {
+	if id == "" || fixed[id] {
+		return ""
+	}
+	return StageLabelPrefix + id
+}
+
+// StageLabels is every stage label this build can set, for the paths that
+// release a claim: clearing the lock has to clear the stage with it, or the
+// tracker keeps saying a stage for a ticket nobody is working.
+//
+// Only ever passed to a label REMOVE, never to a query. An enumeration
+// inside JQL is precisely the hazard this design avoids -- a new actor
+// whose claims the enumeration has not learned about yet becomes invisible
+// to the lock -- which is why tracker.Managed() is still the four lock
+// labels and this list is separate from it.
+//
+// Derived from the roster rather than listed by hand, so adding an actor
+// adds its stage label and changes no query.
+func StageLabels() []string {
+	out := make([]string, 0, len(defaults()))
+	for id := range defaults() {
+		if l := StageLabel(id); l != "" {
+			out = append(out, l)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Reset restores the shipped roster. For tests, and for a caller moving
 // between projects with different configuration.
 func Reset() {

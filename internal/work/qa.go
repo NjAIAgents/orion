@@ -193,7 +193,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 		// branch. Both sides named: two adjacent lines with different names
 		// leave the reader to work out that the developer is now holding it
 		// again, which is exactly what was wrong before (OR-189).
-		ui.Stage(w, log, ui.Handoff{Key: key, From: "qa",
+		handoff(w, log, deps, opts, ui.Handoff{Key: key, From: "qa",
 			To: fmt.Sprintf("fix round %d", out.Rounds),
 			By: events.ActorQA, Next: job.Actor,
 			Detail: fmt.Sprintf("round %d of %d", out.Rounds, max)})
@@ -230,7 +230,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 		// marked or the log shows a run entering a fix round and never
 		// leaving it -- which breaks the duration the event log exists to
 		// make queryable as surely as an unmarked departure does.
-		ui.Stage(w, log, ui.Handoff{Key: key,
+		handoff(w, log, deps, opts, ui.Handoff{Key: key,
 			From: fmt.Sprintf("fix round %d", out.Rounds), To: "qa",
 			By: job.Actor, Next: events.ActorQA, Detail: "re-verifying"})
 		res, err = deps.Supervise(job.WS, supervisor.Options{

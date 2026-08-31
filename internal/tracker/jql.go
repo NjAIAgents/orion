@@ -73,3 +73,35 @@ func JQLAnd(clauses ...string) string {
 	}
 	return strings.Join(kept, " AND ")
 }
+
+// JQLOr joins clauses with OR, dropping empty ones, and PARENTHESISES both
+// each clause and the whole.
+//
+// The parentheses are the entire point. JQL binds AND tighter than OR, so an
+// unbracketed `a OR b` handed to JQLAnd silently becomes `a OR (b AND rest)`
+// -- a query that still parses, still returns rows, and quietly drops half
+// the criterion. That is the shape of failure this package exists to make
+// impossible, so the grouping is done here rather than remembered at each
+// call site.
+//
+// One clause is returned bare: a lone group needs no bracket, and adding one
+// would make every single-project query read as though something had been
+// combined with it.
+func JQLOr(clauses ...string) string {
+	var kept []string
+	for _, c := range clauses {
+		if strings.TrimSpace(c) != "" {
+			kept = append(kept, c)
+		}
+	}
+	switch len(kept) {
+	case 0:
+		return ""
+	case 1:
+		return kept[0]
+	}
+	for i, c := range kept {
+		kept[i] = "(" + c + ")"
+	}
+	return "(" + strings.Join(kept, " OR ") + ")"
+}

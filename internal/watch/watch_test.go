@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/registry"
@@ -23,6 +24,7 @@ type spy struct {
 	collects  int
 	worked    []string
 	queued    []tracker.Issue
+	held      []HeldTicket
 	queueErr  error
 	busy      []string
 	busyErr   error
@@ -98,10 +100,10 @@ func (s *spy) deps() Deps {
 			}
 			return []work.Result{{Key: o.Keys[0], Outcome: out}}
 		},
-		Queued: func(string, []string, string) ([]tracker.Issue, error) {
+		Queued: func(string, []string, string) (Queue, error) {
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			return s.queued, s.queueErr
+			return Queue{Ready: s.queued, Held: s.held}, s.queueErr
 		},
 		InFlight: func(string, []string) ([]string, error) {
 			s.mu.Lock()
@@ -630,8 +632,8 @@ func TestAPermanentErrorStopsTheWatcherRatherThanRetryingForever(t *testing.T) {
 	stopping.Store(false)
 	s := &spy{maxSleeps: 99}
 	d := s.deps()
-	d.Queued = func(string, []string, string) ([]tracker.Issue, error) {
-		return nil, errors.New(`not a registered project: FCRA`)
+	d.Queued = func(string, []string, string) (Queue, error) {
+		return Queue{}, errors.New(`not a registered project: FCRA`)
 	}
 
 	var buf bytes.Buffer
@@ -740,7 +742,7 @@ func TestParentMatchingIgnoresCase(t *testing.T) {
 // merged-branch guard did not catch it -- a hand fix lands on a branch Orion
 // never named -- so the status has to be in the query.
 func TestTheQueueExcludesResolvedTickets(t *testing.T) {
-	jql := queuedJQL([]string{"OR"}, "ORION")
+	jql := queuedJQL([]string{"OR"}, "ORION", nil)
 
 	if !strings.Contains(jql, `statusCategory != "Done"`) {
 		t.Errorf("a Done ticket is still claimable: %s", jql)
@@ -765,7 +767,7 @@ func TestTheQueueExcludesResolvedTickets(t *testing.T) {
 
 // An empty label falls back to the default rather than matching everything.
 func TestTheQueueDefaultsItsLabel(t *testing.T) {
-	if jql := queuedJQL([]string{"OR"}, ""); !strings.Contains(jql,
+	if jql := queuedJQL([]string{"OR"}, "", nil); !strings.Contains(jql,
 		`labels = "`+tracker.QueueLabelDefault+`"`) {
 		t.Errorf("got %s", jql)
 	}
@@ -777,9 +779,25 @@ type fakeLock struct {
 	issues  []tracker.Issue
 	removed map[string][]string
 	err     error
+	// searches records the JQL, so a test can assert that the lock is still
+	// matched EXACTLY and by nothing else (OR-225).
+	searches []string
 }
 
-func (f *fakeLock) Search(string, int) ([]tracker.Issue, error) { return f.issues, nil }
+func (f *fakeLock) Search(jql string, _ int) ([]tracker.Issue, error) {
+	f.searches = append(f.searches, jql)
+	return f.issues, nil
+}
+
+// containsLabel reports whether a label is in a recorded add/remove list.
+func containsLabel(labels []string, want string) bool {
+	for _, l := range labels {
+		if l == want {
+			return true
+		}
+	}
+	return false
+}
 
 func (f *fakeLock) SetLabels(key string, _, remove []string) error {
 	if f.err != nil {
@@ -826,8 +844,18 @@ func TestAHandClosedTicketDoesNotHoldTheQueue(t *testing.T) {
 	}
 	// Cleared, not merely ignored: ignoring it would re-diagnose the same
 	// ticket every tick forever, and `orion queue` reads the label too.
-	if got := j.removed["OR-124"]; len(got) != 1 || got[0] != tracker.LabelWorking {
+	//
+	// The stage label goes with it (OR-225). A ticket closed outside Orion
+	// keeps whatever stage it was wearing, so a clear that took only the lock
+	// would leave the board naming an actor for work that ended hours ago.
+	got := j.removed["OR-124"]
+	if !containsLabel(got, tracker.LabelWorking) {
 		t.Errorf("the stale lock was not cleared, removed = %v", j.removed)
+	}
+	for _, l := range actors.StageLabels() {
+		if !containsLabel(got, l) {
+			t.Errorf("clearing a stale lock left %s behind, removed = %v", l, got)
+		}
 	}
 	if out := b.String(); !strings.Contains(out, "OR-124") ||
 		!strings.Contains(out, tracker.LabelWorking) {

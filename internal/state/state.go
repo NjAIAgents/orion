@@ -299,3 +299,24 @@ func (s *Store) Sweep(maxAge time.Duration) (int, error) {
 
 // Elapsed reports how long the session has been running.
 func (sess *Session) Elapsed() time.Duration { return time.Since(sess.StartedAt) }
+
+// ResetCommand is the exact thing an operator types to un-park a session whose
+// breaker tripped.
+//
+// One spelling, in the package that owns the session id, because the command
+// was previously written out wherever it was needed and every one of those
+// places was addressed to the AGENT or to a file on disk: the block message in
+// its session, plans/BLOCKED.md inside a hashed path under ORION_HOME, and
+// `orion --help`. None of them was the surface an operator watches, so on
+// OR-217 the command was found only by reading BLOCKED.md off disk by hand
+// (OR-232). Callers that put it on that surface share this rather than adding
+// a fifth literal nobody can grep for.
+//
+// Empty for an unknown session: a command with a blank id is worse than no
+// command, because it looks runnable and is not.
+func ResetCommand(sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	return "orion reset --session " + sessionID
+}
