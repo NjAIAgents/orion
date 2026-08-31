@@ -731,11 +731,18 @@ const defaultConfig = `{
     "auto_install": true
   },
 
-  "_comment_qa": "The QA stage: after the change is committed and before the pull request opens, an agent derives test cases from the ticket's acceptance criteria, writes the tests the implementer did not, runs them, and reports findings back through the developer. It reports; it never blocks. max_rounds bounds the findings-fix-reverify exchange before a person is told what is still open. Set enabled to false for a repository that does not need it -- a docs repo -- because the stage spends on every ticket. e2e_base_url is the explicit non-production target an end-to-end run may point at; empty means unit and integration tests only.",
+  "_comment_qa": "The QA stage: after the change is committed and before the pull request opens, an agent derives test cases from the ticket's acceptance criteria, writes the tests the implementer did not, runs them, and reports findings back through the developer. It reports; it never blocks. Set enabled to false for a repository that does not need it -- a docs repo -- because the stage spends on every ticket. e2e_base_url is the explicit non-production target an end-to-end run may point at; empty means unit and integration tests only. max_rounds bounds the findings-fix-reverify exchange before a person is told what is still open. THE TRADE at three rather than two: a second fix round has demonstrably been productive, and stopping at two escalates work that one more exchange would have finished -- but three raises the WORST case by half on every ticket that fails to converge, and that spend lands on the implementer, the actor that dominates per-ticket cost. Zero restores this default rather than meaning no rounds. Set it with 'orion config limits qa.max_rounds N', not by hand; above five it asks you to confirm rather than refusing.",
   "qa": {
     "enabled": true,
-    "max_rounds": 2,
+    "max_rounds": 3,
     "e2e_base_url": ""
+  },
+
+  "_comment_ci": "auto_fix sends a red build back to an agent on the same branch. OFF by default: it spends money without being asked, and on a repository whose tests are flaky it will spend it on nothing. max_fix_attempts is the SAME ceiling as qa.max_rounds and the same trade. It is the OUTER bound, not the usual stop: an identical repeated failure ends the loop immediately, because an agent handed back a byte-identical error has learned nothing, so a third attempt is only ever reached by a run producing a DIFFERENT failure each round. Set it with 'orion config limits ci.max_fix_attempts N', not by hand.",
+  "ci": {
+    "auto_fix": false,
+    "max_fix_attempts": 3,
+    "require_up_to_date": true
   },
 
   "delegation": {

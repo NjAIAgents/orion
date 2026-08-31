@@ -35,6 +35,7 @@ func runCollect(args []string) {
 		Merge:   mergePR,
 		OpenPR:  openPR,
 		Fix:     fixRun,
+		Judge:   doneJudge,
 		Slack:   slackForApproval(),
 	})
 
