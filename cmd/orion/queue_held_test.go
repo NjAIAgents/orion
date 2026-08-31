@@ -123,6 +123,26 @@ func TestQueueSaysWhenItCouldNotReadTheReleases(t *testing.T) {
 	}
 }
 
+// A 404 -- the project itself is not found -- must degrade exactly like any
+// other failed read: holds dropped, the gap disclosed, nothing invented.
+func TestQueueDegradesOnA404TooNotJustA500(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+	var buf bytes.Buffer
+
+	holds := queueHolds(&buf, &tracker.Jira{BaseURL: srv.URL}, queueCfg(),
+		[]tracker.Issue{{Key: "OR-340", Labels: []string{"ORION"}}})
+
+	if len(holds) != 0 {
+		t.Errorf("holds invented from a 404: %v", holds)
+	}
+	if !strings.Contains(buf.String(), "could not read") {
+		t.Errorf("the gap in the report was not disclosed: %s", buf.String())
+	}
+}
+
 // The LISTING query must not carry the milestone requirement. It is the
 // watcher's claim query that gates; this one has to fetch the held tickets in
 // order to be able to report them.

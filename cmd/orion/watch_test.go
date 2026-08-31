@@ -38,6 +38,27 @@ func TestWatchBannerNamesTheTermsBeforeAnythingElse(t *testing.T) {
 	}
 }
 
+// The banner states BOTH halves of the claim criterion (OR-221): the queue
+// label, and -- where a project uses releases -- an open one. Half of the
+// criterion is new, and an operator who only sees "labelled ORION" would not
+// know why a labelled ticket sat unclaimed.
+func TestWatchBannerNamesTheReleaseRequirement(t *testing.T) {
+	var buf bytes.Buffer
+	watchBanner(&buf, []string{"OR"}, time.Minute, 0, 2, "default", false)
+
+	for _, want := range []string{
+		"labelled " + tracker.QueueLabelDefault,
+		"open",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("the banner does not say %q:\n%s", want, buf.String())
+		}
+	}
+	if !strings.Contains(buf.String(), "where the project uses releases") {
+		t.Errorf("the banner does not say the release requirement is conditional on the project:\n%s", buf.String())
+	}
+}
+
 // The banner is worth nothing if it prints after the thing that hangs. This
 // pins the ORDER inside runWatch: the banner call must come before the
 // tracker client is built and before the loop starts, so a stall in either
