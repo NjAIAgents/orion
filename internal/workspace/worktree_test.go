@@ -871,3 +871,60 @@ func gitT(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
+
+// OR-241. CommitAll had never succeeded in a repository whose .gitignore
+// covers a directory the caller also excludes.
+//
+// `git add` treats an explicit pathspec naming an ignored path as an error
+// and refuses the whole invocation, so :(exclude).orion/state against a
+// .gitignore holding ".orion/" exited 1 every time. OR-233 and OR-234 both
+// shipped calling this function, and neither could ever have worked.
+func TestCommitAllSucceedsWhenAnExclusionIsAlreadyGitignored(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		if _, err := git(dir, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@example.com")
+	run("config", "user.name", "t")
+	// The shape that broke it: an ignored directory that the caller will
+	// ALSO pass as an exclusion.
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".orion/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".orion", "state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".orion", "state", "s.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "-A")
+	run("commit", "-q", "-m", "base")
+
+	if err := os.WriteFile(filepath.Join(dir, "work.txt"), []byte("agent output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := CommitAll(dir, "save it", "plans/BLOCKED.md", ".orion/state")
+	if err != nil {
+		t.Fatalf("CommitAll = %v; an already-ignored exclusion must not fail the add", err)
+	}
+	if n != 1 {
+		t.Errorf("committed %d file(s), want 1", n)
+	}
+	// The ignored directory must still not be in the commit -- the exclusion
+	// was dropped, not honoured by staging it.
+	out, err := git(dir, "show", "--name-only", "--format=", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, ".orion") {
+		t.Errorf("the ignored directory reached the commit: %q", out)
+	}
+	if !strings.Contains(out, "work.txt") {
+		t.Errorf("the agent's work is missing from the commit: %q", out)
+	}
+}
