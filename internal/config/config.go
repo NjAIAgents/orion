@@ -245,18 +245,12 @@ type Collect struct {
 	//
 	// With it off, nothing below is reached and the per-branch path is
 	// unchanged, so enabling it is reversible by setting it back.
-	BatchIntegration bool `json:"batch_integration,omitempty"`
-
-	// BatchSize caps how many branches one batch holds. Zero means the
-	// concurrency limit.
 	//
-	// Four to start. CI cost says larger batches keep paying -- the saving is
-	// roughly flat at 35-40% and does not compound -- but CONFLICTS grow with
-	// the square of the batch: six pairs at four branches, forty-five at ten.
-	// Measured on this project, one pair in six collided, so a batch of ten
-	// would eject most of itself before it ever reached CI. Raise this on the
-	// measured ejection rate, not on the CI arithmetic.
-	BatchSize int `json:"batch_size,omitempty"`
+	// There is deliberately no separate batch size. A batch can only hold
+	// branches that finished, and no more can finish than
+	// limits.max_concurrent_tickets allowed to run -- so a second number
+	// could only ever disagree with the first about the same thing.
+	BatchIntegration bool `json:"batch_integration,omitempty"`
 }
 
 // Budget caps what Orion spends over a rolling seven days.

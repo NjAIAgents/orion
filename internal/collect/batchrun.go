@@ -98,10 +98,9 @@ func noChecksYet(pr PR) bool {
 func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	ws *workspace.Workspace, log *events.Log, w io.Writer) []Result {
 
-	size := cfg.Collect.BatchSize
-	if size <= 0 {
-		size = cfg.Limits.ConcurrentTickets()
-	}
+	// The concurrency limit IS the batch size. Nothing can be in a batch
+	// that did not finish, and nothing finishes that was not allowed to run.
+	size := cfg.Limits.ConcurrentTickets()
 
 	var members []Member
 	for _, key := range pass {

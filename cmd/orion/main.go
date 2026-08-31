@@ -58,6 +58,8 @@ CONFIGURATION
   orion config agents         interactive: name, model and effort per agent, by menu
   orion config limits         show the circuit breakers and where each value came from
   orion config limits KEY N   set one, e.g. limits max_concurrent_tickets 3
+  orion config collect        show how work lands, and what each switch costs
+  orion config collect K B    set one, e.g. collect batch_integration true
                               (global -- one roster, shared by every project)
   orion config agents --reset [id...]   reset one, some, or every agent to shipped defaults
 
@@ -418,8 +420,11 @@ func runConfig(args []string) {
 	case "limits":
 		runConfigLimits(args)
 
+	case "collect":
+		runConfigCollect(args)
+
 	default:
-		fmt.Fprintf(os.Stderr, "orion: unknown config subcommand %q (set|show|path|agents|limits)\n", sub)
+		fmt.Fprintf(os.Stderr, "orion: unknown config subcommand %q (set|show|path|agents|limits|collect)\n", sub)
 		os.Exit(64)
 	}
 }
