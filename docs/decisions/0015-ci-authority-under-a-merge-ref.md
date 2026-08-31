@@ -1,6 +1,6 @@
 # 0015: Orion is the gate under a merge ref, and develop keeps a post-merge check
 
-- Status: Accepted
+- Status: Accepted (by Navjyot, 2026-08-30; recorded as Accepted before review, see OR-237)
 - Date: 2026-08-30
 - Tickets: OR-237 (this decision), OR-236 (the change it unblocks)
 - Related: [0001](0001-precedence-rule-orion-owns-orchestration.md) (Orion owns
