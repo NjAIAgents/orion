@@ -6,6 +6,58 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.8.6
+
+### Added
+
+- `docs/decisions/0015` records who gates a merge once CI runs on an ephemeral
+  merge ref instead of on each branch's pull request (OR-236). Orion is the
+  authority on landing, and `develop` keeps a post-merge check on push as the
+  backstop — a workflow trigger rather than branch protection, so it works on
+  the free private repositories where protection returns 403. The record also
+  binds OR-236 to two guards: an empty check rollup must stop reading as
+  passing, and `auto_merge.require_checks` must actually be read (OR-237).
+
+- `orion watch` now pins a live run display to the bottom of the terminal,
+  redrawn about four times a second: one row per running ticket with a braille
+  spinner, its stage, elapsed time, a bar measured against that actor's median
+  run duration in this project, a sparkline of tool calls per 10s over the last
+  two minutes, and the tool-call count. The bar is a reference, never a
+  prediction — past the median it fills, stops, and the row says `running long`
+  with the median beside it. A run that has made no tool call for a minute
+  reports `quiet Xm`, so a stalled run and a busy one can never look the same.
+  Off a terminal there is no cursor control at all: one plain line per run per
+  tick, so a redirected log stays a log. `NO_COLOR` keeps the layout and drops
+  the escape codes and glyphs; `TERM=dumb` gets the plain form.
+
+### Changed
+
+- `orion explore` now takes several questions in one call —
+  `orion explore "<question>" "<question>" "<question>"` — and answers them
+  concurrently, one subagent each, capped by `limits.max_concurrent_children`.
+  A single question behaves exactly as before. One question failing no longer
+  costs you the answers to the others; the batch only sends you back to reading
+  for yourself when every question failed.
+- The implementer's prompt now opens with an exploration phase: work out what
+  you do not know and ask all of it before reading, rather than one question at
+  a time. Asked one at a time the agent waits out each round trip and greps
+  instead, which is the context cost the command exists to remove.
+- A fan-out now announces its roster before dispatch and marks each child as it
+  lands, with the verdict and the running count, so several concurrent
+  subagents are legible while they run rather than a silent gap ending in a
+  wall of output.
+
+### Fixed
+
+- A watcher tick with nothing in flight and nothing awaiting CI now prints
+  nothing. It used to print `checking for tickets awaiting CI...` followed by
+  `nothing is waiting on CI.` every sixty seconds, which read as an idle system
+  while agents were working. `orion collect` typed by hand still reports both.
+- The warning that a run inherited your Claude Code configuration because a
+  curated config directory cannot authenticate on this platform now prints once
+  per process instead of once per run. It is a property of the machine, not of
+  the ticket.
+
 ## v0.8.5
 
 ### Fixed
