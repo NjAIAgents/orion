@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -213,5 +214,81 @@ func TestAMovedBranchResetsTheReminderClock(t *testing.T) {
 	if !strings.Contains(out, "still behind") {
 		t.Errorf("the reminder stayed suppressed across a push, so the branch went "+
 			"quiet at the moment somebody was working on it:\n%s", out)
+	}
+}
+
+// After the window elapses, the reminder is news again -- the acceptance
+// criterion the rate-limit test above stops short of: it proves polls 3 and 4
+// stay quiet, not that poll N minutes later speaks up. A clock that latches
+// permanently after the first reminder would pass every assertion in that
+// test and still leave a branch silent for the rest of the run.
+//
+// The clock is back-dated directly through the same request file the code
+// under test reads, rather than waiting remindEvery in real time.
+func TestTheStillBehindReminderReappearsAfterTheWindowElapses(t *testing.T) {
+	home, _, _, sha := staleTicketAtCap(t)
+	jira := newTracker()
+	pr := PR{Verdict: VerdictPassing, Head: sha, URL: "https://example/pr/1"}
+
+	run(t, home, jira, pr, Options{}) // the hand-over
+	run(t, home, jira, pr, Options{}) // the one reminder
+
+	entry, err := registry.Lookup(home, "FCIA-6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Open(entry.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqs := loadRequests(ws.Dir)
+	reqs.Reminded["FCIA-6"] = time.Now().Add(-remindEvery - time.Second)
+	if err := writeRequests(ws.Dir, reqs); err != nil {
+		t.Fatal(err)
+	}
+
+	_, out, _ := run(t, home, jira, pr, Options{})
+	if !strings.Contains(out, "still behind") {
+		t.Errorf("the reminder stayed suppressed after the window elapsed:\n%s", out)
+	}
+}
+
+// A blank session id must never reach the operator as a command: "orion
+// reset --session " with nothing after it looks runnable and is not, which is
+// worse than saying nothing at the moment somebody is already trying to work
+// out what went wrong.
+func TestAParkedWorktreeWithABlankSessionIDShowsNoResetCommand(t *testing.T) {
+	home, _, _, wtDir, sha := staleTicket(t)
+	parkedWorktree(t, wtDir, "", "breaker/loop", "Bash repeated 4 times")
+
+	_, out, _ := run(t, home, newTracker(), PR{
+		Verdict: VerdictPassing, Head: sha, URL: "https://example/pr/1",
+	}, Options{})
+
+	if strings.Contains(out, "orion reset --session ") {
+		t.Errorf("a blank session id produced what looks like a runnable command:\n%s", out)
+	}
+	if !strings.Contains(out, "breaker/loop") {
+		t.Errorf("the breaker itself should still be named even without a session id:\n%s", out)
+	}
+}
+
+// Incomplete trip data -- a kind with no detail -- must still let through what
+// IS known (the breaker and, when present, the command), rather than
+// suppressing the whole note because one field was blank. Degrading to
+// nothing here would be the same failure this ticket exists to fix, just
+// triggered by a partially written state file instead of a missing one.
+func TestAParkedWorktreeWithNoDetailStillNamesTheBreakerAndCommand(t *testing.T) {
+	home, _, _, wtDir, sha := staleTicket(t)
+	parkedWorktree(t, wtDir, "4b6af93d", "breaker/loop", "")
+
+	_, out, _ := run(t, home, newTracker(), PR{
+		Verdict: VerdictPassing, Head: sha, URL: "https://example/pr/1",
+	}, Options{})
+
+	for _, want := range []string{"breaker/loop", "orion reset --session 4b6af93d"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("incomplete trip data suppressed %q entirely:\n%s", want, out)
+		}
 	}
 }

@@ -355,6 +355,12 @@ func TestUncommittedWorkIsSettledWhenNothingEverTripped(t *testing.T) {
 		!strings.Contains(o, "uncommitted work") {
 		t.Errorf("the run output does not say what it settled or why:\n%s", o)
 	}
+	// OR-232. Uncommitted work alone is not a breaker trip, and the recovery
+	// command is only ever true of one: printing it here would send the
+	// operator to run `orion reset` against a session that was never parked.
+	if o := out.String(); strings.Contains(o, "orion reset --session") {
+		t.Errorf("a reset command was shown for a run with no breaker trip on record:\n%s", o)
+	}
 }
 
 // OR-233, the case that actually happened. A trip that SELF-CLEARED on a
