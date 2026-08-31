@@ -122,31 +122,36 @@ func containsExact(list []string, want string) bool {
 // combination is always a mistake, and resolving the version under one project
 // while writing to tickets in another is the specific mistake that puts a
 // ticket on the wrong milestone.
-func projectForKeys(flag string, keys []string) (string, error) {
+//
+// Shared with `orion queue add|remove`, which resolves its project exactly the
+// same way and for the same reason -- the label it writes belongs to one
+// project too (OR-223). cmd names the caller so the refusal reads as the
+// command the operator typed.
+func projectForKeys(cmd, flag string, keys []string) (string, error) {
 	from := ""
 	for _, k := range keys {
 		p, _, ok := splitTicketKey(k)
 		if !ok {
-			return "", fmt.Errorf("orion release add: %q is not a ticket key", k)
+			return "", fmt.Errorf("orion %s: %q is not a ticket key", cmd, k)
 		}
 		if from == "" {
 			from = p
 			continue
 		}
 		if p != from {
-			return "", fmt.Errorf("orion release add: these keys span two projects, %s and %s; "+
-				"a milestone belongs to one project, so run them separately", from, p)
+			return "", fmt.Errorf("orion %s: these keys span two projects, %s and %s; "+
+				"run them separately", cmd, from, p)
 		}
 	}
 	if from == "" {
-		return "", fmt.Errorf("orion release add: no tickets given")
+		return "", fmt.Errorf("orion %s: no tickets given", cmd)
 	}
 	if flag == "" {
 		return from, nil
 	}
 	if f := strings.ToUpper(strings.TrimSpace(flag)); f != from {
-		return "", fmt.Errorf("orion release add: --project %s does not match the keys, "+
-			"which are %s tickets; one of the two is wrong", f, from)
+		return "", fmt.Errorf("orion %s: --project %s does not match the keys, "+
+			"which are %s tickets; one of the two is wrong", cmd, f, from)
 	}
 	return from, nil
 }
@@ -209,7 +214,7 @@ func runReleaseAdd(args []string) {
 			"e.g. orion release add "+name+" OR-100 OR-140..OR-145")
 		os.Exit(64)
 	}
-	key, err := projectForKeys(project, keys)
+	key, err := projectForKeys("release add", project, keys)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(64)

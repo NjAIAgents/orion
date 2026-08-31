@@ -102,7 +102,7 @@ func TestProjectForKeysInfersFromTheKeys(t *testing.T) {
 			[]string{"two projects", "OR", "FCIA"}},
 		{"no keys", "", nil, "", []string{"no tickets"}},
 	} {
-		got, err := projectForKeys(tc.flag, tc.keys)
+		got, err := projectForKeys("release add", tc.flag, tc.keys)
 		if tc.wantErr == nil {
 			if err != nil {
 				t.Errorf("%s: projectForKeys(%q, %v) errored: %v", tc.name, tc.flag, tc.keys, err)
