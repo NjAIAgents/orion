@@ -230,6 +230,33 @@ type Collect struct {
 	// Turn it OFF for a repository you do not own: however safe the rewrite,
 	// a force-push to somebody else's branch is theirs to authorise.
 	AutoRebase bool `json:"auto_rebase"`
+
+	// BatchIntegration lands the ready branches as ONE set (OR-236): they are
+	// merged into an ephemeral ref, that ref is tested once, and the whole
+	// batch merges. Branches are never rewritten, so with this on there is no
+	// rebase, no force-push and no landing queue.
+	//
+	// OFF by default, and deliberately not defaulted on the way AutoRebase is.
+	// AutoRebase is safe to default because it decides nothing: git has
+	// already said the merge is clean. This decides what lands and in what
+	// order, and a mistake mis-merges or strands every branch in flight at
+	// once rather than one branch at a time. It is turned on per repository,
+	// watched for the first few batches, and only then left alone.
+	//
+	// With it off, nothing below is reached and the per-branch path is
+	// unchanged, so enabling it is reversible by setting it back.
+	BatchIntegration bool `json:"batch_integration,omitempty"`
+
+	// BatchSize caps how many branches one batch holds. Zero means the
+	// concurrency limit.
+	//
+	// Four to start. CI cost says larger batches keep paying -- the saving is
+	// roughly flat at 35-40% and does not compound -- but CONFLICTS grow with
+	// the square of the batch: six pairs at four branches, forty-five at ten.
+	// Measured on this project, one pair in six collided, so a batch of ten
+	// would eject most of itself before it ever reached CI. Raise this on the
+	// measured ejection rate, not on the CI arithmetic.
+	BatchSize int `json:"batch_size,omitempty"`
 }
 
 // Budget caps what Orion spends over a rolling seven days.
