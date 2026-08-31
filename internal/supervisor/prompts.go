@@ -367,6 +367,88 @@ func ExplorePrompt(question string) string {
 	)
 }
 
+// FanChildPrompt instructs one subagent working one Go package while its
+// peers work others in the same worktree (OR-230).
+//
+// The ownership clause is first and is absolute, because it is the only thing
+// standing between this and the failure the design exists to avoid. Orion's
+// validator has already established that no two assigned packages import one
+// another; that guarantee is worth nothing if a child edits outside its own.
+//
+// The no-commands clause is stated even though it is enforced by the tool
+// list, and the reason is stated with it. An agent that discovers it cannot
+// run the suite and is not told why concludes the environment is broken and
+// spends its turns working around it -- which is how a restriction meant to
+// save a suite run costs several.
+func FanChildPrompt(pkg, task string) string {
+	return join(
+		"You are one of several subagents changing this repository at the same",
+		"time. Each of us owns exactly one Go package.",
+		"",
+		"YOU OWN: "+pkg,
+		"Edit files in that package and nowhere else -- not a caller, not a test",
+		"in another package, not a shared helper. Another subagent owns every",
+		"other package being changed right now, and an edit outside yours will",
+		"either overwrite their work or be overwritten by it, silently, with no",
+		"conflict marker to warn anyone.",
+		"",
+		"WHAT TO CHANGE",
+		quote(task),
+		"",
+		"YOU HAVE NO SHELL",
+		"You cannot build, test, lint, or commit, and this is deliberate rather",
+		"than a fault to work around: the tree you are in is being written by",
+		"your peers right now, so a suite run here would report failures that",
+		"are not yours. The parent run builds and tests ONCE, after every",
+		"subagent has landed.",
+		"",
+		"WHEN YOU FINISH",
+		"Say what you changed, file by file, and name anything you could not do",
+		"or that needs a change outside your package. The parent acts on that",
+		"list; anything you leave out of it is lost.",
+	)
+}
+
+// fanOffer tells the implementer that independent packages can be worked
+// concurrently, and that Orion decides whether they are independent.
+//
+// The split matters more than the speedup. An agent asked to judge its own
+// fan width judges it optimistically, and a wrong guess here does not fail --
+// it corrupts a tree quietly and is discovered at merge. So the agent
+// proposes and a deterministic check disposes, in the same shape as the
+// plan-before-edit gate.
+//
+// Conditional on there being a go.mod, for the same reason testEnv's lines
+// are conditional: naming a Go-only mechanism in a repository that has no Go
+// in it teaches the agent to distrust the instruction and go exploring, which
+// costs more than saying nothing.
+func fanOffer(repoPath string) string {
+	if repoPath == "" {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, "go.mod")); err != nil {
+		return ""
+	}
+	return "\n\n" + join(
+		"WORKING SEVERAL PACKAGES AT ONCE",
+		"When this change touches Go packages that do not import one another, you",
+		"can have them written concurrently instead of working them in file order.",
+		"Write the assignment to a file -- one package each, and the task in full,",
+		"because the subagent is given that text and nothing else:",
+		`  {"assignments": [{"package": "./internal/a", "task": "..."},`,
+		`                   {"package": "./internal/b", "task": "..."}]}`,
+		"then run: orion fan <that file>",
+		"Orion checks it -- no package assigned twice, the width within this",
+		"project's limit, and no import edge between the packages assigned, from",
+		"go list. Any failure and it tells you to work serially. That is not a",
+		"negotiation and there is no better argument to make; just do the work.",
+		"The subagents can only read and edit. They cannot run anything, so",
+		"nothing is built or tested until they have all landed and YOU run the",
+		"suite once, yourself. At most two rounds of fixing what it reports, then",
+		"stop and say what is still red.",
+	)
+}
+
 // AIOpsNonePrefix is how the triage subagent says the leftover events are
 // all explainable and nothing should be filed.
 //
@@ -549,6 +631,7 @@ func TicketPromptWithChildren(key, summary, description, url, repoPath string,
 	b.WriteString(testEnv(repoPath))
 	b.WriteString(waitingForALongCommand())
 	b.WriteString(exploreOffer())
+	b.WriteString(fanOffer(repoPath))
 	b.WriteString(changelogFragment(repoPath, key))
 	b.WriteString(join(
 		"",
