@@ -44,16 +44,25 @@ import (
 // still on record, decides the commit MESSAGE and what is reported. It does
 // not decide whether to act.
 //
-// COMMITTING it, not reverting it, is the first thing tried. The breaker
-// takes a snapshot the moment it trips (internal/hook/breaker.go), so after a
-// trip there is usually nothing left; this is the backstop for when that
-// could not happen. Reverting used to be unconditional, on the reasoning that
-// the residue of a trip is unverified -- true, and it cost OR-189 and OR-191
-// 258 and 439 lines of finished, green work between them. Unverified work on
-// a branch can be read, resumed or dropped by a person. Reverted work cannot
-// be anything. The revert survives only as the fallback for a commit that
-// fails, because a dirty worktree still blocks the next rebase and leaving it
-// is the one option that helps nobody.
+// COMMITTING it is the ONLY thing tried. The breaker takes a snapshot the
+// moment it trips (internal/hook/breaker.go), so after a trip there is
+// usually nothing left; this is the backstop for when that could not happen.
+// Reverting used to be unconditional, on the reasoning that the residue of a
+// trip is unverified -- true, and it cost OR-189 and OR-191 258 and 439 lines
+// of finished, green work between them. Unverified work on a branch can be
+// read, resumed or dropped by a person. Reverted work cannot be anything.
+//
+// Keeping the revert as the FALLBACK for a failed commit assumed the commit
+// would normally succeed. OR-241 established that CommitAll had never worked
+// in this repository, so the fallback fired on every run, and on OR-116 it
+// destroyed cmd/orion/releaseship_cli_test.go: the add had failed before
+// staging, so no blob was written and the file was unrecoverable.
+//
+// So when the commit fails, the work is KEPT (OR-242). A dirty worktree is a
+// visible, recoverable problem -- it blocks the next rebase, loudly, on the
+// next collect tick, with every file still where the agent left it. A revert
+// is an invisible, irrecoverable one. The two are not comparable, and no
+// amount of tidiness is worth an agent's output.
 //
 // What the run committed is untouched either way.
 func settleTripResidue(jobPath, branch, key, summary, issueURL string, runFailed bool,
@@ -91,7 +100,10 @@ func settleTripResidue(jobPath, branch, key, summary, issueURL string, runFailed
 	// Both lost runs "looked like ordinary failures until someone opened the
 	// worktree", which is the part this exists to stop.
 	outcome, verb, unresolved := snapshot, ui.VerbWarn, false
-	files := 0
+	// What the report names. The tracked set is what decided to act, because
+	// it is what blocks the rebase; it is NOT the whole of what is at stake
+	// once the commit fails.
+	kept, files := dirty, 0
 	if dirty != "" {
 		files = len(strings.Split(dirty, "\n"))
 		n, commitErr := workspace.CommitAll(jobPath, msgSnapshot(kind, detail, cfg),
@@ -101,21 +113,36 @@ func settleTripResidue(jobPath, branch, key, summary, issueURL string, runFailed
 			outcome = fmt.Sprintf("committed %d uncommitted file(s) as an unverified snapshot on %s",
 				n, branch)
 		default:
-			// Could not preserve it. Revert, so the branch can still be
-			// rebased, and say plainly that work was destroyed rather than
-			// filed away.
-			outcome = fmt.Sprintf("could NOT commit %d uncommitted file(s) (%v); reverted them", files, commitErr)
-			verb, unresolved = ui.VerbFail, true
-			if revertErr := workspace.RevertTracked(jobPath); revertErr != nil {
-				outcome = fmt.Sprintf("could NOT commit %d uncommitted file(s) (%v) and could NOT revert them (%v)",
-					files, commitErr, revertErr)
+			// Could not preserve it, so leave it exactly as it is. The
+			// blocked rebase is the loud, recoverable half of this; the
+			// alternative was destroying the only copy.
+			//
+			// Report the files the way the failed COMMIT saw them, untracked
+			// ones included: OR-116's destroyed file was a new test, and a
+			// list of what git already tracks leaves out exactly the ones
+			// that exist nowhere else.
+			if _, all := workspace.Dirty(jobPath); all != "" {
+				kept = all
+				files = len(strings.Split(all, "\n"))
 			}
+			outcome = fmt.Sprintf("could NOT commit %d uncommitted file(s) (%v); KEPT them, uncommitted, in the worktree", files, commitErr)
+			verb, unresolved = ui.VerbFail, true
 		}
 	}
 
 	ui.Say(w, key, events.ActorOrion, verb,
 		"%s and this run ends with uncommitted work; %s", tripPhrase(kind, detail), outcome)
-	if dirty != "" {
+	switch {
+	case unresolved:
+		// Every one of them by name, and the command that clears them: a
+		// count is not something an operator can act on.
+		for _, line := range strings.Split(kept, "\n") {
+			fmt.Fprintf(w, "          %s\n", ui.Dim(w, line))
+		}
+		fmt.Fprintf(w, "          %s\n", ui.Dim(w,
+			"Nothing was reverted; the work is still on disk. Settle it with:"))
+		fmt.Fprintf(w, "            orion settle %s\n", key)
+	case dirty != "":
 		fmt.Fprintf(w, "          %s\n", ui.Dim(w, firstLine(dirty)))
 	}
 	log.Emitf(events.KindNote, events.ActorOrion,
@@ -133,7 +160,7 @@ func settleTripResidue(jobPath, branch, key, summary, issueURL string, runFailed
 	// discovered on the next collect tick is a slow way to learn that a run
 	// ended badly enough to need a person.
 	title, body := msgResidue(key, summary, kind, detail,
-		branch, dirty, issueURL, outcome, unresolved)
+		branch, kept, issueURL, outcome, unresolved)
 	tell(w, log, ws, notify.Event{
 		Level: notify.Warning, Workspace: ws.ID, Actor: events.ActorOrion,
 		Title: title, Body: body,

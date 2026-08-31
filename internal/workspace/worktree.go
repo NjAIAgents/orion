@@ -341,19 +341,11 @@ func CommitAll(path, message string, exclude ...string) (int, error) {
 	return n, nil
 }
 
-// RevertTracked discards uncommitted changes to tracked files, staged or not.
-//
-// `git checkout -- .` is not enough: a change that was staged and never
-// committed survives it, and a worktree that still fails DirtyTracked after
-// being cleaned is worse than one nobody tried to clean. Commits are
-// untouched -- this resets to HEAD, not past it -- so work the agent DID
-// commit is never what this destroys.
-func RevertTracked(path string) error {
-	if _, err := git(path, "reset", "--hard", "HEAD"); err != nil {
-		return fmt.Errorf("reverting tracked changes in %s: %w", path, err)
-	}
-	return nil
-}
+// RevertTracked is deliberately absent (OR-242). Orion had one, used as the
+// fallback for a failed snapshot commit, and it destroyed OR-116's only copy
+// of a finished test file. Nothing here may discard an agent's uncommitted
+// work to tidy a worktree: a dirty tree blocks the next rebase loudly and
+// every file is still in it, which is the recoverable half of that trade.
 
 // RemoveWorktree deletes a job checkout, refusing while it holds work that
 // exists nowhere else.

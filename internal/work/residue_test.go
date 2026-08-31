@@ -3,6 +3,7 @@ package work
 import (
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -406,14 +407,56 @@ func TestASelfClearedTripStillHasItsResidueSettled(t *testing.T) {
 	}
 }
 
-// The revert fallback, unchanged: when the commit itself fails, the residue is
-// still cleared so the branch can be rebased, and the loss is stated rather
-// than implied.
+// worktreeFiles reads every file in a worktree, git's own directory aside, so
+// a test can assert byte-for-byte that nothing touched the agent's work.
+func worktreeFiles(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		switch {
+		case err != nil:
+			return err
+		case d.Name() == ".git":
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		case d.IsDir():
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		out[rel] = string(b)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// OR-242. When the snapshot commit itself fails, the work is KEPT -- byte for
+// byte, exactly where the agent left it -- and the failure is reported loudly
+// instead.
 //
-// Reverting is the worse outcome of the two and always was. It survives only
-// because a worktree left dirty helps nobody, and a run whose commit failed
-// must not be the one case that silently reintroduces the block.
-func TestResidueIsRevertedWhenTheCommitItselfFails(t *testing.T) {
+// There used to be a revert here, as the fallback for exactly this case, on
+// the reasoning that a dirty worktree blocks the next rebase and helps nobody.
+// That reasoning assumed the commit would normally succeed. OR-241 established
+// that CommitAll had never worked in this repository, so the fallback fired on
+// every run, and on OR-116 it destroyed cmd/orion/releaseship_cli_test.go: the
+// add had failed before staging, so no blob was written and the file could not
+// be recovered from anywhere.
+//
+// A dirty worktree is loud, visible on the next collect tick, and still has
+// every file in it. A revert is silent afterwards and leaves nothing to
+// recover. They are not comparable outcomes.
+func TestResidueIsKeptWhenTheCommitItselfFails(t *testing.T) {
 	home := project(t, cfg)
 	var sent string
 	bindSlack(t, home, &sent)
@@ -421,6 +464,7 @@ func TestResidueIsRevertedWhenTheCommitItselfFails(t *testing.T) {
 	j := &fakeJira{}
 	var out strings.Builder
 	var jobPath string
+	var before map[string]string
 
 	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
 		Deps{
@@ -433,14 +477,18 @@ func TestResidueIsRevertedWhenTheCommitItselfFails(t *testing.T) {
 				}
 				git(t, dir, "add", ".")
 				git(t, dir, "commit", "-q", "-m", "feat: implement")
-				if err := os.WriteFile(filepath.Join(dir, "spec.md"), []byte("# spec\nrisky\n"), 0o644); err != nil {
+				// The finished work: an edit to a tracked file and a new test
+				// file that exists nowhere else -- OR-116's shape exactly.
+				if err := os.WriteFile(filepath.Join(dir, "impl.go"), []byte("package x\n\nfunc F() {}\n"), 0o644); err != nil {
+					return nil, err
+				}
+				if err := os.WriteFile(filepath.Join(dir, "impl_test.go"), []byte("package x\n// finished, green, uncommitted\n"), 0o644); err != nil {
 					return nil, err
 				}
 				tripIn(t, dir, "sess-impl", "breaker/loop", "Bash repeated 4 times")
 				// Make the commit fail for a reason git owns, rather than
-				// stubbing workspace.CommitAll: what is under test is the
-				// fallback, and a hook that rejects the commit is the shape a
-				// real refusal arrives in.
+				// stubbing workspace.CommitAll: a hook that rejects the commit
+				// is the shape a real refusal arrives in.
 				hooks := filepath.Join(dir, "refusing-hooks")
 				if err := os.MkdirAll(hooks, 0o755); err != nil {
 					return nil, err
@@ -450,23 +498,49 @@ func TestResidueIsRevertedWhenTheCommitItselfFails(t *testing.T) {
 					return nil, err
 				}
 				git(t, dir, "config", "core.hooksPath", hooks)
+				before = worktreeFiles(t, dir)
 				return &supervisor.Result{ExitCode: 1, Reason: "tripped"}, errors.New("the agent stopped: breaker tripped")
 			},
 			Push:   func(string, string) error { return nil },
 			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
 		})
 
-	// Cleared either way: a branch nobody can rebase is the outcome this
-	// exists to prevent, and it is the one the failed commit would leave.
-	if dirty, _ := workspace.DirtyTracked(jobPath); dirty != "" {
-		t.Errorf("the commit failed and nothing reverted, so the branch is still blocked:\n%s", dirty)
+	// The acceptance criterion, stated as bytes: a failed commit changes
+	// nothing on disk.
+	after := worktreeFiles(t, jobPath)
+	for name, want := range before {
+		got, ok := after[name]
+		if !ok {
+			t.Errorf("%s was destroyed by the failed commit; it existed nowhere else", name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s was modified by the failed commit:\nwant %q\ngot  %q", name, want, got)
+		}
 	}
-	// And said plainly, in the words that distinguish destroyed from filed
-	// away.
-	if o := out.String(); !strings.Contains(o, "could NOT commit") || !strings.Contains(o, "reverted") {
-		t.Errorf("a run that destroyed work must say so:\n%s", o)
+	if len(after) != len(before) {
+		t.Errorf("the worktree is not byte-identical: %d file(s) before, %d after", len(before), len(after))
 	}
-	if !strings.Contains(sent, "could *not* preserve it") {
-		t.Errorf("the operator was not told the work may be lost:\n%s", sent)
+	// And the branch has no snapshot commit pretending it was saved.
+	if log := git(t, jobPath, "log", "--oneline"); strings.Contains(log, "wip: snapshot") {
+		t.Errorf("the commit failed, so nothing should have been recorded as saved:\n%s", log)
+	}
+
+	// Loud, unresolved, and naming the files that are still on disk.
+	o := out.String()
+	if !strings.Contains(o, "could NOT commit") || !strings.Contains(o, "KEPT") {
+		t.Errorf("a run that could not commit must say so plainly:\n%s", o)
+	}
+	for _, want := range []string{"impl.go", "impl_test.go", "orion settle FCIA-6"} {
+		if !strings.Contains(o, want) {
+			t.Errorf("the report does not name %q, so the operator cannot act on it:\n%s", want, o)
+		}
+	}
+	if !strings.Contains(sent, "Nothing was reverted") {
+		t.Errorf("the operator was not told the work is still there:\n%s", sent)
+	}
+	// The ticket carries the reason too, not only the count.
+	if comments := strings.Join(j.comments, "\n---\n"); !strings.Contains(comments, "KEPT them") {
+		t.Errorf("the ticket does not say what became of the work:\n%s", comments)
 	}
 }
