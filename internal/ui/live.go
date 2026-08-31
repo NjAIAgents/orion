@@ -901,8 +901,8 @@ type Live struct {
 	// records identically either way, which is the same contract the window
 	// keeps -- what scrolls out is unshown, never unrecorded.
 	collapsed bool
-	done chan struct{}
-	wg   sync.WaitGroup
+	done      chan struct{}
+	wg        sync.WaitGroup
 }
 
 // NewLive wraps a writer. Cursor control is used only when the destination is
