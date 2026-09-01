@@ -116,6 +116,47 @@ const (
 // would not otherwise fit.
 const liveWindowFloor = 5
 
+// liveWindowCap is the most lines the window will show, set from the
+// watcher's max_concurrent_tickets.
+//
+// The window's job is to show what the agents are saying, so the volume it
+// has to keep up with is proportional to how many are talking. Five lines is
+// right for one or two agents and starves at eight, where a single ticket's
+// output can push the other seven off the window between glances.
+//
+// Zero means "not set", which falls back to the floor. Package-level for the
+// same reason the rest of this file's state is: the number lives in the
+// watcher's config and the renderer is three packages away from it.
+var liveWindowCap int
+
+// LiveWindowCap sets the visible window's maximum. Called once by the
+// watcher, which is the only thing that knows the concurrency limit.
+func LiveWindowCap(n int) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	liveWindowCap = n
+}
+
+// windowHeight is how many lines the window may show: at least the floor, at
+// most the concurrency cap.
+func windowHeight() int {
+	live.mu.Lock()
+	n := liveWindowCap
+	live.mu.Unlock()
+	if n < liveWindowFloor {
+		return liveWindowFloor
+	}
+	return n
+}
+
+// liveWindowBuffer is how many recent lines are RETAINED, as opposed to shown.
+//
+// Larger than the visible cap so a window that shrank while the region was
+// tall can fill again when it is not, and bounded so a watcher left running
+// overnight does not accumulate a line per tool call forever. The complete
+// record is events.jsonl either way.
+const liveWindowBuffer = 200
+
 // The sparkline's resolution: tool calls per 10s over the last two minutes.
 //
 // Ten seconds because that is short enough for a burst of edits to show as a
@@ -1039,7 +1080,7 @@ func windowLines(recent []string, regionRows, termRows, cols int) []string {
 	// off the top -- the header still saying "3 running" over the empty space
 	// where they were. History is a convenience; the rows are the thing being
 	// watched, so the window yields (OR-264).
-	floor := liveWindowFloor
+	floor := windowHeight()
 	if termRows > 0 && avail < floor {
 		floor = avail
 	}
@@ -1436,12 +1477,21 @@ func (l *Live) drawLocked() {
 		// The frame's own two rows are charged to the region's budget, or the
 		// window would claim them and push a ticket row off the bottom -- the
 		// one thing the floor exists to prevent.
-		l.window = windowLines(l.window, screenRowsOf(region, cols)+windowFrameRows, terminalRows(), cols)
-		if len(l.window) > 0 {
-			top, bottom := windowFrame(l.w, len(l.window), cols)
+		// Trimmed for DISPLAY without discarding the buffer. Reassigning
+		// l.window here made the trim permanent: a line dropped because the
+		// region was tall at that instant could never come back when the
+		// region shrank again, so the window only ever lost lines.
+		shown := windowLines(l.window, screenRowsOf(region, cols)+windowFrameRows, terminalRows(), cols)
+		// The buffer itself is bounded separately, or a long run grows it
+		// without limit for lines nothing will ever show again.
+		if len(l.window) > liveWindowBuffer {
+			l.window = l.window[len(l.window)-liveWindowBuffer:]
+		}
+		if len(shown) > 0 {
+			top, bottom := windowFrame(l.w, len(shown), cols)
 			fmt.Fprintln(l.w, top)
 			drawn += screenRows(top, cols)
-			for _, line := range l.window {
+			for _, line := range shown {
 				fmt.Fprintln(l.w, line)
 				drawn += screenRows(line, cols)
 			}

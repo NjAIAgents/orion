@@ -468,14 +468,25 @@ func metaWidth(l Line, identity bool) int {
 	return n
 }
 
-// columns reads the terminal width from COLUMNS, the only source available
-// without a dependency. Absent means "do not clip".
+// columns is the terminal width: COLUMNS if a shell exported it, else asked
+// of the terminal itself. Absent means "do not clip".
+//
+// COLUMNS is shell-internal in the same way LINES is, so this was 0 on every
+// interactive terminal Orion has ever run in. Clipping was therefore off --
+// survivable, and not the expensive part. The expensive part was screenRows,
+// which cannot tell whether a line WRAPS without a width and so counted every
+// line as one row. A block of fifteen counted rows that really occupies
+// eighteen is erased three rows short at every redraw, and the region walks
+// down the screen until the ticket rows scroll off the top: the reported
+// "agents disappear after a while", with the header still counting them
+// because the rows were drawn every frame and then only partly erased
+// (OR-264).
 func columns() int {
-	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("COLUMNS")))
-	if err != nil || n < 40 {
-		return 0
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("COLUMNS"))); err == nil && n >= 40 {
+		return n
 	}
-	return n
+	_, cols := sttySize()
+	return cols
 }
 
 // terminalRows is the terminal height: LINES if a shell exported it, else
@@ -499,56 +510,73 @@ func terminalRows() int {
 	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("LINES"))); err == nil && n >= 10 {
 		return n
 	}
-	return sttyRows()
+	rows, _ := sttySize()
+	return rows
 }
 
-// sttyRows asks the controlling terminal how tall it is, or 0.
+// sttySize asks the controlling terminal for its size, as (rows, cols), or
+// (0, 0).
 //
-// Cached, because this is read on every redraw -- four times a second, per
-// draw -- and forking a process at that rate to learn a number that changes
-// only when somebody drags a window would be the most expensive thing on the
-// screen by a wide margin. A SIGWINCH clears it (live.go).
-func sttyRows() int {
+// Cached, because both dimensions are read on every redraw -- four times a
+// second, per draw -- and forking a process at that rate to learn two numbers
+// that change only when somebody drags a window would be the most expensive
+// thing on the screen by a wide margin. One call for both, since stty prints
+// them together. invalidateTerminalSize drops it so a resize is picked up.
+func sttySize() (int, int) {
 	sttyOnce.Lock()
 	defer sttyOnce.Unlock()
-	if sttyCached != 0 {
-		return sttyCached
+	if sttyAsked {
+		return sttyRowsCached, sttyColsCached
 	}
+	// Asked once per invalidation whether it works or not: a terminal that
+	// has no /dev/tty will not grow one, and retrying four times a second
+	// would be the fork storm this cache exists to avoid.
+	sttyAsked = true
+
 	// /dev/tty rather than stdin: the region is drawn to stdout, and a piped
 	// stdin must not make a real terminal look sizeless.
-	cmd := exec.Command("stty", "size")
 	tty, err := os.Open("/dev/tty")
 	if err != nil {
-		return 0
+		return 0, 0
 	}
 	defer tty.Close()
+	cmd := exec.Command("stty", "size")
 	cmd.Stdin = tty
 	out, err := cmd.Output()
 	if err != nil {
-		return 0
+		return 0, 0
 	}
 	// "rows cols".
-	fields := strings.Fields(string(out))
-	if len(fields) != 2 {
-		return 0
+	f := strings.Fields(string(out))
+	if len(f) != 2 {
+		return 0, 0
 	}
-	n, err := strconv.Atoi(fields[0])
-	if err != nil || n < 10 {
-		return 0
+	rows, rerr := strconv.Atoi(f[0])
+	cols, cerr := strconv.Atoi(f[1])
+	if rerr != nil || cerr != nil {
+		return 0, 0
 	}
-	sttyCached = n
-	return n
+	if rows >= 10 {
+		sttyRowsCached = rows
+	}
+	if cols >= 40 {
+		sttyColsCached = cols
+	}
+	return sttyRowsCached, sttyColsCached
 }
 
-// invalidateTerminalSize drops the cached height, so the next redraw asks
-// again. Called on SIGWINCH.
+// invalidateTerminalSize drops the cached size, so the next read asks again.
+// Called from the redraw loop once a second.
 func invalidateTerminalSize() {
 	sttyOnce.Lock()
-	sttyCached = 0
+	sttyAsked = false
+	sttyRowsCached, sttyColsCached = 0, 0
 	sttyOnce.Unlock()
 }
 
 var (
-	sttyOnce   sync.Mutex
-	sttyCached int
+	sttyOnce       sync.Mutex
+	sttyAsked      bool
+	sttyRowsCached int
+	sttyColsCached int
 )

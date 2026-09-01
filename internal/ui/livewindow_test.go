@@ -62,10 +62,17 @@ func TestTheFrozenWindowCapsTheChatter(t *testing.T) {
 	if strings.Contains(frame, "chatter-34") {
 		t.Errorf("a line past the cap is still on screen:\n%q", frame)
 	}
-	// And the buffer is the window: an eight-hour run must not accumulate every
-	// line it ever printed in memory for a cap that might never be dropped.
-	if len(l.window) != liveWindowFloor {
-		t.Errorf("the window retained %d lines, want %d", len(l.window), liveWindowFloor)
+	// The buffer is BOUNDED, which is what this was always about: an
+	// eight-hour run must not accumulate every line it ever printed for a cap
+	// that might never be dropped.
+	//
+	// Bounded at liveWindowBuffer rather than at the visible cap, because
+	// trimming the buffer to what fits made the loss permanent -- a line
+	// dropped while the region was tall could never come back when it shrank,
+	// so the window only ever emptied (OR-264).
+	if len(l.window) > liveWindowBuffer {
+		t.Errorf("the window retained %d lines, more than the %d it bounds at",
+			len(l.window), liveWindowBuffer)
 	}
 }
 

@@ -213,6 +213,9 @@ func Run(opts Options, deps Deps) error {
 	liveOut.Store(&lw)
 	defer liveOut.Store(nil)
 	ui.LiveReset()
+	// The window shows what the agents are saying, so how much it has to hold
+	// scales with how many are talking (OR-264).
+	ui.LiveWindowCap(opts.MaxConcurrent)
 	ui.LiveMedians(medianFor(opts.Home, opts.Projects))
 
 	// The count for a run of identical lines is printed when the run ends;
