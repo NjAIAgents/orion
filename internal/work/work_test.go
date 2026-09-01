@@ -31,6 +31,10 @@ type fakeJira struct {
 	// which is the flat ticket the rest of this file describes.
 	children map[string][]tracker.Issue
 	childErr error
+	// assigned records every key put on Orion's own account, in order, so a
+	// test can assert the assignment landed WITH the claim and not later.
+	assigned  []string
+	assignErr error
 }
 
 func (f *fakeJira) GetIssue(key string) (*tracker.Issue, error) {
@@ -50,6 +54,13 @@ func (f *fakeJira) SetLabels(key string, add, remove []string) error {
 	f.labelCalls = append(f.labelCalls,
 		"add:"+strings.Join(add, ",")+" remove:"+strings.Join(remove, ","))
 	return f.labelErr
+}
+func (f *fakeJira) AssignSelf(key string) error {
+	if f.assignErr != nil {
+		return f.assignErr
+	}
+	f.assigned = append(f.assigned, key)
+	return nil
 }
 func (f *fakeJira) TransitionTo(key, status string) error {
 	f.transitions = append(f.transitions, status)
@@ -489,6 +500,9 @@ func TestDryRunDoesNotTouchTheTracker(t *testing.T) {
 	}
 	if len(j.comments) != 0 {
 		t.Errorf("a dry run commented: %v", j.comments)
+	}
+	if len(j.assigned) != 0 {
+		t.Errorf("a dry run assigned the ticket: %v", j.assigned)
 	}
 }
 
