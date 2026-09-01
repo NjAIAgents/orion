@@ -211,6 +211,10 @@ type liveRun struct {
 	// resolved when the actor becomes known. Zero means unknown, which is
 	// rendered as no bar at all rather than as an empty one.
 	median time.Duration
+	// barColor overrides the bar's colour. Empty means green -- progress. A
+	// culprit sets red, so the branch that broke the batch reads as broken in
+	// the bar as well as in the word beside it.
+	barColor string
 }
 
 // live is the registry. Guarded by its own mutex because a watcher writes to
@@ -233,6 +237,8 @@ var live struct {
 	// assembled from one pass in one repository's sandbox, so a second would
 	// mean two passes racing on one clone -- which collect does not do.
 	batch *liveBatch
+	// since is when this watcher started, set on the first LiveStart.
+	since time.Time
 	// checks is the current CI run's individual checks, newest reading wins.
 	//
 	// ci above is the COUNT of tickets waiting; this is what the one shared
@@ -290,6 +296,12 @@ func liveStart(key string, at time.Time) {
 	defer live.mu.Unlock()
 	if live.runs == nil {
 		live.runs = map[string]*liveRun{}
+	}
+	// The session clock starts at the first dispatch rather than at process
+	// start: what the header reports is how long this watcher has been
+	// WORKING, and the seconds spent reading config are not that.
+	if live.since.IsZero() {
+		live.since = at
 	}
 	live.runs[key] = &liveRun{
 		key: key, stage: "starting", started: at,
@@ -383,7 +395,7 @@ func LiveReset() {
 	live.mu.Lock()
 	defer live.mu.Unlock()
 	live.runs, live.spend, live.ci, live.median = nil, 0, 0, nil
-	live.batch, live.checks = nil, nil
+	live.batch, live.checks, live.since = nil, nil, time.Time{}
 }
 
 // liveState is one consistent read of the registry: rows in key order, plus
@@ -403,12 +415,14 @@ type liveState struct {
 	batch *liveBatch
 	// checks is copied for the same reason the batch is.
 	checks []Check
+	// since is when this watcher started, for the header's elapsed.
+	since time.Time
 }
 
 func liveSnapshot() liveState {
 	live.mu.Lock()
 	defer live.mu.Unlock()
-	st := liveState{spend: live.spend, ci: live.ci}
+	st := liveState{spend: live.spend, ci: live.ci, since: live.since}
 	st.checks = append([]Check(nil), live.checks...)
 	if live.batch != nil {
 		st.batch = live.batch.snapshotLocked()
@@ -462,9 +476,13 @@ const (
 	spinnerASCII  = `|/-\`
 	sparkGlyphs   = "▁▂▃▄▅▆▇█"
 	sparkASCII    = "_.-=+*#%"
-	barFullGlyph  = "━"
-	barHeadGlyph  = "╸"
-	barEmptyGlyph = "─"
+	// A BLOCK bar, not a rule. The mockup draws a filled band against a
+	// stippled remainder, which reads as a quantity at a glance where a thin
+	// line reads as a divider -- and the region already has two real rules in
+	// it, so a bar shaped like one competes with them.
+	barFullGlyph  = "█"
+	barHeadGlyph  = "▓"
+	barEmptyGlyph = "░"
 	barFullASCII  = "#"
 	barHeadASCII  = ">"
 	barEmptyASCII = "-"
@@ -535,10 +553,18 @@ func (r liveRun) bar(w io.Writer, elapsed time.Duration) string {
 	if n < 0 {
 		n = 0
 	}
-	if n >= liveBarWidth {
-		return paint(w, cyan, strings.Repeat(full, liveBarWidth))
+	// Green for progress, matching the mockup and the ok/failed palette the
+	// rest of the display already uses. barColor lets a culprit's row draw
+	// its bar red, so the one branch that broke the batch is red in the
+	// glyph, the word and the bar rather than only in the word.
+	c := r.barColor
+	if c == "" {
+		c = green
 	}
-	return paint(w, cyan, strings.Repeat(full, n)+head) +
+	if n >= liveBarWidth {
+		return paint(w, c, strings.Repeat(full, liveBarWidth))
+	}
+	return paint(w, c, strings.Repeat(full, n)+head) +
 		Dim(w, strings.Repeat(empty, liveBarWidth-n-1))
 }
 
@@ -665,7 +691,17 @@ func renderRow(w io.Writer, r liveRun, now time.Time, cols int) string {
 	if keep(cols, liveBar) {
 		add(r.bar(w, elapsed)+"  ", liveBarWidth+2)
 	}
-	add(pad(elapsedString(elapsed), liveElapsedWidth)+"  ", liveElapsedWidth+2)
+	// Elapsed AND the median it is measured against, as the mockup has it:
+	// "18m / ~24m". The bar shows the ratio and the numbers say what the
+	// ratio is of -- a bar alone cannot be read aloud, quoted in a ticket, or
+	// seen in a NO_COLOR terminal (OR-163).
+	el := elapsedString(elapsed)
+	if r.median > 0 && keep(cols, liveMedian) {
+		add(pad(el, liveElapsedWidth)+" "+Dim(w, "/ ~"+coarse(r.median))+"  ",
+			liveElapsedWidth+1+3+len(coarse(r.median))+2)
+	} else {
+		add(pad(el, liveElapsedWidth)+"  ", liveElapsedWidth+2)
+	}
 	if keep(cols, liveSpark) {
 		add(r.sparkline()+"  ", sparkBuckets+2)
 	}
@@ -717,7 +753,11 @@ func clip(s string, n int) string {
 
 // The optional columns.
 const (
-	liveSpark = iota
+	// Surrendered first: the bar already carries this ratio, so the numbers
+	// are the cheapest thing to lose and the last thing worth wrapping a row
+	// for.
+	liveMedian = iota
+	liveSpark
 	liveBar
 	liveActor
 )
@@ -747,7 +787,12 @@ func keep(cols, col int) bool {
 	if col == liveBar {
 		return cols >= need
 	}
-	return cols >= need+sparkBuckets+2
+	need += sparkBuckets + 2
+	if col == liveSpark {
+		return cols >= need
+	}
+	// "/ ~24m" and its leading space.
+	return cols >= need+7
 }
 
 // renderHeader is the one line above the rows: when, which project, how much
@@ -782,12 +827,28 @@ func renderHeaderAt(w io.Writer, st liveState, now time.Time, collapsed bool) st
 	if p := projectsOf(st.rows); p != "" {
 		parts = append(parts, p)
 	}
-	parts = append(parts, fmt.Sprintf("%d running", len(st.rows)))
+	// "3 running", or "idle" when nothing is: a bare "0 running" reads as a
+	// counter that failed rather than as a watcher with nothing to do, and
+	// the mockup's finished state says idle.
+	if len(st.rows) == 0 {
+		parts = append(parts, "idle")
+	} else {
+		parts = append(parts, fmt.Sprintf("%d running", len(st.rows)))
+	}
+	if st.batch != nil {
+		parts = append(parts, "1 batch")
+	}
 	if st.ci > 0 {
 		parts = append(parts, fmt.Sprintf("%d in CI", st.ci))
 	}
 	if st.spend > 0 {
 		parts = append(parts, fmt.Sprintf("$%.2f this session", st.spend))
+	}
+	// How long this watcher has been up. The mockup's last field, and the one
+	// that answers "is this the run I started before lunch" without reading
+	// back through the log.
+	if !st.since.IsZero() {
+		parts = append(parts, coarse(now.Sub(st.since)))
 	}
 	if h := hintFor(st, collapsed); h != "" {
 		parts = append(parts, h)

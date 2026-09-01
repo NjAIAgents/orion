@@ -220,15 +220,18 @@ func TestNarrowTerminalDropsColumnsRightToLeft(t *testing.T) {
 	var b bytes.Buffer
 	has := func(row, glyphs string) bool { return strings.ContainsAny(row, glyphs) }
 
+	// The sparkline is detected by the glyphs the BAR cannot draw: both use
+	// the full block now, so testing for sparkGlyphs alone matches a bar.
+	sparkOnly := strings.TrimRight(sparkGlyphs, barFullGlyph)
 	full := renderRow(&b, *r, now, 200)
-	if !has(full, sparkGlyphs) || !strings.Contains(full, barHeadGlyph) || !strings.Contains(full, who) {
+	if !has(full, sparkOnly) || !strings.Contains(full, barHeadGlyph) || !strings.Contains(full, who) {
 		t.Fatalf("a wide terminal should keep every column: %q", full)
 	}
 
 	// One column narrower than the full row: the sparkline is the first thing
 	// given up, and everything to its left survives.
 	noSpark := renderRow(&b, *r, now, 79)
-	if has(noSpark, sparkGlyphs) {
+	if has(noSpark, sparkOnly) {
 		t.Errorf("the sparkline goes first: %q", noSpark)
 	}
 	if !strings.Contains(noSpark, barHeadGlyph) || !strings.Contains(noSpark, who) {
