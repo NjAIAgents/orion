@@ -372,11 +372,11 @@ func TestScrollbackSurvivesTheRegion(t *testing.T) {
 	if !(fi < si && si < ti) {
 		t.Errorf("scrollback came out of order:\n%q", got)
 	}
-	// The region is four lines -- rule, header, blank, one row -- and the window
-	// grows by one at each write, so the block is 5, then 6, then 7 rows and
-	// each erase names the one before it. The first write had nothing yet to
-	// erase; Close erases the last block.
-	for _, want := range []string{"\x1b[5A\x1b[0J", "\x1b[6A\x1b[0J", "\x1b[7A\x1b[0J"} {
+	// The region is four lines -- rule, header, blank, one row -- the window's
+	// frame takes two, and the window grows by one at each write, so the block
+	// is 7, then 8, then 9 rows and each erase names the one before it. The
+	// first write had nothing yet to erase; Close erases the last block.
+	for _, want := range []string{"\x1b[7A\x1b[0J", "\x1b[8A\x1b[0J", "\x1b[9A\x1b[0J"} {
 		if n := strings.Count(got, want); n != 1 {
 			t.Errorf("expected exactly one %q erase, got %d:\n%q", want, n, got)
 		}
@@ -384,7 +384,7 @@ func TestScrollbackSurvivesTheRegion(t *testing.T) {
 	// Close commits the window rather than erasing it with the region: those
 	// three lines are the only ones the terminal has not seen, and ending a run
 	// on a blank screen answers "what just happened" worse than they do.
-	if !strings.HasSuffix(got, "\x1b[7A\x1b[0Jfirst\nsecond\nthird\n") {
+	if !strings.HasSuffix(got, "\x1b[9A\x1b[0Jfirst\nsecond\nthird\n") {
 		t.Errorf("Close must clear the region and leave the window on screen:\n%q", got)
 	}
 	if l.drawn != 0 {

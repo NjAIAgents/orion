@@ -916,6 +916,48 @@ func screenRowsOf(lines []string, cols int) int {
 // rows it needs are rows the region does not. A terminal that has not told us
 // its height gets the floor: guessing tall enough would be guessing the region
 // off the top of the screen, which is the failure this exists to prevent.
+// windowFrameRows is what the frame costs: one rule above, one below.
+const windowFrameRows = 2
+
+// windowFrame draws the labelled rules that bound the frozen window.
+//
+// The frame is not decoration. Three zones share the screen and exactly one
+// of them scrolls (OR-248); without a boundary the scrolling zone and the
+// pinned rows below it read as one continuous log, and the whole point is
+// that they behave differently. The labels say which is which and how much
+// history is being kept, so a line vanishing off the top is explained rather
+// than merely noticed.
+func windowFrame(w io.Writer, n, cols int) (string, string) {
+	tl, tr, bl, br, h := "╭", "╮", "╰", "╯", "─"
+	if !glyphs() {
+		tl, tr, bl, br, h = "+", "+", "+", "+", "-"
+	}
+	width := liveRuleWidth
+	if cols > 0 && cols-1 < width {
+		width = cols - 1
+	}
+
+	label := func(left, right, text string) string {
+		// text sits at the right end, as the mockup has it: the left corner
+		// is the anchor the eye follows down the screen.
+		body := " " + text + " "
+		fill := width - 2 - utf8.RuneCountInString(body)
+		if fill < 0 {
+			return Dim(w, left+strings.Repeat(h, max0(width-2))+right)
+		}
+		return Dim(w, left+strings.Repeat(h, fill)+body+right)
+	}
+	return label(tl, tr, fmt.Sprintf("recent %d line(s)", n)),
+		label(bl, br, "scrolls, then gone")
+}
+
+func max0(n int) int {
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
 func windowLines(recent []string, regionRows, termRows, cols int) []string {
 	// One row for the cursor itself, which sits below everything drawn.
 	avail := termRows - regionRows - 1
@@ -1260,10 +1302,21 @@ func (l *Live) drawLocked() {
 		// Trimmed to what is shown, so the window is the buffer: a line that
 		// scrolled off the screen is dropped here and is thereafter only in
 		// events.jsonl, which is exactly what "gone from the screen" means.
-		l.window = windowLines(l.window, screenRowsOf(region, cols), terminalRows(), cols)
-		for _, line := range l.window {
-			fmt.Fprintln(l.w, line)
-			drawn += screenRows(line, cols)
+		//
+		// The frame's own two rows are charged to the region's budget, or the
+		// window would claim them and push a ticket row off the bottom -- the
+		// one thing the floor exists to prevent.
+		l.window = windowLines(l.window, screenRowsOf(region, cols)+windowFrameRows, terminalRows(), cols)
+		if len(l.window) > 0 {
+			top, bottom := windowFrame(l.w, len(l.window), cols)
+			fmt.Fprintln(l.w, top)
+			drawn += screenRows(top, cols)
+			for _, line := range l.window {
+				fmt.Fprintln(l.w, line)
+				drawn += screenRows(line, cols)
+			}
+			fmt.Fprintln(l.w, bottom)
+			drawn += screenRows(bottom, cols)
 		}
 	}
 	for _, line := range region {

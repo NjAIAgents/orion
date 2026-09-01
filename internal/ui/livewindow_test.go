@@ -116,13 +116,14 @@ func TestATallerTerminalShowsMoreHistory(t *testing.T) {
 		}
 	}
 
-	// The region is four rows -- rule, header, blank, one ticket row -- and the
-	// cursor keeps one, so a 40-row terminal has 35 to spare.
+	// The region is four rows -- rule, header, blank, one ticket row -- the
+	// window's frame takes two, and the cursor keeps one, so a 40-row
+	// terminal has 33 to spare.
 	t.Setenv("LINES", "40")
 	var tall bytes.Buffer
 	fill(&Live{w: &tall, cursor: true})
-	if n := strings.Count(lastFrame(tall.String()), "chatter-"); n != 35 {
-		t.Errorf("a 40-row terminal showed %d lines of history, want 35", n)
+	if n := strings.Count(lastFrame(tall.String()), "chatter-"); n != 33 {
+		t.Errorf("a 40-row terminal showed %d lines of history, want 33", n)
 	}
 
 	t.Setenv("LINES", "")
@@ -159,20 +160,22 @@ func TestResizingReflowsWithoutStrandingRows(t *testing.T) {
 	if _, err := fmt.Fprintf(l, "%s\n", strings.Repeat("x", 100)); err != nil {
 		t.Fatalf("writing: %v", err)
 	}
-	if l.drawn != 3 {
-		t.Errorf("100 cells at 40 columns is 3 rows, not %d", l.drawn)
+	// Three rows for the wrapped line, plus the frame's two.
+	if l.drawn != 5 {
+		t.Errorf("100 cells at 40 columns is 3 rows plus a 2-row frame, not %d", l.drawn)
 	}
 
-	// Widen the terminal. The next redraw erases what the last one drew -- three
-	// rows, measured at the old width -- and the same line now needs one.
+	// Widen the terminal. The next redraw erases what the last one drew -- five
+	// rows, measured at the old width -- and the same line now needs one plus
+	// the frame.
 	t.Setenv("COLUMNS", "120")
 	b.Reset()
 	redraw(l)
-	if got := b.String(); !strings.HasPrefix(got, "\x1b[3A\x1b[0J") {
+	if got := b.String(); !strings.HasPrefix(got, "\x1b[5A\x1b[0J") {
 		t.Errorf("the erase must undo the rows actually drawn:\n%q", got)
 	}
-	if l.drawn != 1 {
-		t.Errorf("100 cells at 120 columns is 1 row, not %d", l.drawn)
+	if l.drawn != 3 {
+		t.Errorf("100 cells at 120 columns is 1 row plus a 2-row frame, not %d", l.drawn)
 	}
 }
 
@@ -415,5 +418,71 @@ func TestTheWindowCountsLinesNotWrites(t *testing.T) {
 	}
 	if got := l.window[len(l.window)-1]; got != "half a line" {
 		t.Errorf("the completed line is %q, want %q", got, "half a line")
+	}
+}
+
+// Three zones share the screen and exactly one of them scrolls (OR-248).
+// Without a boundary the scrolling zone and the pinned rows below it read as
+// one continuous log, which is precisely the distinction that matters. The
+// labels say which zone is which and how much history is being kept, so a
+// line vanishing off the top is explained rather than merely noticed.
+func TestTheFrozenWindowIsBoundedByALabelledFrame(t *testing.T) {
+	t.Setenv("LINES", "24")
+	t.Setenv("COLUMNS", "100")
+	LiveReset()
+	t.Cleanup(LiveReset)
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	for i := 0; i < 3; i++ {
+		if _, err := fmt.Fprintf(l, "chatter-%d\n", i); err != nil {
+			t.Fatalf("writing: %v", err)
+		}
+	}
+	got := lastFrame(b.String())
+
+	if !strings.Contains(got, "recent") {
+		t.Errorf("the window does not say what it is:\n%s", got)
+	}
+	if !strings.Contains(got, "3 line(s)") {
+		t.Errorf("the window does not say how much history it is holding:\n%s", got)
+	}
+	if !strings.Contains(got, "scrolls, then gone") {
+		t.Errorf("the window does not say its lines are transient:\n%s", got)
+	}
+	// The frame bounds the chatter: every captured line falls between the two
+	// rules, not outside them.
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	top, bottom := -1, -1
+	for i, ln := range lines {
+		if strings.Contains(ln, "recent") {
+			top = i
+		}
+		if strings.Contains(ln, "scrolls, then gone") {
+			bottom = i
+		}
+	}
+	if top < 0 || bottom < 0 || bottom <= top {
+		t.Fatalf("the frame is not a pair of rules around the window:\n%s", got)
+	}
+	for i, ln := range lines {
+		if strings.Contains(ln, "chatter-") && (i < top || i > bottom) {
+			t.Errorf("line %d escaped the frame:\n%s", i, got)
+		}
+	}
+}
+
+// Nothing captured yet, no frame. An empty box above an empty region is two
+// rules saying nothing.
+func TestNoChatterDrawsNoFrame(t *testing.T) {
+	t.Setenv("LINES", "24")
+	LiveReset()
+	t.Cleanup(LiveReset)
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	redraw(l)
+	if strings.Contains(b.String(), "recent") {
+		t.Errorf("an empty window must not draw a frame:\n%s", b.String())
 	}
 }
