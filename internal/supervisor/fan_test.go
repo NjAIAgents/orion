@@ -218,6 +218,11 @@ func captureStderr(t *testing.T, fn func()) (lines []string, at []time.Duration)
 	}
 	old := os.Stderr
 	os.Stderr = w
+	// fanOut holds its own reference to the stderr it was initialised with, so
+	// reassigning os.Stderr alone leaves a fan-out writing to the real one and
+	// this helper reading an empty pipe. Both are swapped, and both restored.
+	oldFan := fanOut
+	fanOut = w
 	start := time.Now()
 
 	var mu sync.Mutex
@@ -236,6 +241,7 @@ func captureStderr(t *testing.T, fn func()) (lines []string, at []time.Duration)
 	fn()
 
 	os.Stderr = old
+	fanOut = oldFan
 	_ = w.Close()
 	<-done
 	_ = r.Close()
@@ -278,9 +284,13 @@ exit 0
 		}
 	})
 
+	// A landing line is the one that reports a child's exit; the roster lines
+	// printed before dispatch carry the same running count and must not be
+	// mistaken for landings. Keyed on "exit" rather than on the running count
+	// for exactly that reason.
 	var landedAt []time.Duration
 	for i, l := range lines {
-		if strings.Contains(l, "landed") {
+		if strings.Contains(l, "exit") {
 			landedAt = append(landedAt, at[i])
 		}
 	}

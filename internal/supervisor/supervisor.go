@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -629,12 +630,29 @@ func runArgs(settingsPath, prompt string, opts Options, ac *agentcfg.Run) []stri
 	return args
 }
 
+// runSeq numbers log files within a process so two runs starting in the same
+// second cannot name the same one. Process-local is enough: two Orion
+// processes writing the same workspace in the same second is a different
+// problem, and one the workspace lock already covers.
+var runSeq atomic.Uint64
+
+func nextRunSeq() uint64 { return runSeq.Add(1) }
+
 // runOnce executes a single attempt and returns its result plus the tail
 // of its combined output for quota inspection.
 func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt int, ac *agentcfg.Run) (*Result, string) {
 	stamp := time.Now().UTC().Format("20060102-150405")
+	// The suffix is what makes concurrent children distinguishable. Fan's
+	// N children share a stage and start inside the same second, so stamp +
+	// stage + attempt names ONE file for all of them and os.Create truncates
+	// it N-1 times: the logs interleave, and N-1 runs lose the only account of
+	// what they did. Not a theoretical race -- `orion fan` runs every child as
+	// stage "fan" today, and `orion explore` runs every question as "explore".
+	//
+	// A counter rather than nanoseconds because it cannot collide at all,
+	// where two goroutines reading the clock in the same nanosecond can.
 	logPath := filepath.Join(ws.LogsDir(),
-		fmt.Sprintf("%s-%s-a%d.log", stamp, safe(opts.Stage), attempt))
+		fmt.Sprintf("%s-%s-a%d-%d.log", stamp, safe(opts.Stage), attempt, nextRunSeq()))
 
 	args := runArgs(ws.SettingsPath(), prompt, opts, ac)
 
