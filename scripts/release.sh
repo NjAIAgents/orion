@@ -12,51 +12,106 @@
 # the wrong branch, and runs the full gate before anything is published. What
 # it cannot prove is that the build works somewhere other than here.
 #
+# TWO CHANNELS, and they are not symmetrical (OR-116):
+#
+#   production  cut from main, tagged vX.Y.Z, updates the tap and the bucket
+#   beta        cut from develop, tagged vX.Y.Z-beta.N, marked prerelease on
+#               the forge, and touches NEITHER installer
+#
+# The tap and the bucket never move on a beta. That is the whole rule: a
+# production user runs `brew upgrade`, and an installer that can serve a
+# prerelease hands them a build nobody promoted. Semver makes it worse rather
+# than better -- v0.9.0-beta.1 sorts BELOW v0.9.0 -- so the mistake is not
+# self-correcting on the next release either.
+#
 # Usage: scripts/release.sh v0.1.0 [--dry-run]
+#        scripts/release.sh v0.1.0-beta.1 --beta [--dry-run]
 set -euo pipefail
 
-VERSION_TAG="${1:-}"
+VERSION_TAG=""
 DRY_RUN=""
-[ "${2:-}" = "--dry-run" ] && DRY_RUN=1
-
-SOURCE_REPO="NjAIAgents/orion"
-RELEASES_REPO="NjAIAgents/orion-releases"
-TAP_REPO="navjyotnishant/homebrew-tap"
-BUCKET_REPO="navjyotnishant/scoop-bucket"
-# Overridable for repositories that name their release branch differently,
-# and so the script's later stages can be exercised without first merging.
-RELEASE_BRANCH="${ORION_RELEASE_BRANCH:-main}"
+CHANNEL="production"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 step() { echo; echo "==> $*"; }
 run() { if [ -n "$DRY_RUN" ]; then echo "    [dry-run] $*"; else "$@"; fi; }
 
-[ -n "$VERSION_TAG" ] || die "usage: $0 vX.Y.Z [--dry-run]"
-case "$VERSION_TAG" in
-  v[0-9]*.[0-9]*.[0-9]*) ;;
-  *) die "tag must look like v1.2.3, got '$VERSION_TAG'" ;;
+# A loop rather than positional $2, so --beta and --dry-run can be given in
+# either order. `scripts/release.sh v1.0.0 --beta --dry-run` reading --beta as
+# "not --dry-run" and publishing for real is exactly the class of mistake this
+# script exists to make impossible.
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=1 ;;
+    --beta)    CHANNEL="beta" ;;
+    -*)        die "unknown option '$arg' (usage: $0 vX.Y.Z [--beta] [--dry-run])" ;;
+    *)         [ -z "$VERSION_TAG" ] || die "two versions given: '$VERSION_TAG' and '$arg'"
+               VERSION_TAG="$arg" ;;
+  esac
+done
+
+SOURCE_REPO="NjAIAgents/orion"
+RELEASES_REPO="NjAIAgents/orion-releases"
+TAP_REPO="navjyotnishant/homebrew-tap"
+BUCKET_REPO="navjyotnishant/scoop-bucket"
+# Overridable for repositories that name their branches differently, and so
+# the script's later stages can be exercised without first merging.
+if [ "$CHANNEL" = "beta" ]; then
+  RELEASE_BRANCH="${ORION_WORK_BRANCH:-develop}"
+  # Only the releases repo is written on a beta, so only it is required.
+  PUSH_TARGETS="$RELEASES_REPO"
+else
+  RELEASE_BRANCH="${ORION_RELEASE_BRANCH:-main}"
+  PUSH_TARGETS="$RELEASES_REPO $TAP_REPO $BUCKET_REPO"
+fi
+
+[ -n "$VERSION_TAG" ] || die "usage: $0 vX.Y.Z [--beta] [--dry-run]"
+# The tag shape is per channel, and a mismatch names BOTH sides. "tag must
+# look like v1.2.3" is unhelpful when the caller's actual mistake was asking
+# for the wrong channel, which is the more common of the two.
+case "$CHANNEL:$VERSION_TAG" in
+  production:v[0-9]*.[0-9]*.[0-9]*)
+    case "$VERSION_TAG" in
+      *-*) die "'$VERSION_TAG' is a prerelease tag and this is the production channel.
+  A prerelease reaching the tap means 'brew upgrade' hands a beta to a stable
+  user. Pass --beta to cut it as one." ;;
+    esac ;;
+  beta:v[0-9]*.[0-9]*.[0-9]*-beta.[0-9]*) ;;
+  production:*) die "a production tag must look like v1.2.3, got '$VERSION_TAG'" ;;
+  beta:*)       die "a beta tag must look like v1.2.3-beta.4 so it sorts below v1.2.3
+  under semver, got '$VERSION_TAG'" ;;
 esac
 VERSION="${VERSION_TAG#v}"
 
 # ---------------------------------------------------------------- preflight
 
-step "Preflight"
+step "Preflight ($CHANNEL channel, from $RELEASE_BRANCH)"
 command -v gh  >/dev/null || die "gh not found"
 command -v go  >/dev/null || die "go not found"
 gh auth status >/dev/null 2>&1 || die "gh is not authenticated. Run: gh auth login"
 
-# Push access to every target, checked up front. Discovering halfway through
-# that the tap is unwritable leaves a published release and a stale formula,
-# which is a worse state than not having started.
-for r in "$RELEASES_REPO" "$TAP_REPO" "$BUCKET_REPO"; do
+# Push access to every target this channel writes, checked up front.
+# Discovering halfway through that the tap is unwritable leaves a published
+# release and a stale formula, which is worse than not having started.
+for r in $PUSH_TARGETS; do
   perm="$(gh api "repos/$r" --jq '.permissions.push' 2>/dev/null || echo false)"
   [ "$perm" = "true" ] || die "no push access to $r (gh account: $(gh api user --jq .login))"
   echo "    push ok: $r"
 done
 
+# The channel/branch pairing, named on BOTH sides when it is wrong. Being told
+# "you are on develop" is not actionable until the reader knows which channel
+# wanted which branch -- and getting this pair backwards is the mistake that
+# publishes a beta as production.
 branch="$(git rev-parse --abbrev-ref HEAD)"
-[ "$branch" = "$RELEASE_BRANCH" ] || die "releases are cut from $RELEASE_BRANCH, you are on $branch.
-  Merge develop into $RELEASE_BRANCH through a pull request first."
+if [ "$branch" != "$RELEASE_BRANCH" ]; then
+  if [ "$CHANNEL" = "beta" ]; then
+    die "a beta is cut from $RELEASE_BRANCH only, and you are on $branch."
+  fi
+  die "a production release is cut from $RELEASE_BRANCH only, and you are on $branch.
+  Promote $branch through a pull request first, or pass --beta to cut a
+  prerelease from where you are."
+fi
 
 [ -z "$(git status --porcelain)" ] || die "working tree is dirty. A release must be reproducible from a commit."
 
@@ -96,6 +151,18 @@ extract_notes() {
 
 if extract_notes; then
   echo "    notes from CHANGELOG.md ($(wc -l < "$notes_file" | tr -d " ") lines)"
+elif [ "$CHANNEL" = "beta" ]; then
+  # EXPECTED on a beta, not a warning. Fragments are collated into
+  # CHANGELOG.md at the production release, so a prerelease cut from develop
+  # legitimately has no section of its own, and telling the operator to
+  # generate one would have them collate a version that has not shipped.
+  echo "    no CHANGELOG.md section (expected for a prerelease); listing what is new"
+  {
+    printf 'Prerelease from %s. Not published to the Homebrew tap or the Scoop bucket.\n\n' \
+      "$RELEASE_BRANCH"
+    printf 'Commits since the last production release:\n\n'
+    git log --format='- %h %s' "origin/${ORION_RELEASE_BRANCH:-main}..HEAD" 2>/dev/null || true
+  } > "$notes_file"
 else
   echo "WARNING: no '## $VERSION_TAG' section in CHANGELOG.md; using a generic note." >&2
   echo "         Generate one with: orion changelog --version $VERSION_TAG" >&2
@@ -122,10 +189,14 @@ step "Building archives for $VERSION_TAG"
 # manifests rendered a moment later.
 run git tag -a "$VERSION_TAG" -m "orion $VERSION_TAG"
 if [ -n "$DRY_RUN" ]; then
-  echo "    [dry-run] make dist && scripts/render-packaging.sh $VERSION"
+  echo "    [dry-run] make dist"
+  [ "$CHANNEL" = "beta" ] || echo "    [dry-run] scripts/render-packaging.sh $VERSION"
 else
   make dist
-  scripts/render-packaging.sh "$VERSION"
+  # The formula and the manifest are only rendered on the channel that
+  # publishes them. Rendering them for a beta would leave a valid-looking
+  # orion.rb in dist/ pointing at a prerelease -- one copy away from the tap.
+  [ "$CHANNEL" = "beta" ] || scripts/render-packaging.sh "$VERSION"
   ls -1 dist/*.tar.gz dist/*.zip dist/checksums.txt
 fi
 
@@ -133,13 +204,18 @@ fi
 
 step "Publishing to $RELEASES_REPO"
 run git push origin "$VERSION_TAG"
+# --prerelease is what keeps a beta out of "latest" on the forge, which is
+# what `gh release download` and every naive script resolve to.
+prerelease_flag=""
+[ "$CHANNEL" = "beta" ] && prerelease_flag="--prerelease"
 if [ -n "$DRY_RUN" ]; then
-  echo "    [dry-run] gh release create $VERSION_TAG --repo $RELEASES_REPO ..."
+  echo "    [dry-run] gh release create $VERSION_TAG --repo $RELEASES_REPO $prerelease_flag ..."
 else
   gh release create "$VERSION_TAG" \
     --repo "$RELEASES_REPO" \
     --title "orion $VERSION_TAG" \
     --notes-file "$notes_file" \
+    $prerelease_flag \
     dist/orion_*.tar.gz dist/orion_*.zip dist/checksums.txt
 fi
 
@@ -165,12 +241,27 @@ publish_manifest() {
   rm -rf "$tmp"
 }
 
-publish_manifest "$TAP_REPO"    "dist/packaging/orion.rb"   "Formula/orion.rb"
-publish_manifest "$BUCKET_REPO" "dist/packaging/orion.json" "bucket/orion.json"
+if [ "$CHANNEL" = "beta" ]; then
+  step "Not touching $TAP_REPO or $BUCKET_REPO"
+  echo "    a beta never reaches a production installer: 'brew upgrade' would"
+  echo "    otherwise hand this build to a stable user, and semver would keep"
+  echo "    offering it as an upgrade because $VERSION_TAG sorts below ${VERSION_TAG%%-*}."
+else
+  publish_manifest "$TAP_REPO"    "dist/packaging/orion.rb"   "Formula/orion.rb"
+  publish_manifest "$BUCKET_REPO" "dist/packaging/orion.json" "bucket/orion.json"
+fi
 
 step "Done"
 echo "  release   https://github.com/$RELEASES_REPO/releases/tag/$VERSION_TAG"
-echo "  verify    brew update && brew install navjyotnishant/tap/orion"
+if [ "$CHANNEL" = "beta" ]; then
+  # NOT the brew line. Printing it here would tell the operator to verify a
+  # prerelease by installing from a tap that deliberately does not have it,
+  # and the install they got would be the previous production build.
+  echo "  verify    gh release download $VERSION_TAG --repo $RELEASES_REPO"
+  echo "  note      prerelease: the tap and the bucket still serve production"
+else
+  echo "  verify    brew update && brew install navjyotnishant/tap/orion"
+fi
 # An `[ ... ] && echo` as the final statement exits 1 when the test is false,
 # and under `set -e` that becomes the script's exit code: a successful release
 # reporting failure. Use an if, not a short-circuit, in tail position.

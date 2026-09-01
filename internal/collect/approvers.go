@@ -22,11 +22,23 @@ import (
 // do not mention anybody: tagging on those trains a room to mute the channel,
 // which costs the approval request the only advantage it has.
 
-// memberResolver turns a configured approver into the member id a mention
+// MemberResolver turns a configured approver into the member id a mention
 // needs. Satisfied by *slack.Client; separate from SlackAPI's other methods
 // only so the rendering below can be tested without a workspace.
-type memberResolver interface {
+type MemberResolver interface {
 	MemberID(who string) (string, error)
+}
+
+// ApproverTags is approverTags for callers outside this package.
+//
+// `orion release ship` asks the same people, in the same channel, for the
+// same kind of authority, and must notify them by the same rule (OR-116).
+// One definition rather than two, because a second copy that drifted would
+// fail SILENTLY: a message that names the approver and notifies nobody looks
+// identical to one that works, and the only symptom is a release nobody
+// answers.
+func ApproverTags(s MemberResolver, approvers []string) (tags, unresolved []string) {
+	return approverTags(s, approvers)
 }
 
 // approverTags renders slack.merge_approvers for the approval request.
@@ -36,7 +48,7 @@ type memberResolver interface {
 // error -- an approval request that fails to send because a lookup failed is
 // far worse than one that does not tag -- so every failure comes back in
 // unresolved for the run to report instead.
-func approverTags(s memberResolver, approvers []string) (tags, unresolved []string) {
+func approverTags(s MemberResolver, approvers []string) (tags, unresolved []string) {
 	for _, a := range approvers {
 		a = strings.TrimSpace(a)
 		if a == "" {

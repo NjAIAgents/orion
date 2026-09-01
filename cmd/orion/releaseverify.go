@@ -83,6 +83,29 @@ func ghOut(dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// branchBuild reports the commit CI ran on for a branch, and its conclusion.
+//
+// The branch's own PUSH build, not a pull request's: the push build is the
+// one that tested the tree that actually resulted.
+//
+// One definition, shared with `orion release ship` (OR-116). Two would
+// eventually disagree about whether a branch is green, and the disagreement
+// would show up as the verify step refusing a release the ship step had
+// already published -- or the reverse, which is worse.
+func branchBuild(root, branch string) (sha, state string) {
+	line := ghOut(root, "run", "list", "--branch", branch, "--event", "push",
+		"--limit", "1", "--json", "headSha,conclusion",
+		"--jq", `.[0] | .headSha + " " + (.conclusion // "")`)
+	parts := strings.Fields(line)
+	if len(parts) > 0 {
+		sha = parts[0]
+	}
+	if len(parts) > 1 {
+		state = parts[1]
+	}
+	return sha, state
+}
+
 func runReleaseVerify(args []string) {
 	var project, base string
 	rest := []string{}
@@ -142,19 +165,7 @@ func runReleaseVerify(args []string) {
 	_ = gitOut(root, "fetch", "--quiet", "origin")
 	in.HeadSHA = gitOut(root, "rev-parse", "origin/"+base)
 
-	// The build for the branch's own PUSH, not for a pull request: the push
-	// build is the one that tested the tree that actually resulted.
-	if line := ghOut(root, "run", "list", "--branch", base, "--event", "push",
-		"--limit", "1", "--json", "headSha,conclusion",
-		"--jq", `.[0] | .headSha + " " + (.conclusion // "")`); line != "" {
-		parts := strings.Fields(line)
-		if len(parts) > 0 {
-			in.BuildSHA = parts[0]
-		}
-		if len(parts) > 1 {
-			in.BuildState = parts[1]
-		}
-	}
+	in.BuildSHA, in.BuildState = branchBuild(root, base)
 
 	if out := ghOut(root, "pr", "list", "--base", base, "--state", "open",
 		"--json", "number", "--jq", `.[] | "#" + (.number|tostring)`); out != "" {

@@ -136,6 +136,15 @@ DEPENDENCIES
   orion njagents update       fast-forward Orion's own clone, if it has one
   orion njagents install      wire Orion's clone into a dir (only if no global)
 
+RELEASING (run by a person; orion watch has no path to any of it)
+  orion release                what the milestone verbs are; acts on nothing
+  orion release verify vX.Y.Z  the five promotion checks, reporting only
+  orion release ship vX.Y.Z    promote work -> release behind a Slack
+                               approval, then tag, build and publish
+  orion release ship vX.Y.Z --beta      prerelease from the work branch:
+                               no promotion, and no tap or bucket
+  orion release ship vX.Y.Z --dry-run   print what would ship, then stop
+
 MONITORING
   orion changelog --version vX.Y.Z  collate .changelog.d/ fragments into CHANGELOG.md
   orion changelog [--version vX.Y.Z]  no fragments: generate from commits (nj-agents)
