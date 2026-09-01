@@ -79,6 +79,62 @@ func TestABlockedRunStillAssignedTheTicketWhenItClaimedIt(t *testing.T) {
 	}
 }
 
+// Every ticket claimed in a run gets assigned, not just the first. If the
+// assign call happened once per Run instead of once per claim, only the
+// first ticket in a batch would ever show an assignee.
+func TestEveryClaimedTicketInABatchIsAssigned(t *testing.T) {
+	home := project(t, cfg)
+	j := &fakeJira{}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6", "FCIA-7"}, Out: &out, Home: home},
+		Deps{
+			Jira:      j,
+			Supervise: worked(t),
+			Push:      func(dir, branch string) error { return nil },
+			OpenPR: func(dir, branch, title, body, base string) (string, error) {
+				return "https://github.com/x/y/pull/4", nil
+			},
+		})
+
+	if len(res) != 2 {
+		t.Fatalf("results = %d, want both tickets to run", len(res))
+	}
+	if len(j.assigned) != 2 || j.assigned[0] != "FCIA-6" || j.assigned[1] != "FCIA-7" {
+		t.Fatalf("assigned = %v, want both tickets assigned once each", j.assigned)
+	}
+}
+
+// A failed run releases the label but the interface exposes no way to clear
+// an assignee -- so "stays assigned" here is really "nothing was ever asked
+// to clear it". Recorded to pin the current, correct behavior; a real
+// regression test for this would need an Unassign-style method to observe.
+func TestAFailedRunStillAssignedTheTicketWhenItClaimedIt(t *testing.T) {
+	home := project(t, cfg)
+	j := &fakeJira{}
+	var out strings.Builder
+
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(*workspace.Workspace, supervisor.Options) (*supervisor.Result, error) {
+				return &supervisor.Result{ExitCode: 1, Reason: "breaker tripped"}, nil
+			},
+			Push:   func(string, string) error { t.Fatal("pushed after a failed run"); return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	if res[0].Outcome != OutcomeFailed {
+		t.Fatalf("outcome = %q", res[0].Outcome)
+	}
+	if len(j.assigned) != 1 || j.assigned[0] != "FCIA-6" {
+		t.Errorf("assigned = %v, want the ticket assigned when it was claimed", j.assigned)
+	}
+	if !strings.Contains(j.labelLog(), "add:orion-failed remove:orion-working") {
+		t.Fatalf("the ticket was not released: %s", j.labelLog())
+	}
+}
+
 // The assignment is decoration next to the lock. A tracker that refuses it --
 // no Assign Issues permission, a deactivated account -- must cost a warning
 // and nothing else: a ticket worked but not assigned beats a run refused.
