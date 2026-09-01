@@ -184,12 +184,12 @@ fi
 # ---------------------------------------------------------------- the gate
 
 step "Gate: build, vet, gofmt, tests"
-go build ./...
-go vet ./...
-unformatted="$(gofmt -l . || true)"
-[ -z "$unformatted" ] || die "gofmt would change: $unformatted"
-go test ./... >/dev/null
-echo "    all green"
+# The gate lives in its own script (OR-259) so it can be run against a
+# deliberately broken tree in a test. It names the step that failed and shows
+# what that step printed, which this block did not: it ended in
+# `go test ./... >/dev/null`, and a v0.8.9 release stopped here -- promotion
+# already merged -- with "exit status 1" as the entire account of why.
+"${0%/*}/release-gate.sh"
 
 # ---------------------------------------------------------------- artifacts
 
