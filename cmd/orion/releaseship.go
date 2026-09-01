@@ -45,6 +45,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -298,9 +299,7 @@ func shipProduction(root string, cfg config.Config, in promote.ShipInputs,
 // command would now refuse -- correctly -- for an empty delta.
 func shipStopped(w io.Writer, log *events.Log, release, version string, err error) {
 	ui.Fail(w, "%v", err)
-	log.Emit(events.Event{Kind: events.KindFailed, Actor: events.ActorOrion,
-		Msg: "stopped after the promotion merged, before " + version +
-			" was tagged: " + err.Error()})
+	log.Emit(stoppedEvent(version, err))
 	ui.Warn(w, "%s IS PROMOTED AND UNRELEASED: the merge landed, no tag was pushed, "+
 		"and nothing was published.", release)
 	fmt.Fprintf(w, "          %s\n", ui.Dim(w, fmt.Sprintf(
@@ -309,6 +308,75 @@ func shipStopped(w io.Writer, log *events.Log, release, version string, err erro
 	fmt.Fprintf(w, "          %s\n", ui.Dim(w,
 		"re-running `orion release ship` would refuse: nothing is left to promote."))
 	os.Exit(1)
+}
+
+// stoppedEvent is the record shipStopped leaves behind.
+//
+// Separated from the printing and the exit so that it can be asserted on: by
+// the time anyone asks why a release stopped, this event is the only account
+// of it that still exists. OR-256 established that a refusal must leave a
+// record; OR-259 is the same principle one level down, because a record whose
+// reason is "exit status 1" records that something happened and nothing about
+// what.
+//
+// The output goes in Detail rather than Msg so that a log being scanned stays
+// one line per event, and the evidence is still there for whoever opens it.
+func stoppedEvent(version string, err error) events.Event {
+	e := events.Event{Kind: events.KindFailed, Actor: events.ActorOrion,
+		Msg: "stopped after the promotion merged, before " + version +
+			" was tagged: " + err.Error()}
+	var f *scriptFailure
+	if errors.As(err, &f) && f.output != "" {
+		e.Detail = map[string]any{"output": f.output}
+	}
+	return e
+}
+
+// scriptFailure is a failed scripts/release.sh run together with the tail of
+// what it printed.
+//
+// The output has to travel with the error rather than only down the terminal.
+// The script streams live, which is right for someone sitting watching it --
+// but that stream is gone the moment the window is closed, and the failure
+// this exists for is precisely the one nobody looks at until later.
+type scriptFailure struct {
+	err    error
+	output string
+}
+
+func (e *scriptFailure) Error() string { return "scripts/release.sh: " + e.err.Error() }
+func (e *scriptFailure) Unwrap() error { return e.err }
+
+// gateTailBytes is how much of a failed release script's output is kept.
+//
+// Bounded because the thing being watched cross-compiles six targets and runs
+// the whole test suite: all of it does not belong in a log line, and the end
+// of it is the part that says why it stopped.
+const gateTailBytes = 8 << 10
+
+// tailWriter keeps the last gateTailBytes written to it and drops the rest.
+//
+// Mutexed because exec.Cmd copies stdout and stderr on separate goroutines
+// when they are not *os.File, which is exactly what teeing makes them.
+type tailWriter struct {
+	mu sync.Mutex
+	b  []byte
+}
+
+func (t *tailWriter) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.b = append(t.b, p...)
+	if len(t.b) > gateTailBytes {
+		t.b = append([]byte(nil), t.b[len(t.b)-gateTailBytes:]...)
+	}
+	return len(p), nil
+}
+
+func (t *tailWriter) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return strings.TrimSpace(string(t.b))
 }
 
 // onInterrupt runs fn on the first SIGINT or SIGTERM, and returns a function
@@ -660,17 +728,28 @@ func sameRoot(a, b string) bool {
 	return ax == bx
 }
 
-// releaseScript runs scripts/release.sh, streaming its output.
+// releaseScript runs scripts/release.sh, streaming its output and keeping a
+// copy of the tail.
 //
 // Unbounded on purpose, unlike every gh call on the watch path: it
 // cross-compiles six targets and uploads them, which legitimately takes
 // minutes, and it is only ever run attended.
+//
+// Tee rather than capture (OR-259). The operator is watching this live, so
+// the stream has to stay on the terminal; the copy is for the event log,
+// which is what is left once the terminal is not.
 func releaseScript(root, version string, extra ...string) error {
 	cmd := exec.Command(filepath.Join(root, "scripts", "release.sh"),
 		append([]string{version}, extra...)...)
 	cmd.Dir = root
-	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
-	return cmd.Run()
+	tail := &tailWriter{}
+	cmd.Stdout = io.MultiWriter(os.Stdout, tail)
+	cmd.Stderr = io.MultiWriter(os.Stderr, tail)
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		return &scriptFailure{err: err, output: tail.String()}
+	}
+	return nil
 }
 
 func fileExists(path string) bool {
