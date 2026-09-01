@@ -89,6 +89,95 @@ func TestSetLabelsSendsOperationsNotAWholeList(t *testing.T) {
 	}
 }
 
+// The claim is assigned to whoever the credentials belong to -- the bot when
+// there is a bot account, the operator otherwise -- so the account id is
+// READ from the tracker rather than configured anywhere (OR-34).
+func TestAssignSelfSendsTheAuthenticatedAccount(t *testing.T) {
+	var putPath string
+	var putBody map[string]any
+	j := fakeJira(t, func(method, path string, body []byte) (int, string) {
+		if method == "GET" && strings.HasSuffix(path, "/myself") {
+			return 200, `{"accountId":"5b10a2","displayName":"Orion Bot"}`
+		}
+		putPath = path
+		_ = json.Unmarshal(body, &putBody)
+		return 204, `{}`
+	})
+	if err := j.AssignSelf("FCIA-1"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(putPath, "/issue/FCIA-1/assignee") {
+		t.Errorf("assigned via %q; the assignee endpoint needs only the assign "+
+			"permission, an edit also needs the field on the edit screen", putPath)
+	}
+	if putBody["accountId"] != "5b10a2" {
+		t.Errorf("body = %v, want the account /myself named", putBody)
+	}
+}
+
+// An account that cannot be resolved must be an error the caller can report,
+// not an assignment of the ticket to nobody.
+func TestAssignSelfFailsRatherThanAssigningNobody(t *testing.T) {
+	assigned := false
+	j := fakeJira(t, func(method, path string, body []byte) (int, string) {
+		if method == "GET" && strings.HasSuffix(path, "/myself") {
+			return 401, `{"message":"unauthorized"}`
+		}
+		assigned = true
+		return 204, `{}`
+	})
+	if err := j.AssignSelf("FCIA-1"); err == nil {
+		t.Error("a rejected /myself was reported as a successful assignment")
+	}
+	if assigned {
+		t.Error("the ticket was written to with no account resolved")
+	}
+}
+
+// A malformed /myself body -- Jira returning 200 with something that is not
+// the expected JSON shape -- must fail descriptively rather than panic or
+// silently resolve an empty account id.
+func TestSelfMalformedJSONFailsDescriptively(t *testing.T) {
+	assigned := false
+	j := fakeJira(t, func(method, path string, body []byte) (int, string) {
+		if method == "GET" && strings.HasSuffix(path, "/myself") {
+			return 200, `not json`
+		}
+		assigned = true
+		return 204, `{}`
+	})
+	err := j.AssignSelf("FCIA-1")
+	if err == nil {
+		t.Fatal("a malformed /myself body was reported as a successful assignment")
+	}
+	if !strings.Contains(err.Error(), "resolving the authenticated account") {
+		t.Errorf("error = %q, want it to name what failed", err.Error())
+	}
+	if assigned {
+		t.Error("the ticket was written to with no account resolved")
+	}
+}
+
+// A tracker that resolves the account fine but refuses the assignment itself
+// -- no Assign Issues permission, a deactivated account -- must still fail
+// descriptively; the caller (work.one) is the one that turns this into a
+// warning rather than a blocked run.
+func TestAssignSelfPermissionDeniedFailsDescriptively(t *testing.T) {
+	j := fakeJira(t, func(method, path string, body []byte) (int, string) {
+		if method == "GET" && strings.HasSuffix(path, "/myself") {
+			return 200, `{"accountId":"5b10a2"}`
+		}
+		return 403, `{"errorMessages":["You do not have permission to assign issues."]}`
+	})
+	err := j.AssignSelf("FCIA-1")
+	if err == nil {
+		t.Fatal("a 403 from the assignee endpoint was reported as success")
+	}
+	if !strings.Contains(err.Error(), "FCIA-1") || !strings.Contains(err.Error(), "403") {
+		t.Errorf("error = %q, want the ticket and status code named", err.Error())
+	}
+}
+
 func TestSetLabelsNoOpsMakesNoRequest(t *testing.T) {
 	called := false
 	j := fakeJira(t, func(method, path string, body []byte) (int, string) {
