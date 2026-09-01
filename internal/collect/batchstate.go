@@ -126,11 +126,22 @@ func (s batchState) resumable(base, baseSHA string, members []Member) bool {
 	if s.BaseSHA == "" || s.BaseSHA != baseSHA {
 		return false
 	}
-	if len(s.Members) != len(members) {
+	return sameMembers(s.Members, members)
+}
+
+// sameMembers reports whether a recorded member list is the set now on offer.
+//
+// Shared by both resume gates (OR-261). A validated batch may only merge the
+// set it proved, and a testing batch may only be waited on while the set it
+// published is still the set being asked about -- the same comparison for two
+// different reasons, and two copies of it would drift into disagreeing about
+// what "the same batch" means.
+func sameMembers(recorded []string, members []Member) bool {
+	if len(recorded) != len(members) {
 		return false
 	}
 	want := append([]string(nil), keysOf(members)...)
-	have := append([]string(nil), s.Members...)
+	have := append([]string(nil), recorded...)
 	sort.Strings(want)
 	sort.Strings(have)
 	for i := range want {
