@@ -26,11 +26,18 @@ package main
 // WHAT IT IS NOT. It does not decide WHETHER to release: that is the one
 // decision the branch model reserves for a human (OR-115). It automates the
 // ceremony around that decision -- preflight, promotion pull request, wait,
-// ask, merge, cut -- and every step is an attributed event in the log. A
-// failure at any step leaves everything inspectable, because an open pull
-// request is just an open pull request.
+// ask, merge, cut -- and every step, INCLUDING EVERY REFUSAL, is an attributed
+// event in the log. A failure at any step leaves everything inspectable,
+// because an open pull request is just an open pull request.
+//
+// The refusals were the exception until OR-256: the log opened after the
+// preflight, so the outcome this command produces most often was the one it
+// recorded least. The one remaining gap is stated rather than papered over --
+// a repository with no Orion binding still ships, on a nil log, with a
+// warning. See shipContext.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -122,9 +129,26 @@ func runReleaseShip(args []string) {
 		refusals = append(refusals,
 			script+" is missing, so nothing can be published from here")
 	}
+
+	// The log OPENS BEFORE THE PREFLIGHT (OR-256). It used to open after, so
+	// every refusal -- a dirty tree, red checks, an empty delta -- left no
+	// event at all, and the command's commonest outcome was its least
+	// recorded one. "Why didn't it ship last night?" is exactly the question
+	// asked afterwards, when the terminal is gone and the log is all there is.
+	//
+	// A dry run stays out of the log deliberately: it is a question, not a
+	// decision not to ship, and an event for it would read like one.
+	channelID, log, closeLog := shipContext(root, argFlag(args, "--project", ""), w)
+	defer closeLog()
+
 	if len(refusals) > 0 {
 		for _, r := range refusals {
 			ui.Fail(w, "%s", r)
+			// One event per guard rather than one for the set: which guard
+			// fired is the whole content of the record, and a count is not
+			// something anybody comes back to the log to learn.
+			log.Emit(events.Event{Kind: events.KindBlocked, Actor: events.ActorOrion,
+				Key: version, Msg: "refused to ship " + version + ": " + r})
 		}
 		ui.Fail(w, "%d refusal(s); nothing was promoted, tagged or published", len(refusals))
 		os.Exit(1)
@@ -135,8 +159,6 @@ func runReleaseShip(args []string) {
 		return
 	}
 
-	channelID, log, closeLog := shipContext(root, argFlag(args, "--project", ""), w)
-	defer closeLog()
 	log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorHuman,
 		Msg: fmt.Sprintf("release ship %s started on the %s channel", version, channel)})
 
@@ -237,6 +259,21 @@ func shipProduction(root string, cfg config.Config, in promote.ShipInputs,
 	// 4. The cut. Everything from here leaves the release branch promoted if
 	// it fails, which is a state worth naming rather than leaving to be
 	// inferred from a stack of git commands that half worked.
+	//
+	// AND THAT INCLUDES CTRL-C (OR-257). The two await loops each install a
+	// handler and each say something useful; this section had none, so an
+	// interrupt during the cross-compile and upload -- the longest step by a
+	// wide margin, and the one the operator is actually sitting watching --
+	// killed the process on Go's default handling. Promoted, unreleased, and
+	// not one word about it. The handler covers the whole irreversible
+	// section so that the same message a failure gets is what an interrupt
+	// gets, because the state they leave behind is identical.
+	stop := onInterrupt(func() {
+		shipStopped(w, log, release, in.Version,
+			errors.New("interrupted during the cut"))
+	})
+	defer stop()
+
 	if out, err := gitIn(root, "checkout", release); err != nil {
 		shipStopped(w, log, release, in.Version,
 			fmt.Errorf("could not check out %s: %s", release, firstLineOf(out)))
@@ -272,6 +309,31 @@ func shipStopped(w io.Writer, log *events.Log, release, version string, err erro
 	fmt.Fprintf(w, "          %s\n", ui.Dim(w,
 		"re-running `orion release ship` would refuse: nothing is left to promote."))
 	os.Exit(1)
+}
+
+// onInterrupt runs fn on the first SIGINT or SIGTERM, and returns a function
+// that takes the handler back down.
+//
+// A goroutine rather than a select, because the section it guards is not a
+// wait loop: it is a sequence of blocking calls, one of which is a
+// cross-compile and upload that runs for minutes. There is nowhere to poll a
+// channel from, so the signal has to arrive on its own thread and speak for
+// itself (OR-257). fn is expected not to return -- shipStopped exits.
+func onInterrupt(fn func()) (stop func()) {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-sig:
+			fn()
+		case <-done:
+		}
+	}()
+	return func() {
+		signal.Stop(sig)
+		close(done)
+	}
 }
 
 // awaitPRChecks polls the promotion until its checks settle.

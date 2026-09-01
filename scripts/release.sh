@@ -69,18 +69,29 @@ fi
 # The tag shape is per channel, and a mismatch names BOTH sides. "tag must
 # look like v1.2.3" is unhelpful when the caller's actual mistake was asking
 # for the wrong channel, which is the more common of the two.
-case "$CHANNEL:$VERSION_TAG" in
-  production:v[0-9]*.[0-9]*.[0-9]*)
-    case "$VERSION_TAG" in
-      *-*) die "'$VERSION_TAG' is a prerelease tag and this is the production channel.
+# The SHAPES live in scripts/tag-channel.sh, which is also what the release
+# workflow uses to derive a channel it was not told (OR-255). Two copies of
+# "is this a beta" drift, and the direction they drift in is a prerelease
+# reaching the tap. What stays here is the comparison and its wording: this
+# script is TOLD the channel and checks the tag agrees, which is a different
+# question from the workflow's, and the mismatch names BOTH sides -- "tag must
+# look like v1.2.3" is unhelpful when the caller's actual mistake was asking
+# for the wrong channel, which is the more common of the two.
+#
+# ${0%/*} rather than `dirname $0`: this script runs under a deliberately
+# minimal PATH in its own tests, and dirname is not on it. Parameter expansion
+# is a shell builtin and cannot be missing.
+IMPLIED="$("${0%/*}/tag-channel.sh" "$VERSION_TAG")" || die "$VERSION_TAG is not a release tag.
+  Expected vX.Y.Z for production, or vX.Y.Z-beta.N for a beta."
+if [ "$IMPLIED" != "$CHANNEL" ]; then
+  case "$CHANNEL" in
+    production) die "'$VERSION_TAG' is a prerelease tag and this is the production channel.
   A prerelease reaching the tap means 'brew upgrade' hands a beta to a stable
   user. Pass --beta to cut it as one." ;;
-    esac ;;
-  beta:v[0-9]*.[0-9]*.[0-9]*-beta.[0-9]*) ;;
-  production:*) die "a production tag must look like v1.2.3, got '$VERSION_TAG'" ;;
-  beta:*)       die "a beta tag must look like v1.2.3-beta.4 so it sorts below v1.2.3
+    beta) die "a beta tag must look like v1.2.3-beta.4 so it sorts below v1.2.3
   under semver, got '$VERSION_TAG'" ;;
-esac
+  esac
+fi
 VERSION="${VERSION_TAG#v}"
 
 # ---------------------------------------------------------------- preflight
