@@ -20,3 +20,4 @@ already have been decided against, on purpose.
 - [0014](0014-supervised-runs-get-a-curated-config-directory.md) — a supervised run gets a config directory Orion curates, and no MCP servers
 - [0015](0015-ci-authority-under-a-merge-ref.md) — under a merge ref Orion is the gate on landing, and `develop` keeps a post-merge check as the backstop
 - [0016](0016-fan-implementation-by-go-package.md) — implementation fans out by Go package, the implementer proposes and a deterministic check disposes, and only the parent verifies
+- [0017](0017-integration-state-machine-not-a-job-queue.md) — the integration state machine carries the sophistication; the queue is Go channels and JSON, with a git SHA recorded at every transition
