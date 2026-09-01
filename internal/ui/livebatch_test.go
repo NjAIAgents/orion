@@ -231,7 +231,12 @@ func TestTheBatchIsDrawnAboveTheTicketRows(t *testing.T) {
 		if batchAt < 0 && strings.Contains(p, "batch") && strings.Contains(p, "CI") {
 			batchAt = i
 		}
-		if rowAt < 0 && strings.Contains(p, "starting") {
+		// Located by KEY, not by stage: while a batch is testing the rows
+		// pair up two to a line and drop the stage, which is the same word
+		// on every member of one CI run. The key is on the row in every
+		// layout. The member list under the batch line also carries the key,
+		// so the row is the LAST line that does.
+		if strings.Contains(p, "OR-9") && !strings.Contains(p, "batch") {
 			rowAt = i
 		}
 	}
@@ -364,5 +369,104 @@ func TestAnEjectedMemberKeepsItsRowWhileTheBatchIsTesting(t *testing.T) {
 	keyLine := strings.Split(got, "\n")[1]
 	if strings.Contains(keyLine, "OR-229") {
 		t.Errorf("an ejected branch must not be listed as part of the CI run:\n%s", keyLine)
+	}
+}
+
+// isTicketRow distinguishes a rendered run from the batch's own member list,
+// which also names several keys on one line. A row leads with a spinner.
+func isTicketRow(p string) bool {
+	t := strings.TrimSpace(p)
+	if t == "" {
+		return false
+	}
+	return strings.ContainsAny(string([]rune(t)[0]), spinnerGlyphs+spinnerASCII)
+}
+
+// While the batch is TESTING the rows pair two to a line. That phase is the
+// one where a row each says least -- one CI run covers every member, so the
+// stage, the bar and the sparkline are the same story repeated -- and the
+// vertical space buys back what the batch block and its checks now take.
+func TestTestingPairsTheTicketRowsTwoToALine(t *testing.T) {
+	LiveReset()
+	defer LiveReset()
+	now := time.Now()
+	for _, k := range []string{"OR-223", "OR-224", "OR-242"} {
+		liveStart(k, now.Add(-10*time.Minute))
+	}
+	LiveBatchStart("orion/batch", "develop", []string{"OR-223", "OR-224", "OR-242"})
+	liveBatchPhase(BatchTesting, now)
+
+	var buf bytes.Buffer
+	lines := renderRegion(&buf, liveSnapshot(), now, 200)
+
+	var paired int
+	for _, l := range lines {
+		p := plain(l)
+		if isTicketRow(p) && strings.Contains(p, "OR-223") && strings.Contains(p, "OR-224") {
+			paired++
+		}
+	}
+	if paired != 1 {
+		t.Errorf("three runs must render as two lines of pairs, got %d paired line(s):\n%s",
+			paired, strings.Join(lines, "\n"))
+	}
+	// The odd one out still gets its own line rather than being dropped.
+	var sawThird bool
+	for _, l := range lines {
+		p := plain(l)
+		if isTicketRow(p) && strings.Contains(p, "OR-242") && !strings.Contains(p, "OR-223") {
+			sawThird = true
+		}
+	}
+	if !sawThird {
+		t.Errorf("an odd third run must still have a line:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// Every other phase keeps one row per ticket, because then the tickets really
+// are doing different things and the stage and sparkline are worth the space.
+func TestOnlyTestingPairsTheRows(t *testing.T) {
+	LiveReset()
+	defer LiveReset()
+	now := time.Now()
+	for _, k := range []string{"OR-223", "OR-224"} {
+		liveStart(k, now.Add(-10*time.Minute))
+	}
+	LiveBatchStart("orion/batch", "develop", []string{"OR-223", "OR-224"})
+
+	for _, phase := range []BatchPhase{BatchAssembling, BatchIsolating, BatchDone} {
+		liveBatchPhase(phase, now)
+		var buf bytes.Buffer
+		for _, l := range renderRegion(&buf, liveSnapshot(), now, 200) {
+			p := plain(l)
+			if !isTicketRow(p) {
+				continue
+			}
+			if strings.Contains(p, "OR-223") && strings.Contains(p, "OR-224") {
+				t.Errorf("%s must keep one row per ticket, got a paired line: %q", phase, p)
+			}
+		}
+	}
+}
+
+// A terminal too narrow for two cells keeps one row per ticket: a wrapped row
+// is two rows, and two wrapped rows are four -- more than the layout it was
+// meant to compress.
+func TestANarrowTerminalDoesNotPair(t *testing.T) {
+	LiveReset()
+	defer LiveReset()
+	now := time.Now()
+	for _, k := range []string{"OR-223", "OR-224"} {
+		liveStart(k, now.Add(-10*time.Minute))
+	}
+	LiveBatchStart("orion/batch", "develop", []string{"OR-223", "OR-224"})
+	liveBatchPhase(BatchTesting, now)
+
+	var buf bytes.Buffer
+	for _, l := range renderRegion(&buf, liveSnapshot(), now, 60) {
+		p := plain(l)
+		if isTicketRow(p) && strings.Contains(p, "OR-223") && strings.Contains(p, "OR-224") {
+			t.Errorf("60 columns is too narrow to pair, got: %q", p)
+		}
 	}
 }

@@ -819,10 +819,69 @@ func renderRegionAt(w io.Writer, st liveState, now time.Time, cols int, collapse
 		}
 		return out
 	}
+	// Two to a line while the batch is TESTING, per the mockup. That phase is
+	// the one where a full row per ticket says least: one CI run covers all of
+	// them, so the stage, the bar and the sparkline are the same story
+	// repeated, and the rows are worth compressing to buy back the vertical
+	// space the batch block and its checks now take.
+	//
+	// Every other phase keeps one row per ticket, because then the tickets
+	// really are doing different things.
+	if st.batch != nil && st.batch.phase == BatchTesting && pairedFits(cols) {
+		return append(out, renderPairedRows(w, st.rows, now, cols)...)
+	}
 	for _, row := range st.rows {
 		out = append(out, renderRow(w, row, now, cols))
 	}
 	return out
+}
+
+// pairedColumnWidth is what one half of a paired line gets.
+const pairedColumnWidth = 46
+
+// pairedFits reports whether two compact rows fit side by side.
+//
+// Below this the pair is worse than the thing it replaces: a wrapped row is
+// two rows, and two wrapped rows are four, which is more than the one-per-
+// ticket layout it was meant to compress.
+func pairedFits(cols int) bool {
+	return cols == 0 || cols >= pairedColumnWidth*2
+}
+
+// renderPairedRows draws two runs to a line.
+//
+// The compact cell drops the stage and the call count and keeps what differs
+// between two tickets in the same CI run: which ticket, whether it is moving,
+// how long it has been alive against its own median.
+func renderPairedRows(w io.Writer, rows []liveRun, now time.Time, cols int) []string {
+	var out []string
+	for i := 0; i < len(rows); i += 2 {
+		line := " " + pairedCell(w, rows[i], now)
+		if i+1 < len(rows) {
+			line += "  " + pairedCell(w, rows[i+1], now)
+		}
+		// Trailing pad on the last cell is invisible but real: it is columns
+		// the erase has to account for, and a line that ends in spaces wraps
+		// on a narrow terminal for nothing.
+		out = append(out, clip(strings.TrimRight(line, " "), cols))
+	}
+	return out
+}
+
+func pairedCell(w io.Writer, r liveRun, now time.Time) string {
+	elapsed := now.Sub(r.started)
+	cell := fmt.Sprintf("%s %s %s %s",
+		spinner(now),
+		paint(w, ticketColor(r.key), pad(r.key, liveKeyWidth)),
+		r.bar(w, elapsed),
+		pad(elapsedString(elapsed), liveElapsedWidth))
+	// Padded on DISPLAY cells, not bytes: paint() wraps the key in escapes
+	// that occupy no columns, and padding on length would stagger the second
+	// column by however much colour the first one used.
+	if n := displayCells(cell); n < pairedColumnWidth {
+		cell += strings.Repeat(" ", pairedColumnWidth-n)
+	}
+	return cell
 }
 
 // renderPlain is the off-terminal form: one line per run, per tick.
