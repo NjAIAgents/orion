@@ -580,10 +580,22 @@ func TestQuietMeasuredFromDispatchWhenNeverActive(t *testing.T) {
 	r := run("OR-237", events.ActorImplementer, "starting", now.Add(-90*time.Second))
 	// r.last is left at its zero value: no tool call has ever been recorded.
 
-	notes := r.notes(now)
-	if len(notes) != 1 || !strings.Contains(notes[0], "quiet 1m30s") {
+	// Asserted by presence rather than by position: this run has no median,
+	// so it also carries "no baseline yet", and which note comes first is not
+	// what this test is about.
+	if notes := r.notes(now); !hasNote(notes, "quiet 1m30s") {
 		t.Errorf("a run with no activity must be quiet from its dispatch time: %+v", notes)
 	}
+}
+
+// hasNote reports whether any note contains want.
+func hasNote(notes []string, want string) bool {
+	for _, n := range notes {
+		if strings.Contains(n, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // The quiet threshold is exactly 60 seconds: one tick short must not say it,
@@ -594,11 +606,11 @@ func TestQuietThresholdIsExactlySixtySeconds(t *testing.T) {
 	r.last = start
 
 	notAt59 := r.notes(start.Add(59 * time.Second))
-	if len(notAt59) != 0 {
+	if hasNote(notAt59, "quiet") {
 		t.Errorf("59 seconds of silence must not be reported quiet: %+v", notAt59)
 	}
 	atExactly60 := r.notes(start.Add(60 * time.Second))
-	if len(atExactly60) == 0 || !strings.Contains(atExactly60[0], "quiet") {
+	if !hasNote(atExactly60, "quiet") {
 		t.Errorf("exactly 60 seconds of silence must be reported quiet: %+v", atExactly60)
 	}
 }

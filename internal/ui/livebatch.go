@@ -310,18 +310,40 @@ func renderTesting(w io.Writer, b *liveBatch, now time.Time, cols int) []string 
 	bar := liveRun{median: b.median}.bar(w, elapsed)
 	ci := fmt.Sprintf("  %s  %d members  CI %s  %s",
 		paint(w, bold, "batch"), len(b.members), bar, elapsedString(elapsed))
+	// "median" names what the number IS. Without it "/ ~11m" reads as an
+	// estimate of when this run will finish, which is the prediction the bar
+	// deliberately refuses to make.
 	if b.median > 0 {
-		ci += Dim(w, fmt.Sprintf(" / ~%s", coarse(b.median)))
+		ci += Dim(w, fmt.Sprintf(" / ~%s median", coarse(b.median)))
+	} else {
+		// Same reason as liveRun.notes: a blank bar with nothing beside it
+		// reads as unbuilt rather than as unmeasured.
+		ci += "  " + Dim(w, "no baseline yet")
 	}
 	ci += "  " + Dim(w, fmt.Sprintf("run %d", b.runs))
 
 	var keys []string
+	var ejected []string
 	for _, m := range b.members {
-		if m.state != MemberEjected {
-			keys = append(keys, m.key)
+		if m.state == MemberEjected {
+			ejected = append(ejected, m.key)
+			continue
 		}
+		keys = append(keys, m.key)
 	}
-	return []string{clip(ci, cols), clip("    "+Dim(w, strings.Join(keys, "  ")), cols)}
+	out := []string{clip(ci, cols), clip("    "+Dim(w, strings.Join(keys, "  ")), cols)}
+	// An ejected branch is out of THIS run but not out of the picture, and it
+	// stays on screen saying so. Dropping it silently was the one thing the
+	// operator could not otherwise account for: a batch of four that names
+	// three members, with nothing anywhere explaining the fourth.
+	//
+	// Its own row rather than a name in the list above, because that list is
+	// "who is in this CI run" and it is not.
+	for _, key := range ejected {
+		g, note := memberGlyph(w, MemberEjected)
+		out = append(out, clip(fmt.Sprintf("    %s %s  %s", g, key, Dim(w, note)), cols))
+	}
+	return out
 }
 
 // renderIsolating draws the SEARCH, because the shape of the search is what

@@ -460,6 +460,18 @@ func (r liveRun) bar(w io.Writer, elapsed time.Duration) string {
 func (r liveRun) notes(now time.Time) []string {
 	var out []string
 	elapsed := now.Sub(r.started)
+	// A bar with no median draws nothing, which is right -- inventing a
+	// baseline is what OR-250 forbids -- and silent, which is not. Fourteen
+	// blank columns where every other row has a bar reads as a display that
+	// was never built rather than as a measurement that cannot honestly be
+	// made yet, and it was read exactly that way.
+	//
+	// So the absence is stated, in words, per OR-163. The vocabulary is
+	// batchcost.go's, deliberately: the same idea should read the same way
+	// wherever a baseline is missing.
+	if r.median <= 0 {
+		out = append(out, "no baseline yet")
+	}
 	if r.median > 0 && elapsed > r.median {
 		out = append(out, "running long "+liveSep+" median "+coarse(r.median))
 	}

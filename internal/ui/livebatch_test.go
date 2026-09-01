@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -291,5 +292,77 @@ func TestEveryBatchCallIsSafeWithNoBatchOpen(t *testing.T) {
 
 	if b := liveSnapshot().batch; b != nil {
 		t.Errorf("a batch appeared without one being started: %+v", b)
+	}
+}
+
+// A bar with no median draws nothing, which is honest -- inventing a baseline
+// is what OR-250 forbids. Drawing nothing SILENTLY is not: fourteen blank
+// columns read as a display that was never built, and were read exactly that
+// way. The absence has to say what it is (OR-264).
+func TestAMissingBaselineIsStatedRatherThanDrawnAsBlankSpace(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	r := liveRun{key: "OR-223", started: now.Add(-18 * time.Minute)}
+
+	notes := r.notes(now)
+	if !hasNote(notes, "no baseline yet") {
+		t.Errorf("a run with no median must say so rather than rendering blank: %+v", notes)
+	}
+	// And the bar itself still draws nothing: the fix is the words beside it,
+	// not a bar against a number nobody has.
+	if got := r.bar(io.Discard, 18*time.Minute); strings.TrimSpace(got) != "" {
+		t.Errorf("a bar with no median must stay blank, got %q", got)
+	}
+}
+
+// The batch bar carries the same rule, and labels the number as a MEDIAN.
+// Without that word "/ ~11m" reads as an estimate of when this run finishes,
+// which is the prediction the bar deliberately refuses to make.
+func TestTheBatchBarNamesItsMedianAndSaysWhenThereIsNone(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	withMedian := &liveBatch{
+		ref: "orion/batch", base: "develop", phase: BatchTesting, runs: 1,
+		members: []batchMember{{key: "OR-223"}}, median: 11 * time.Minute,
+		ciStarted: now.Add(-4 * time.Minute),
+	}
+	got := strings.Join(renderTesting(io.Discard, withMedian, now, 200), "\n")
+	if !strings.Contains(got, "median") {
+		t.Errorf("the batch bar does not name what its number is:\n%s", got)
+	}
+
+	none := &liveBatch{
+		ref: "orion/batch", base: "develop", phase: BatchTesting, runs: 1,
+		members: []batchMember{{key: "OR-223"}}, ciStarted: now.Add(-4 * time.Minute),
+	}
+	if got := strings.Join(renderTesting(io.Discard, none, now, 200), "\n"); !strings.Contains(got, "no baseline yet") {
+		t.Errorf("a batch with no baseline must say so:\n%s", got)
+	}
+}
+
+// An ejected branch is out of THIS run, not out of the picture. Dropping it
+// from the testing view left a batch of four naming three members with
+// nothing anywhere accounting for the fourth.
+func TestAnEjectedMemberKeepsItsRowWhileTheBatchIsTesting(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	b := &liveBatch{
+		ref: "orion/batch", base: "develop", phase: BatchTesting, runs: 1,
+		members: []batchMember{
+			{key: "OR-223"}, {key: "OR-229", state: MemberEjected}, {key: "OR-242"},
+		},
+		median: 11 * time.Minute, ciStarted: now.Add(-4 * time.Minute),
+	}
+	got := strings.Join(renderTesting(io.Discard, b, now, 200), "\n")
+
+	if !strings.Contains(got, "OR-229") {
+		t.Errorf("the ejected member vanished from the testing view:\n%s", got)
+	}
+	if !strings.Contains(got, "returns to the queue") {
+		t.Errorf("the ejected row must say it is coming back, not read as a failure:\n%s", got)
+	}
+	// It is NOT in the shared-run key list: that line is "who is in this CI
+	// run", and it is not.
+	keyLine := strings.Split(got, "\n")[1]
+	if strings.Contains(keyLine, "OR-229") {
+		t.Errorf("an ejected branch must not be listed as part of the CI run:\n%s", keyLine)
 	}
 }
