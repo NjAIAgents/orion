@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/supervisor"
+	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/work"
 )
 
@@ -43,6 +44,7 @@ func TestARateLimitStopsDispatchForTheWholeWatcher(t *testing.T) {
 		return res
 	}
 
+	ui.ConsoleReset() // OR-262
 	var buf bytes.Buffer
 	if err := Run(Options{
 		Out: &buf, Home: t.TempDir(), Interval: time.Millisecond, MaxConcurrent: 1,

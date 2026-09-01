@@ -140,6 +140,27 @@ func Reset(w io.Writer) {
 	console.have = false
 }
 
+// ConsoleReset forgets the destination as well as the last line, so nothing
+// about the previous run can suppress the next one's first line.
+//
+// Reset above is a boundary WITHIN a run and deliberately keeps console.w.
+// This is the boundary BETWEEN runs. It exists because the console is
+// process-global while sameWriter compares by pointer: once a writer is
+// collected, a new one can be allocated at the same address, compare equal to
+// the stale console.w, and have its first line swallowed by rule 3 as a
+// repeat of a line belonging to a run that has already ended. That is
+// invisible when it happens -- the text is counted, never written -- and it
+// depends on the allocator, so it appears as a test that passes locally and
+// fails perhaps one run in three on a busier machine (OR-262).
+//
+// For tests, and for a second watcher in one process, exactly as LiveReset.
+func ConsoleReset() {
+	console.mu.Lock()
+	defer console.mu.Unlock()
+	flushLocked()
+	console.w, console.have, console.repeat, console.last = nil, false, 0, Line{}
+}
+
 func flushLocked() {
 	if console.repeat == 0 || !console.have || console.w == nil {
 		return
