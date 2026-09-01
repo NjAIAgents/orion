@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -476,18 +478,77 @@ func columns() int {
 	return n
 }
 
-// terminalRows reads the terminal height from LINES, the counterpart to
-// columns() and limited the same way: it is the only source available without
-// a dependency, and a shell that does not export it leaves the height unknown.
+// terminalRows is the terminal height: LINES if a shell exported it, else
+// asked of the terminal itself.
 //
-// Absent means "do not grow". The frozen window (live.go) falls back to its
-// floor, which is the safe answer in a way that a guessed height is not: guess
-// too tall and the region goes off the top of the screen, which is the thing
-// the window exists to prevent.
+// LINES ALONE WAS NOT ENOUGH, and the way that failed is worth keeping. It is
+// a shell-internal variable: bash and zsh set it for themselves and do not
+// export it, so a child process sees nothing. Orion therefore never knew the
+// height of any interactive terminal it has ever run in, and the frozen window
+// sat permanently on its five-line floor. That was survivable while the block
+// was small; it stopped being survivable the moment the window grew a frame,
+// because a block sized without knowing the screen scrolls the region off the
+// top -- which is precisely the outcome the comment here used to say the
+// fallback was avoiding (OR-264).
+//
+// So ask stty, following internal/creds/prompt.go: Orion builds with an empty
+// go.sum, and a raw TIOCGWINSZ would need per-platform constants across six
+// cross-compile targets to save one exec that happens on resize, not per
+// frame. If that fails too the answer is still zero -- unknown, do not grow.
 func terminalRows() int {
-	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("LINES")))
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("LINES"))); err == nil && n >= 10 {
+		return n
+	}
+	return sttyRows()
+}
+
+// sttyRows asks the controlling terminal how tall it is, or 0.
+//
+// Cached, because this is read on every redraw -- four times a second, per
+// draw -- and forking a process at that rate to learn a number that changes
+// only when somebody drags a window would be the most expensive thing on the
+// screen by a wide margin. A SIGWINCH clears it (live.go).
+func sttyRows() int {
+	sttyOnce.Lock()
+	defer sttyOnce.Unlock()
+	if sttyCached != 0 {
+		return sttyCached
+	}
+	// /dev/tty rather than stdin: the region is drawn to stdout, and a piped
+	// stdin must not make a real terminal look sizeless.
+	cmd := exec.Command("stty", "size")
+	tty, err := os.Open("/dev/tty")
+	if err != nil {
+		return 0
+	}
+	defer tty.Close()
+	cmd.Stdin = tty
+	out, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	// "rows cols".
+	fields := strings.Fields(string(out))
+	if len(fields) != 2 {
+		return 0
+	}
+	n, err := strconv.Atoi(fields[0])
 	if err != nil || n < 10 {
 		return 0
 	}
+	sttyCached = n
 	return n
 }
+
+// invalidateTerminalSize drops the cached height, so the next redraw asks
+// again. Called on SIGWINCH.
+func invalidateTerminalSize() {
+	sttyOnce.Lock()
+	sttyCached = 0
+	sttyOnce.Unlock()
+}
+
+var (
+	sttyOnce   sync.Mutex
+	sttyCached int
+)

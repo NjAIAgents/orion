@@ -1020,10 +1020,25 @@ func max0(n int) int {
 func windowLines(recent []string, regionRows, termRows, cols int) []string {
 	// One row for the cursor itself, which sits below everything drawn.
 	avail := termRows - regionRows - 1
+
+	// THE REGION OUTRANKS THE FLOOR. The floor keeps five lines of history so
+	// the screen does not look dead, but on a terminal too short for both, an
+	// unconditional floor spends rows the region needs and the ticket rows go
+	// off the top -- the header still saying "3 running" over the empty space
+	// where they were. History is a convenience; the rows are the thing being
+	// watched, so the window yields (OR-264).
+	floor := liveWindowFloor
+	if termRows > 0 && avail < floor {
+		floor = avail
+	}
+	if floor < 0 {
+		floor = 0
+	}
+
 	start, rows := len(recent), 0
 	for i := len(recent) - 1; i >= 0; i-- {
 		r := screenRows(recent[i], cols)
-		if len(recent)-i > liveWindowFloor && (termRows <= 0 || rows+r > avail) {
+		if len(recent)-i > floor && (termRows <= 0 || rows+r > avail) {
 			break
 		}
 		rows += r
@@ -1317,10 +1332,22 @@ func (l *Live) loop() {
 	defer l.wg.Done()
 	t := time.NewTicker(liveRedraw)
 	defer t.Stop()
+	// The cached terminal size is dropped every so often so a resized window
+	// is picked up. A poll rather than SIGWINCH: the signal needs a
+	// platform-specific constant on six cross-compile targets, and re-asking
+	// stty once a second costs one exec where the alternative costs a
+	// build-tagged file per platform. A resize takes at most a second to
+	// reflow, which is below what anyone notices while dragging a window.
+	const resizeCheck = time.Second
+	resize := time.NewTicker(resizeCheck)
+	defer resize.Stop()
+
 	for {
 		select {
 		case <-l.done:
 			return
+		case <-resize.C:
+			invalidateTerminalSize()
 		case <-t.C:
 			l.lock.Lock()
 			l.eraseLocked()

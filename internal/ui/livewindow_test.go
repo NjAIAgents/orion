@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // lastFrame is what is on screen: everything after the final erase.
@@ -484,5 +485,45 @@ func TestNoChatterDrawsNoFrame(t *testing.T) {
 	redraw(l)
 	if strings.Contains(b.String(), "recent") {
 		t.Errorf("an empty window must not draw a frame:\n%s", b.String())
+	}
+}
+
+// THE REGION OUTRANKS THE WINDOW FLOOR. On a terminal too short for both, an
+// unconditional five-line floor spends rows the region needs and the ticket
+// rows go off the top -- with the header still saying "3 running" over the
+// empty space where they were, which is exactly how this was reported
+// (OR-264).
+func TestAShortTerminalKeepsTheRowsAndShrinksTheWindow(t *testing.T) {
+	t.Setenv("COLUMNS", "100")
+	// Twelve rows for a region that needs most of them: rule, header, blank
+	// and three ticket rows, plus the window's own frame.
+	t.Setenv("LINES", "12")
+	LiveReset()
+	t.Cleanup(LiveReset)
+
+	now := time.Now()
+	for _, k := range []string{"OR-223", "OR-224", "OR-242"} {
+		liveStart(k, now.Add(-10*time.Minute))
+	}
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	for i := 0; i < 20; i++ {
+		if _, err := fmt.Fprintf(l, "chatter-%02d\n", i); err != nil {
+			t.Fatalf("writing: %v", err)
+		}
+	}
+	got := lastFrame(b.String())
+
+	// Every ticket row survived.
+	for _, k := range []string{"OR-223", "OR-224", "OR-242"} {
+		if !strings.Contains(got, k) {
+			t.Errorf("%s was pushed off a short terminal:\n%s", k, got)
+		}
+	}
+	// And the whole block still fits, which is what makes that true on a real
+	// terminal rather than only in a buffer.
+	if rows := strings.Count(strings.TrimRight(got, "\n"), "\n") + 1; rows > 12 {
+		t.Errorf("the block is %d rows on a 12-row terminal:\n%s", rows, got)
 	}
 }
