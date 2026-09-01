@@ -170,6 +170,10 @@ type TrackerAPI interface {
 	// as itself, which is what Orion did before hierarchy existed.
 	Children(key string) ([]tracker.Issue, error)
 	SetLabels(key string, add, remove []string) error
+	// AssignSelf puts the ticket on the account Orion authenticates as, so
+	// the board's assignee column names whoever is holding it rather than
+	// staying empty through the whole run (OR-34).
+	AssignSelf(key string) error
 	TransitionTo(key, status string) error
 	Comment(key, text string) error
 }
@@ -512,6 +516,26 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		if err := setStage(deps, key, actors.StageLabel(events.ActorOrion), ""); err != nil {
 			ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
 				"the board will not say which actor holds it: %v", err)
+		}
+		// And WHO holds it, in the field a board actually shows. Labels are
+		// Orion's own vocabulary; the assignee column is the one anybody
+		// scanning a sprint board reads, and until now a claimed ticket
+		// moved itself to In Progress with that column empty (OR-34).
+		//
+		// A THIRD request, best-effort, for the same reason the stage label
+		// is its own: the claim is the lock, and a tracker that refuses an
+		// assignment -- no Assign Issues permission, a deactivated account --
+		// must not be able to fail a run over it. A ticket that gets worked
+		// but not assigned is far better than a run refused.
+		//
+		// Nothing clears it on release. On a finished ticket the assignee is
+		// the record of who did the work, which is what a reader expects it
+		// to mean; on a failed or blocked one it names the person to go to.
+		// Unassigning would throw both away to avoid a misreading the status
+		// field already rules out.
+		if err := deps.Jira.AssignSelf(key); err != nil {
+			ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+				"the board will not say who holds it: %v", err)
 		}
 	}
 
