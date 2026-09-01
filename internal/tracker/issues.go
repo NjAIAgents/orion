@@ -362,6 +362,68 @@ func (j *Jira) SetLabels(key string, add, remove []string) error {
 	return nil
 }
 
+// AssignSelf puts the issue on the account Orion authenticates as.
+//
+// A claim used to be a LABEL and nothing else, so a board showed an
+// unassigned ticket moving itself to In Progress -- the one column a human
+// scans to answer "who is on this" was the one column that stayed empty
+// (OR-34).
+//
+// WHICH account this is falls out of whose token Orion runs with, and that
+// is deliberate. A deployment that has a bot Jira account gives Orion the
+// bot's token, and the board names the bot -- honest about who is doing the
+// work. A deployment without one gives Orion the operator's token, and the
+// board names the person accountable for the run -- which needs no new
+// account and works today. There is nothing to configure and nothing that
+// can drift, because it is the same identity every other write on the
+// ticket already carries.
+//
+// The dedicated assignee endpoint rather than an issue edit: assigning needs
+// only the Assign Issues permission, where an edit also requires the field
+// to be present on the project's edit screen.
+func (j *Jira) AssignSelf(key string) error {
+	id, err := j.self()
+	if err != nil {
+		return err
+	}
+	code, body, err := j.do("PUT",
+		"/rest/api/3/issue/"+url.PathEscape(key)+"/assignee",
+		map[string]any{"accountId": id})
+	if err != nil {
+		return err
+	}
+	if code >= 400 {
+		return fmt.Errorf("assigning %s: %d %s", key, code, snippet(body))
+	}
+	return nil
+}
+
+// self is the account id behind the credentials in use.
+//
+// Its own request rather than Probe's, which resolves the same id but also
+// runs a permission check this does not need. Uncached on purpose: it costs
+// one GET against a claim that already spends several tracker writes and a
+// whole agent run, and a cached id would outlive a credential change.
+func (j *Jira) self() (string, error) {
+	code, body, err := j.do("GET", "/rest/api/3/myself", nil)
+	if err != nil {
+		return "", err
+	}
+	if code >= 400 {
+		return "", fmt.Errorf("resolving the authenticated account: %d %s", code, snippet(body))
+	}
+	var me struct {
+		AccountID string `json:"accountId"`
+	}
+	if err := json.Unmarshal(body, &me); err != nil {
+		return "", fmt.Errorf("resolving the authenticated account: %w", err)
+	}
+	if me.AccountID == "" {
+		return "", fmt.Errorf("the tracker named no account for these credentials")
+	}
+	return me.AccountID, nil
+}
+
 // Comment posts a plain-text comment, wrapped in the document format Jira
 // Cloud's v3 API requires.
 func (j *Jira) Comment(key, text string) error {
