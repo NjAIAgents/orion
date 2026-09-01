@@ -89,6 +89,51 @@ func TestSetLabelsSendsOperationsNotAWholeList(t *testing.T) {
 	}
 }
 
+// The claim is assigned to whoever the credentials belong to -- the bot when
+// there is a bot account, the operator otherwise -- so the account id is
+// READ from the tracker rather than configured anywhere (OR-34).
+func TestAssignSelfSendsTheAuthenticatedAccount(t *testing.T) {
+	var putPath string
+	var putBody map[string]any
+	j := fakeJira(t, func(method, path string, body []byte) (int, string) {
+		if method == "GET" && strings.HasSuffix(path, "/myself") {
+			return 200, `{"accountId":"5b10a2","displayName":"Orion Bot"}`
+		}
+		putPath = path
+		_ = json.Unmarshal(body, &putBody)
+		return 204, `{}`
+	})
+	if err := j.AssignSelf("FCIA-1"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(putPath, "/issue/FCIA-1/assignee") {
+		t.Errorf("assigned via %q; the assignee endpoint needs only the assign "+
+			"permission, an edit also needs the field on the edit screen", putPath)
+	}
+	if putBody["accountId"] != "5b10a2" {
+		t.Errorf("body = %v, want the account /myself named", putBody)
+	}
+}
+
+// An account that cannot be resolved must be an error the caller can report,
+// not an assignment of the ticket to nobody.
+func TestAssignSelfFailsRatherThanAssigningNobody(t *testing.T) {
+	assigned := false
+	j := fakeJira(t, func(method, path string, body []byte) (int, string) {
+		if method == "GET" && strings.HasSuffix(path, "/myself") {
+			return 401, `{"message":"unauthorized"}`
+		}
+		assigned = true
+		return 204, `{}`
+	})
+	if err := j.AssignSelf("FCIA-1"); err == nil {
+		t.Error("a rejected /myself was reported as a successful assignment")
+	}
+	if assigned {
+		t.Error("the ticket was written to with no account resolved")
+	}
+}
+
 func TestSetLabelsNoOpsMakesNoRequest(t *testing.T) {
 	called := false
 	j := fakeJira(t, func(method, path string, body []byte) (int, string) {
