@@ -29,6 +29,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/orion-sdlc/orion/internal/actors"
@@ -153,7 +154,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 	}
 
 	out = qaOutcome{Ran: true}
-	findings, clean, ok, qaSession := qaReadVerdict(job, "", res, deps, log, w)
+	findings, clean, ok, qaSession := qaReadVerdict(job, cfg.QA, "", res, deps, log, w)
 	if !ok {
 		qaNoVerdict(job, deps, log, w)
 		return out
@@ -248,7 +249,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 			qaPostRound(deps, report)
 			return out
 		}
-		findings, clean, ok, qaSession = qaReadVerdict(job, qaSession, res, deps, log, w)
+		findings, clean, ok, qaSession = qaReadVerdict(job, cfg.QA, qaSession, res, deps, log, w)
 		if !ok {
 			report.Verdict = "Re-verification ended without a verdict, so whether the fix " +
 				"cleared this is unknown."
@@ -607,8 +608,8 @@ const (
 // ok is false when QA still did not answer, or when the re-ask itself did not
 // finish. The caller escalates to a person; it must not guess. next is QA's
 // session to carry forward, which the re-ask may replace.
-func qaReadVerdict(job qaJob, session string, res *supervisor.Result, deps Deps,
-	log *events.Log, w io.Writer) (findings string, clean, ok bool, next string) {
+func qaReadVerdict(job qaJob, qa config.QA, session string, res *supervisor.Result,
+	deps Deps, log *events.Log, w io.Writer) (findings string, clean, ok bool, next string) {
 
 	next = session
 	if res.SessionID != "" {
@@ -629,16 +630,35 @@ func qaReadVerdict(job qaJob, session string, res *supervisor.Result, deps Deps,
 	ui.Say(w, job.Key, events.ActorQA, ui.VerbWarn,
 		"ended without a verdict; asking once for one rather than dispatching a fix round")
 
+	// Scaled to the run being resumed (OR-252). A re-ask against a session
+	// that worked for thirty minutes is not the one-line job the flat cap
+	// assumed, and on OR-248 the flat cap killed it: the change reached a
+	// pull request with no QA opinion at all.
+	budget := qa.VerdictBudget(parentMinutes(res))
+
 	again, err := deps.Supervise(job.WS, supervisor.Options{
 		Stage: "qa", Resume: next,
 		Prompt:     supervisor.QAVerdictMessage(),
 		Model:      actors.Model(events.ActorQA),
 		Effort:     actors.Effort(events.ActorQA),
-		MaxMinutes: qaVerdictMaxMinutes, MaxTurns: qaVerdictMaxTurns,
+		MaxMinutes: budget, MaxTurns: qaVerdictMaxTurns,
 		OnActivity: ActivityLogger(log, w, job.Key, events.ActorQA),
 		Actor:      events.ActorQA, Key: job.Key,
 	})
 	if !qaRan(again, err, job.Key, log, w) {
+		// A KILLED RE-ASK IS NOT QA DECLINING TO ANSWER, and the two need
+		// different words because they need different fixes. "Gave no
+		// verdict, even when asked for one" reads as QA refusing; the truth
+		// here is that it never got the chance, and the lever is the budget.
+		if killedByClock(again, budget) {
+			ui.Say(w, job.Key, events.ActorQA, ui.VerbWarn,
+				"the re-ask ran out of time (%d minute budget for a %d minute run); "+
+					"raise it with `orion config limits qa.verdict_minutes N`",
+				budget, parentMinutes(res))
+			log.Emitf(events.KindQA, events.ActorQA,
+				"the verdict re-ask was killed at its %d minute budget; "+
+					"QA did not decline to answer, it was not given time to", budget)
+		}
 		return "", false, false, next
 	}
 	if again.SessionID != "" {
@@ -835,4 +855,36 @@ func qaTools(cfg config.Config, home string) supervisor.QATools {
 		}
 	}
 	return t
+}
+
+// parentMinutes is how long the run being resumed actually took, rounded up.
+//
+// ROUNDED UP, and never zero for a run that did anything: a re-ask against a
+// run of forty seconds should not compute a budget of zero minutes and then
+// fall back to the floor for the wrong reason. The floor is a decision, not
+// an accident of integer division.
+func parentMinutes(res *supervisor.Result) int {
+	if res == nil || res.Duration <= 0 {
+		return 0
+	}
+	m := int(res.Duration.Round(time.Minute) / time.Minute)
+	if m < 1 {
+		return 1
+	}
+	return m
+}
+
+// killedByClock reports whether a run ended because it ran out of wall clock,
+// rather than for any other reason.
+//
+// The distinction the operator needs: a re-ask that was KILLED tells them to
+// raise a budget, and one that finished without answering tells them QA has
+// nothing to say. Reporting the first as the second sends them to read a
+// diff when the fix was a number.
+func killedByClock(res *supervisor.Result, budget int) bool {
+	if res == nil || !res.Killed {
+		return false
+	}
+	return strings.Contains(res.Reason, "wall clock") ||
+		strings.Contains(res.Reason, fmt.Sprintf("%d minute", budget))
 }
