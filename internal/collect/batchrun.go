@@ -377,12 +377,18 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	for _, line := range b.Describe() {
 		fmt.Fprintf(w, "          %s\n", ui.Dim(w, line))
 	}
+	// The baseline is read from THIS repository's own history, not modelled
+	// (OR-250). Past per-branch landings are in the log as a push followed by
+	// a merge; their median is what the old path actually cost here, on this
+	// machine, with this CI.
+	base := perBranchBaseline(events.Path(ws.Dir))
 	ui.Say(w, "", events.ActorOrion, ui.VerbOK,
-		"the batch cost %d CI run(s) for %d branch(es)", b.Runs, len(members))
+		"the batch cost %s", costLine(b.Runs, len(members), b.Elapsed, base))
 	log.Emitf(events.KindNote, events.ActorOrion,
-		"batch on %s: %d run(s), landed=%v ejected=%v culprit=%v deferred=%v",
-		ref, b.Runs, b.Members(Landed), b.Members(Ejected),
-		b.Members(Culprit), b.Members(Deferred))
+		"batch on %s: %d run(s) in %s, landed=%v ejected=%v culprit=%v deferred=%v "+
+			"(per-branch median %s over %d landing(s))",
+		ref, b.Runs, round(b.Elapsed), b.Members(Landed), b.Members(Ejected),
+		b.Members(Culprit), b.Members(Deferred), round(base.Median), base.Samples)
 
 	var out []Result
 	for _, r := range b.Results {
