@@ -744,6 +744,14 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 			res.Reason = msg
 			fmt.Fprintf(logFile, "\n[orion] %s\n", res.Reason)
 		}
+		// Every OTHER non-zero exit, which classify() could only call
+		// "claude exited N" (OR-245). Last, so it never speaks over the two
+		// specific readings above -- both of those know something this one
+		// would have to infer.
+		if msg, named := FailureReason(tail.String(), res); named {
+			res.Reason = msg
+			fmt.Fprintf(logFile, "\n[orion] %s\n", res.Reason)
+		}
 	case <-ctx.Done():
 		res.Killed = true
 		res.Duration = time.Since(started)
