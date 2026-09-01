@@ -187,6 +187,28 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 	}
 	base := cfg.VCS.WorkBranch
 	baseSHA, err := g.SHAOf(base)
+
+	// A TESTING batch is resumed before the validated-batch gate below, and
+	// the order is the whole of OR-261.
+	//
+	// resumable() answers "may this PROOF still be used to merge?", so it
+	// requires a validated status by construction. A batch whose CI is still
+	// running has no proof yet -- and asking that question of it returned
+	// false, cleared the state and reassembled. Every tick. The testing branch
+	// twenty lines down was unreachable from the day it was written, which is
+	// exactly the re-proving OR-251 exists to prevent, and the reassembly then
+	// failed on the ref's own leftover worktree so nothing ever landed.
+	//
+	// The checks that DO apply to a testing batch are made here rather than
+	// borrowed from resumable(): same base branch, same members, and a base
+	// that has not moved. A moved base is not merely stale here, it means the
+	// build being waited on is testing a tree that no longer exists.
+	if err == nil && st.Status == batchTesting &&
+		st.Base == base && st.BaseSHA != "" && st.BaseSHA == baseSHA &&
+		sameMembers(st.Members, members) {
+		return resumeTesting(st, members, cfg, opts, deps, g, ws, log, w), true
+	}
+
 	if err != nil || !st.resumable(base, baseSHA, members) {
 		if st.BaseSHA != "" && baseSHA != "" && st.BaseSHA != baseSHA {
 			ui.Warn(w, "%s moved since the batch was proved green; "+
@@ -195,14 +217,6 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 		}
 		clearBatchState(ws.Dir)
 		return nil, false
-	}
-
-	// A batch still building resumes to ONE more status read, never to a
-	// fresh assembly: the ref is published, its pull request is open, and the
-	// build being waited for is already running. Re-cutting would abandon it
-	// and buy another.
-	if st.Status == batchTesting {
-		return resumeTesting(st, members, cfg, opts, deps, g, ws, log, w), true
 	}
 
 	approve := batchApprover(cfg, opts, deps, ws, log, w)
@@ -411,12 +425,31 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	// a merge; their median is what the old path actually cost here, on this
 	// machine, with this CI.
 	base := perBranchBaseline(events.Path(ws.Dir))
-	ui.Say(w, "", events.ActorOrion, ui.VerbOK,
-		"the batch cost %s", costLine(b.Runs, len(members), b.Elapsed, base))
-	// Built by events.BatchNote rather than by a Printf here, because the
-	// dashboard reads this sentence back and the two used to agree only by
-	// coincidence (OR-258). One format, one place, tested against itself.
 	landed := b.Members(Landed)
+
+	// A BATCH THAT LANDED NOTHING IS NOT A COST, IT IS A FAILURE (OR-261).
+	//
+	// This printed "the batch cost 0 CI runs for 2 branches, in 1s" with a
+	// green tick, once a minute all night, while develop never moved and both
+	// members sat unmerged. Zero runs in one second is the shape of a cycle
+	// that did no work; rendering it as an accomplishment is how a stall reads
+	// as success to somebody scrolling past.
+	if len(landed) == 0 {
+		ui.Warn(w, "the batch landed nothing: %s",
+			costLine(b.Runs, len(members), b.Elapsed, base))
+	} else {
+		ui.Say(w, "", events.ActorOrion, ui.VerbOK,
+			"the batch cost %s", costLine(b.Runs, len(members), b.Elapsed, base))
+	}
+
+	// The note is emitted either way. A batch that landed nothing is still a
+	// batch that happened, and the dashboard reads this sentence to count
+	// runs spent -- dropping it would hide the cost of exactly the cycles
+	// worth seeing.
+	//
+	// Built by events.BatchNote rather than by a Printf here, because the
+	// dashboard reads it back and the two used to agree only by coincidence
+	// (OR-258). One format, one place, tested against itself.
 	log.Emitf(events.KindNote, events.ActorOrion, "%s", events.BatchNote{
 		Ref: ref, Runs: b.Runs, Elapsed: b.Elapsed,
 		Landed: landed, Ejected: b.Members(Ejected),

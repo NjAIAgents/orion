@@ -64,10 +64,31 @@ func (r repoGit) dir() string { return r.ws.CloneDir() }
 //
 // Discarding rather than refusing: the ref is ephemeral by definition, and a
 // leftover from an interrupted batch is not a reason to refuse the next one.
-// It is created DETACHED from any worktree, so nothing has it checked out and
-// deleting it later cannot disturb a job.
+// THE REF'S OWN WORKTREE IS RELEASED FIRST, and that is not housekeeping
+// (OR-261). MergeInto checks the ref out in a worktree to merge into, and git
+// refuses to force-update a branch that any worktree holds:
+//
+//	fatal: cannot force update the branch 'orion/batch' used by worktree at ...
+//
+// A batch that parks to wait for CI returns before DropRef, so its worktree
+// outlives the tick by design. Without this, the next batch hits that fatal
+// forever -- observed on 2026-09-01, looping every minute overnight and
+// landing nothing. This doc line used to claim the ref was "created DETACHED
+// from any worktree, so nothing has it checked out"; MergeInto had made that
+// false, and the sentence is now true because this makes it true rather than
+// because it was never violated.
+//
+// Removing only the worktree for THIS ref, and only ever a batch ref: a job
+// worktree belongs to a ticket that may still be running.
 func (r repoGit) CutRef(ref, base string) error {
 	defer workspace.LockRepo(r.ws)()
+
+	_, _ = git(r.dir(), "worktree", "remove", "--force", r.worktreePath(ref))
+	// Prune the administrative record too. A worktree directory deleted by
+	// hand -- which is what an operator does when this wedges -- leaves git
+	// still believing the branch is checked out, so the fatal survives the
+	// cleanup that was supposed to fix it.
+	_, _ = git(r.dir(), "worktree", "prune")
 
 	if out, err := git(r.dir(), "fetch", "--prune", "origin"); err != nil {
 		return fmt.Errorf("fetching before assembling the batch: %w\n%s", err, out)

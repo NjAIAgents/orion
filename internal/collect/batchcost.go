@@ -24,6 +24,7 @@ package collect
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/events"
@@ -143,5 +144,16 @@ func plural(n int, unit string) string {
 	if n == 1 {
 		return fmt.Sprintf("1 %s", unit)
 	}
-	return fmt.Sprintf("%d %ss", n, unit)
+	// "branch" needs -es, and a bare -s produced "2 branchs" on every batch
+	// this repository has ever run. The sibilant endings are the only ones
+	// these units use; a general pluraliser would be more code than the two
+	// words that reach here deserve.
+	suffix := "s"
+	for _, end := range []string{"ch", "sh", "s", "x", "z"} {
+		if strings.HasSuffix(unit, end) {
+			suffix = "es"
+			break
+		}
+	}
+	return fmt.Sprintf("%d %s%s", n, unit, suffix)
 }
