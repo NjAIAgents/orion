@@ -14,14 +14,49 @@ import (
 type fakeGit struct {
 	conflict map[string]bool     // branch -> will not merge
 	contents map[string][]string // ref -> branches merged into it
+
+	// sha is what SHAOf answers, per ref. A base that "moves" during a batch
+	// is modelled by writing a new value here between calls, which is how the
+	// ADR 0017 precondition is tested without a repository.
+	sha map[string]string
+	// landed records what LandRef merged, in order, so a test can assert that
+	// the ref that was TESTED is the ref that merged -- the property the whole
+	// design turns on.
+	landed   []string
+	landErr  error
+	landInto map[string]string
 }
 
 func newFakeGit(conflicting ...string) *fakeGit {
-	g := &fakeGit{conflict: map[string]bool{}, contents: map[string][]string{}}
+	g := &fakeGit{
+		conflict: map[string]bool{}, contents: map[string][]string{},
+		sha: map[string]string{}, landInto: map[string]string{},
+	}
 	for _, b := range conflicting {
 		g.conflict[b] = true
 	}
 	return g
+}
+
+// SHAOf answers from the map, defaulting to a stable value derived from the
+// name so a test that does not care about SHAs does not have to set any.
+func (g *fakeGit) SHAOf(ref string) (string, error) {
+	if s, ok := g.sha[ref]; ok {
+		return s, nil
+	}
+	return "sha-" + ref, nil
+}
+
+func (g *fakeGit) LandRef(ref, base string) (string, error) {
+	if g.landErr != nil {
+		return "", g.landErr
+	}
+	g.landed = append(g.landed, ref)
+	g.landInto[base] = ref
+	// Base now points at what landed, which is what a real merge leaves
+	// behind and what a later SHAOf would report.
+	g.sha[base] = "sha-after-" + ref
+	return g.sha[base], nil
 }
 
 func (g *fakeGit) CutRef(ref, base string) error { g.contents[ref] = nil; return nil }
@@ -39,10 +74,24 @@ type fakeTester struct {
 	g   *fakeGit
 	bad map[string]bool
 	n   int
+	// tested records every ref a run was spent on, so a test can assert that
+	// what merged is what was proven rather than merely what was assembled.
+	tested map[string]bool
+	// onTest runs during a test, standing in for the world changing while CI
+	// is in flight -- a person pushing to the base being the case that
+	// matters (ADR 0017).
+	onTest func()
 }
 
 func (t *fakeTester) Test(ref string) (bool, error) {
 	t.n++
+	if t.tested == nil {
+		t.tested = map[string]bool{}
+	}
+	t.tested[ref] = true
+	if t.onTest != nil {
+		t.onTest()
+	}
 	for _, b := range t.g.contents[ref] {
 		if t.bad[b] {
 			return false, nil
@@ -122,8 +171,13 @@ func TestABatchThatFullyConflictsTestsNothing(t *testing.T) {
 	}
 }
 
-// The point of isolation: one bad member must not sink the other seven.
-func TestOneCulpritIsIsolatedAndTheRestAreOfferedAgain(t *testing.T) {
+// The point of isolation: one bad member must not sink the other seven, and
+// since OR-253 the seven LAND rather than waiting for a later batch.
+//
+// Deferring them was the old contract and it is what let one bad branch hold
+// good work hostage for a whole cycle. The culprit goes back to the coding
+// queue; the rest are not punished for having been assembled beside it.
+func TestOneCulpritIsIsolatedAndTheRestStillLand(t *testing.T) {
 	g := newFakeGit()
 	tr := &fakeTester{g: g, bad: map[string]bool{"orion/or-6": true}}
 
@@ -135,15 +189,127 @@ func TestOneCulpritIsIsolatedAndTheRestAreOfferedAgain(t *testing.T) {
 	if got := b.Members(Culprit); len(got) != 1 || got[0] != "OR-6" {
 		t.Fatalf("culprit = %v, want [OR-6]", got)
 	}
-	if got := len(b.Members(Deferred)); got != 7 {
-		t.Errorf("deferred %d, want the other 7 offered again rather than blamed", got)
+	if got := len(b.Members(Landed)); got != 7 {
+		t.Errorf("landed %d, want the other 7 to land now rather than wait: %v",
+			got, b.Describe())
 	}
-	// 8 serial runs is the thing being beaten. ~2*log2(8) is the honest
-	// expectation, so anything at or above 8 means isolation bought nothing.
-	if b.Runs >= 8 {
-		t.Errorf("Runs = %d; isolation must cost less than testing all 8 separately", b.Runs)
+	if got := len(b.Members(Deferred)); got != 0 {
+		t.Errorf("deferred %d, want none: a sound member waiting for a later batch "+
+			"is the behaviour OR-253 removes", got)
 	}
-	t.Logf("8 members, 1 culprit: %d CI runs", b.Runs)
+	// The culprit must not be among what merged. Landing the branch the
+	// search just blamed would be the worst possible outcome of isolating it.
+	for _, ref := range g.landed {
+		for _, merged := range g.contents[ref] {
+			if merged == "orion/or-6" {
+				t.Fatalf("the culprit's branch was merged in %s: %v", ref, g.contents[ref])
+			}
+		}
+	}
+	// THE BASELINE IS NOT 8, and pretending it is understates the batch by
+	// exactly the term it was built to remove.
+	//
+	// Landing 8 branches the per-branch way costs 8 pull-request runs PLUS a
+	// rebase cascade: `ci.require_up_to_date` means each merge leaves the
+	// remaining branches behind the work branch, each is rebased, and each
+	// rebase triggers another run. That is the quadratic term ADR 0015 and
+	// Collect.AutoRebase both describe -- measured at 27 rebases across ~26
+	// merges on this repository.
+	//
+	// So the honest ceiling for a RED batch of 8 is the naive 8 plus that
+	// cascade. This asserts the weaker, safer bound: a red batch must never
+	// cost MORE than one run per member plus one, which is what the search
+	// (~2*log2(8)) plus a confirming run comes to. A green batch of 8 costs
+	// one run against eight, and that is where the design earns its keep --
+	// at a measured 0.10 per-branch failure rate, most batches are green.
+	if max := len(b.Results) + 1; b.Runs > max {
+		t.Errorf("Runs = %d, want at most %d for 8 members with one culprit: "+
+			"the search plus one confirming run", b.Runs, max)
+	}
+	t.Logf("8 members, 1 culprit: %d CI runs (search + confirmation); "+
+		"per-branch would be 8 runs plus the rebase cascade", b.Runs)
+}
+
+// The reuse path (OR-253 option B): when the search already proved exactly the
+// sound set, landing it must cost NO further run.
+//
+// Narrow by construction, and that is worth recording rather than discovering.
+// Bisection proves HALVES, so the sound remainder is a proven set only when
+// the red side turns out to be entirely culprits. Two members with one bad is
+// the smallest case where that holds, and the assertion is about the run
+// count, not the shape: a reused proof must not be re-bought.
+func TestAProvenSoundSetLandsWithoutAnotherRun(t *testing.T) {
+	g := newFakeGit()
+	tr := &fakeTester{g: g, bad: map[string]bool{"orion/or-2": true}}
+
+	b, err := Land(g, tr, "batch", "develop", members("OR-1", "OR-2"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := b.Members(Culprit); len(got) != 1 || got[0] != "OR-2" {
+		t.Fatalf("culprit = %v, want [OR-2]", got)
+	}
+	if got := b.Members(Landed); len(got) != 1 || got[0] != "OR-1" {
+		t.Fatalf("landed = %v, want [OR-1] to land on the search's own proof", got)
+	}
+	// One run for the batch, two for the split. A fourth would mean the
+	// already-proved set was tested a second time to learn what it knew.
+	if b.Runs != 3 {
+		t.Errorf("Runs = %d, want 3: the sound set was already proved green, "+
+			"so landing it must not buy another run", b.Runs)
+	}
+}
+
+// The confirming run is not ceremony: the sound set must be TESTED as a set
+// before it lands, because bisection proves halves and never the remainder.
+//
+// [A,B] green and [C] green does not prove [A,B,C]; merging on those two
+// results would put C on a base containing A and B that C was never tested
+// against -- the unvalidated-base merge ADR 0017 exists to refuse.
+func TestTheSoundSetIsTestedAsASetBeforeItLands(t *testing.T) {
+	g := newFakeGit()
+	tr := &fakeTester{g: g, bad: map[string]bool{"orion/or-3": true}}
+
+	b, err := Land(g, tr, "batch", "develop", members("OR-1", "OR-2", "OR-3", "OR-4"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.landed) != 1 {
+		t.Fatalf("landed %d refs, want exactly one: the sound set merges as a set, "+
+			"not one proven subset at a time", len(g.landed))
+	}
+	landedRef := g.landed[0]
+	if !tr.tested[landedRef] {
+		t.Errorf("%s merged without ever being tested; bisection proves halves, "+
+			"not the remainder", landedRef)
+	}
+	if got := len(b.Members(Landed)); got != 3 {
+		t.Errorf("landed %d, want OR-1, OR-2 and OR-4: %v", got, b.Describe())
+	}
+}
+
+// ADR 0017: a green result may only merge into the base it was validated
+// against. If the base moved while CI ran, the proof belongs to a tree that no
+// longer exists, and merging anyway is how a validated result silently becomes
+// an unvalidated one.
+func TestABaseThatMovedDuringTestingRefusesToMerge(t *testing.T) {
+	g := newFakeGit()
+	g.sha["develop"] = "before"
+	tr := &fakeTester{g: g, bad: map[string]bool{}}
+	// Somebody pushes to develop while the batch is testing.
+	tr.onTest = func() { g.sha["develop"] = "after" }
+
+	b, err := Land(g, tr, "batch", "develop", members("OR-1", "OR-2"), nil)
+	if err == nil {
+		t.Fatalf("merged into a base that moved; want a refusal. results: %v", b.Describe())
+	}
+	if len(g.landed) != 0 {
+		t.Errorf("landed %v despite the base moving", g.landed)
+	}
+	if !strings.Contains(err.Error(), "moved") {
+		t.Errorf("error = %q, want it to name the base moving so the operator "+
+			"knows to reassemble rather than retry", err)
+	}
 }
 
 // Two culprits is the case a search that stops at the first would get wrong:

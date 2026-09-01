@@ -46,6 +46,14 @@ type Issue struct {
 	// both use the same field -- so one query and one field cover both
 	// hierarchies without Orion knowing which shape a project uses.
 	Parent string
+	// BlockedBy are the keys this ticket is blocked by, from Jira's issue
+	// links (OR-95).
+	//
+	// ONLY the blocking relationship. Jira's links also carry "relates to",
+	// "duplicates" and "clones", and none of those says anything about
+	// ORDER -- treating them as dependencies would hold work behind tickets
+	// that merely mention each other.
+	BlockedBy []string
 	// FixVersions are the milestone names this ticket carries, by Jira's own
 	// name for each. A LIST because Jira allows several, and the plural
 	// matters: `release add` has to tell "this ticket is on no milestone"
@@ -73,7 +81,7 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 	q := url.Values{}
 	q.Set("jql", jql)
 	q.Set("maxResults", fmt.Sprint(maxResults))
-	q.Set("fields", "summary,description,status,labels,priority,parent,issuetype,components,fixVersions")
+	q.Set("fields", "summary,description,status,labels,priority,parent,issuetype,components,fixVersions,issuelinks")
 
 	code, body, err := j.do("GET", "/rest/api/3/search/jql?"+q.Encode(), nil)
 	if err != nil {
@@ -116,6 +124,7 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 				FixVersions []struct {
 					Name string `json:"name"`
 				} `json:"fixVersions"`
+				IssueLinks []issueLink `json:"issuelinks"`
 			} `json:"fields"`
 		} `json:"issues"`
 	}
@@ -137,10 +146,54 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 			IssueType:      i.Fields.IssueType.Name,
 			Components:     namesOf(i.Fields.Components),
 			FixVersions:    namesOf(i.Fields.FixVersions),
+			BlockedBy:      blockersOf(i.Fields.IssueLinks),
 			URL:            j.BaseURL + "/browse/" + i.Key,
 		})
 	}
 	return out, nil
+}
+
+// issueLink is Jira's link shape, trimmed to what ordering needs.
+//
+// INWARD and OUTWARD are both carried because Jira stores one link once, from
+// whichever side created it, and which side you are on decides what it means.
+// On the "Blocks" type, inwardIssue is the ticket that BLOCKS this one and
+// outwardIssue is the one this one blocks -- so reading only one field would
+// see half the dependencies in a project and none in another, depending on
+// which end people happened to link from.
+type issueLink struct {
+	Type struct {
+		Name    string `json:"name"`
+		Inward  string `json:"inward"`
+		Outward string `json:"outward"`
+	} `json:"type"`
+	InwardIssue  *struct{ Key string } `json:"inwardIssue"`
+	OutwardIssue *struct{ Key string } `json:"outwardIssue"`
+}
+
+// blockersOf returns the keys this issue is blocked by.
+//
+// Matched on the link's own INWARD DESCRIPTION ("is blocked by") rather than
+// on the type name, because the type is named by the Jira instance and the
+// description is what Jira renders for that direction. A site that renamed
+// "Blocks" to something local still reads correctly; a site with a custom
+// link type whose inward description says "is blocked by" is honoured, which
+// is what its author meant.
+//
+// Everything else is ignored. "relates to", "duplicates" and "clones" say
+// nothing about order, and treating them as dependencies would hold work
+// behind tickets that merely mention each other.
+func blockersOf(links []issueLink) []string {
+	var out []string
+	for _, l := range links {
+		if l.InwardIssue == nil || l.InwardIssue.Key == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(l.Type.Inward), "blocked by") {
+			out = append(out, l.InwardIssue.Key)
+		}
+	}
+	return out
 }
 
 // GetIssue fetches one issue.
@@ -417,7 +470,22 @@ const QueueLabelDefault = "ORION"
 const (
 	LabelWorking = "orion-working"
 	LabelCIWait  = "orion-ci-wait"
-	LabelFailed  = "orion-failed"
+	// LabelReady is the integration queue's inbox (OR-253): the agent
+	// finished, QA gave its verdict, the branch is pushed, and NOTHING is
+	// running. The next batch takes it.
+	//
+	// A third state rather than reusing ci-wait, because the two mean
+	// opposite things to a reader. ci-wait says a machine is working and the
+	// answer is patience; ready says nothing is working and the ticket is
+	// waiting on the integration queue's next pass. Reporting one as the
+	// other would have an operator waiting on a build nobody started.
+	//
+	// It is NOT a claim. orion-working is the mutual-exclusion lock and it is
+	// released before this is set: a ready ticket holds no job slot, which is
+	// the whole point of separating the coding queue from the integration
+	// queue.
+	LabelReady  = "orion-ready"
+	LabelFailed = "orion-failed"
 )
 
 // StatusCategoryDone is Jira's terminal category. Every workflow has one,
@@ -438,7 +506,7 @@ func (i Issue) Resolved() bool {
 // Managed are every label Orion owns, for the queue query and for clearing
 // state when a ticket is finished or requeued.
 func Managed(queueLabel string) []string {
-	return []string{queueLabel, LabelWorking, LabelCIWait, LabelFailed}
+	return []string{queueLabel, LabelWorking, LabelCIWait, LabelReady, LabelFailed}
 }
 
 // StaleLocks returns the keys of issues that are FINISHED but still carry

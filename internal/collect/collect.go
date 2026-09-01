@@ -108,6 +108,15 @@ type Deps struct {
 	// because it is the only irreversible action in this package, and the
 	// only one a person explicitly authorised.
 	Merge func(dir, branch, reason, strategy string) error
+	// OpenPR publishes a branch for review and for CI. Used by the batch
+	// path, which has to open one for its assembled ref: `ci.yml` builds
+	// pull requests rather than arbitrary pushed refs, and prStatus reads
+	// checks through `gh pr view`, so a ref with no pull request is one whose
+	// green run Orion cannot see (OR-253).
+	//
+	// Nil leaves the batch unable to publish itself, which LandRef reports
+	// rather than working around.
+	OpenPR func(dir, branch, title, body, base string) (string, error)
 	// Fix sends a CI failure back to an agent on the same branch and reports
 	// whether it pushed anything. Nil disables the fix loop.
 	//

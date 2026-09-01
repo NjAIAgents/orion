@@ -28,6 +28,28 @@ import (
 // exists for.
 type repoGit struct {
 	ws *workspace.Workspace
+
+	// merge lands the batch's pull request. The SAME seam the per-branch path
+	// uses (collect.Deps.Merge), not a second one: merging is the only
+	// irreversible action in this package and it keeps its single
+	// implementation, whatever assembled the thing being merged.
+	//
+	// Nil disables landing, and LandRef says so rather than silently
+	// reporting a batch as landed. A batch that cannot merge is a batch that
+	// tested something for nothing, and the operator needs to know which.
+	merge func(dir, branch, reason, strategy string) error
+
+	// openPR publishes the batch for review and for CI.
+	//
+	// The ref needs a pull request for three separate reasons, and it is
+	// worth naming all three because any one of them alone would look like it
+	// could be worked around. CI: `ci.yml` builds `pull_request`, and a bare
+	// push to an ephemeral ref matches no trigger. READING: prStatus asks
+	// `gh pr view`, so with no pull request Orion cannot see its own green
+	// run and waits out the deadline (observed twice on 2026-08-31).
+	// REVIEW: with no per-ticket pull request, this is the only place a
+	// person can read what is about to land.
+	openPR func(dir, branch, title, body, base string) (string, error)
 }
 
 // CloneDir, emphatically not RepoDir. RepoDir resolves to a per-job worktree
@@ -104,6 +126,106 @@ func (r repoGit) DropRef(ref string) error {
 	_, _ = git(r.dir(), "worktree", "remove", "--force", wt)
 	_, _ = git(r.dir(), "branch", "-D", ref)
 	return nil
+}
+
+// SHAOf resolves a ref, branch or remote branch to its commit.
+//
+// origin FIRST, then local, which is the opposite of what reads naturally and
+// is the point: the question this answers is "what would I be merging into",
+// and that is the remote's state. A local branch can trail the remote by any
+// amount and answering from it would compare the batch against a base nobody
+// else has.
+func (r repoGit) SHAOf(ref string) (string, error) {
+	defer workspace.LockRepo(r.ws)()
+
+	for _, cand := range []string{"origin/" + ref, ref} {
+		if out, err := git(r.dir(), "rev-parse", "--verify", "--quiet", cand); err == nil {
+			if sha := strings.TrimSpace(out); sha != "" {
+				return sha, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("%s resolves to no commit locally or on origin", ref)
+}
+
+// ContainsRef reports whether base already contains branch.
+//
+// Asked of ORIGIN, for the same reason SHAOf prefers it: the question is
+// whether this work has already landed where everyone can see it, and a local
+// base that trails the remote would answer no for something that merged an
+// hour ago.
+//
+// Ancestry, not a squash-aware comparison. A squash-merged branch reads as
+// NOT contained, which is deliberately the safe direction here: it would be
+// offered to a batch, merge as an empty change, and land harmlessly. The
+// opposite error -- treating unlanded work as already landed -- silently
+// drops a ticket's commits. OR-88 is the same distinction, seen from the
+// cleanup side.
+func (r repoGit) ContainsRef(base, branch string) (bool, error) {
+	defer workspace.LockRepo(r.ws)()
+
+	baseRef, err := r.resolve(base)
+	if err != nil {
+		return false, err
+	}
+	branchRef, err := r.resolve(branch)
+	if err != nil {
+		return false, err
+	}
+	_, err = git(r.dir(), "merge-base", "--is-ancestor", branchRef, baseRef)
+	return err == nil, nil
+}
+
+// resolve names the ref that actually exists, origin first.
+func (r repoGit) resolve(ref string) (string, error) {
+	for _, cand := range []string{"origin/" + ref, ref} {
+		if _, err := git(r.dir(), "rev-parse", "--verify", "--quiet", cand); err == nil {
+			return cand, nil
+		}
+	}
+	return "", fmt.Errorf("%s exists neither locally nor on origin", ref)
+}
+
+// LandRef merges the tested ref into base through a pull request.
+//
+// THROUGH A PULL REQUEST, not a push to base. Three reasons, and the first is
+// the one that bites: `develop` requires status checks by name, and a merge
+// commit created locally carries none of its own, so a direct push is
+// accepted only by bypassing the very protection that is supposed to be
+// gating this. Second, the pull request is where the approval reaction lands.
+// Third, it leaves a record of what merged and why, which a push does not.
+//
+// The ref is pushed first because a pull request needs a remote branch. The
+// pull request is opened only if there is not one already: this is called on
+// a ref that Test has usually just published and opened, and asking twice
+// would either fail or leave a duplicate.
+func (r repoGit) LandRef(ref, base string) (string, error) {
+	if r.merge == nil {
+		return "", fmt.Errorf(
+			"the batch is green but nothing was wired to merge it; "+
+				"merge %s into %s yourself, or report this as a bug", ref, base)
+	}
+	if err := r.PushRef(ref); err != nil {
+		return "", err
+	}
+	if r.openPR != nil {
+		title := fmt.Sprintf("batch: land %s into %s", ref, base)
+		body := "Assembled and tested as one set by Orion (OR-253).\n\n" +
+			"Every member was merged into this ref and the ref was tested once. " +
+			"What CI proved here is what merges."
+		// An existing pull request is the expected case, not a failure: Test
+		// opened one to get the checks read. Reported and ignored.
+		if _, err := r.openPR(r.dir(), ref, title, body, base); err != nil &&
+			!strings.Contains(strings.ToLower(err.Error()), "already exists") {
+			return "", fmt.Errorf("opening the batch pull request: %w", err)
+		}
+	}
+	if err := r.merge(r.dir(), ref, "batch validated as one set", ""); err != nil {
+		return "", err
+	}
+	// Read AFTER the merge, so what is recorded is where base actually ended
+	// up rather than where it was predicted to.
+	return r.SHAOf(base)
 }
 
 // refWorktree returns a checkout of ref, creating it if needed.

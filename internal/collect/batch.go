@@ -71,6 +71,28 @@ type Batch struct {
 	// number the whole design is justified by, so it is recorded rather than
 	// estimated afterwards.
 	Runs int
+
+	// The SHAs a landing decision rests on (ADR 0017). Recorded rather than
+	// re-derived, because the question they answer -- "was this result proven
+	// against the thing it merged into?" -- cannot be answered afterwards
+	// from a repository that has already moved on.
+	//
+	// BaseSHA is the base as it stood when the set was assembled and tested.
+	// ValidatedSHA is the ref CI actually proved. LandedSHA is where base
+	// ended up. Equal BaseSHA and a later re-read is the precondition on
+	// merging; a difference between them is a bug report, not a retry.
+	BaseSHA      string
+	ValidatedSHA string
+	LandedSHA    string
+
+	// AwaitingApproval is set when the batch is green and proved but a person
+	// has not said yes yet. Distinct from a failure in every direction: the
+	// members stay unmerged, nothing is blamed, and the next pass asks again.
+	AwaitingApproval bool
+
+	// approve gates the merge. Unexported because it is a decision the caller
+	// injects, not a fact about the batch worth reporting or serialising.
+	approve Approver
 }
 
 // Members returns the keys with a given outcome, in order.
@@ -106,6 +128,20 @@ type Git interface {
 	MergeInto(ref, branch string) error
 	// DropRef removes an ephemeral ref. Best effort.
 	DropRef(ref string) error
+
+	// SHAOf resolves a ref or branch to a commit. Used to stamp what a
+	// result was validated against (ADR 0017), so a merge can refuse a base
+	// that has moved since.
+	SHAOf(ref string) (string, error)
+
+	// LandRef merges the tested ref into base and reports the commit base
+	// ended up at.
+	//
+	// The one irreversible operation in a batch, and the whole point of it:
+	// the thing that was TESTED is the thing that MERGES. Landing members
+	// individually instead re-introduces the rebase cascade the batch exists
+	// to remove (OR-253), because each merge leaves the rest behind base.
+	LandRef(ref, base string) (string, error)
 }
 
 // Tester runs CI against a ref and reports whether it passed.
@@ -201,15 +237,52 @@ func Assemble(g Git, ref, base string, members []Member, o Observer) (kept []Mem
 // caller already has is a whole CI run bought for nothing, and at the top of
 // every search it is the single most expensive mistake available here.
 func Isolate(t Tester, g Git, refPrefix, base string, members []Member, o Observer) (culprits []Member, runs int, err error) {
-	return isolate(t, g, refPrefix, base, members, observe(o), 0, new(int))
+	c, r, _, e := isolateProving(t, g, refPrefix, base, members, observe(o), 0, new(int))
+	return c, r, e
+}
+
+// proven is a ref the search TESTED GREEN, and exactly which members were in
+// it.
+//
+// Kept because the sound remainder of a red batch often is one of these, and
+// when it is, landing it costs no run at all: the set was already proved, on
+// this same base, moments ago. The alternative is reassembling the same
+// members into a new ref and paying CI to learn what is already known.
+//
+// The ref is NOT dropped while it might still be reused, which is the one
+// place the search holds a resource past its own use. Cleanup is the caller's.
+type proven struct {
+	ref  string
+	keys []string
+}
+
+// matches reports whether this proven set is exactly want, order-insensitively.
+//
+// EXACTLY, both directions. A proven superset would land a member the search
+// blamed; a proven subset would silently drop sound work. Neither is a
+// near-miss worth accepting, so the comparison is equality and nothing else.
+func (p proven) matches(want []string) bool {
+	if len(p.keys) != len(want) {
+		return false
+	}
+	have := make(map[string]bool, len(p.keys))
+	for _, k := range p.keys {
+		have[k] = true
+	}
+	for _, k := range want {
+		if !have[k] {
+			return false
+		}
+	}
+	return true
 }
 
 // isolate carries the depth and a shared run counter so the observer can draw
 // the search as the tree it is. depth is the indent; total is shared across
 // the whole recursion rather than summed on the way out, because the display
 // needs the run number DURING the search, not after it.
-func isolate(t Tester, g Git, refPrefix, base string, members []Member,
-	o Observer, depth int, total *int) (culprits []Member, runs int, err error) {
+func isolateProving(t Tester, g Git, refPrefix, base string, members []Member,
+	o Observer, depth int, total *int) (culprits []Member, runs int, green []proven, err error) {
 
 	if len(members) <= 1 {
 		// Already narrowed, and already known red. Reported as a leaf so the
@@ -217,7 +290,7 @@ func isolate(t Tester, g Git, refPrefix, base string, members []Member,
 		if len(members) == 1 {
 			o.Split(keysOf(members), false, depth, *total, true)
 		}
-		return members, 0, nil
+		return members, 0, nil, nil
 	}
 
 	half := len(members) / 2
@@ -225,30 +298,42 @@ func isolate(t Tester, g Git, refPrefix, base string, members []Member,
 		ref := fmt.Sprintf("%s-%d-%d", refPrefix, len(members), i)
 		kept, _, aerr := Assemble(g, ref, base, side, nil)
 		if aerr != nil {
-			return nil, runs, aerr
+			return nil, runs, green, aerr
 		}
 		ok, terr := t.Test(ref)
 		runs++
 		*total++
-		_ = g.DropRef(ref)
 		if terr != nil {
-			return nil, runs, terr
+			_ = g.DropRef(ref)
+			return nil, runs, green, terr
 		}
 		o.Split(keysOf(kept), ok, depth, *total, false)
 		if ok {
+			// KEPT, not dropped. This ref is a tested-green set on this base,
+			// and the sound remainder of the batch is frequently exactly it
+			// -- one culprit, cleanly on one side of one split. Reusing it
+			// then costs nothing, where reassembling the same members costs a
+			// whole CI run to re-learn what was just proved. The caller drops
+			// these once it has chosen.
+			green = append(green, proven{ref: ref, keys: keysOf(kept)})
 			continue // this half is sound; the fault is in the other
 		}
+		// A red ref is worth nothing to anybody: dropped immediately, as
+		// before. Its NAME lives on as the prefix for the next level, which
+		// is why the drop is safe here.
+		_ = g.DropRef(ref)
 		// Both halves are examined rather than stopping at the first red
 		// one: a batch can hold more than one culprit, and stopping early
 		// would land the second.
-		sub, r, serr := isolate(t, g, ref, base, kept, o, depth+1, total)
+		sub, r, subGreen, serr := isolateProving(t, g, ref, base, kept, o, depth+1, total)
 		runs += r
+		green = append(green, subGreen...)
 		if serr != nil {
-			return nil, runs, serr
+			return nil, runs, green, serr
 		}
 		culprits = append(culprits, sub...)
 	}
-	return culprits, runs, nil
+	return culprits, runs, green, nil
 }
 
 // Land runs one full cycle: assemble, test once, and on red isolate the
@@ -257,9 +342,40 @@ func isolate(t Tester, g Git, refPrefix, base string, members []Member,
 // It does not merge anything. Deciding to act on a green batch is the
 // caller's, which keeps this function total and testable, and keeps the
 // irreversible step in one place.
-func Land(g Git, t Tester, ref, base string, members []Member, o Observer) (Batch, error) {
+// Approver decides whether a green batch may merge.
+//
+// Asked ONLY after checks pass, never before: a person asked to approve
+// something whose tests have not finished learns to approve on the strength
+// of being asked, which is the rubber stamp the whole gate exists to prevent.
+// approvalFlow states the same rule for the per-branch path.
+//
+// Returning false is not an error. It means "not yet": the answer has been
+// requested and has not arrived, and the batch will be offered again on a
+// later pass rather than merging or failing.
+type Approver func(ref string, members []string) (bool, error)
+
+// LandOption configures a landing without changing Land's signature for the
+// callers and tests that do not care.
+type LandOption func(*landOpts)
+
+type landOpts struct{ approve Approver }
+
+// WithApproval gates the merge on a human. Absent, a green batch lands as
+// soon as it is proved -- which is correct for an unattended pipeline and
+// wrong for a repository whose operator wants to look first.
+func WithApproval(a Approver) LandOption {
+	return func(o *landOpts) { o.approve = a }
+}
+
+func Land(g Git, t Tester, ref, base string, members []Member, o Observer,
+	opts ...LandOption) (Batch, error) {
+
+	var lo landOpts
+	for _, opt := range opts {
+		opt(&lo)
+	}
 	ob := observe(o)
-	b := Batch{Base: base, Ref: ref}
+	b := Batch{Base: base, Ref: ref, approve: lo.approve}
 	if len(members) == 0 {
 		return b, nil
 	}
@@ -274,6 +390,16 @@ func Land(g Git, t Tester, ref, base string, members []Member, o Observer) (Batc
 		return b, nil // everything conflicted; nothing to test
 	}
 
+	// The base as it stood when this set was assembled, recorded BEFORE the
+	// run rather than read again after it (ADR 0017). What CI proves is "this
+	// ref, on top of this base"; a merge into any other base is a result
+	// carried somewhere it was never earned.
+	baseSHA, err := g.SHAOf(base)
+	if err != nil {
+		return b, fmt.Errorf("reading %s before testing the batch: %w", base, err)
+	}
+	b.BaseSHA = baseSHA
+
 	ob.Testing(1)
 	ok, err := t.Test(ref)
 	b.Runs++
@@ -281,16 +407,24 @@ func Land(g Git, t Tester, ref, base string, members []Member, o Observer) (Batc
 		return b, err
 	}
 	if ok {
-		for _, m := range kept {
-			b.Results = append(b.Results, MemberResult{Member: m, Outcome: Landed,
-				Reason: "the batch was green"})
+		b.ValidatedSHA, _ = g.SHAOf(ref)
+		if err := b.land(g, ref, base, kept, ob); err != nil {
+			return b, err
 		}
 		b.report(ob)
 		return b, nil
 	}
 
-	culprits, runs, err := Isolate(t, g, ref+"-iso", base, kept, ob)
+	culprits, runs, green, err := isolateProving(t, g, ref+"-iso", base, kept, ob, 0, new(int))
 	b.Runs += runs
+	// Whatever happens next, the search's green refs are litter once the
+	// choice below is made. Dropped here rather than inside the search, which
+	// is what lets one of them be reused.
+	defer func() {
+		for _, p := range green {
+			_ = g.DropRef(p.ref)
+		}
+	}()
 	if err != nil {
 		return b, err
 	}
@@ -298,17 +432,163 @@ func Land(g Git, t Tester, ref, base string, members []Member, o Observer) (Batc
 	for _, c := range culprits {
 		bad[c.Key] = true
 	}
+	var innocent []Member
 	for _, m := range kept {
 		if bad[m.Key] {
 			b.Results = append(b.Results, MemberResult{Member: m, Outcome: Culprit,
 				Reason: "isolated as a reason the batch failed"})
 			continue
 		}
-		b.Results = append(b.Results, MemberResult{Member: m, Outcome: Deferred,
-			Reason: "sound, but batched with a failure; offer it again"})
+		innocent = append(innocent, m)
+	}
+
+	// The innocent members land now rather than waiting for a later batch
+	// (OR-253). Deferring them was the old behaviour and it is what made a
+	// single bad branch hold four good ones hostage: the culprit goes back to
+	// the coding queue for a fix, and the rest are not punished for having
+	// been assembled next to it.
+	//
+	// WHY THIS COSTS ONE MORE RUN, and why that is not the bisection's
+	// results being thrown away. The search proves HALVES, not the innocent
+	// set: [A,B,C,D] red can split to [A,B] green and [C,D] red, then [C]
+	// green and [D] culprit -- so [A,B] and [C] are each proven and [A,B,C]
+	// never was. Landing them on the strength of separate proofs would merge
+	// [C] onto a base containing [A,B] that it was never tested against,
+	// which is the same unvalidated-base merge ADR 0017's SHA check exists to
+	// refuse. One confirming run buys the guarantee the whole design rests
+	// on, and it is spent only on batches that were already red.
+	if len(innocent) > 0 {
+		if err := b.landInnocent(g, t, ref, base, innocent, green, ob); err != nil {
+			return b, err
+		}
 	}
 	b.report(ob)
 	return b, nil
+}
+
+// landInnocent lands the members no culprit was found in.
+//
+// FREE WHEN THE SEARCH ALREADY PROVED THIS EXACT SET, which is the common
+// shape: one culprit, cleanly inside one side of one split, leaving the other
+// side as a tested-green ref holding precisely the sound remainder. Landing
+// that ref costs no CI run, because the run was already spent proving it.
+//
+// One confirming run otherwise, and the reason is not caution for its own
+// sake. Bisection proves HALVES: [A,B] green and [C] green does not prove
+// [A,B,C], so merging on those two results would put C on a base containing
+// A and B that C was never tested against -- the unvalidated-base merge ADR
+// 0016's SHA check exists to refuse. The confirming run buys the guarantee
+// the design rests on, and only on batches that were already red.
+//
+// A failure here is reported against the members rather than returned as the
+// batch's error: the culprits are already identified and recorded, and losing
+// that finding because the follow-up run failed would send the operator back
+// to a bisection that has already been paid for.
+func (b *Batch) landInnocent(g Git, t Tester, ref, base string,
+	innocent []Member, green []proven, ob Observer) error {
+
+	want := keysOf(innocent)
+	for _, p := range green {
+		if !p.matches(want) {
+			continue
+		}
+		// Proved, on this base, during the search. Nothing left to learn.
+		b.ValidatedSHA, _ = g.SHAOf(p.ref)
+		return b.land(g, p.ref, base, innocent, ob)
+	}
+
+	clean := ref + "-clean"
+	kept, ejected, err := Assemble(g, clean, base, innocent, ob)
+	b.Results = append(b.Results, ejected...)
+	if err != nil {
+		return fmt.Errorf("reassembling the sound members: %w", err)
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	defer func() { _ = g.DropRef(clean) }()
+
+	ob.Testing(b.Runs + 1)
+	ok, err := t.Test(clean)
+	b.Runs++
+	if err != nil {
+		return err
+	}
+	if !ok {
+		// The set the search said was sound is not. That is a finding, not a
+		// crash: it means the fault is an interaction the halving did not
+		// separate, and the members go back rather than landing on a red run.
+		for _, m := range kept {
+			b.Results = append(b.Results, MemberResult{Member: m, Outcome: Deferred,
+				Reason: "sound in isolation, red together; offer it again"})
+		}
+		return nil
+	}
+	b.ValidatedSHA, _ = g.SHAOf(clean)
+	return b.land(g, clean, base, kept, ob)
+}
+
+// land merges the tested ref into base, once, and records every member as
+// landed.
+//
+// THE BASE IS RE-READ AND COMPARED FIRST (ADR 0017). CI proved this ref on
+// top of the base recorded before the run; if base has moved since -- which,
+// with a single integration worker, means a person pushed directly -- then
+// the green result belongs to a tree that no longer exists. Merging anyway is
+// how a validated result silently becomes an unvalidated one, and it is
+// exactly the race nobody is watching for. Rebuilding costs one run; being
+// wrong here costs a broken base nobody can attribute.
+//
+// Members are marked Landed only AFTER the merge returns. Marking first and
+// merging second would report work as landed that a failed merge left behind.
+func (b *Batch) land(g Git, ref, base string, kept []Member, ob Observer) error {
+	// The gate, after green and before the merge. A "no" here is not a
+	// refusal of the work: it means the answer has been asked for and has not
+	// come back, so the batch waits and is offered again rather than merging
+	// unapproved or being reported as failed.
+	if b.approve != nil {
+		ok, err := b.approve(ref, keysOf(kept))
+		if err != nil {
+			return fmt.Errorf("asking for approval to land %s: %w", ref, err)
+		}
+		if !ok {
+			b.AwaitingApproval = true
+			for _, m := range kept {
+				b.Results = append(b.Results, MemberResult{Member: m, Outcome: Deferred,
+					Reason: "green and waiting for approval to merge"})
+			}
+			return nil
+		}
+	}
+	now, err := g.SHAOf(base)
+	if err != nil {
+		return fmt.Errorf("re-reading %s before landing the batch: %w", base, err)
+	}
+	if now != b.BaseSHA {
+		return fmt.Errorf(
+			"%s moved from %s to %s while the batch was testing, so the green result "+
+				"was not proven against what it would merge into; reassemble and test again",
+			base, short(b.BaseSHA), short(now))
+	}
+	landedAt, err := g.LandRef(ref, base)
+	if err != nil {
+		return fmt.Errorf("landing %s into %s: %w", ref, base, err)
+	}
+	b.LandedSHA = landedAt
+	for _, m := range kept {
+		b.Results = append(b.Results, MemberResult{Member: m, Outcome: Landed,
+			Reason: "the batch was green and landed as one"})
+	}
+	return nil
+}
+
+// short trims a SHA for a message. Full SHAs in prose are unreadable and the
+// first seven identify a commit in every repository this will ever run on.
+func short(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
 }
 
 // report tells the observer what became of every member, once, at the end.

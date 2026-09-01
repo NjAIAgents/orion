@@ -124,7 +124,7 @@ func runWatch(args []string) {
 			return collect.Run(o, collect.Deps{
 				Jira: mustJiraSearch(), Status: prStatus,
 				Refresh: workspace.Refresh, Prune: pruneBranch,
-				Merge: mergePR, Fix: fixRun, Judge: doneJudge,
+				Merge: mergePR, OpenPR: openPR, Fix: fixRun, Judge: doneJudge,
 				Slack: slackForApproval(),
 			})
 		},
