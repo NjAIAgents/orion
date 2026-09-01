@@ -97,6 +97,11 @@ func (t batchTester) Test(ref string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("reading the checks on %s: %w", ref, err)
 	}
+	// Pushed, not pulled: this read already happened for the verdict, so the
+	// display costs nothing extra and cannot disagree with the decision made
+	// two lines below it. Same model as LiveSpend -- a number in the region
+	// must not be the most expensive thing on the screen.
+	ui.LiveChecks(liveChecks(pr.Checks))
 	switch {
 	case pr.Verdict == VerdictFailing:
 		return false, nil
@@ -107,6 +112,27 @@ func (t batchTester) Test(ref string) (bool, error) {
 	// nothing has reported. Silence is not success, and it is not failure
 	// either -- it is "come back".
 	return false, ErrCheckPending
+}
+
+// liveChecks converts this package's checks into the display's.
+//
+// Two types rather than one shared: internal/ui cannot import this package
+// (it is imported BY it, for rendering), and a display type that had to
+// track a forge's vocabulary would drag GitHub's dozen conclusions into a
+// file whose whole job is to draw three states.
+func liveChecks(in []Check) []ui.Check {
+	out := make([]ui.Check, 0, len(in))
+	for _, c := range in {
+		state := ui.CheckPassed
+		switch c.State {
+		case CheckFailed:
+			state = ui.CheckFailed
+		case CheckRunning:
+			state = ui.CheckRunning
+		}
+		out = append(out, ui.Check{Name: c.Name, State: state})
+	}
+	return out
 }
 
 // noChecksYet reports the empty rollup that cmd/orion/collect.go turns into a

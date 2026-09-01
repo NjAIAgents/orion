@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -762,5 +763,52 @@ func TestElapsedString(t *testing.T) {
 		if got := elapsedString(c.d); got != c.want {
 			t.Errorf("elapsedString(%v) = %q, want %q", c.d, got, c.want)
 		}
+	}
+}
+
+// The header's CI count answers "how many tickets are waiting". It cannot
+// answer "what is that run doing" -- during a batch three tickets share ONE
+// run, so a count says nothing about which platform is still going, and an
+// operator watching "still running" for nine minutes has no way to see that
+// only Windows is left (OR-264).
+func TestTheChecksRowNamesEachCheckAndItsState(t *testing.T) {
+	got := renderChecks(io.Discard, []Check{
+		{Name: "go (ubuntu)", State: CheckPassed},
+		{Name: "go (macos)", State: CheckRunning},
+		{Name: "go (windows)", State: CheckFailed},
+	}, 200)
+
+	for _, want := range []string{"go (ubuntu)", "go (macos)", "go (windows)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the checks row does not name %q:\n%s", want, got)
+		}
+	}
+	// One line, not a row each: they belong to a single run, and stacking
+	// them would push the ticket rows off a short terminal.
+	if strings.Contains(got, "\n") {
+		t.Errorf("the checks must render as one line:\n%s", got)
+	}
+}
+
+// Nothing to say, nothing drawn. A repository with no checks configured must
+// not gain a blank row for them.
+func TestNoChecksDrawsNoRow(t *testing.T) {
+	if got := renderChecks(io.Discard, nil, 200); got != "" {
+		t.Errorf("an empty check set must draw nothing, got %q", got)
+	}
+}
+
+// A rollup is a complete picture of one moment, so a later reading REPLACES
+// the previous one. Merging would leave a finished check on screen after a
+// re-run dropped it.
+func TestChecksReplaceRatherThanAccumulate(t *testing.T) {
+	LiveReset()
+	defer LiveReset()
+	LiveChecks([]Check{{Name: "go (ubuntu)", State: CheckRunning}, {Name: "go (macos)", State: CheckRunning}})
+	LiveChecks([]Check{{Name: "go (ubuntu)", State: CheckPassed}})
+
+	st := liveSnapshot()
+	if len(st.checks) != 1 || st.checks[0].Name != "go (ubuntu)" || st.checks[0].State != CheckPassed {
+		t.Errorf("the second reading must replace the first, got %+v", st.checks)
 	}
 }

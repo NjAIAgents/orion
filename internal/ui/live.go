@@ -180,6 +180,40 @@ var live struct {
 	// assembled from one pass in one repository's sandbox, so a second would
 	// mean two passes racing on one clone -- which collect does not do.
 	batch *liveBatch
+	// checks is the current CI run's individual checks, newest reading wins.
+	//
+	// ci above is the COUNT of tickets waiting; this is what the one shared
+	// run is actually doing. During a batch that distinction is the whole
+	// point: three tickets share one run, and "2 in CI" says nothing about
+	// which of the three platforms is still going (OR-264).
+	checks []Check
+}
+
+// Check is one CI check and where it got to, as the display needs it.
+//
+// Declared here rather than imported from internal/collect because that
+// package already depends on this one for rendering; the dependency can only
+// point one way. Three states, because that is what a reader acts on.
+type Check struct {
+	Name  string
+	State string
+}
+
+// The check states, matching internal/collect's vocabulary.
+const (
+	CheckPassed  = "passed"
+	CheckFailed  = "failed"
+	CheckRunning = "running"
+)
+
+// LiveChecks records what the current CI run's checks are doing. Replaces
+// the previous reading rather than merging: a rollup is a complete picture
+// of one moment, and merging would leave a finished check on screen after
+// a re-run dropped it.
+func LiveChecks(c []Check) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	live.checks = append([]Check(nil), c...)
 }
 
 // LiveMedians installs the median lookup. Called once by the watcher, which
@@ -296,7 +330,7 @@ func LiveReset() {
 	live.mu.Lock()
 	defer live.mu.Unlock()
 	live.runs, live.spend, live.ci, live.median = nil, 0, 0, nil
-	live.batch = nil
+	live.batch, live.checks = nil, nil
 }
 
 // liveState is one consistent read of the registry: rows in key order, plus
@@ -314,12 +348,15 @@ type liveState struct {
 	// would let a member resolve between drawing the batch and drawing the
 	// ticket it belongs to.
 	batch *liveBatch
+	// checks is copied for the same reason the batch is.
+	checks []Check
 }
 
 func liveSnapshot() liveState {
 	live.mu.Lock()
 	defer live.mu.Unlock()
 	st := liveState{spend: live.spend, ci: live.ci}
+	st.checks = append([]Check(nil), live.checks...)
 	if live.batch != nil {
 		st.batch = live.batch.snapshotLocked()
 	}
@@ -488,6 +525,49 @@ func (r liveRun) notes(now time.Time) []string {
 // liveSep is the middle dot the roster already uses to join two facts on one
 // line. One separator, so the display reads as one system.
 const liveSep = "·"
+
+// renderChecks is the individual checks of the ONE shared CI run.
+//
+// The count in the header answers "how many tickets are waiting"; this
+// answers "what is that run actually doing". During a batch the two are very
+// different questions -- three tickets share one run, so a count says nothing
+// about which platform is still going, and "still running" for nine minutes
+// with no way to see that it is only Windows is the thing an operator sits
+// and wonders about.
+//
+// One line, not a row each: they belong to a single run, and stacking them
+// would push the ticket rows off a short terminal to say what fits in eighty
+// columns.
+func renderChecks(w io.Writer, checks []Check, cols int) string {
+	if len(checks) == 0 {
+		return ""
+	}
+	ascii := !glyphs()
+	var cells []string
+	for _, c := range checks {
+		var mark string
+		switch c.State {
+		case CheckFailed:
+			g := "✗"
+			if ascii {
+				g = "x"
+			}
+			mark = paint(w, red, g)
+		case CheckRunning:
+			// The same braille the ticket rows use, so "still going" reads
+			// identically wherever it appears.
+			mark = spinner(time.Now())
+		default:
+			g := "✓"
+			if ascii {
+				g = "+"
+			}
+			mark = paint(w, green, g)
+		}
+		cells = append(cells, fmt.Sprintf("%s %s", c.Name, mark))
+	}
+	return clip("    "+strings.Join(cells, "   "), cols)
+}
 
 // renderRow is one run's line.
 //
@@ -726,6 +806,10 @@ func renderRegionAt(w io.Writer, st liveState, now time.Time, cols int, collapse
 	// The batch above the rows: it is the thing the rows are members OF, and
 	// reading the set after its members inverts the containment.
 	out = append(out, renderBatch(w, st.batch, now, cols)...)
+	// Directly under the batch, because it describes that one shared run.
+	if line := renderChecks(w, st.checks, cols); line != "" {
+		out = append(out, line)
+	}
 	if collapsed {
 		// Said, rather than left to be inferred from rows that vanished. An
 		// operator who collapsed the region ten minutes ago and came back to

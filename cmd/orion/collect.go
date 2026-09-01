@@ -196,6 +196,18 @@ func prStatus(dir, branch string) (collect.PR, error) {
 		if concl == "" {
 			concl = strings.ToUpper(c.State)
 		}
+		// Kept as data in the same pass that flattens it into Detail, so the
+		// display costs no extra call and cannot disagree with the verdict.
+		state := collect.CheckPassed
+		switch concl {
+		case "FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED", "ERROR", "CANCELLED":
+			state = collect.CheckFailed
+		case "SUCCESS", "NEUTRAL", "SKIPPED":
+		default:
+			state = collect.CheckRunning
+		}
+		pr.Checks = append(pr.Checks, collect.Check{Name: name, State: state})
+
 		switch concl {
 		case "SUCCESS", "NEUTRAL", "SKIPPED":
 			// Done, and not a reason to stop.
