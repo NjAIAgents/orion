@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -61,6 +62,18 @@ type Options struct {
 	// Effort sets `claude --effort`: low, medium, high, xhigh, or max.
 	// Empty leaves the CLI's own default in force.
 	Effort string
+	// AllowedTools and DeniedTools bound what this run can DO, as opposed to
+	// what its prompt asks it to do. Empty means the CLI's own defaults,
+	// which is right for a run that has to be able to do everything.
+	//
+	// They are a pair on purpose. The allowlist is the restriction that
+	// matters, but whether an unlisted tool is refused or merely prompted for
+	// depends on the permission mode; the denylist is unconditional. A
+	// capability a run must NOT have -- a fan-out child must not run the test
+	// suite, because a suite run against a tree its peers are still writing
+	// reports failures that are not its own (OR-230) -- is stated in both.
+	AllowedTools []string
+	DeniedTools  []string
 	// NoWait skips quota waiting entirely and fails fast instead. For CI,
 	// where sleeping a runner for forty minutes costs real money.
 	NoWait bool
@@ -560,13 +573,14 @@ func humanTokens(n int) string {
 	return fmt.Sprintf("%dk", n/1000)
 }
 
-// runOnce executes a single attempt and returns its result plus the tail
-// of its combined output for quota inspection.
-func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt int, ac *agentcfg.Run) (*Result, string) {
-	stamp := time.Now().UTC().Format("20060102-150405")
-	logPath := filepath.Join(ws.LogsDir(),
-		fmt.Sprintf("%s-%s-a%d.log", stamp, safe(opts.Stage), attempt))
-
+// runArgs builds the CLI invocation for one attempt.
+//
+// Split out of runOnce so what a run is ALLOWED to do can be asserted without
+// spawning a process. That matters for one clause in particular: a fan-out
+// child may write files and may not run commands (OR-230), and "the child
+// cannot run the test suite" has to be a fact about the argv rather than a
+// sentence in a prompt.
+func runArgs(settingsPath, prompt string, opts Options, ac *agentcfg.Run) []string {
 	args := []string{}
 	if opts.Resume != "" {
 		// Continue the existing conversation. The prompt here is the ANSWER
@@ -575,7 +589,7 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	}
 	args = append(args,
 		"-p", prompt,
-		"--settings", ws.SettingsPath(),
+		"--settings", settingsPath,
 		// stream-json rather than json: both carry the run's own usage and
 		// cost (text output reports neither), but json emits a single object
 		// AT EXIT, so a forty minute run is indistinguishable from a hung one
@@ -602,6 +616,45 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	if opts.Effort != "" {
 		args = append(args, "--effort", opts.Effort)
 	}
+	// Both lists, not one. The allowlist is the real restriction, but what it
+	// means for an unlisted tool depends on the permission mode in force; the
+	// denylist does not depend on anything. A capability this project has
+	// decided an agent must not have is worth stating in the form that cannot
+	// be reinterpreted.
+	if len(opts.AllowedTools) > 0 {
+		args = append(args, "--allowedTools", strings.Join(opts.AllowedTools, ","))
+	}
+	if len(opts.DeniedTools) > 0 {
+		args = append(args, "--disallowedTools", strings.Join(opts.DeniedTools, ","))
+	}
+	return args
+}
+
+// runSeq numbers log files within a process so two runs starting in the same
+// second cannot name the same one. Process-local is enough: two Orion
+// processes writing the same workspace in the same second is a different
+// problem, and one the workspace lock already covers.
+var runSeq atomic.Uint64
+
+func nextRunSeq() uint64 { return runSeq.Add(1) }
+
+// runOnce executes a single attempt and returns its result plus the tail
+// of its combined output for quota inspection.
+func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt int, ac *agentcfg.Run) (*Result, string) {
+	stamp := time.Now().UTC().Format("20060102-150405")
+	// The suffix is what makes concurrent children distinguishable. Fan's
+	// N children share a stage and start inside the same second, so stamp +
+	// stage + attempt names ONE file for all of them and os.Create truncates
+	// it N-1 times: the logs interleave, and N-1 runs lose the only account of
+	// what they did. Not a theoretical race -- `orion fan` runs every child as
+	// stage "fan" today, and `orion explore` runs every question as "explore".
+	//
+	// A counter rather than nanoseconds because it cannot collide at all,
+	// where two goroutines reading the clock in the same nanosecond can.
+	logPath := filepath.Join(ws.LogsDir(),
+		fmt.Sprintf("%s-%s-a%d-%d.log", stamp, safe(opts.Stage), attempt, nextRunSeq()))
+
+	args := runArgs(ws.SettingsPath(), prompt, opts, ac)
 
 	if opts.DryRun {
 		fmt.Printf("would run: %s %s\n  cwd: %s\n", bin, strings.Join(quoteAll(args), " "), ws.RepoDir())
@@ -623,7 +676,7 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = ws.RepoDir()
-	cmd.Env = childEnv(ws, ac)
+	cmd.Env = childEnv(ws, ac, opts.Actor)
 	// New process group so a kill can take the whole tree with it -- see
 	// terminate() below. claude -p runs bash, which runs whatever the agent
 	// invoked (go test, npm, a dev server, docker); without this, killing
@@ -706,6 +759,14 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 		// than as the exit code that replaced it (OR-212).
 		if msg, no := AuthFailure(tail.String()); no {
 			res.Unauthenticated = true
+			res.Reason = msg
+			fmt.Fprintf(logFile, "\n[orion] %s\n", res.Reason)
+		}
+		// Every OTHER non-zero exit, which classify() could only call
+		// "claude exited N" (OR-245). Last, so it never speaks over the two
+		// specific readings above -- both of those know something this one
+		// would have to infer.
+		if msg, named := FailureReason(tail.String(), res); named {
 			res.Reason = msg
 			fmt.Fprintf(logFile, "\n[orion] %s\n", res.Reason)
 		}
@@ -837,7 +898,7 @@ func terminate(cmd *exec.Cmd, done <-chan error) {
 // It also points CLAUDE_CONFIG_DIR at the directory Orion curated for this
 // run, which is what stops the operator's own plugins, subagents and slash
 // commands loading into it. See internal/agentcfg.
-func childEnv(ws *workspace.Workspace, ac *agentcfg.Run) []string {
+func childEnv(ws *workspace.Workspace, ac *agentcfg.Run, actor string) []string {
 	drop := map[string]bool{
 		"AWS_SECRET_ACCESS_KEY": true, "AWS_SESSION_TOKEN": true,
 		"GITHUB_TOKEN": true, "GH_TOKEN": true,
@@ -859,6 +920,14 @@ func childEnv(ws *workspace.Workspace, ac *agentcfg.Run) []string {
 	}
 	out = ac.Env(out)
 	out = append(out, "ORION_WORKSPACE="+ws.ID, "ORION_WORKSPACE_DIR="+ws.Dir)
+	if actor != "" {
+		// Which role this run IS, so a command the run calls back into Orion
+		// with can attribute what it spends to the same actor rather than
+		// guessing. `orion fan` needs it: a frontend ticket's subagents are
+		// frontend work, and a cost report that files them under the backend
+		// implementer is describing a run that did not happen.
+		out = append(out, "ORION_ACTOR="+actor)
+	}
 	out = append(out, agentAuthorEnv(ws.RepoDir())...)
 	return append(out, agentTrackerEnv(ws.RepoDir())...)
 }

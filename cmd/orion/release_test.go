@@ -17,10 +17,12 @@ func TestBareReleaseNamesNoAction(t *testing.T) {
 	for _, args := range [][]string{
 		nil,
 		{},
-		{"publish"}, // the dangerous verb, deliberately not wired
+		{"publish"}, // still unwired, and staying that way
 		{"cut"},
-		{"ship"},
 		{"--yes"},
+		// OR-116 spent `ship` on the publishing command, so it is no longer
+		// on this list -- see TestOnlyShipIsWiredOfTheReservedPublishingVerbs
+		// in releaseship_test.go, which holds the other two to the rule.
 	} {
 		if got := releaseAction(args); got != "" {
 			t.Errorf("release %v resolved to %q; a command that does not name "+
@@ -49,12 +51,30 @@ func TestReleaseSubcommandsResolve(t *testing.T) {
 
 // The usage text has to be clear about which "release" this is, because the
 // whole hazard is that a reader assumes the other one.
-func TestReleaseUsageSaysItDoesNotPublish(t *testing.T) {
+//
+// Since OR-116 both meanings live on this list, which makes the sentence
+// separating them load-bearing rather than decorative: it must name
+// milestones, name ship as the exception, and say ship is irreversible. A
+// reader who skims the subcommand list and stops must still not be able to
+// mistake `ship` for a tracker operation.
+func TestReleaseUsageSeparatesTheMilestoneVerbsFromTheOneThatPublishes(t *testing.T) {
 	low := strings.ToLower(releaseUsage)
-	for _, want := range []string{"milestone", "does not build, tag or publish"} {
+	for _, want := range []string{
+		"milestone",
+		"except ship",
+		"does not build,\ntag or publish anything",
+		"irreversible",
+	} {
 		if !strings.Contains(low, want) {
-			t.Errorf("usage never says %q, so a reader cannot tell this from cutting "+
-				"a real release:\n%s", want, releaseUsage)
+			t.Errorf("usage never says %q, so a reader cannot tell the milestone "+
+				"verbs from the one that cuts a real release:\n%s", want, releaseUsage)
+		}
+	}
+	// And ship's own entry has to say what it touches, since that is the
+	// difference a reader is deciding on.
+	for _, want := range []string{"homebrew tap", "scoop bucket", "--beta", "--dry-run"} {
+		if !strings.Contains(low, want) {
+			t.Errorf("ship's usage entry never mentions %q:\n%s", want, releaseUsage)
 		}
 	}
 }

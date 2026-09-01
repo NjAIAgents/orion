@@ -1,9 +1,11 @@
 package supervisor
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -198,6 +200,142 @@ func TestFanWithNoJobsReturnsEmptyWithoutBlocking(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Fan(w, nil) did not return -- it hung on zero jobs")
+	}
+}
+
+// captureStderr redirects os.Stderr to a pipe for the duration of fn,
+// recording the elapsed time (from the moment capture starts) at which each
+// line arrives. Lines are timestamped as they are READ from the pipe, not
+// after fn returns, so a caller can tell "announced as it happened" from
+// "announced once, after the fact, in the right order" -- two
+// implementations that would otherwise look identical from the final text
+// alone.
+func captureStderr(t *testing.T, fn func()) (lines []string, at []time.Duration) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	// fanOut holds its own reference to the stderr it was initialised with, so
+	// reassigning os.Stderr alone leaves a fan-out writing to the real one and
+	// this helper reading an empty pipe. Both are swapped, and both restored.
+	oldFan := fanOut
+	fanOut = w
+	start := time.Now()
+
+	var mu sync.Mutex
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			mu.Lock()
+			lines = append(lines, sc.Text())
+			at = append(at, time.Since(start))
+			mu.Unlock()
+		}
+	}()
+
+	fn()
+
+	os.Stderr = old
+	fanOut = oldFan
+	_ = w.Close()
+	<-done
+	_ = r.Close()
+	return lines, at
+}
+
+// TestFanAnnouncesEachChildAsItLands is the acceptance criterion for
+// "progress updates announce each child as it lands, not silent until the
+// last one": three children with staggered sleeps must produce their landing
+// line close to their OWN finish time, not all bunched at the end once every
+// child is done. A Fan that buffered every announcement until it returned
+// would pass every other test in this file and still leave an operator
+// watching nothing happen for the full run.
+func TestFanAnnouncesEachChildAsItLands(t *testing.T) {
+	fakeClaudeTree(t, `for a in "$@"; do
+  case "$a" in
+    FAST) sleep 0.1;;
+    MID) sleep 0.3;;
+    SLOW) sleep 0.6;;
+  esac
+done
+echo '`+fanResultJSON+`'
+exit 0
+`)
+
+	w := ws(t, `{"limits":{"max_concurrent_children":3}}`)
+	jobs := []Options{
+		{Stage: "fast", Prompt: "FAST", MaxMinutes: 1, MaxTurns: 1},
+		{Stage: "mid", Prompt: "MID", MaxMinutes: 1, MaxTurns: 1},
+		{Stage: "slow", Prompt: "SLOW", MaxMinutes: 1, MaxTurns: 1},
+	}
+
+	var totalElapsed time.Duration
+	lines, at := captureStderr(t, func() {
+		start := time.Now()
+		results := Fan(w, jobs)
+		totalElapsed = time.Since(start)
+		if len(results) != 3 {
+			t.Fatalf("got %d results, want 3", len(results))
+		}
+	})
+
+	// A landing line is the one that reports a child's exit; the roster lines
+	// printed before dispatch carry the same running count and must not be
+	// mistaken for landings. Keyed on "exit" rather than on the running count
+	// for exactly that reason.
+	var landedAt []time.Duration
+	for i, l := range lines {
+		if strings.Contains(l, "exit") {
+			landedAt = append(landedAt, at[i])
+		}
+	}
+	if len(landedAt) != 3 {
+		t.Fatalf("got %d landing announcements, want 3:\n%s", len(landedAt), strings.Join(lines, "\n"))
+	}
+	// The fast child (sleeps 0.1s) must be announced well before the whole
+	// fan returns (dominated by the slow child's 0.6s) -- a wide margin so
+	// scheduling jitter under a loaded CI runner cannot flip this.
+	if landedAt[0] > totalElapsed/2 {
+		t.Errorf("first landing announced at %s, %s after Fan started and Fan took %s total -- "+
+			"that is not distinguishable from every announcement arriving at the end",
+			landedAt[0], landedAt[0], totalElapsed)
+	}
+	// Strictly increasing: children land in the order they actually finish,
+	// and each is announced at that time, not re-ordered into dispatch order.
+	for i := 1; i < len(landedAt); i++ {
+		if landedAt[i] <= landedAt[i-1] {
+			t.Errorf("landing %d arrived at %s, not after landing %d at %s",
+				i, landedAt[i], i-1, landedAt[i-1])
+		}
+	}
+}
+
+// TestFanAnnouncesTheCostShapeBeforeAnyChildStarts is CONVENTIONS-orchestration
+// §C's other half: how many children and their cap must be stated before
+// dispatch, not discovered by counting landing lines after the fact.
+func TestFanAnnouncesTheCostShapeBeforeAnyChildStarts(t *testing.T) {
+	fakeClaudeTree(t, "echo '"+fanResultJSON+"'\nexit 0\n")
+	w := ws(t, `{"limits":{"max_concurrent_children":2}}`)
+	jobs := []Options{
+		{Stage: "a", Prompt: "x", MaxMinutes: 1, MaxTurns: 1},
+		{Stage: "b", Prompt: "x", MaxMinutes: 1, MaxTurns: 1},
+	}
+
+	lines, _ := captureStderr(t, func() { Fan(w, jobs) })
+	if len(lines) == 0 {
+		t.Fatal("Fan announced nothing at all")
+	}
+	first := lines[0]
+	if !strings.Contains(first, "fan-out 2 children") || !strings.Contains(first, "cap 2") {
+		t.Errorf("first announcement = %q, want the fan width and cap stated before any child runs", first)
+	}
+	if strings.Contains(first, "landed") {
+		t.Error("the cost-shape announcement and a landing announcement are the same line")
 	}
 }
 

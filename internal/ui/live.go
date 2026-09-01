@@ -37,6 +37,20 @@ package ui
 //   - No median for an actor means NO BAR. A bar with nothing to measure
 //     against would read as "0% done"; blank reads as "not applicable".
 //
+// THE SCROLLBACK IS ALSO A ZONE (OR-248). A pinned region that is never lost
+// is only half the problem: a talkative tick used to push everything the
+// operator was reading off the top of the terminal, and a quiet one left the
+// screen looking dead. So the terminal is three zones and EXACTLY ONE OF THEM
+// SCROLLS -- a frozen window of recent lines, the region, and the header the
+// region already carries. The window has a FLOOR of five lines rather than a
+// fixed height: it takes whatever rows are left once the region has its own,
+// so a taller terminal shows more history and a short one still shows five.
+//
+// A line that scrolls out of the window is gone from the SCREEN, not from the
+// record: events.jsonl has every one of them and `orion logs` prints them.
+// Live.Full drops the cap when somebody actually wants to read the log as it
+// happens, and off a terminal the cap does not exist at all.
+//
 // DEGRADATION IS NOT OPTIONAL. A redirected log must stay a log: off a
 // terminal there is no cursor control at all, just one plain line per run per
 // tick. NO_COLOR keeps the layout and drops the escapes; TERM=dumb is a
@@ -78,6 +92,17 @@ const (
 	// a banner.
 	liveRuleWidth = 76
 )
+
+// liveWindowFloor is the fewest recent lines the frozen window ever shows.
+//
+// A floor rather than a height. Five is what was asked for and it is also the
+// smallest number that still reads as a log rather than as a status line: with
+// one line you cannot see that a second thing happened, and with none the
+// watcher looks hung, which is the failure OR-217 shipped and OR-240 was
+// written to undo. The window grows past it whenever the terminal has the
+// room, and never shrinks below it even when the terminal does not -- a window
+// squeezed to nothing by a busy region is the hung-looking screen again.
+const liveWindowFloor = 5
 
 // The sparkline's resolution: tool calls per 10s over the last two minutes.
 //
@@ -586,7 +611,28 @@ func keep(cols, col int) bool {
 // The spend is here because it is the least deniable liveness signal there
 // is. A spinner says a goroutine is alive; a number that goes up says work is
 // actually being done.
+// hintFor names the key that changes what is on screen right now.
+//
+// ONE hint, and only when there is something to do with it. Listing both keys
+// always would spend header width on an instruction that is wrong half the
+// time -- "ctrl-o collapses" is untrue while collapsed -- and a status line
+// that says something inaccurate is worse than one that says less. Nothing at
+// all when there are no rows: there is nothing to collapse.
+func hintFor(st liveState, collapsed bool) string {
+	if len(st.rows) == 0 {
+		return ""
+	}
+	if collapsed {
+		return "ctrl-o expands"
+	}
+	return "ctrl-o collapses"
+}
+
 func renderHeader(w io.Writer, st liveState, now time.Time) string {
+	return renderHeaderAt(w, st, now, false)
+}
+
+func renderHeaderAt(w io.Writer, st liveState, now time.Time, collapsed bool) string {
 	parts := []string{now.Local().Format("15:04:05")}
 	if p := projectsOf(st.rows); p != "" {
 		parts = append(parts, p)
@@ -597,6 +643,9 @@ func renderHeader(w io.Writer, st liveState, now time.Time) string {
 	}
 	if st.spend > 0 {
 		parts = append(parts, fmt.Sprintf("$%.2f this session", st.spend))
+	}
+	if h := hintFor(st, collapsed); h != "" {
+		parts = append(parts, h)
 	}
 	return Dim(w, strings.Join(parts, "  "+liveSep+"  "))
 }
@@ -631,6 +680,21 @@ func projectsOf(rows []liveRun) string {
 // then one row per run. Empty when nothing is running, which is what makes a
 // tick with nothing to do print nothing at all.
 func renderRegion(w io.Writer, st liveState, now time.Time, cols int) []string {
+	return renderRegionAt(w, st, now, cols, false)
+}
+
+// renderRegionAt is renderRegion with the collapsed state made explicit.
+//
+// COLLAPSED KEEPS THE HEADER AND THE BATCH, and drops only the per-ticket
+// rows. The header is the status line, which is pinned and must never
+// disappear -- collapsing to nothing would answer "too many rows" with "no
+// information", and the operator's next move would be to expand it again. The
+// batch line stays because a batch is one thing however many tickets are in
+// it, so it is not what made the region tall.
+//
+// What is dropped is exactly what grows with max_concurrent_tickets, which is
+// the thing being made survivable (OR-249).
+func renderRegionAt(w io.Writer, st liveState, now time.Time, cols int, collapsed bool) []string {
 	// A batch keeps the region alive with no rows of its own. The members'
 	// agents have finished by the time a batch assembles, so their rows are
 	// gone -- and a batch waiting up to thirty minutes on one CI run is
@@ -644,12 +708,21 @@ func renderRegion(w io.Writer, st liveState, now time.Time, cols int) []string {
 	}
 	out := []string{
 		Dim(w, strings.Repeat(r, liveRuleWidth)),
-		renderHeader(w, st, now),
+		renderHeaderAt(w, st, now, collapsed),
 		"",
 	}
 	// The batch above the rows: it is the thing the rows are members OF, and
 	// reading the set after its members inverts the containment.
 	out = append(out, renderBatch(w, st.batch, now, cols)...)
+	if collapsed {
+		// Said, rather than left to be inferred from rows that vanished. An
+		// operator who collapsed the region ten minutes ago and came back to
+		// a quiet screen needs to know the runs are hidden, not finished.
+		if n := len(st.rows); n > 0 {
+			out = append(out, Dim(w, fmt.Sprintf("    %d run(s) hidden · ctrl-o expands", n)))
+		}
+		return out
+	}
 	for _, row := range st.rows {
 		out = append(out, renderRow(w, row, now, cols))
 	}
@@ -679,6 +752,87 @@ func renderPlain(st liveState, now time.Time) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+// displayCells is how many columns a rendered line occupies once the terminal
+// has swallowed its escape sequences.
+//
+// Runes are not enough here. paint() wraps a field in escapes that occupy no
+// columns at all, and counting them would have a coloured line look wider than
+// it is -- which, in the arithmetic below, means the window thinks a line
+// wrapped when it did not and erases a row that was never drawn.
+func displayCells(s string) int {
+	n := 0
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b {
+			// CSI is ESC [ params, ended by a byte in @-~. Anything else is a
+			// short escape whose second byte ends it. Either way: skipped whole,
+			// never counted, and never cut in half.
+			j := i + 1
+			if j < len(s) && s[j] == '[' {
+				j++
+				for j < len(s) && (s[j] < '@' || s[j] > '~') {
+					j++
+				}
+			}
+			if j < len(s) {
+				j++
+			}
+			i = j
+			continue
+		}
+		_, w := utf8.DecodeRuneInString(s[i:])
+		i += w
+		n++
+	}
+	return n
+}
+
+// screenRows is how many terminal rows a line occupies once it has wrapped.
+//
+// The erase is a RELATIVE cursor move, so this is not cosmetic: a line counted
+// as one row and drawn as two strands a row on screen at every redraw, and the
+// strandings accumulate until the region is walking down the terminal. An
+// unknown width cannot wrap anything, so it counts one.
+func screenRows(s string, cols int) int {
+	if cols <= 0 {
+		return 1
+	}
+	if n := displayCells(s); n > cols {
+		return (n + cols - 1) / cols
+	}
+	return 1
+}
+
+func screenRowsOf(lines []string, cols int) int {
+	n := 0
+	for _, s := range lines {
+		n += screenRows(s, cols)
+	}
+	return n
+}
+
+// windowLines picks the newest recent lines that fit above the region.
+//
+// The order of the two rules is the whole function. The FLOOR is taken first,
+// so five lines are shown whatever the region costs; only past the floor does
+// the height of the terminal get a say, and then a line is kept only while the
+// rows it needs are rows the region does not. A terminal that has not told us
+// its height gets the floor: guessing tall enough would be guessing the region
+// off the top of the screen, which is the failure this exists to prevent.
+func windowLines(recent []string, regionRows, termRows, cols int) []string {
+	// One row for the cursor itself, which sits below everything drawn.
+	avail := termRows - regionRows - 1
+	start, rows := len(recent), 0
+	for i := len(recent) - 1; i >= 0; i-- {
+		r := screenRows(recent[i], cols)
+		if len(recent)-i > liveWindowFloor && (termRows <= 0 || rows+r > avail) {
+			break
+		}
+		rows += r
+		start = i
+	}
+	return recent[start:]
 }
 
 // elapsedString is a duration a person reads at a glance: 42s, 6m02s, 1h04m.
@@ -713,23 +867,42 @@ func coarse(d time.Duration) string {
 // Live is the writer that owns the bottom of the terminal.
 //
 // EVERY line the watcher prints goes through it, which is the only way the
-// scrollback above can stay untouched: a write erases the region, emits the
-// line, and redraws below it. Anything writing to the terminal around this
-// would be overdrawn by the next redraw and lost.
+// screen can be three zones at all: a write goes into the frozen window rather
+// than into the terminal's own scrollback, and the whole block -- window then
+// region -- is erased and redrawn as one. Anything writing to the terminal
+// around this would be overdrawn by the next redraw and lost.
 //
-// Off a terminal it is a pass-through and nothing else. That is not a
-// fallback bolted on afterwards -- it is the same object with cursor control
-// switched off, so there is no second code path to keep honest.
+// Off a terminal it is a pass-through and nothing else, so a redirected log is
+// a complete, greppable, uncapped record. That is not a fallback bolted on
+// afterwards -- it is the same object with cursor control switched off, so
+// there is no second code path to keep honest.
 type Live struct {
-	// lock guards drawn, pending and every write to w, so a job goroutine's
-	// line can never land between the erase and the redraw of a row.
+	// lock guards drawn, pending, the window and every write to w, so a job
+	// goroutine's line can never land between the erase and the redraw of a row.
 	lock    sync.Mutex
 	w       io.Writer
 	cursor  bool
-	drawn   int
+	drawn   int  // ROWS drawn, not lines: a wrapped line is two rows to erase
 	pending bool // last write did not end a line, so hold the redraw
-	done    chan struct{}
-	wg      sync.WaitGroup
+	// window is the frozen scrollback: the recent lines still on screen, oldest
+	// first. Trimmed to what was actually shown at every redraw, so it is
+	// bounded by the terminal rather than by the length of the run.
+	window []string
+	// partial is a line a caller has begun and not yet ended. Held rather than
+	// shown, so a half-written line never becomes a window entry that a later
+	// write has to amend.
+	partial string
+	// full means the cap has been dropped and the log prints in full, straight
+	// into the terminal's own scrollback -- the behaviour every caller had
+	// before the window existed.
+	full bool
+	// collapsed hides the per-ticket rows, leaving the batch line and the
+	// status line (OR-249). A DISPLAY state and nothing more: events.jsonl
+	// records identically either way, which is the same contract the window
+	// keeps -- what scrolls out is unshown, never unrecorded.
+	collapsed bool
+	done      chan struct{}
+	wg        sync.WaitGroup
 }
 
 // NewLive wraps a writer. Cursor control is used only when the destination is
@@ -740,8 +913,100 @@ func NewLive(w io.Writer) *Live {
 		l.done = make(chan struct{})
 		l.wg.Add(1)
 		go l.loop()
+		// The cap is only worth dropping where there is a person to drop it, so
+		// the key reader starts only when both ends are a terminal.
+		if isTerminal(os.Stdin) {
+			go l.watchInput(os.Stdin)
+		}
 	}
 	return l
+}
+
+// Full drops the cap: from here every line prints in full, into the terminal's
+// own scrollback, exactly as it did before the window existed.
+//
+// The window's own lines are committed on the way out, so nothing that was on
+// screen disappears at the moment the cap is dropped. What had already scrolled
+// out of the window is NOT reprinted -- it was never held. events.jsonl is the
+// complete record and `orion logs` prints it; a buffer of every line a watcher
+// emitted over an eight-hour run is not something to keep in memory for a
+// keystroke that usually never comes.
+//
+// One way. Re-capping would leave the operator's screen mid-log with no way to
+// tell which lines the window had eaten.
+func (l *Live) Full() {
+	l.lock.Lock()
+	defer l.lock.Unlock()
+	if l.full || !l.cursor {
+		return
+	}
+	l.eraseLocked()
+	l.full = true
+	l.commitWindowLocked()
+	l.drawLocked()
+}
+
+// watchInput drops the cap on the first keystroke.
+//
+// LINE BUFFERED rather than raw, which is why the key is ctrl-r (or anything
+// else) FOLLOWED BY ENTER. Putting a terminal into raw mode takes an ioctl per
+// platform; Orion cross-compiles to six of them, has no third-party modules,
+// and has no build-tagged file anywhere in the tree. One extra keystroke buys
+// all of that back.
+//
+// Reading the terminal from a backgrounded watcher would normally stop the
+// process with SIGTTIN. The Go runtime ignores that signal by default, so the
+// read fails instead and this goroutine exits -- `orion watch &` keeps running,
+// simply with no key to press.
+// Keys the region answers to. Control characters rather than letters, so
+// nothing typed at a prompt behind the watcher is mistaken for a command.
+const (
+	keyCollapse = 0x0F // ctrl-o: collapse the region to its summary, and back
+	keyFullLog  = 0x12 // ctrl-r: drop the window's cap and print the full log
+)
+
+func (l *Live) watchInput(r io.Reader) {
+	var b [64]byte
+	for {
+		n, err := r.Read(b[:])
+		// EVERY byte in the read, not just the first. A terminal delivers a
+		// paste or a fast double-press as one read, and answering only b[0]
+		// would silently swallow the second key.
+		for _, c := range b[:n] {
+			switch c {
+			case keyCollapse:
+				l.ToggleCollapsed()
+			case keyFullLog:
+				l.Full()
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// ToggleCollapsed switches the region between every ticket row and a summary.
+//
+// THE RELEASE VALVE FOR A LONG QUEUE. OR-246 removed the ceiling on
+// max_concurrent_tickets and asks above ten instead; at ten the pinned rows
+// are taller than many terminals and there is no way to shrink them. Expanded
+// stays the default -- "you should never have to ask to see what is running"
+// -- and this is the other half of that rule, which shipped without it.
+//
+// A TOGGLE, not a one-way door. The key handling this replaces dropped the
+// window's cap on ANY keystroke and could not be undone: a stray arrow key
+// ended the frozen window for the rest of the run. A control the operator
+// cannot reverse is one they learn not to touch.
+func (l *Live) ToggleCollapsed() {
+	l.lock.Lock()
+	defer l.lock.Unlock()
+	if !l.cursor {
+		return
+	}
+	l.eraseLocked()
+	l.collapsed = !l.collapsed
+	l.drawLocked()
 }
 
 // cursorControl reports whether the destination can be redrawn in place.
@@ -761,7 +1026,13 @@ func cursorControl(w io.Writer) bool {
 	return isTerminal(w)
 }
 
-// Write emits a scrollback line without disturbing the region.
+// Write puts a line into the frozen window without disturbing the region.
+//
+// Off a terminal, and once the cap has been dropped, it is the pass-through it
+// always was and the terminal owns the scrollback. Otherwise the line never
+// reaches the terminal directly at all: it is captured, and the window redraws
+// with it. That is what bounds it -- a line the writer emitted itself could
+// only be taken back by scrolling the screen, which is the thing being stopped.
 func (l *Live) Write(p []byte) (int, error) {
 	l.lock.Lock()
 	defer l.lock.Unlock()
@@ -769,13 +1040,44 @@ func (l *Live) Write(p []byte) (int, error) {
 		return l.w.Write(p)
 	}
 	l.eraseLocked()
-	n, err := l.w.Write(p)
+	n, err := len(p), error(nil)
+	if l.full {
+		n, err = l.w.Write(p)
+	} else {
+		l.capture(string(p))
+	}
 	// A write that did not finish its line leaves the cursor mid-row, and
 	// drawing the region there would splice the two together. Held until the
 	// line is closed, which every caller in this codebase does with Fprintln.
 	l.pending = len(p) > 0 && p[len(p)-1] != '\n'
 	l.drawLocked()
 	return n, err
+}
+
+// capture folds a write into the window, one entry per COMPLETED line.
+//
+// Split here rather than at the caller because a writer is a byte stream: one
+// Write can carry three lines or half of one, and a window that counted writes
+// instead of lines would cap at five of whichever it happened to get.
+func (l *Live) capture(s string) {
+	l.partial += s
+	for {
+		i := strings.IndexByte(l.partial, '\n')
+		if i < 0 {
+			return
+		}
+		l.window = append(l.window, strings.TrimSuffix(l.partial[:i], "\r"))
+		l.partial = l.partial[i+1:]
+	}
+}
+
+// commitWindowLocked prints the window into the terminal's real scrollback and
+// forgets it, so the lines that were on screen stay on screen.
+func (l *Live) commitWindowLocked() {
+	for _, line := range l.window {
+		fmt.Fprintln(l.w, line)
+	}
+	l.window = nil
 }
 
 // Tick is the off-terminal heartbeat: one plain line per run.
@@ -797,6 +1099,11 @@ func (l *Live) Tick() {
 
 // Close stops the redraw and clears the region, leaving the scrollback as the
 // only thing on screen. Safe to call twice.
+//
+// The window is COMMITTED rather than erased with the region. Its lines are the
+// only ones the terminal has not seen -- erasing them too would end a watch run
+// on a blank screen, which is a worse answer to "what just happened" than the
+// five lines that were there a moment ago.
 func (l *Live) Close() {
 	if l.done != nil {
 		close(l.done)
@@ -806,6 +1113,7 @@ func (l *Live) Close() {
 	l.lock.Lock()
 	defer l.lock.Unlock()
 	l.eraseLocked()
+	l.commitWindowLocked()
 }
 
 func (l *Live) loop() {
@@ -825,11 +1133,12 @@ func (l *Live) loop() {
 	}
 }
 
-// eraseLocked removes the region, leaving the cursor where it began.
+// eraseLocked removes the drawn block, leaving the cursor where it began.
 //
 // Move up by however many rows were drawn, then clear from there to the end
 // of the screen. Clearing to the end rather than line by line is what makes a
-// region that SHRANK -- a run finished -- not leave its last row behind.
+// block that SHRANK -- a run finished, the window narrowed -- not leave its
+// last row behind. ROWS, not lines: see screenRows.
 func (l *Live) eraseLocked() {
 	if l.drawn == 0 {
 		return
@@ -838,13 +1147,32 @@ func (l *Live) eraseLocked() {
 	l.drawn = 0
 }
 
+// drawLocked paints the block: the frozen window, then the region under it.
+//
+// The geometry is read fresh on EVERY redraw rather than cached, which is what
+// makes a resize reflow: the next of the four frames a second sizes the window
+// to the new terminal, and the erase that precedes it is measured in the rows
+// this pass actually drew.
 func (l *Live) drawLocked() {
 	if l.pending {
 		return
 	}
-	lines := renderRegion(l.w, liveSnapshot(), time.Now(), columns())
-	for _, line := range lines {
-		fmt.Fprintln(l.w, line)
+	cols := columns()
+	region := renderRegionAt(l.w, liveSnapshot(), time.Now(), cols, l.collapsed)
+	drawn := 0
+	if !l.full {
+		// Trimmed to what is shown, so the window is the buffer: a line that
+		// scrolled off the screen is dropped here and is thereafter only in
+		// events.jsonl, which is exactly what "gone from the screen" means.
+		l.window = windowLines(l.window, screenRowsOf(region, cols), terminalRows(), cols)
+		for _, line := range l.window {
+			fmt.Fprintln(l.w, line)
+			drawn += screenRows(line, cols)
+		}
 	}
-	l.drawn = len(lines)
+	for _, line := range region {
+		fmt.Fprintln(l.w, line)
+		drawn += screenRows(line, cols)
+	}
+	l.drawn = drawn
 }

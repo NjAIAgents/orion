@@ -203,13 +203,25 @@ type CI struct {
 	// Off by default. It spends money without being asked, and on a
 	// repository whose tests are flaky it will spend it on nothing.
 	AutoFix bool `json:"auto_fix"`
-	// MaxFixAttempts bounds that loop. Zero means the built-in 3.
+	// MaxFixAttempts bounds that loop. Zero means the built-in default,
+	// applied by Attempts -- never "unlimited", which is this package's rule
+	// for every circuit breaker.
 	//
 	// A ceiling is not the only brake and not the most important one --
 	// an identical repeated failure stops the loop immediately, because an
 	// agent that gets back a byte-identical error has learned nothing and
 	// spending the remaining attempts proves only that it can fail the same
-	// way three times.
+	// way three times. The ceiling is the outer bound; the repeat brake is
+	// what usually stops the loop, and raising the ceiling must never reach
+	// past it. A third attempt is therefore only ever reached by a run
+	// presenting a DIFFERENT failure each round.
+	//
+	// Deliberately NOT clamped from above, matching Limits.ConcurrentTickets:
+	// a configured number is honoured, and the argument about whether it is
+	// wise happens where it is SET -- `orion config limits` asks for
+	// confirmation above FixRoundsWarnAbove -- rather than silently on every
+	// read. A file saying 40 while the loop ran 5 is a config disagreeing
+	// with behaviour, with nothing in either place explaining the gap.
 	MaxFixAttempts int `json:"max_fix_attempts"`
 	// RequireUpToDate refuses to merge a branch whose base has moved since
 	// its checks ran.
@@ -225,6 +237,59 @@ type CI struct {
 	// plan, and with protection off `gh` reports a stale branch as CLEAN.
 	// One local `git merge-base --is-ancestor` has neither limitation.
 	RequireUpToDate bool `json:"require_up_to_date"`
+}
+
+// FixRounds is the shipped ceiling for BOTH fix loops -- QA's
+// findings-fix-reverify exchange and the CI fix loop after a red build.
+//
+// One constant for both because they are the same bet made twice: an agent is
+// handed what went wrong and asked to try again, and the number bounds how
+// many times that is worth paying for. Two numbers that mean the same thing
+// drift apart, and the second one to drift is the one nobody remembers to
+// look at.
+//
+// Three, raised from two (OR-226). The case for it is evidence: a second fix
+// round has demonstrably been productive on this project, and stopping at two
+// escalates to a person work that one more exchange would have finished. The
+// case against is spend, and it is not small -- this raises the WORST case by
+// half on every ticket that fails to converge, and it lands on the
+// implementer, which internal/agent/actors.go records as the actor that
+// dominates per-ticket cost. For scale, OR-168 took 41 minutes of wall time
+// across six runs at the old ceiling of two.
+//
+// It is a decision with a stated cost rather than a constant, which is why
+// both loops read it from config and both are settable from
+// `orion config limits`.
+const FixRounds = 3
+
+// FixRoundsWarnAbove is where `orion config limits` stops accepting a fix-round
+// ceiling silently and asks the operator to confirm it.
+//
+// A confirmation, not a clamp -- the same answer ConcurrencyWarnAbove gives,
+// and for the same reason: refusing a number the operator chose would be Orion
+// overruling them about a repository it cannot measure from here. A repo whose
+// failures genuinely take four exchanges to converge exists; Orion cannot tell
+// it apart from a typo, but the person typing the number can.
+//
+// Five because that is where the evidence runs out. Three is the most this
+// project has ever seen pay off, and past five a loop that is still changing
+// something every round and still failing is not converging -- it is buying
+// attempts. The repeat brake already catches the loop that repeats itself; the
+// case this bounds is the one that keeps producing NEW failures, which is the
+// expensive one. It is a threshold for a conversation, not a verdict.
+const FixRoundsWarnAbove = 5
+
+// Attempts is MaxFixAttempts with the default applied. Zero means the shipped
+// default rather than no attempts: a fix loop with no attempts is auto_fix
+// switched off by an absent value, which nobody asked for.
+//
+// Deliberately shaped like QA.Rounds. The two ceilings bound the same kind of
+// exchange, and reading alike is how they stay explicable together.
+func (c CI) Attempts() int {
+	if c.MaxFixAttempts > 0 {
+		return c.MaxFixAttempts
+	}
+	return FixRounds
 }
 
 // Collect configures the pass that reconciles a pull request after CI.
@@ -518,7 +583,30 @@ type QA struct {
 	// paying two agents to argue: QA never blocks on its own authority, so
 	// an unbounded loop is the only way this stage could stop a run, and
 	// it would do it by spending.
+	//
+	// Not clamped from above; see CI.MaxFixAttempts for why, and
+	// FixRoundsWarnAbove for where the argument about a large number happens.
 	MaxRounds int `json:"max_rounds"`
+	// VerdictMinutes bounds the VERDICT RE-ASK, not the QA run (OR-252).
+	//
+	// When QA ends without a verdict and without findings, Orion resumes its
+	// session and asks once for one. That re-ask had a hardcoded five-minute
+	// cap, and on OR-248 it killed a re-ask against a session that had been
+	// running for thirty: the change reached a pull request with no QA
+	// opinion at all, which is the worst outcome available -- neither a
+	// verdict nor a fix round, just an unverified branch and a person sent to
+	// read it.
+	//
+	// The old comment's reasoning is still right for the ordinary case: one
+	// line is being asked for, from a session that has already done the work,
+	// and the short cap is what makes the claim true that a re-ask is cheaper
+	// than the fix round it replaces. What it missed is that resuming a large
+	// session and asking it to summarise its own findings is not a one-line
+	// job.
+	//
+	// So it SCALES: see QA.VerdictBudget. This is the floor and the setting,
+	// zero meaning the built-in default.
+	VerdictMinutes int `json:"verdict_minutes,omitempty"`
 	// E2EBaseURL is the explicit non-production target an end-to-end run may
 	// point at. EMPTY MEANS NO E2E, never "guess one": nj-agents
 	// CONVENTIONS-testing §T3 blocks an e2e execution without an explicit
@@ -531,12 +619,54 @@ type QA struct {
 // On reports whether the stage runs. See the Enabled comment: absent is on.
 func (q QA) On() bool { return q.Enabled == nil || *q.Enabled }
 
-// Rounds is MaxRounds with the default applied.
+// defaultVerdictMinutes is the floor for a verdict re-ask, and what a short
+// QA run gets. The value the re-ask was hardcoded to before OR-252.
+const defaultVerdictMinutes = 5
+
+// verdictShare is how much of the parent run's own time a re-ask may have.
+//
+// A fifth. Resuming a thirty-minute session and asking it to summarise gets
+// six minutes; a four-minute session still gets the five-minute floor. The
+// fraction rather than a bigger constant because the thing that makes a
+// re-ask expensive is the size of the session it resumes, and a constant
+// large enough for the worst case would be spent on every ordinary one.
+const verdictShare = 5
+
+// VerdictMinutes is the configured floor, or the built-in default.
+func (q QA) VerdictFloor() int {
+	if q.VerdictMinutes > 0 {
+		return q.VerdictMinutes
+	}
+	return defaultVerdictMinutes
+}
+
+// VerdictBudget is how long a re-ask may take, given how long the run it is
+// resuming took.
+//
+// PROPORTIONAL, FLOORED, NEVER SMALLER THAN THE FLOOR. A re-ask against a
+// long session is a different question from one against a short session, and
+// treating them the same is what produced an unverified pull request on
+// OR-248. The cheap case stays cheap: at or below the floor's worth of parent
+// time, this is exactly the floor.
+func (q QA) VerdictBudget(parentMinutes int) int {
+	floor := q.VerdictFloor()
+	if parentMinutes <= 0 {
+		return floor
+	}
+	if scaled := parentMinutes / verdictShare; scaled > floor {
+		return scaled
+	}
+	return floor
+}
+
+// Rounds is MaxRounds with the default applied. Zero means the shipped
+// default rather than no rounds: no rounds at all would escalate the first
+// finding with nobody having tried to fix it.
 func (q QA) Rounds() int {
 	if q.MaxRounds > 0 {
 		return q.MaxRounds
 	}
-	return 2
+	return FixRounds
 }
 
 // Agent overrides how one actor is displayed, and which model and effort it

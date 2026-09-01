@@ -4,6 +4,13 @@ on:
   # develop is the integration branch and where work actually lands, so CI
   # must run there too. Triggering only on main meant every commit between
   # releases was unverified by CI.
+  #
+  # orion/batch is deliberately NOT here. The batch opens a pull request for
+  # its ref (OR-253), so `pull_request:` below builds it; listing the ref here
+  # as well would match both events and run the batch's single CI run twice,
+  # which is the exact cost the batch exists to remove. It was listed here for
+  # a few hours on 2026-08-31, when the batch pushed the ref and opened no
+  # pull request for it -- the reading side of the same bug.
   push: { branches: [main, develop] }
   # branches-ignore: [main] excludes the develop-to-main PROMOTION pull
   # request, and only that one. Feature pull requests target develop, so

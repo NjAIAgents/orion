@@ -46,6 +46,24 @@ type Issue struct {
 	// both use the same field -- so one query and one field cover both
 	// hierarchies without Orion knowing which shape a project uses.
 	Parent string
+	// BlockedBy are the keys this ticket is blocked by, from Jira's issue
+	// links (OR-95).
+	//
+	// ONLY the blocking relationship. Jira's links also carry "relates to",
+	// "duplicates" and "clones", and none of those says anything about
+	// ORDER -- treating them as dependencies would hold work behind tickets
+	// that merely mention each other.
+	BlockedBy []string
+	// SupersededBy are the keys that declare this ticket obsolete, and
+	// Supersedes are the ones it declares obsolete (OR-243).
+	//
+	// BOTH, because a supersession link is written once, on the newer
+	// ticket, by the person drafting it -- so the fact that the older one is
+	// dead can live entirely on the newer one's record. Blocking does not
+	// have that problem, which is why BlockedBy above needs only one side.
+	// See supersededByOf and supersedesOf.
+	SupersededBy []string
+	Supersedes   []string
 	// FixVersions are the milestone names this ticket carries, by Jira's own
 	// name for each. A LIST because Jira allows several, and the plural
 	// matters: `release add` has to tell "this ticket is on no milestone"
@@ -73,7 +91,7 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 	q := url.Values{}
 	q.Set("jql", jql)
 	q.Set("maxResults", fmt.Sprint(maxResults))
-	q.Set("fields", "summary,description,status,labels,priority,parent,issuetype,components,fixVersions")
+	q.Set("fields", "summary,description,status,labels,priority,parent,issuetype,components,fixVersions,issuelinks")
 
 	code, body, err := j.do("GET", "/rest/api/3/search/jql?"+q.Encode(), nil)
 	if err != nil {
@@ -116,6 +134,7 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 				FixVersions []struct {
 					Name string `json:"name"`
 				} `json:"fixVersions"`
+				IssueLinks []issueLink `json:"issuelinks"`
 			} `json:"fields"`
 		} `json:"issues"`
 	}
@@ -137,10 +156,110 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 			IssueType:      i.Fields.IssueType.Name,
 			Components:     namesOf(i.Fields.Components),
 			FixVersions:    namesOf(i.Fields.FixVersions),
+			BlockedBy:      blockersOf(i.Fields.IssueLinks),
+			SupersededBy:   supersededByOf(i.Fields.IssueLinks),
+			Supersedes:     supersedesOf(i.Fields.IssueLinks),
 			URL:            j.BaseURL + "/browse/" + i.Key,
 		})
 	}
 	return out, nil
+}
+
+// issueLink is Jira's link shape, trimmed to what ordering needs.
+//
+// INWARD and OUTWARD are both carried because Jira stores one link once, from
+// whichever side created it, and which side you are on decides what it means.
+// On the "Blocks" type, inwardIssue is the ticket that BLOCKS this one and
+// outwardIssue is the one this one blocks -- so reading only one field would
+// see half the dependencies in a project and none in another, depending on
+// which end people happened to link from.
+type issueLink struct {
+	Type struct {
+		Name    string `json:"name"`
+		Inward  string `json:"inward"`
+		Outward string `json:"outward"`
+	} `json:"type"`
+	InwardIssue  *struct{ Key string } `json:"inwardIssue"`
+	OutwardIssue *struct{ Key string } `json:"outwardIssue"`
+}
+
+// blockersOf returns the keys this issue is blocked by.
+//
+// Matched on the link's own INWARD DESCRIPTION ("is blocked by") rather than
+// on the type name, because the type is named by the Jira instance and the
+// description is what Jira renders for that direction. A site that renamed
+// "Blocks" to something local still reads correctly; a site with a custom
+// link type whose inward description says "is blocked by" is honoured, which
+// is what its author meant.
+//
+// Everything else is ignored. "relates to", "duplicates" and "clones" say
+// nothing about order, and treating them as dependencies would hold work
+// behind tickets that merely mention each other.
+func blockersOf(links []issueLink) []string {
+	var out []string
+	for _, l := range links {
+		if l.InwardIssue == nil || l.InwardIssue.Key == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(l.Type.Inward), "blocked by") {
+			out = append(out, l.InwardIssue.Key)
+		}
+	}
+	return out
+}
+
+// supersededByOf and supersedesOf read the two SIDES of a supersession link,
+// which carry different facts and are both needed (OR-243).
+//
+// Jira returns, for each link on issue X, whichever end is NOT X. So:
+//
+//	inwardIssue  present  =>  "X <inward> that issue"      e.g. X is superseded by A
+//	outwardIssue present  =>  "X <outward> that issue"     e.g. X supersedes B
+//
+// blockersOf reads only the inward side and is right to: "who blocks me" is
+// answerable from my own record, because Jira mirrors the link onto both
+// issues. Supersession needs the other side as well for a reason that is
+// about people rather than about Jira. The link is written on the NEW
+// ticket -- its author types "supersedes OR-231" while drafting it -- and the
+// mirror only exists if the tracker rendered it. Where it did not, the fact
+// that OR-231 is obsolete lives exclusively on OR-235.
+//
+// OR-231 and OR-235 on 2026-08-30 were both written that way, which is the
+// case this rule exists for.
+//
+// So the queue manager unions the two: a ticket is superseded if its own
+// record says so, OR if some other ticket in the set declares it superseded.
+// Reading one side would half-work, and the half it missed would be the
+// obsolete ticket getting admitted and worked.
+func supersededByOf(links []issueLink) []string {
+	var out []string
+	for _, l := range links {
+		if l.InwardIssue == nil || l.InwardIssue.Key == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(l.Type.Inward), "superseded by") {
+			out = append(out, l.InwardIssue.Key)
+		}
+	}
+	return out
+}
+
+func supersedesOf(links []issueLink) []string {
+	var out []string
+	for _, l := range links {
+		if l.OutwardIssue == nil || l.OutwardIssue.Key == "" {
+			continue
+		}
+		// "supersedes" and not "superseded by": a site whose outward
+		// description is the passive form is describing the opposite
+		// relationship, and reading it as this one would evict the newer
+		// ticket -- permanently, with a reason that sounds right.
+		o := strings.ToLower(l.Type.Outward)
+		if strings.Contains(o, "supersedes") && !strings.Contains(o, "superseded by") {
+			out = append(out, l.OutwardIssue.Key)
+		}
+	}
+	return out
 }
 
 // GetIssue fetches one issue.
@@ -417,7 +536,22 @@ const QueueLabelDefault = "ORION"
 const (
 	LabelWorking = "orion-working"
 	LabelCIWait  = "orion-ci-wait"
-	LabelFailed  = "orion-failed"
+	// LabelReady is the integration queue's inbox (OR-253): the agent
+	// finished, QA gave its verdict, the branch is pushed, and NOTHING is
+	// running. The next batch takes it.
+	//
+	// A third state rather than reusing ci-wait, because the two mean
+	// opposite things to a reader. ci-wait says a machine is working and the
+	// answer is patience; ready says nothing is working and the ticket is
+	// waiting on the integration queue's next pass. Reporting one as the
+	// other would have an operator waiting on a build nobody started.
+	//
+	// It is NOT a claim. orion-working is the mutual-exclusion lock and it is
+	// released before this is set: a ready ticket holds no job slot, which is
+	// the whole point of separating the coding queue from the integration
+	// queue.
+	LabelReady  = "orion-ready"
+	LabelFailed = "orion-failed"
 )
 
 // StatusCategoryDone is Jira's terminal category. Every workflow has one,
@@ -438,7 +572,7 @@ func (i Issue) Resolved() bool {
 // Managed are every label Orion owns, for the queue query and for clearing
 // state when a ticket is finished or requeued.
 func Managed(queueLabel string) []string {
-	return []string{queueLabel, LabelWorking, LabelCIWait, LabelFailed}
+	return []string{queueLabel, LabelWorking, LabelCIWait, LabelReady, LabelFailed}
 }
 
 // StaleLocks returns the keys of issues that are FINISHED but still carry

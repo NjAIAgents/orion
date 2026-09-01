@@ -8,12 +8,18 @@ package collect
 // flag is off, and interleaving the two would make the old path's behaviour
 // depend on a feature that is not enabled. Off, nothing here is reached.
 //
-// What this does NOT do is merge. Land() reports which members a green batch
-// would land, and the existing approval and merge path acts on that, so the
-// one irreversible step in this package stays in the one place that already
-// owns it.
+// IT MERGES, and that is the change OR-253 made. This file used to end by
+// reporting which members a green batch WOULD land, handing them back to the
+// per-branch path to merge one at a time -- which left every remaining member
+// behind the work branch, rebased each one, and bought a CI run per rebase.
+// The batch now lands the ref it tested, so the work branch moves exactly once
+// and nothing is ever behind it.
+//
+// The irreversible step still has one implementation: Deps.Merge, the same
+// seam the per-branch path uses. What changed is what is handed to it.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -34,7 +40,9 @@ import (
 type batchTester struct {
 	git    repoGit
 	status func(dir, branch string) (PR, error)
+	openPR func(dir, branch, title, body, base string) (string, error)
 	dir    string
+	base   string
 	wait   time.Duration
 	out    io.Writer
 	log    *events.Log
@@ -53,29 +61,52 @@ func (t batchTester) Test(ref string) (bool, error) {
 	if err := t.git.PushRef(ref); err != nil {
 		return false, err
 	}
-	defer func() { _ = t.git.DeleteRemoteRef(ref) }()
 
-	deadline := time.Now().Add(t.wait)
-	for {
-		pr, err := t.status(t.dir, ref)
-		if err != nil {
-			return false, fmt.Errorf("reading the checks on %s: %w", ref, err)
+	// The pull request is what makes the run both HAPPEN and be READABLE.
+	// `ci.yml` triggers on pull_request; a bare push to an ephemeral ref
+	// matches no trigger, so without this nothing builds. And prStatus asks
+	// `gh pr view`, so without this the checks cannot be read even when they
+	// do run -- which is exactly what happened twice on 2026-08-31: CI green
+	// on the ref, Orion reading "no pull requests found" and waiting out the
+	// full deadline before refusing to call silence green.
+	//
+	// Opened before the poll rather than lazily, because the poll's whole
+	// premise is that a result will eventually appear, and nothing would
+	// produce one.
+	if t.openPR != nil {
+		title := fmt.Sprintf("batch: %s", ref)
+		body := "Assembled by Orion and tested as one set (OR-253). " +
+			"This pull request is the batch's single CI run and its review surface."
+		if _, err := t.openPR(t.dir, ref, title, body, t.base); err != nil &&
+			!strings.Contains(strings.ToLower(err.Error()), "already exists") {
+			return false, fmt.Errorf("opening the batch pull request for %s: %w", ref, err)
 		}
-		switch {
-		case pr.Verdict == VerdictFailing:
-			return false, nil
-		case pr.Verdict == VerdictPassing && !noChecksYet(pr):
-			return true, nil
-		case pr.Verdict == VerdictPassing:
-			// Silence is not success. Keep waiting; the deadline below ends
-			// this, not an absence of evidence.
-		}
-		if time.Now().After(deadline) {
-			return false, fmt.Errorf(
-				"no check result for %s after %s; refusing to read silence as green", ref, t.wait)
-		}
-		time.Sleep(15 * time.Second)
 	}
+
+	// ONE READ, NEVER A WAIT (OR-251). This is called from the watch tick,
+	// and the tick's own contract is that the jobs it starts outlive it --
+	// "a tick that blocked on the agent could never start a second". A
+	// thirty-minute poll loop here broke exactly that: on 2026-08-31 the
+	// console reported nothing for the whole of a batch's CI while three
+	// agents carried on working, which is the OR-128 silent-hang shape
+	// arriving through a door OR-128 could not have known about.
+	//
+	// The deadline did not go anywhere; it moved to the batch record, which
+	// is where a thing that spans ticks belongs.
+	pr, err := t.status(t.dir, ref)
+	if err != nil {
+		return false, fmt.Errorf("reading the checks on %s: %w", ref, err)
+	}
+	switch {
+	case pr.Verdict == VerdictFailing:
+		return false, nil
+	case pr.Verdict == VerdictPassing && !noChecksYet(pr):
+		return true, nil
+	}
+	// Passing-with-no-checks and everything else are the same answer here:
+	// nothing has reported. Silence is not success, and it is not failure
+	// either -- it is "come back".
+	return false, ErrCheckPending
 }
 
 // noChecksYet reports the empty rollup that cmd/orion/collect.go turns into a
@@ -136,6 +167,101 @@ func (liveObserver) Settled(landed, ejected, culprits, deferred []string) {
 	ui.LiveBatchPhase(ui.BatchDone)
 }
 
+// resumeBatch acts on a batch that was already proved green and is waiting on
+// an approver, without spending CI again.
+//
+// Returns done=false whenever anything at all has changed -- a different set
+// of members, a base that moved, a record from another work branch -- so the
+// caller assembles and tests from scratch. The bar for reusing a proof is
+// that NOTHING relevant differs, because the failure mode on the other side
+// is merging a set nobody tested.
+//
+// The record is cleared on every path that does not resume, so a stale file
+// never survives to be compared against a second time.
+func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
+	deps Deps, g repoGit, ws *workspace.Workspace, log *events.Log, w io.Writer) ([]Result, bool) {
+
+	st, ok := loadBatchState(ws.Dir)
+	if !ok {
+		return nil, false
+	}
+	base := cfg.VCS.WorkBranch
+	baseSHA, err := g.SHAOf(base)
+	if err != nil || !st.resumable(base, baseSHA, members) {
+		if st.BaseSHA != "" && baseSHA != "" && st.BaseSHA != baseSHA {
+			ui.Warn(w, "%s moved since the batch was proved green; "+
+				"reassembling and testing again rather than merging a result "+
+				"that was not proved against it", base)
+		}
+		clearBatchState(ws.Dir)
+		return nil, false
+	}
+
+	// A batch still building resumes to ONE more status read, never to a
+	// fresh assembly: the ref is published, its pull request is open, and the
+	// build being waited for is already running. Re-cutting would abandon it
+	// and buy another.
+	if st.Status == batchTesting {
+		return resumeTesting(st, members, cfg, opts, deps, g, ws, log, w), true
+	}
+
+	approve := batchApprover(cfg, opts, deps, ws, log, w)
+	if approve == nil {
+		// The gate was removed while a batch waited on it. Landing without
+		// asking is the configured behaviour now, and the proof still stands.
+		return landResumed(st, members, g, ws, w), true
+	}
+	okd, err := approve(st.Ref, st.Members)
+	if err != nil {
+		return []Result{{Err: err}}, true
+	}
+	if !okd {
+		// Still waiting, or declined. Either way nothing merges and the ref
+		// stays exactly as the approver last saw it.
+		var out []Result
+		for _, m := range members {
+			out = append(out, Result{Key: m.Key, Verdict: VerdictStale})
+		}
+		return out, true
+	}
+	return landResumed(st, members, g, ws, w), true
+}
+
+// landResumed merges a proof recorded on an earlier pass.
+//
+// The base is re-read one final time even though resumable() just compared
+// it: approval is a human-length gap, and the whole point of ADR 0017's
+// precondition is that the base can move in exactly such a gap.
+func landResumed(st batchState, members []Member, g repoGit,
+	ws *workspace.Workspace, w io.Writer) []Result {
+
+	now, err := g.SHAOf(st.Base)
+	if err != nil || now != st.BaseSHA {
+		ui.Warn(w, "%s moved between the approval and the merge; "+
+			"nothing was merged and the batch will be assembled again", st.Base)
+		clearBatchState(ws.Dir)
+		var out []Result
+		for _, m := range members {
+			out = append(out, Result{Key: m.Key, Verdict: VerdictStale})
+		}
+		return out
+	}
+	if _, err := g.LandRef(st.Ref, st.Base); err != nil {
+		return []Result{{Err: fmt.Errorf("landing the approved batch %s: %w", st.Ref, err)}}
+	}
+	clearBatchState(ws.Dir)
+	_ = g.DropRef(st.Ref)
+	_ = g.DeleteRemoteRef(st.Ref)
+
+	ui.Say(w, "", events.ActorOrion, ui.VerbOK,
+		"landed %d approved branch(es) as one, with no further CI run", len(members))
+	var out []Result
+	for _, m := range members {
+		out = append(out, Result{Key: m.Key, Verdict: VerdictMerged, Changed: true})
+	}
+	return out
+}
+
 // runBatch lands the pass as one set.
 //
 // Returns a Result per ticket so the caller's contract is unchanged: the
@@ -147,6 +273,10 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	// The concurrency limit IS the batch size. Nothing can be in a batch
 	// that did not finish, and nothing finishes that was not allowed to run.
 	size := cfg.Limits.ConcurrentTickets()
+
+	// Built before the membership loop, which now asks git what is ready
+	// rather than asking the forge whether a pull request exists.
+	g := repoGit{ws: ws, merge: deps.Merge, openPR: deps.OpenPR}
 
 	var members []Member
 	for _, key := range pass {
@@ -161,31 +291,112 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		if !recorded {
 			branch = branchFor(cfg.VCS.BranchPrefix, key)
 		}
-		pr, err := deps.Status(ws.CloneDir(), branch)
-		if err != nil || pr.URL == "" || pr.Verdict == VerdictMerged {
-			continue // not ready to land; the per-branch path still reports it
+		// READINESS IS THE BRANCH BEING ON THE REMOTE, not a pull request
+		// existing (OR-253).
+		//
+		// Requiring a pull request was what forced the work pipeline to open
+		// one per ticket, which is what bought N CI runs before the batch had
+		// tested anything. The branch being pushed is the same fact without
+		// the cost: the agent finished, QA gave its verdict, and the commits
+		// are somewhere the batch can merge from.
+		//
+		// A branch that resolves nowhere is simply not ready yet -- the agent
+		// may still be running, or the push may have failed and been
+		// reported elsewhere. Skipped in silence here, and the per-branch
+		// path still has something to say about it.
+		head, err := g.SHAOf(branch)
+		if err != nil || head == "" {
+			continue
 		}
-		members = append(members, Member{Key: key, Branch: branch, Head: pr.Head})
+		// Already in the base is not a member, it is history. Without this a
+		// merged branch would be assembled into every later batch, each time
+		// contributing nothing and each time widening the set that has to be
+		// bisected when something else fails.
+		if merged, err := g.ContainsRef(cfg.VCS.WorkBranch, branch); err == nil && merged {
+			continue
+		}
+		members = append(members, Member{Key: key, Branch: branch, Head: head})
 	}
 	if len(members) == 0 {
 		return nil
 	}
 
 	ref := "orion/batch"
-	g := repoGit{ws: ws}
 	if opts.DryRun {
 		ui.Ok(w, "would", "assemble %d branch(es) into %s and test once: %s",
 			len(members), ref, strings.Join(pass[:len(members)], " "))
 		return nil
 	}
 
+	// RESUME BEFORE REASSEMBLING. A batch that is green and waiting on a
+	// person is finished with CI: re-cutting the ref would force-push a new
+	// merge commit, replace the pull request the approver is reading, and buy
+	// another CI run to re-prove what is already proved -- once per tick, for
+	// as long as they take to look.
+	if res, done := resumeBatch(ref, members, cfg, opts, deps, g, ws, log, w); done {
+		return res
+	}
+
 	ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
 		"assembling %d branch(es) into %s", len(members), ref)
 
-	t := batchTester{git: g, status: deps.Status, dir: ws.CloneDir(),
+	t := batchTester{git: g, status: deps.Status, openPR: deps.OpenPR,
+		dir: ws.CloneDir(), base: cfg.VCS.WorkBranch,
 		wait: 30 * time.Minute, out: w, log: log}
-	b, err := Land(g, t, ref, cfg.VCS.WorkBranch, members, liveObserver{})
-	_ = g.DropRef(ref)
+	b, err := Land(g, t, ref, cfg.VCS.WorkBranch, members, liveObserver{},
+		WithApproval(batchApprover(cfg, opts, deps, ws, log, w)))
+
+	// Local ref and its worktree, then the published branch. Both, and only
+	// here: Test used to drop the remote ref as it returned, which cannot
+	// stand now that LandRef merges the ref Test proved. Asked for explicitly
+	// on 2026-08-31 -- a surviving orion/batch is force-pushed over by the
+	// next batch and misleads anyone reading the remote in between.
+	//
+	// EXCEPT WHILE A PERSON IS BEING ASKED. A batch waiting on approval is
+	// finished with CI and not finished with the ref: dropping it here would
+	// have the next pass reassemble the same members, open another pull
+	// request and buy another CI run to re-prove what is already proved --
+	// and it would delete the very pull request the approver is looking at.
+	// STILL BUILDING: record it and let the tick go (OR-251). The ref, its
+	// pull request and the run they belong to all survive; the next pass
+	// reads the checks once more. Every other ticket keeps being reported in
+	// the meantime, which is the whole point.
+	if b.Pending {
+		if err := saveBatchState(ws.Dir, batchState{
+			Ref: ref, Base: cfg.VCS.WorkBranch, Members: keysOf(members),
+			Status: batchTesting, BaseSHA: b.BaseSHA, TestingSince: time.Now(),
+		}); err != nil {
+			ui.Warn(w, "the batch is building but its record could not be written "+
+				"(%v); the next pass will assemble it again", err)
+		}
+		ui.Say(w, "", events.ActorOrion, ui.VerbOK,
+			"%d branch(es) assembled into %s; CI is running and the next tick reads it",
+			len(members), ref)
+		var out []Result
+		for _, m := range members {
+			out = append(out, Result{Key: m.Key, Verdict: VerdictPending})
+		}
+		return out
+	}
+
+	if b.AwaitingApproval {
+		// Written now so the next pass resumes instead of re-proving. A
+		// failure to record it is reported rather than fatal: the batch is
+		// green either way, and the cost of the record being lost is one
+		// repeated CI run, not a wrong merge -- resumable() still refuses
+		// anything it cannot verify.
+		if err := saveBatchState(ws.Dir, batchState{
+			Ref: ref, Base: cfg.VCS.WorkBranch, Members: keysOf(members),
+			Status: batchValidated, BaseSHA: b.BaseSHA, ValidatedSHA: b.ValidatedSHA,
+		}); err != nil {
+			ui.Warn(w, "the batch is green but its record could not be written (%v); "+
+				"the next pass will test it again", err)
+		}
+	} else {
+		clearBatchState(ws.Dir)
+		_ = g.DropRef(ref)
+		_ = g.DeleteRemoteRef(ref)
+	}
 
 	// Closed after the report is written, so the summary the observer left on
 	// screen is the last thing the region showed before the scrollback takes
@@ -195,22 +406,54 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	for _, line := range b.Describe() {
 		fmt.Fprintf(w, "          %s\n", ui.Dim(w, line))
 	}
+	// The baseline is read from THIS repository's own history, not modelled
+	// (OR-250). Past per-branch landings are in the log as a push followed by
+	// a merge; their median is what the old path actually cost here, on this
+	// machine, with this CI.
+	base := perBranchBaseline(events.Path(ws.Dir))
 	ui.Say(w, "", events.ActorOrion, ui.VerbOK,
-		"the batch cost %d CI run(s) for %d branch(es)", b.Runs, len(members))
-	log.Emitf(events.KindNote, events.ActorOrion,
-		"batch on %s: %d run(s), landed=%v ejected=%v culprit=%v deferred=%v",
-		ref, b.Runs, b.Members(Landed), b.Members(Ejected),
-		b.Members(Culprit), b.Members(Deferred))
+		"the batch cost %s", costLine(b.Runs, len(members), b.Elapsed, base))
+	// Built by events.BatchNote rather than by a Printf here, because the
+	// dashboard reads this sentence back and the two used to agree only by
+	// coincidence (OR-258). One format, one place, tested against itself.
+	landed := b.Members(Landed)
+	log.Emitf(events.KindNote, events.ActorOrion, "%s", events.BatchNote{
+		Ref: ref, Runs: b.Runs, Elapsed: b.Elapsed,
+		Landed: landed, Ejected: b.Members(Ejected),
+		Culprit: b.Members(Culprit), Deferred: b.Members(Deferred),
+		Median: base.Median, Samples: base.Samples,
+	})
+
+	// A MERGE PER MEMBER, because the batch merged them (OR-258).
+	//
+	// The batch lands the ref rather than merging ticket by ticket -- that is
+	// the whole of OR-253 and why the rebase cascade is gone -- so no member
+	// ever emitted the merge event the per-branch path emits. Anything
+	// counting merges per key therefore saw them stop at `push` and stay
+	// there: the dashboard reported four tickets waiting to integrate that
+	// had landed days earlier, which pinned the one signal it exists to give.
+	//
+	// Emitted here rather than fixed in the dashboard because the dashboard is
+	// not the only reader of the log, and the next thing to count merges would
+	// have inherited the same hole.
+	for _, key := range landed {
+		log.Emit(events.Event{Kind: events.KindMerge, Actor: events.ActorOrion,
+			Key: key, Msg: "landed in the batch on " + ref})
+	}
 
 	var out []Result
 	for _, r := range b.Results {
 		res := Result{Key: r.Key, Changed: true}
 		switch r.Outcome {
 		case Landed:
-			// Green as a SET. The existing per-branch pass now takes it
-			// through approval and merge, which keeps the irreversible step
-			// where it already lives.
-			res.Verdict = VerdictPassing
+			// ALREADY MERGED, as part of the set that was tested. Not
+			// VerdictPassing any more: that meant "green, now let the
+			// per-branch path merge it", and merging members one at a time is
+			// what left every other member behind the work branch and paid
+			// for a rebase and a fresh CI run each (OR-253). The thing that
+			// was tested is the thing that merged, so there is nothing left
+			// to do with it.
+			res.Verdict = VerdictMerged
 		case Culprit:
 			res.Verdict = VerdictFailing
 		default:
@@ -268,4 +511,81 @@ func batchContext(pass []string, opts Options, deps Deps) (
 		Project: registry.ProjectOf(pass[0]), Actor: events.ActorOrion,
 	})
 	return ws, log, w, cfg, true
+}
+
+// resumeTesting reads the checks on a batch that was already published, once.
+//
+// The deadline is enforced HERE rather than inside a loop, from the record
+// rather than from a local variable. Same refusal as before -- silence is
+// never green, however long it lasts -- and the same thirty minutes; the only
+// thing that changed is that nobody sits and waits for it.
+func resumeTesting(st batchState, members []Member, cfg config.Config, opts Options,
+	deps Deps, g repoGit, ws *workspace.Workspace, log *events.Log, w io.Writer) []Result {
+
+	t := batchTester{git: g, status: deps.Status, openPR: deps.OpenPR,
+		dir: ws.CloneDir(), base: st.Base, out: w, log: log}
+
+	ok, err := t.Test(st.Ref)
+	switch {
+	case errors.Is(err, ErrCheckPending):
+		if st.waitedOut(time.Now(), batchCheckDeadline) {
+			// Reported and cleared, so the next tick assembles rather than
+			// waiting on a build that is never going to report.
+			ui.Warn(w, "no check result for %s after %s; refusing to read silence "+
+				"as green. The batch will be assembled again.", st.Ref, batchCheckDeadline)
+			clearBatchState(ws.Dir)
+			_ = g.DropRef(st.Ref)
+			_ = g.DeleteRemoteRef(st.Ref)
+			return []Result{{Err: fmt.Errorf(
+				"no check result for %s after %s", st.Ref, batchCheckDeadline)}}
+		}
+		waited := time.Since(st.TestingSince).Round(time.Minute)
+		ui.Ok(w, "ci", "%s: %d branch(es), %s elapsed", st.Ref, len(members), waited)
+		return pendingResults(members)
+
+	case err != nil:
+		return []Result{{Err: err}}
+
+	case !ok:
+		// Red. Cleared so the next pass reassembles and bisects, which needs
+		// the full Land path rather than this one.
+		clearBatchState(ws.Dir)
+		ui.Warn(w, "%s went red; the next pass will isolate the cause", st.Ref)
+		return pendingResults(members)
+	}
+
+	// Green. The approval gate and the merge are exactly the ones a
+	// first-pass green batch goes through; nothing here is a second copy of
+	// that decision.
+	st.Status, st.ValidatedSHA = batchValidated, st.Ref
+	if err := saveBatchState(ws.Dir, st); err != nil {
+		ui.Warn(w, "the batch is green but its record could not be updated (%v)", err)
+	}
+	approve := batchApprover(cfg, opts, deps, ws, log, w)
+	if approve == nil {
+		return landResumed(st, members, g, ws, w)
+	}
+	okd, err := approve(st.Ref, st.Members)
+	if err != nil {
+		return []Result{{Err: err}}
+	}
+	if !okd {
+		return pendingResults(members)
+	}
+	return landResumed(st, members, g, ws, w)
+}
+
+// batchCheckDeadline is how long a batch may wait for its checks to report.
+//
+// The same thirty minutes the poll loop used, moved to where a wait that
+// spans ticks belongs. It is a DEADLINE, not a delay: a batch whose CI
+// reports in nine minutes is read on the next tick after that.
+const batchCheckDeadline = 30 * time.Minute
+
+func pendingResults(members []Member) []Result {
+	var out []Result
+	for _, m := range members {
+		out = append(out, Result{Key: m.Key, Verdict: VerdictPending})
+	}
+	return out
 }

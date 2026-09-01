@@ -115,6 +115,12 @@ var otherPaths = []OtherPath{
 	// would spend money judging every ticket, and the whole design of that
 	// pass is that most runs need no agent at all (OR-168).
 	{events.ActorAIOps, "reads a finished run's event log when `orion aiops` is run, after the fact"},
+	// Not routable for the reason QA is not: it runs at a fixed point in the
+	// pipeline rather than being chosen for a ticket. That point is after the
+	// checks go green and before anybody is asked to approve, which is the
+	// only moment its answer changes anything -- a label that also invoked it
+	// would be the second way to reach one thing that OR-176 cost us.
+	{events.ActorDoneTriage, "reads a green run against its diff, after CI and before approval"},
 }
 
 // OtherPaths lists the actors that are not routable, and why not.

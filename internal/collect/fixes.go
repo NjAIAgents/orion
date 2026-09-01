@@ -116,6 +116,28 @@ func loadFixes(wsDir string) fixFile {
 	return f
 }
 
+// FixRounds reports how many fix runs a ticket has spent, and whether that
+// could be read at all.
+//
+// Exported for the queue manager (OR-243), which evicts a ticket whose
+// fix-round ceiling is spent and must be able to ask from another package.
+// The two return values are the point: a workspace with no ci-fixes.json is
+// UNKNOWN, not zero. A cleaned-up workspace says nothing about how many
+// rounds a ticket spent, and reading that silence as "none" is how a ticket
+// that has already failed twice gets a third run.
+func FixRounds(wsDir, key string) (n int, known bool) {
+	if _, err := os.Stat(fixPath(wsDir)); err != nil {
+		return 0, false
+	}
+	s, ok := loadFixes(wsDir).States[key]
+	if !ok {
+		// The file exists and this ticket is not in it: it has spent no
+		// rounds, which is a reading rather than an absence of one.
+		return 0, true
+	}
+	return s.Count(), true
+}
+
 // recordAttempt appends one attempt and returns the updated state.
 //
 // Written BEFORE the fix run, not after. A crash mid-run would otherwise

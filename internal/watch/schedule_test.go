@@ -45,7 +45,7 @@ func TestTheQueueRequiresAnOpenMilestoneAsWellAsTheLabel(t *testing.T) {
 	for _, want := range []string{
 		`project = "OR"`,
 		`labels = "ORION"`,
-		`labels NOT IN ("orion-working", "orion-ci-wait", "orion-failed")`,
+		wantClaimExclusions(),
 		`statusCategory != "Done"`,
 		" ORDER BY priority DESC, Rank ASC",
 	} {
@@ -89,7 +89,7 @@ func TestTheHeldQueryIsTheClaimQueryInverted(t *testing.T) {
 		`fixVersion NOT IN ("v0.8.6")`,
 		"fixVersion IS EMPTY",
 		`labels = "ORION"`,
-		`labels NOT IN ("orion-working", "orion-ci-wait", "orion-failed")`,
+		wantClaimExclusions(),
 		`statusCategory != "Done"`,
 	} {
 		if !strings.Contains(jql, want) {

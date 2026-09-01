@@ -57,6 +57,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/cost"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/queue"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
@@ -983,7 +984,51 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 	if err != nil {
 		return Queue{}, err
 	}
-	q := Queue{Ready: dropClaimedChildren(issues)}
+	// Dependencies decide what is ELIGIBLE; Jira's Rank, already applied by
+	// the query, decides what goes first among those. Ordering the ready set
+	// topologically instead would silently overrule a backlog somebody
+	// arranged by hand (OR-95).
+	candidates := dropClaimedChildren(issues)
+
+	// The queue manager decides eligibility (OR-243). It runs HERE, on the
+	// query's results, rather than as extra JQL clauses, for two reasons that
+	// are both about the pair of queries below: the claim query and the held
+	// query have to stay exact inverses, so every clause added to one has to
+	// be added to the other and stay in step forever -- and a supersession
+	// rule cannot be expressed in JQL at all, because it depends on links
+	// written on OTHER tickets in the same result set.
+	//
+	// The eviction signals are left nil here. Queued has a Jira and no
+	// workspace, and reading a fix-round count it cannot see would report
+	// "no evidence" as "no rounds spent" -- the one reading queue.Facts
+	// documents as the way this gate disappears. The tick supplies them where
+	// it has the repository.
+	ds := queue.Plan(queue.Facts{
+		Candidates: candidates,
+		// Every eligible ticket, not a slice of them: the concurrency limit
+		// is the tick's arithmetic, and applying it twice would report a
+		// ticket as held for capacity that the tick then also counts.
+		Free:      len(candidates),
+		Resolved:  resolvedLookup(j, candidates),
+		Scheduled: func(i tracker.Issue) string { return sched.HoldReason(i, label) },
+	})
+
+	q := Queue{}
+	byKey := make(map[string]tracker.Issue, len(candidates))
+	for _, i := range candidates {
+		byKey[i.Key] = i
+	}
+	// Order is the query's, which is Rank's, which is somebody's intention
+	// expressed by dragging a ticket. Plan returns decisions in the order it
+	// was given them, so walking the decisions preserves it.
+	for _, d := range ds {
+		switch d.Verdict {
+		case queue.Admit:
+			q.Ready = append(q.Ready, byKey[d.Key])
+		default:
+			q.Held = append(q.Held, HeldTicket{Key: d.Key, Reason: d.Reason})
+		}
+	}
 
 	// The second query runs only where the gate is actually enforced, so a
 	// project that does not use versions costs nothing extra.
@@ -1030,7 +1075,8 @@ func queuedJQL(keys []string, label string, sched tracker.Schedules) string {
 	return tracker.JQLAnd(
 		sched.Scope(keys),
 		tracker.JQLEq("labels", label),
-		tracker.JQLNotIn("labels", tracker.LabelWorking, tracker.LabelCIWait, tracker.LabelFailed),
+		tracker.JQLNotIn("labels", tracker.LabelWorking, tracker.LabelCIWait,
+			tracker.LabelReady, tracker.LabelFailed),
 		tracker.JQLNotDone(),
 	) + " ORDER BY priority DESC, Rank ASC"
 }
@@ -1050,9 +1096,61 @@ func heldJQL(keys []string, label string, sched tracker.Schedules) string {
 	return tracker.JQLAnd(
 		held,
 		tracker.JQLEq("labels", label),
-		tracker.JQLNotIn("labels", tracker.LabelWorking, tracker.LabelCIWait, tracker.LabelFailed),
+		tracker.JQLNotIn("labels", tracker.LabelWorking, tracker.LabelCIWait,
+			tracker.LabelReady, tracker.LabelFailed),
 		tracker.JQLNotDone(),
 	) + " ORDER BY priority DESC, Rank ASC"
+}
+
+// resolvedLookup answers "is this blocker finished?" for blockers that are not
+// themselves in the queue, which is the usual case: a blocker is most often a
+// ticket that merged last week and carries no label at all.
+//
+// ONE query for all of them, and only when there are any. Asking per blocker
+// would put a round trip on the tick for every link in the queue.
+//
+// A key the query does not return stays UNKNOWN, and tracker.Ready treats
+// unknown as not blocking. That is the deliberate direction: a link may point
+// into another project or at something this token cannot see, and refusing to
+// work a ticket because of a reference nobody can inspect produces work that
+// can never start (OR-95). The opposite error costs one run against a base
+// that is missing something, which is visible and recoverable.
+func resolvedLookup(j *tracker.Jira, candidates []tracker.Issue) func(string) (bool, bool) {
+	inQueue := make(map[string]bool, len(candidates))
+	for _, i := range candidates {
+		inQueue[strings.ToUpper(strings.TrimSpace(i.Key))] = true
+	}
+	var unknown []string
+	seen := map[string]bool{}
+	for _, i := range candidates {
+		for _, b := range i.BlockedBy {
+			k := strings.ToUpper(strings.TrimSpace(b))
+			if k == "" || inQueue[k] || seen[k] {
+				continue
+			}
+			seen[k] = true
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	found := map[string]bool{}
+	// A failure here is not fatal and not a reason to hold work: it leaves
+	// every blocker unknown, which is the same answer as a link nobody can
+	// see, and the tick carries on rather than stopping on a lookup.
+	// Built rather than concatenated: a key is a bare value and a bare value
+	// breaks on a reserved word, which is how a project keyed OR broke the
+	// queue query itself (OR-120). The package's own guard test enforces it.
+	if issues, err := j.Search(tracker.JQLIn("key", unknown...), len(unknown)); err == nil {
+		for _, i := range issues {
+			found[strings.ToUpper(strings.TrimSpace(i.Key))] = i.Resolved()
+		}
+	}
+	return func(key string) (done, known bool) {
+		d, ok := found[strings.ToUpper(strings.TrimSpace(key))]
+		return d, ok
+	}
 }
 
 // dropClaimedChildren removes any issue whose PARENT is also in the list.

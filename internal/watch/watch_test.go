@@ -753,7 +753,7 @@ func TestTheQueueExcludesResolvedTickets(t *testing.T) {
 	for _, want := range []string{
 		`project IN ("OR")`,
 		`labels = "ORION"`,
-		`labels NOT IN ("orion-working", "orion-ci-wait", "orion-failed")`,
+		wantClaimExclusions(),
 		" ORDER BY priority DESC, Rank ASC",
 	} {
 		if !strings.Contains(jql, want) {
@@ -1019,4 +1019,16 @@ func TestANonPositiveIntervalFallsBackRatherThanSpinning(t *testing.T) {
 			t.Errorf("interval %v slept %v, want [%v]", given, got, DefaultInterval)
 		}
 	}
+}
+
+// wantClaimExclusions is the "already in flight" clause the claim query must
+// carry, derived from the labels Orion owns rather than spelled out.
+//
+// A literal here fails whenever the SET grows -- orion-ready arrived with
+// OR-253 -- which makes a test about the query's shape fail for a reason that
+// has nothing to do with its shape. What these tests are about is that the
+// clause is present and quoted, not which labels exist this month.
+func wantClaimExclusions() string {
+	return tracker.JQLNotIn("labels", tracker.LabelWorking, tracker.LabelCIWait,
+		tracker.LabelReady, tracker.LabelFailed)
 }

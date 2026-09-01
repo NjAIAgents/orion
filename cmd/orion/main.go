@@ -94,6 +94,8 @@ RUNNING
                               requeue a failed ticket and return it to To Do)
   orion queue remove <KEY>... take tickets out of the queue; status and
                               fixVersion are left alone
+  orion dashboard             whether coding is outrunning integration: queue
+                              depth, batch cost, CI runs saved (read-only)
   orion routes                which marker sends a ticket to which actor, and
                               which actors are reached another way (read-only)
   orion watch [PROJECT...]    run the queue by itself: work, collect, repeat
@@ -125,13 +127,26 @@ GUARDRAILS
                               rebase again (--dry-run to look first)
 
 FOR AN AGENT INSIDE A RUN
-  orion explore "<question>"  answer one question about this repository in a
-                              subagent's context, citing the paths (--repo DIR)
+  orion explore "<q>" ["<q>"] answer questions about this repository, each in a
+                              subagent's context, citing the paths. Several run
+                              concurrently, so ask them together (--repo DIR)
+  orion fan <plan.json>       write several independent Go packages at once, one
+                              subagent each. Refuses -- and says work serially --
+                              unless the packages are genuinely independent
 
 DEPENDENCIES
   orion njagents status       where nj-agents is, which commit, how stale
   orion njagents update       fast-forward Orion's own clone, if it has one
   orion njagents install      wire Orion's clone into a dir (only if no global)
+
+RELEASING (run by a person; orion watch has no path to any of it)
+  orion release                what the milestone verbs are; acts on nothing
+  orion release verify vX.Y.Z  the five promotion checks, reporting only
+  orion release ship vX.Y.Z    promote work -> release behind a Slack
+                               approval, then tag, build and publish
+  orion release ship vX.Y.Z --beta      prerelease from the work branch:
+                               no promotion, and no tap or bucket
+  orion release ship vX.Y.Z --dry-run   print what would ship, then stop
 
 MONITORING
   orion changelog --version vX.Y.Z  collate .changelog.d/ fragments into CHANGELOG.md
@@ -271,8 +286,12 @@ func main() {
 		runFix(os.Args[2])
 	case "explore":
 		runExplore(os.Args[2:])
+	case "fan":
+		runFan(os.Args[2:])
 	case "njagents", "nj-agents":
 		runNJAgents(os.Args[2:])
+	case "dashboard":
+		runDashboard(os.Args[2:])
 	case "report":
 		runReport(os.Args[2:])
 	case "logs", "log":

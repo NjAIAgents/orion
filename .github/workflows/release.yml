@@ -32,6 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      channel: ${{ steps.v.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -39,12 +40,28 @@ jobs:
         with: { go-version: 'stable' }
 
       - id: v
-        name: Resolve version
+        name: Resolve version and channel
+        env:
+          # Through the environment, never interpolated into the script body:
+          # `inputs.tag` is free text a dispatcher types, and ${{ }} splices it
+          # in before the shell ever sees it.
+          TAG: ${{ inputs.tag }}
         run: |
+          # THE CHANNEL IS DERIVED FROM THE TAG, and a tag that names no
+          # channel stops the run here (OR-255). Nothing else in this file
+          # knows what a beta is, so without this step a dispatcher typing
+          # v0.9.0-beta.1 would publish a prerelease formula to the Homebrew
+          # tap and every stable user's next `brew upgrade` would take it.
+          #
+          # The shapes come from scripts/tag-channel.sh, which is what
+          # scripts/release.sh checks against too. One definition, because two
+          # drift and the drift is silent until somebody is running a beta.
+          CHANNEL="$(scripts/tag-channel.sh "$TAG")"
+          echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
           # Tag is vX.Y.Z; brew and scoop want the bare X.Y.Z in the version
           # field, while the download URLs keep the v. Both forms are needed.
-          TAG="${{ inputs.tag }}"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "releasing ${TAG} on the ${CHANNEL} channel"
 
       - run: make dist
 
@@ -64,12 +81,19 @@ jobs:
         env:
           TOKEN: ${{ secrets.RELEASES_GITHUB_TOKEN }}
           VERSION: ${{ steps.v.outputs.version }}
+          CHANNEL: ${{ steps.v.outputs.channel }}
         run: |
           [ -n "$TOKEN" ] || { echo "RELEASES_GITHUB_TOKEN is not set" >&2; exit 1; }
           export GH_TOKEN="$TOKEN"
+          # A beta that is not marked prerelease becomes `latest`, and every
+          # naive download script that resolves `latest` picks it up -- the
+          # same reason scripts/release.sh passes this flag.
+          PRERELEASE=""
+          [ "$CHANNEL" = "beta" ] && PRERELEASE="--prerelease"
           gh release create "v${VERSION}" \
             --repo NjAIAgents/orion-releases \
             --title "orion v${VERSION}" \
+            $PRERELEASE \
             --notes "Binaries for orion v${VERSION}. Source is maintained privately; these archives include LICENSE and NOTICE." \
             dist/orion_* dist/checksums.txt
 
@@ -81,8 +105,16 @@ jobs:
   # Publishing to the tap and the bucket is a separate job on purpose. If it
   # fails, the release itself still exists and is installable by hand; the
   # package managers can be caught up with a re-run rather than a re-tag.
+  #
+  # PRODUCTION ONLY. A beta never reaches the tap or the bucket: `brew
+  # upgrade` would hand a prerelease to a stable user, and semver would keep
+  # offering it because v1.2.3-beta.4 sorts below v1.2.3 (OR-255). This is the
+  # same rule scripts/release.sh enforces around its publish_manifest calls,
+  # stated where this workflow can see it -- the workflow had no beta concept
+  # at all and would have published one.
   publish-packages:
     needs: build
+    if: needs.build.outputs.channel == 'production'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

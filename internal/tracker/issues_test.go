@@ -298,7 +298,7 @@ func TestStatePrecedenceUnderPartialWrites(t *testing.T) {
 // that looks queued but still carries a terminal state.
 func TestManagedCoversEveryOrionLabel(t *testing.T) {
 	m := Managed("ORION")
-	for _, want := range []string{"ORION", LabelWorking, LabelCIWait, LabelFailed} {
+	for _, want := range []string{"ORION", LabelWorking, LabelCIWait, LabelReady, LabelFailed} {
 		found := false
 		for _, g := range m {
 			if g == want {
@@ -309,7 +309,12 @@ func TestManagedCoversEveryOrionLabel(t *testing.T) {
 			t.Errorf("Managed() is missing %q", want)
 		}
 	}
-	if len(m) != 4 {
+	// Five since OR-253 added orion-ready: the integration queue's inbox is a
+	// label Orion owns and must clear when a ticket finishes or is requeued,
+	// exactly like the other four. The count is asserted because an entry
+	// added carelessly widens the queue query, and one forgotten leaves a
+	// label nothing ever clears.
+	if len(m) != 5 {
 		t.Errorf("Managed() = %v; an extra entry would widen the queue query", m)
 	}
 }
