@@ -312,6 +312,21 @@ func main() {
 	}
 }
 
+// supervisedRun reports whether this process is inside a run Orion started.
+//
+// ORION_WORKSPACE is exported by the supervisor into every agent run
+// (internal/supervisor.childEnv) and by nothing else in the tree, so its
+// presence is the existing answer to "am I supervised?" -- `orion explore`
+// already reads it for exactly that. Reusing it keeps one signal rather
+// than inventing a second that could disagree with the first.
+//
+// ORION_BREAKER_FORCE is the way back in: it keeps the breaker reachable
+// from a shell for testing, and lets a future non-supervised runner opt in
+// without having to fake a workspace.
+func supervisedRun() bool {
+	return os.Getenv("ORION_WORKSPACE") != "" || os.Getenv("ORION_BREAKER_FORCE") == "1"
+}
+
 // runHook is the hot path: it runs on every matching tool call, so it
 // does the minimum work needed to reach a verdict.
 func runHook(args []string) {
@@ -346,6 +361,19 @@ func runHook(args []string) {
 
 	switch name {
 	case "breaker":
+		// The breaker bounds an UNATTENDED AGENT: loops, failure budgets,
+		// tool-call and wall-clock ceilings. None of that describes a person
+		// at a keyboard, who can simply stop typing -- and the cost of
+		// applying it to one is not merely noise. On 2026-09-01 the
+		// session-time breaker tripped in an interactive session and
+		// committed seven files to develop as an unverified snapshot,
+		// because a trip commits so "the run's work survives the run". A
+		// chat session is not a run (OR-263).
+		if !supervisedRun() {
+			fmt.Fprintln(os.Stderr,
+				"orion: not a supervised run (ORION_WORKSPACE unset); breaker inactive")
+			os.Exit(hook.ExitAllow)
+		}
 		hook.Emit(hook.Breaker(in, cfg, store))
 	case "gate":
 		hook.Emit(hook.Gate(in, cfg))
