@@ -41,9 +41,32 @@ type batchState struct {
 	// repository that has moved on cannot answer either question afterwards.
 	BaseSHA      string `json:"base_sha"`
 	ValidatedSHA string `json:"validated_sha"`
+
+	// TestingSince is when the batch was published for CI, and it is where
+	// the deadline lives now (OR-251).
+	//
+	// IN THE RECORD, because the wait spans ticks. It used to be a local
+	// variable inside a poll loop, which is why waiting for a build meant
+	// blocking the tick that every other ticket reports through.
+	TestingSince time.Time `json:"testing_since,omitempty"`
 }
 
-// batchValidated is the only status that resumes. A batch in any other state
+// waitedOut reports whether a testing batch has exceeded its deadline.
+//
+// The same refusal as before, in a new home: silence is never read as green,
+// however long it lasts. What changed is only who is waiting.
+func (s batchState) waitedOut(now time.Time, limit time.Duration) bool {
+	return s.Status == batchTesting && !s.TestingSince.IsZero() &&
+		now.Sub(s.TestingSince) > limit
+}
+
+// batchTesting is a batch whose CI is still running (OR-251). It resumes to
+// one more status read, never to a fresh assembly: the ref is published, the
+// pull request is open, and the build that is running is the one being waited
+// for.
+const batchTesting = "testing"
+
+// batchValidated is the only status that resumes to a MERGE. A batch in any other state
 // has nothing worth reusing, and the honest thing is to assemble again.
 const batchValidated = "validated"
 

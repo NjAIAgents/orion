@@ -34,6 +34,7 @@ package collect
 // the first few times, and only then left alone.
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -96,6 +97,14 @@ type Batch struct {
 	// batch that went red and bisected cost what it cost.
 	Elapsed time.Duration
 
+	// Pending is set when CI has not reported yet (OR-251).
+	//
+	// A THIRD ANSWER, beside green and red, and the tick needs it: without
+	// one, the only way to wait for a build is to block, and a tick that
+	// blocks for thirty minutes stops reporting every OTHER ticket the
+	// watcher is running. The batch is recorded and resumed on a later pass.
+	Pending bool
+
 	// AwaitingApproval is set when the batch is green and proved but a person
 	// has not said yes yet. Distinct from a failure in every direction: the
 	// members stay unmerged, nothing is blamed, and the next pass asks again.
@@ -155,7 +164,20 @@ type Git interface {
 	LandRef(ref, base string) (string, error)
 }
 
+// ErrCheckPending means the checks have not reported yet.
+//
+// A SENTINEL RATHER THAN A THIRD RETURN VALUE, because every existing caller
+// and every fake already handles an error, and a bool that means "ignore the
+// other bool" is the shape that gets misread. Callers that do not know about
+// it treat a pending build as an error and stop, which is the safe reading:
+// they will not merge on it.
+var ErrCheckPending = errors.New("the checks have not reported yet")
+
 // Tester runs CI against a ref and reports whether it passed.
+//
+// Returns ErrCheckPending while a build is still running. It must NOT block
+// waiting for one: the watch tick calls this, and a tick that waits is a tick
+// that has stopped reporting the other tickets in flight (OR-251).
 type Tester interface {
 	Test(ref string) (bool, error)
 }
@@ -449,6 +471,14 @@ func Land(g Git, t Tester, ref, base string, members []Member, o Observer,
 
 	ob.Testing(1)
 	ok, err := t.Test(ref)
+	if errors.Is(err, ErrCheckPending) {
+		// NOT A FAILURE, AND NOT A RUN SPENT. CI is still going; the caller
+		// records the batch and comes back on a later tick (OR-251). Counting
+		// a run here would inflate the number the whole design is justified
+		// by, once per tick, for as long as the build takes.
+		b.Pending = true
+		return b, nil
+	}
 	b.Runs++
 	if err != nil {
 		return b, err
