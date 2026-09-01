@@ -54,6 +54,16 @@ type Issue struct {
 	// ORDER -- treating them as dependencies would hold work behind tickets
 	// that merely mention each other.
 	BlockedBy []string
+	// SupersededBy are the keys that declare this ticket obsolete, and
+	// Supersedes are the ones it declares obsolete (OR-243).
+	//
+	// BOTH, because a supersession link is written once, on the newer
+	// ticket, by the person drafting it -- so the fact that the older one is
+	// dead can live entirely on the newer one's record. Blocking does not
+	// have that problem, which is why BlockedBy above needs only one side.
+	// See supersededByOf and supersedesOf.
+	SupersededBy []string
+	Supersedes   []string
 	// FixVersions are the milestone names this ticket carries, by Jira's own
 	// name for each. A LIST because Jira allows several, and the plural
 	// matters: `release add` has to tell "this ticket is on no milestone"
@@ -147,6 +157,8 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 			Components:     namesOf(i.Fields.Components),
 			FixVersions:    namesOf(i.Fields.FixVersions),
 			BlockedBy:      blockersOf(i.Fields.IssueLinks),
+			SupersededBy:   supersededByOf(i.Fields.IssueLinks),
+			Supersedes:     supersedesOf(i.Fields.IssueLinks),
 			URL:            j.BaseURL + "/browse/" + i.Key,
 		})
 	}
@@ -191,6 +203,60 @@ func blockersOf(links []issueLink) []string {
 		}
 		if strings.Contains(strings.ToLower(l.Type.Inward), "blocked by") {
 			out = append(out, l.InwardIssue.Key)
+		}
+	}
+	return out
+}
+
+// supersededByOf and supersedesOf read the two SIDES of a supersession link,
+// which carry different facts and are both needed (OR-243).
+//
+// Jira returns, for each link on issue X, whichever end is NOT X. So:
+//
+//	inwardIssue  present  =>  "X <inward> that issue"      e.g. X is superseded by A
+//	outwardIssue present  =>  "X <outward> that issue"     e.g. X supersedes B
+//
+// blockersOf reads only the inward side and is right to: "who blocks me" is
+// answerable from my own record, because Jira mirrors the link onto both
+// issues. Supersession needs the other side as well for a reason that is
+// about people rather than about Jira. The link is written on the NEW
+// ticket -- its author types "supersedes OR-231" while drafting it -- and the
+// mirror only exists if the tracker rendered it. Where it did not, the fact
+// that OR-231 is obsolete lives exclusively on OR-235.
+//
+// OR-231 and OR-235 on 2026-08-30 were both written that way, which is the
+// case this rule exists for.
+//
+// So the queue manager unions the two: a ticket is superseded if its own
+// record says so, OR if some other ticket in the set declares it superseded.
+// Reading one side would half-work, and the half it missed would be the
+// obsolete ticket getting admitted and worked.
+func supersededByOf(links []issueLink) []string {
+	var out []string
+	for _, l := range links {
+		if l.InwardIssue == nil || l.InwardIssue.Key == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(l.Type.Inward), "superseded by") {
+			out = append(out, l.InwardIssue.Key)
+		}
+	}
+	return out
+}
+
+func supersedesOf(links []issueLink) []string {
+	var out []string
+	for _, l := range links {
+		if l.OutwardIssue == nil || l.OutwardIssue.Key == "" {
+			continue
+		}
+		// "supersedes" and not "superseded by": a site whose outward
+		// description is the passive form is describing the opposite
+		// relationship, and reading it as this one would evict the newer
+		// ticket -- permanently, with a reason that sounds right.
+		o := strings.ToLower(l.Type.Outward)
+		if strings.Contains(o, "supersedes") && !strings.Contains(o, "superseded by") {
+			out = append(out, l.OutwardIssue.Key)
 		}
 	}
 	return out

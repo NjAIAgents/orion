@@ -57,6 +57,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/cost"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/queue"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
@@ -988,10 +989,45 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 	// topologically instead would silently overrule a backlog somebody
 	// arranged by hand (OR-95).
 	candidates := dropClaimedChildren(issues)
-	ready, blocked := tracker.Ready(candidates, resolvedLookup(j, candidates))
-	q := Queue{Ready: ready}
-	for _, b := range blocked {
-		q.Held = append(q.Held, HeldTicket{Key: b.Key, Reason: b.Reason()})
+
+	// The queue manager decides eligibility (OR-243). It runs HERE, on the
+	// query's results, rather than as extra JQL clauses, for two reasons that
+	// are both about the pair of queries below: the claim query and the held
+	// query have to stay exact inverses, so every clause added to one has to
+	// be added to the other and stay in step forever -- and a supersession
+	// rule cannot be expressed in JQL at all, because it depends on links
+	// written on OTHER tickets in the same result set.
+	//
+	// The eviction signals are left nil here. Queued has a Jira and no
+	// workspace, and reading a fix-round count it cannot see would report
+	// "no evidence" as "no rounds spent" -- the one reading queue.Facts
+	// documents as the way this gate disappears. The tick supplies them where
+	// it has the repository.
+	ds := queue.Plan(queue.Facts{
+		Candidates: candidates,
+		// Every eligible ticket, not a slice of them: the concurrency limit
+		// is the tick's arithmetic, and applying it twice would report a
+		// ticket as held for capacity that the tick then also counts.
+		Free:      len(candidates),
+		Resolved:  resolvedLookup(j, candidates),
+		Scheduled: func(i tracker.Issue) string { return sched.HoldReason(i, label) },
+	})
+
+	q := Queue{}
+	byKey := make(map[string]tracker.Issue, len(candidates))
+	for _, i := range candidates {
+		byKey[i.Key] = i
+	}
+	// Order is the query's, which is Rank's, which is somebody's intention
+	// expressed by dragging a ticket. Plan returns decisions in the order it
+	// was given them, so walking the decisions preserves it.
+	for _, d := range ds {
+		switch d.Verdict {
+		case queue.Admit:
+			q.Ready = append(q.Ready, byKey[d.Key])
+		default:
+			q.Held = append(q.Held, HeldTicket{Key: d.Key, Reason: d.Reason})
+		}
 	}
 
 	// The second query runs only where the gate is actually enforced, so a
