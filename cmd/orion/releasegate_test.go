@@ -141,6 +141,47 @@ func X() string { return fmt.Sprintf("%d", "not a number") }
 	}
 }
 
+// The failure message must name the actual unformatted file, not just the
+// word "gofmt" -- "gofmt would change" alone still leaves the operator
+// grepping a possibly-large tree for what to run `gofmt -w` on.
+func TestTheGofmtFailureListsTheUnformattedFile(t *testing.T) {
+	out, err := runGate(t, gateModule(t, map[string]string{
+		"m.go": "package gatecanary\n\nfunc  X()  {}\n",
+	}))
+	if err == nil {
+		t.Fatalf("the gate passed a tree it should have refused:\n%s", out)
+	}
+	if !strings.Contains(out, "m.go") {
+		t.Errorf("the gofmt failure does not name which file is unformatted:\n%s", out)
+	}
+}
+
+// The gate must stop at the first failing step rather than running the rest
+// and reporting only the last. A build error means the tree cannot even be
+// vetted or tested, so a gate that pressed on would either crash confusingly
+// in a later step or -- worse -- silently skip it and still report only one
+// failure, hiding that the later steps never ran at all.
+func TestTheGateStopsAtTheFirstFailure(t *testing.T) {
+	dir := gateModule(t, map[string]string{
+		// Fails to build AND is unformatted, so if the gate did not stop at
+		// go build, gofmt would also fail and be reported.
+		"m.go": "package gatecanary\n\nfunc  X()  { return 1 }\n",
+	})
+
+	out, err := runGate(t, dir)
+	if err == nil {
+		t.Fatalf("the gate passed a tree it should have refused:\n%s", out)
+	}
+	if !strings.Contains(out, "FAILED: go build") {
+		t.Fatalf("want the build failure reported:\n%s", out)
+	}
+	if strings.Contains(out, "FAILED: go vet") || strings.Contains(out, "FAILED: gofmt") ||
+		strings.Contains(out, "FAILED: go test") {
+		t.Errorf("the gate ran a step past the first failure, so a build error no longer "+
+			"tells the operator the tree didn't even compile:\n%s", out)
+	}
+}
+
 // The other half of the fix, and the easier half to lose: keeping the failing
 // output means nothing if a passing run now buries the release in a thousand
 // lines of test output. Success says one thing, exactly as it did before.
