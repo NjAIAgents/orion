@@ -94,6 +94,8 @@ RUNNING
                               requeue a failed ticket and return it to To Do)
   orion queue remove <KEY>... take tickets out of the queue; status and
                               fixVersion are left alone
+  orion dashboard             whether coding is outrunning integration: queue
+                              depth, batch cost, CI runs saved (read-only)
   orion routes                which marker sends a ticket to which actor, and
                               which actors are reached another way (read-only)
   orion watch [PROJECT...]    run the queue by itself: work, collect, repeat

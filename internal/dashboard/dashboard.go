@@ -115,6 +115,19 @@ func From(evs []events.Event) View {
 			state[e.Key] = "fixing"
 		case events.KindNote:
 			in.absorb(e)
+			// A batch note names what it landed, and that is a merge for
+			// every key in it (OR-258). Read as WELL as the per-key merge
+			// events runBatch now emits, not instead: the events are the
+			// primary record and the note is the belt, so a log written by a
+			// build that emitted one but not the other still retires its
+			// members. Without either, a batch-landed ticket sits in `ready`
+			// forever and the backpressure signal is pinned high.
+			if n, ok := events.ParseBatchNote(e.Msg); ok {
+				for _, key := range n.Landed {
+					state[key] = "merged"
+					merged++
+				}
+			}
 		}
 	}
 
@@ -146,22 +159,27 @@ func From(evs []events.Event) View {
 // not the other the dashboard would quietly diverge from the log. When the
 // event carries structured Detail this should read that instead -- the
 // mechanism exists, this is simply not the change that introduces it.
+// absorb reads one batch note.
+//
+// Through events.ParseBatchNote, which is the same code that WROTE the note
+// (OR-258). It used to be a Sscanf for "%d run(s) in %fm", which parsed
+// "3m0s" by luck and failed outright on "45s" or "1h2m0s" -- so the dashboard
+// silently emptied itself for any batch that did not take a whole number of
+// minutes, and reported "no batch has integrated yet" on a repository that
+// had run several.
+//
+// Member counting was its own bug: strings.Count(msg, "OR-") hard-codes one
+// project's key prefix, so on any other tracker every batch was measured as
+// having no members and the runs-saved figure divided by nothing.
 func (i *Integration) absorb(e events.Event) {
-	if !strings.HasPrefix(e.Msg, "batch on ") {
+	n, ok := events.ParseBatchNote(e.Msg)
+	if !ok {
 		return
 	}
-	var runs, members int
-	var mins float64
-	// "batch on REF: N run(s) in Xm, landed=[A B] ..."
-	if _, err := fmt.Sscanf(e.Msg[strings.Index(e.Msg, ": ")+2:],
-		"%d run(s) in %fm", &runs, &mins); err != nil {
-		return
-	}
-	members = strings.Count(e.Msg, "OR-") // members named in the outcome lists
 	i.Batches++
-	i.RunsSpent += runs
-	i.MembersSeen += members
-	i.Elapsed += time.Duration(mins * float64(time.Minute))
+	i.RunsSpent += n.Runs
+	i.MembersSeen += len(n.Members())
+	i.Elapsed += n.Elapsed
 }
 
 // Render writes the view.

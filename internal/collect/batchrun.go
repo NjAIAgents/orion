@@ -413,11 +413,33 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	base := perBranchBaseline(events.Path(ws.Dir))
 	ui.Say(w, "", events.ActorOrion, ui.VerbOK,
 		"the batch cost %s", costLine(b.Runs, len(members), b.Elapsed, base))
-	log.Emitf(events.KindNote, events.ActorOrion,
-		"batch on %s: %d run(s) in %s, landed=%v ejected=%v culprit=%v deferred=%v "+
-			"(per-branch median %s over %d landing(s))",
-		ref, b.Runs, round(b.Elapsed), b.Members(Landed), b.Members(Ejected),
-		b.Members(Culprit), b.Members(Deferred), round(base.Median), base.Samples)
+	// Built by events.BatchNote rather than by a Printf here, because the
+	// dashboard reads this sentence back and the two used to agree only by
+	// coincidence (OR-258). One format, one place, tested against itself.
+	landed := b.Members(Landed)
+	log.Emitf(events.KindNote, events.ActorOrion, "%s", events.BatchNote{
+		Ref: ref, Runs: b.Runs, Elapsed: b.Elapsed,
+		Landed: landed, Ejected: b.Members(Ejected),
+		Culprit: b.Members(Culprit), Deferred: b.Members(Deferred),
+		Median: base.Median, Samples: base.Samples,
+	})
+
+	// A MERGE PER MEMBER, because the batch merged them (OR-258).
+	//
+	// The batch lands the ref rather than merging ticket by ticket -- that is
+	// the whole of OR-253 and why the rebase cascade is gone -- so no member
+	// ever emitted the merge event the per-branch path emits. Anything
+	// counting merges per key therefore saw them stop at `push` and stay
+	// there: the dashboard reported four tickets waiting to integrate that
+	// had landed days earlier, which pinned the one signal it exists to give.
+	//
+	// Emitted here rather than fixed in the dashboard because the dashboard is
+	// not the only reader of the log, and the next thing to count merges would
+	// have inherited the same hole.
+	for _, key := range landed {
+		log.Emit(events.Event{Kind: events.KindMerge, Actor: events.ActorOrion,
+			Key: key, Msg: "landed in the batch on " + ref})
+	}
 
 	var out []Result
 	for _, r := range b.Results {
