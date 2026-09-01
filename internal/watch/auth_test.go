@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/work"
 )
 
@@ -49,6 +50,9 @@ func TestAnEnvironmentalFaultHoldsTheQueueRatherThanDrainingIt(t *testing.T) {
 
 	t.Setenv("COLUMNS", "")
 	stopping.Store(false)
+	// See OR-262: without this the first line can be swallowed as a repeat of
+	// a line belonging to a test that has already finished.
+	ui.ConsoleReset()
 	var buf strings.Builder
 	if err := Run(Options{
 		Out: &buf, Home: home, Interval: time.Millisecond, MaxConcurrent: 1,
@@ -101,6 +105,9 @@ func TestAHealthyTickReleasesTheHoldAndResumes(t *testing.T) {
 
 	t.Setenv("COLUMNS", "")
 	stopping.Store(false)
+	// See OR-262: without this the first line can be swallowed as a repeat of
+	// a line belonging to a test that has already finished.
+	ui.ConsoleReset()
 	var buf strings.Builder
 	if err := Run(Options{
 		Out: &buf, Home: home, Interval: time.Millisecond, MaxConcurrent: 1,
@@ -138,6 +145,9 @@ func TestAFaultThatCannotBeRecordedStopsTheWatcher(t *testing.T) {
 
 	t.Setenv("COLUMNS", "")
 	stopping.Store(false)
+	// See OR-262: without this the first line can be swallowed as a repeat of
+	// a line belonging to a test that has already finished.
+	ui.ConsoleReset()
 	var buf strings.Builder
 	if err := Run(Options{
 		Out: &buf, Home: t.TempDir(), Interval: time.Millisecond, MaxConcurrent: 1,

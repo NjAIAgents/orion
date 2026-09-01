@@ -13,6 +13,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/tracker"
+	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/work"
 )
 
@@ -142,6 +143,10 @@ func runWatch(t *testing.T, s *spy, o Options) string {
 	// terminal that happened to run it.
 	t.Setenv("COLUMNS", "")
 	stopping.Store(false)
+	// The console is process-global and keyed on the writer's ADDRESS, so a
+	// buffer allocated where a finished test's buffer used to live inherits
+	// its dedupe state and loses its first line (OR-262).
+	ui.ConsoleReset()
 	var buf bytes.Buffer
 	o.Out = &buf
 	o.Home = t.TempDir()
