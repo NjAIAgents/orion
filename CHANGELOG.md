@@ -6,6 +6,508 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.8.9
+
+### Added
+
+- `orion release ship vX.Y.Z` cuts a release. It refuses on a dirty tree, red
+  CI, an empty `main..develop` delta or the wrong branch — naming which —
+  prints the exact commit list that would ship, opens the promotion pull
+  request, waits for its checks, asks for approval in Slack naming the version
+  and everything in it, merges on approval, then tags, builds and publishes.
+  Every step, including every refusal, is an attributed event in the log — the
+  one exception being a repository with no Orion binding, which still ships, on
+  no log, and says so.
+- `orion release ship vX.Y.Z --beta` cuts a `vX.Y.Z-beta.N` prerelease from the
+  work branch, numbered from the existing tags. It is marked prerelease on
+  GitHub and updates **neither the Homebrew tap nor the Scoop bucket**, so
+  `brew install navjyotnishant/tap/orion` still installs the latest production
+  build and `brew upgrade` can never hand a beta to a stable user.
+- `orion release ship vX.Y.Z --dry-run` prints the ship list and the preflight
+  result and stops.
+- `scripts/release.sh` (and `make release`) take `--beta` / `BETA=1` for the
+  same prerelease channel, and now name the channel as well as the branch when
+  refusing a mismatch.
+
+- `orion config limits` now reads and writes the two fix-round ceilings by
+  qualified name — `orion config limits qa.max_rounds 3` and
+  `orion config limits ci.max_fix_attempts 3` — listing each with its effective
+  value and whether it came from `orion.json` or the shipped default, alongside
+  the nine keys it already covered. Neither is clamped: a value above 5 is
+  confirmed rather than refused. Nothing in the `limits` block moved or was
+  renamed, and a project whose `orion.json` has no `qa` or `ci` block gets one
+  written rather than being told to add it by hand.
+- Both keys now appear in `templates/orion.json` and in the `docs/USAGE.md`
+  guardrails table, each with the cost of raising it stated where it is set.
+  `ci.max_fix_attempts` was already configurable and `qa.max_rounds` had been
+  for months; neither was written by `orion init` or mentioned anywhere, so
+  both were effectively invisible.
+
+- **`orion explore` takes several questions and asks them all at once.** They
+  run as concurrent subagents, capped by `limits.max_concurrent_children`, so
+  asking four costs about what asking one costs. The implementer's exploration
+  phase now emits questions instead of running greps: roughly 43% of its tool
+  calls were reading the repository, and everything it read stayed in its
+  context and was re-sent on every subsequent turn.
+- The offer in the prompt changed shape with it. Told it may ask "ONE narrow
+  question", an agent asks at most one and greps for the rest — a question at a
+  time serialises the run behind a subagent it does nothing while waiting for,
+  so reading for itself is genuinely faster. **The cheap path has to also be the
+  fast one, or it is not taken.**
+- One question still behaves exactly as it always did, including printing no
+  roster: a single explore is not a fan-out, and noise on the common path costs
+  the batch case too, because a reader who learns to skip these lines skips the
+  ones that matter.
+- One child failing does not discard its siblings' answers, and every question
+  is recorded whether it was answered or not. A question that failed is a
+  question that was paid for.
+
+- `orion fan <plan.json>` writes several independent Go packages at once, one
+  subagent per package. The implementer proposes the assignment; Orion checks it
+  deterministically — no package assigned twice, the width within
+  `limits.max_concurrent_children`, and no import edge between the packages
+  assigned, from `go list` — and any failure runs the work serially instead.
+  Most changes will be refused, on purpose: a change that runs down a layer is
+  one bucket and is not separable.
+- The subagents can read and edit and have no shell, so nothing is built or
+  tested until they have all landed and the parent run verifies once. That is
+  enforced by the tool list rather than asked for in a prompt.
+- A fan-out now reports each child as it lands rather than going quiet until
+  the last one finishes.
+
+See `docs/decisions/0016-fan-implementation-by-go-package.md` for why the unit
+is the package rather than the file.
+
+- **A queue manager decides what enters the queue, by rule.** Keeping the queue
+  correct was a person's job: on 2026-08-30 it meant labelling tickets through
+  the Jira API roughly fifteen times, holding four that would have wasted agent
+  time, and pulling one out after its run went wrong. None of those decisions
+  needed judgement; all of them needed someone awake.
+- **Deterministic, and that is the point.** Every rule returns the same answer
+  every time it is asked. A queue that orders differently on identical input is
+  a bug nobody can reproduce, which is why this is Orion and not an agent — and
+  why admitting and evicting belongs to the layer that sequences stages
+  (ADR 0001).
+- **Supersession is read from both sides of the link.** A ticket is not
+  admitted when it declares itself superseded *or* when another ticket in the
+  set declares it so. Blocking needs only one side; supersession does not,
+  because the link is written once, on the newer ticket, by whoever drafts it —
+  so the fact that the older one is dead can live entirely on the newer one's
+  record. OR-231 and OR-235 were both written that way.
+- **An evictions ledger**, keyed by ticket, carrying the reason, the rule and
+  the run. A ticket evicted twice **escalates to a person** instead of being
+  retried — the same two-attempt cap the orchestration conventions put on fix
+  rounds, and the third attempt at something that has failed the same way twice
+  spends money to learn nothing.
+- **Nothing rots at the bottom of the queue.** A ticket not admitted for N
+  consecutive passes is reported by name. The count measures *neglect*, so it
+  clears on admission rather than on completion.
+- Decisions are reported **grouped by reason, not by ticket**: six tickets held
+  on one missing milestone is one fact, and six lines saying so is how the one
+  line that matters gets buried. A pass that changed nothing prints nothing.
+- `collect.FixRounds` is exported so the manager can read a ticket's spent
+  rounds from another package.
+
+- **A finished run is triaged before anyone is asked to approve it.** Once a
+  ticket's checks go green, `orion collect` reads the run against its diff and
+  answers one question: is this genuinely done, or does it only look done? On
+  2026-08-30 three green pull requests were evidence of nothing, and each was
+  caught by a person reading the run rather than the status.
+- **Four checks, three of them free.** Did QA actually reach a verdict, or did
+  the stage fail and the change go to review unverified? Do the tests QA wrote
+  appear in the diff, or only in the worktree it left behind? Do the branch's
+  new or changed Go tests still pass at `-count=2`? Those are rules over
+  evidence that already exists and cost nothing. Only when they come back clean
+  is a model asked the one question no rule expresses — whether the ticket's
+  acceptance criteria correspond to anything in the diff.
+- **NOT DONE hands the ticket back; it never blocks.** The ticket leaves
+  `orion-ci-wait` and becomes visible again with the specific evidence on it,
+  the branch is kept, and nobody is asked to approve. Nothing here merges,
+  approves or edits a change — it reports, and the answer is DONE or NOT DONE,
+  never a score.
+- **It runs once per commit, not once per poll.** A ticket waiting on an
+  approval does not re-run a test suite or re-ask a model on every tick; a
+  branch that somebody pushes to is triaged afresh.
+- **A new roster entry, `done-triage`**, so the pass appears in the ticket's own
+  cost report rather than as spend nothing accounts for. Absent a `claude` CLI
+  the mechanical checks still run and say the intent question went unasked.
+
+- **`ctrl-o` collapses the live region, and expands it again.** OR-246 removed
+  the ceiling on `limits.max_concurrent_tickets` and asks above ten instead; at
+  ten the pinned rows are taller than many terminals and there was no way to
+  shrink them. Collapsing keeps the header and the batch line and drops the
+  per-ticket rows, which are the part that grows with the cap. Expanded stays
+  the default — you should never have to ask to see what is running.
+- The collapsed region **says how many runs it is hiding**, and how to get them
+  back. Someone who collapsed it ten minutes ago and returns to a quiet screen
+  must not read it as finished.
+- The status line names the key that applies right now, and only when there is
+  something to apply it to.
+
+- **The batch reports what it cost in minutes, not only in CI runs.** Run
+  count is the model ADR 0015 argued in; elapsed is what an operator feels —
+  the time between "the agents finished" and "the work is on develop". The
+  timer covers assembly, testing and every isolation round, and is recorded
+  even when the batch fails, because a batch that died after twenty minutes
+  cost twenty minutes.
+- **A baseline to read it against, taken from this repository's own history.**
+  Every past per-branch landing is already in `events.jsonl` as a push
+  followed by a merge; their median is what the old path actually cost here,
+  on this machine, with this CI. Not a simulation: an invented number that
+  flatters the feature is worse than no number.
+- Measured from the FIRST push per branch, not the last, so a rebase and its
+  re-run stay in the baseline. Counting from the last would delete the exact
+  cost batching claims to remove.
+- Batch landings emit no per-key push, so they contribute no samples and
+  cannot poison the baseline they are measured against.
+- Under three past landings it says **"no baseline yet"** and names the count,
+  rather than printing a median of one.
+- **A slower batch is reported as slower.** A measurement that only speaks up
+  when it flatters the feature is not a measurement.
+
+- `orion config limits qa.verdict_minutes N` sets the floor, alongside
+  `qa.max_rounds` and `ci.max_fix_attempts`. Its stated hazard is unusual:
+  too LOW is the expensive direction, because a re-ask killed by the clock
+  buys nothing at all.
+
+- **`orion-ready`: the integration queue's inbox.** A third state beside
+  `orion-working` and `orion-ci-wait`, and deliberately not either of them —
+  working means an agent holds the job slot, ci-wait means a machine is
+  building, and ready means nothing is running and the next batch takes it.
+- **A merge precondition, from ADR 0017.** The base is stamped before the
+  batch is tested and re-read before it merges. If it moved in between, the
+  green result was proven against a tree that no longer exists, and the batch
+  is reassembled and retested rather than merged on a proof that no longer
+  applies.
+- **An approval gate for the batch**, asked only after checks pass. A "not
+  yet" leaves the members unmerged and unblamed, and the next pass asks again.
+
+- **A batch asks once, for the set.** The members were tested together and
+  merge together, so approving them one at a time would be four questions with
+  one possible answer. Same channel, same reactions, same allowlist and same
+  two-pass shape the per-branch path already uses — only the subject differs.
+- **The proof is written down** (`batch-state.json`, beside the approval
+  requests). Without it, every tick while an approver looked would reassemble
+  the same members, force-push a new merge commit, replace the pull request
+  they were reading, and buy another CI run to re-prove what was already
+  proved. A record is reused only when the status, work branch, member set and
+  base commit are all unchanged; anything else reassembles.
+- **The base is re-read between approval and merge.** Approval is a
+  human-length gap, which is exactly the gap ADR 0017's precondition exists
+  for.
+
+- **`orion dashboard`: is the coding queue outrunning the integration queue?**
+  Agents scale horizontally; integration is one operation at a time by
+  construction. So the number that matters is not how fast agents code, it is
+  whether coding produces work faster than integration can absorb it. Nothing
+  reported that.
+- **READY is the backpressure signal**, and it is shown first among the
+  integration numbers as queue depth. It grows before anything else looks
+  wrong.
+- **A drain estimate**: how long the waiting work would take at the rate this
+  repository has actually integrated, using the members-per-batch it has seen
+  rather than the cap it is allowed. Queue depth is a fact; the drain estimate
+  is what makes it a decision.
+- **Completed and merged are counted separately.** The gap between work
+  finished and work landed IS the bottleneck moving to integration.
+- **CI runs saved is signed.** A batch that cost more runs than the path it
+  replaced is reported as having COST them. A metric that can only show a
+  saving is advertising.
+- Everything is derived from `events.jsonl`. Nothing is estimated, and nothing
+  is read from a second source that could later disagree with the log.
+- With no integration history it says **"no batch has integrated yet"** rather
+  than printing a zero. A measured zero and an absent measurement lead to
+  different actions.
+
+- **The queue reads dependencies.** It was a flat label search: it claimed
+  whatever Jira returned, in whatever order, and nothing anywhere read issue
+  links. A ticket queued behind work that does not exist yet was
+  indistinguishable from one that was ready, so an agent could be spawned
+  against a codebase missing the very thing it was meant to build on. The cost
+  is not one wasted run — it is a wasted run, a merge conflict, and somebody
+  working out which of two parallel implementations is the real one.
+- **Blocked tickets are skipped, not failed.** They keep their label, stay in
+  the queue, and are claimed on a later tick once their blockers land.
+  `orion queue` names the specific blockers rather than saying "blocked".
+- **An unknown blocker does not block.** A link into another project, or one
+  the token cannot see, is treated as satisfied. The alternative is a ticket
+  that can never be worked because of a reference nobody can inspect — the
+  same failure mode as a required check that never reports.
+- **Dependency cycles are detected and refused.** A → B → A is a data error,
+  not a scheduling problem: both keys are named and neither is worked.
+  Silently picking one would produce an ordering nobody could explain, and a
+  different one on the next run.
+- **Rank still decides order.** Dependencies decide what is *eligible*; the
+  backlog order people curate by dragging tickets decides what goes first
+  among those.
+
+### Changed
+
+- `orion release ship` is the only `orion release` subcommand that builds, tags
+  or publishes; the rest still only manage Jira milestones. A bare
+  `orion release` still names no action, and `publish` and `cut` remain unwired.
+- `orion watch` has no code path to any of this, and a test enforces it.
+
+- Both fix-round ceilings now default to **3**, raised from 2. `qa.max_rounds`
+  bounds QA's findings-fix-reverify exchange; `ci.max_fix_attempts` bounds the
+  fix loop after a red build. A second fix round has demonstrably been
+  productive, and stopping at two escalated to a person work that one more
+  exchange would have finished — but three raises the **worst case by half** on
+  every ticket that fails to converge, and that spend lands on the implementer.
+  Set either back to `2` to buy the old ceiling back. The CI loop's early stop
+  is unchanged: an identical repeated failure still ends it immediately, so the
+  third attempt is only ever reached by a run producing a *different* failure
+  each round.
+
+- This reverts the revert. OR-229 landed on 2026-08-31 and was backed out the
+  same day as a "correctness fault": answers appeared matched to the wrong
+  questions under `-count=2`. **The fault was in the test fixture, not the
+  code.** The fake `claude` emitted its `case` arms by ranging a map, so their
+  order was Go's randomised map order — and one marker was `worktree`, a word
+  that appears in `ExplorePrompt`'s own READ ONLY section and therefore in
+  every child's argv. Whichever arm the draw put first answered all three
+  questions. `Fan` writes `results[i]` with `i` captured by value and
+  `exploreAll` reads `out[i]` from the same index; the pairing was never wrong.
+  The fixture now sorts its arms and refuses any marker the prompt template
+  contains.
+
+- **It does not reorder, and it does not deprioritise.** Priority then Rank is
+  Jira's answer and stays Jira's: Rank is a person expressing an intention by
+  dragging a ticket, and silently overruling that is how a queue stops being
+  trusted. The manager decides what is *eligible*; Rank decides what goes
+  first among those.
+- **Unknown is never zero.** Each eviction signal reports whether it could be
+  read at all. A cleaned-up worktree says nothing about how many rounds a
+  ticket spent, and reading that silence as "none" is how a ticket that has
+  already failed twice gets a third run.
+- **The capacity limit is applied after the rules**, so a blocked ticket is
+  never reported as "no free slot" — true, useless, and it would leave the
+  blocker unnamed on every pass.
+- The rules run on the query's results rather than as extra JQL, because the
+  claim query and the held query must stay exact inverses, and because a
+  supersession rule cannot be written in JQL at all: it depends on links
+  written on *other* tickets in the same result set.
+- Two of the three admission rules already existed and are now named in one
+  place rather than reimplemented: `tracker.Ready` decides blocked (OR-95), and
+  `Schedules.HoldReason` decides unscheduled (OR-221, which this absorbs).
+
+- **A run that fails now says what happened and what it cost, instead of
+  `claude exited 1`.** That line was indistinguishable from a crash, a lost
+  network, an expired login and a session that simply grew too large — and each
+  of those wants a different response. OR-212 fixed exactly this for the login;
+  the other three arrive the same way now.
+- **A filled context window is reported as a measurement, not a guess.** Orion
+  already records the largest prompt any single turn sent and the window that
+  had to hold it. When the peak reaches 90% of the window, the failure names
+  both numbers and the remedy: a smaller ticket, or exploring through
+  subagents so repository reads stay out of the parent's context.
+- **It will not call a failure "context exhaustion" because the run read a lot
+  of tokens.** A large `cache_read` is what a long healthy run looks like too —
+  cache reads are re-sent context, so they grow with turns whether or not the
+  window ever filled. Without the window measurement the failure is reported as
+  unclassified, with its cost. A confident wrong sentence is worse than the bare
+  exit code it replaced.
+- **A lost connection is separated from a crash**, read only from the CLI's own
+  result field — never the agent's prose, which is full of the words "connection
+  reset" whenever the ticket is about retries.
+- **The cost of a failed run is in the line itself.** The OR-224 run that
+  prompted this spent $17.23 across 121 turns and produced nothing, and finding
+  that out meant reading `events.jsonl`. The reason string now carries turns and
+  dollars, so it reaches the terminal, the Jira comment and Slack at once.
+
+- `orion watch` now shows its chatter in a frozen window above the live region
+  instead of letting it scroll the terminal. The window holds at least five
+  recent lines and grows into whatever room the terminal has left, so a
+  talkative tick can no longer push the running-ticket rows or the status line
+  off the screen, and a quiet one still shows the last few things that
+  happened. Lines that scroll out of the window are gone from the screen only —
+  `events.jsonl` and `orion logs` remain the complete record. Press ctrl-r (or
+  any key) followed by Enter to drop the cap and let the log print in full for
+  the rest of the run. The window grows with the terminal only when the shell
+  exports `LINES`, the same limitation `COLUMNS` already has; otherwise it
+  stays at five.
+- Redirected output is unchanged: off a terminal there is no window and no cap,
+  so a piped or captured log stays a complete, greppable record.
+
+Isolation still tests synchronously. A red batch bisecting will hold the tick
+for the length of that search. The common path — a green batch waiting on one
+build — is what this fixes; the rest wants the same treatment and is a
+separate change.
+
+- **A batch now lands the ref it tested.** It used to mark its members
+  `passing` and hand them back to the per-branch path to merge one at a time,
+  which left every remaining member behind the work branch: each was rebased
+  and each rebase bought another CI run. That is the quadratic term batching
+  exists to remove, and it survived inside the feature meant to remove it.
+  The batch merges once, the work branch moves once, and nothing rebases.
+- **No pull request per ticket while `collect.batch_integration` is on.** The
+  branch is pushed and the ticket becomes `orion-ready`; the batch's own pull
+  request is the single CI run and the single review surface for the set.
+  Measured before this change: four tickets bought four `pull_request` runs
+  plus the batch's own, and then the cascade on top.
+- **The batch opens a pull request for its ref.** Not decoration — without one
+  nothing builds it, because `ci.yml` triggers on `pull_request` and a bare
+  push to an ephemeral ref matches no trigger; and nothing can read it either,
+  because check status is read through `gh pr view`. On 2026-08-31 a batch was
+  green on GitHub twice while Orion waited out its full 30-minute deadline and
+  then correctly refused to read silence as green.
+- **The sound members of a red batch land instead of waiting.** They were
+  deferred to a later batch, so one bad branch held good work for a whole
+  cycle. The culprit goes back to the coding queue; the rest merge now.
+
+- Latent rather than live: the job needs `TAP_GITHUB_TOKEN`, which that file's
+  own header says deliberately does not exist. Fixed now anyway, because a
+  guard that depends on a secret staying absent is not a guard, and the day
+  someone adds that token is the day nobody re-reads this file looking for a
+  channel check.
+
+- Found by building `develop` and running the command, not by a test. Both
+  defects are the seam between OR-253 and OR-254 — same release, never run
+  together — which is the shape a green suite cannot catch.
+- This repository's own four stuck tickets stay stuck, and that is correct: the
+  only batch note in its log records `landed=[]`, because that batch was merged
+  by hand rather than through `runBatch`. Nothing anywhere records them as
+  landed, so nothing can recover it. Future landings are recorded twice over.
+
+### Fixed
+
+- **Concurrent runs of the same stage no longer overwrite each other's log.**
+  The path was built from a second-resolution timestamp plus the stage name, so
+  every child of a fan-out — `orion fan` runs them all as stage `fan`, `orion
+  explore` as `explore` — resolved to one filename and `os.Create` truncated it
+  N-1 times. A child's context is gone the moment it exits; its log was all
+  that ever existed of it.
+
+- **Any keystroke used to drop the frozen window's cap, permanently.** A stray
+  arrow key ended the bounded window for the rest of the run with no way back.
+  Now only `ctrl-r` does it, `ctrl-o` toggles the region, and everything else
+  is ignored. Every byte of a read is examined, so a fast double-press or a
+  paste is not half-swallowed.
+
+- **A batch waiting on CI no longer silences the whole watcher.** The check
+  poll ran inside the watch tick with a thirty-minute deadline, so while a
+  batch built, nothing else printed — on 2026-08-31 the console reported
+  nothing for the whole of a batch's CI while three agents carried on working.
+  That is the OR-128 silent-hang shape arriving through a door OR-128 could
+  not have known about, and it breaks the tick's own stated contract: *"a tick
+  that blocked on the agent could never start a second."*
+- **The checks are read once per tick.** A build still running is a third
+  answer beside green and red, so the batch is recorded and resumed on the
+  next pass. Every other ticket keeps being reported throughout.
+- **The deadline moved into the batch record**, which is where something that
+  spans ticks belongs. Same thirty minutes, same refusal to read silence as
+  green; the only change is that nobody sits and waits for it.
+- **A pending build is not a CI run.** Counting one per tick would have
+  inflated the number the whole design is justified by, once a minute, for as
+  long as the build took.
+
+- **The QA verdict re-ask no longer has a five-minute cap compiled into it.**
+  When QA ends without a verdict and without findings, Orion resumes its
+  session and asks once for one. That re-ask was bounded at five minutes
+  regardless of the run it resumed, and on OR-248 it killed a re-ask against a
+  session that had been working for thirty. The change reached a pull request
+  with no QA opinion at all — neither a verdict nor a fix round, just an
+  unverified branch and a person sent to read it.
+- **The budget now scales with the run it resumes**, floored at five minutes.
+  A thirty-minute session gets six; a four-minute one still gets five. The
+  cheap case stays cheap, which was the whole point of the original cap: one
+  line asked of a session that has already done the work.
+- **A killed re-ask says so**, and names the lever. "Gave no verdict, even
+  when asked for one" reads as QA refusing to answer; the truth was that it
+  never got the chance, and the fix is a number rather than a diff to read.
+
+- **The ephemeral ref is deleted after landing**, remotely as well as locally.
+  It used to be dropped as soon as testing finished, which cannot stand now
+  that the tested ref is the thing that merges.
+- **A branch already contained in the work branch is not offered to a batch.**
+  It contributed nothing and widened the set that has to be bisected when
+  something else in the batch failed.
+
+- **The release workflow can no longer push a beta to the Homebrew tap.**
+  `scripts/release.sh` had three independent guards keeping a prerelease away
+  from installers; `.github/workflows/release.yml` had none of them — a
+  free-text tag input, no beta concept anywhere in the file, and an
+  unconditional push of the rendered formula to the tap and the Scoop bucket.
+  Dispatching it with `v0.9.0-beta.1` would have handed a prerelease to every
+  stable user's next `brew upgrade`, and semver would have kept offering it,
+  because `v1.2.3-beta.4` sorts *below* `v1.2.3`.
+- The workflow now derives the channel from the tag, marks a beta as a
+  prerelease on GitHub, and skips package publishing entirely on that channel.
+  A tag matching neither shape stops the run rather than being guessed at.
+- **One definition of the shapes**, in `scripts/tag-channel.sh`, used by both
+  callers. They ask different questions — the script is *told* its channel and
+  checks the tag agrees, the workflow is given only a tag and must derive one —
+  but two copies of "is this a beta" drift, and the direction they drift in is
+  a prerelease reaching the tap.
+- The dispatched tag reaches the shell through the environment rather than
+  being interpolated into a script body, and a test keeps it that way.
+
+- **A refused release now leaves a record.** The event log opened *after* the
+  preflight, so every refusal `orion release ship` exists to make — dirty tree,
+  red checks, empty delta, wrong branch, wrong channel for the tag — wrote no
+  event at all. The command's most frequent outcome was its least recorded one,
+  and "why didn't it ship last night?" is exactly the question asked once the
+  terminal has scrolled away.
+- One event per guard, not one for the set. Which guard fired is the whole
+  content of the record; a count is not something anyone opens a log to learn.
+- A dry run stays out of the log deliberately. It is a question, not a decision
+  not to ship, and an event for it would read like the latter.
+- The one remaining gap is now stated instead of implied: a repository with no
+  Orion binding still ships, on no log, and says so. The OR-116 changelog entry
+  claimed "every step is an attributed event" while the code did not keep that;
+  it now says what is true.
+
+- **Ctrl-C during the cut now says where it stopped.** The interrupt handlers
+  covered the two waits — CI and the Slack approval — and both said something
+  useful. The cut itself had none, so an interrupt during the cross-compile and
+  upload killed the process on Go's default handling: the release branch
+  promoted, nothing tagged, and not one word about it. That is the longest step
+  in the command by a wide margin and the one the operator is actually sitting
+  and watching.
+- The handler now spans the whole irreversible section and routes through the
+  same `shipStopped` a failure does, so an interrupt gets the same sentence,
+  the same resume command, and the same warning that re-running
+  `orion release ship` would refuse because nothing is left to promote. The
+  state the two leave behind is identical, so two wordings would have been two
+  descriptions of one situation.
+- The two existing interrupt paths are unchanged.
+
+- **`orion dashboard` no longer reports tickets as waiting that landed days
+  ago.** The batch lands the ref rather than merging ticket by ticket — that is
+  the whole of OR-253 and why the rebase cascade is gone — so no member ever
+  emitted the merge event the per-branch path emits, and last-write-wins left
+  every batched ticket at `push` forever. `queue depth` is read off that list,
+  so it contradicted `orion queue` outright. Worse than a wrong number: READY
+  growing while integration holds steady is the backpressure signal the
+  dashboard exists to give, and it was pinned high on any repository using the
+  feature it was built to measure.
+- A batch landing now emits a merge per member. Emitted at the source rather
+  than patched in the dashboard, because the dashboard is not the only reader
+  of the log and the next thing to count merges would have inherited the hole.
+  The dashboard also reads the note's `landed=[…]` as a second source, so a log
+  written before this still retires its members.
+- **The batch note is written and parsed in one place.** It lived in two that
+  agreed by coincidence: the reader scanned for `"%d run(s) in %fm"`, which
+  parses `3m0s` by luck and fails outright on `45s` or `1h2m0s`. Run against
+  this repository's own log it matched nothing, so the integration section said
+  "no batch has integrated yet" and **CI runs saved** — the number the whole
+  batching design is justified by — was permanently absent. The builder and the
+  parser now sit together in `internal/events` and are tested against each
+  other, so a change to the wording breaks a test rather than a dashboard.
+- **Members are counted whatever the project key looks like.** The old parser
+  counted occurrences of the literal `"OR-"`, so on any other tracker every
+  batch was measured as having no members and the runs-saved figure divided by
+  nothing.
+- An unmeasured baseline prints as `unknown` rather than `0s`, which read as a
+  measurement that found zero.
+- `orion dashboard` appears in the usage text. It was dispatched in `main.go`
+  and named nowhere, so nothing told an operator it existed.
+
+- **A ticket waiting for the integration queue is no longer re-claimed.**
+  `orion-ready` was missing from the claim query's exclusions, so a ticket
+  that had finished and was waiting to be batched could be picked up and
+  worked a second time.
+
 ## v0.8.8
 
 ### Added
