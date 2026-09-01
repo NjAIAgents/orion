@@ -54,6 +54,11 @@ func runWatchDemo(w io.Writer, args []string) {
 
 	live := ui.NewLive(w)
 	defer live.Close()
+	// THE WRITER IS REPLACED, exactly as internal/watch does it. A line that
+	// went to the original w would bypass the frozen window entirely and be
+	// overdrawn by the next redraw -- which is precisely the bug this demo was
+	// written to make visible, and which it shipped with on the first cut.
+	w = live
 
 	say := func(format string, a ...any) {
 		ui.Say(w, "", events.ActorOrion, ui.VerbWorking, format, a...)
@@ -66,7 +71,7 @@ func runWatchDemo(w io.Writer, args []string) {
 		say("claimed %s", k)
 		time.Sleep(*step / 4)
 	}
-	demoActivity(*step)
+	demoActivity(w, *step)
 
 	// 2. Assembling: membership is the information, and one branch is ejected.
 	say("assembling %d branches into orion/batch", len(demoKeys))
@@ -77,7 +82,7 @@ func runWatchDemo(w io.Writer, args []string) {
 	}
 	ui.LiveBatchMember("OR-229", ui.MemberEjected)
 	say("OR-229 conflicts with the batch; it returns to the queue")
-	demoActivity(*step)
+	demoActivity(w, *step)
 
 	// 3. Testing with NO baseline: the case that used to render as fourteen
 	// blank columns and nothing else.
@@ -88,7 +93,7 @@ func runWatchDemo(w io.Writer, args []string) {
 		{Name: "go (macos)", State: ui.CheckRunning},
 		{Name: "go (windows)", State: ui.CheckRunning},
 	})
-	demoActivity(*step)
+	demoActivity(w, *step)
 
 	// 4. Testing WITH a baseline, and one check home.
 	ui.LiveBatchMedian(11 * time.Minute)
@@ -97,7 +102,7 @@ func runWatchDemo(w io.Writer, args []string) {
 		{Name: "go (macos)", State: ui.CheckRunning},
 		{Name: "go (windows)", State: ui.CheckRunning},
 	})
-	demoActivity(*step)
+	demoActivity(w, *step)
 
 	// 5. Isolating: the tree, because the shape of the search is what explains
 	// the cost.
@@ -108,11 +113,11 @@ func runWatchDemo(w io.Writer, args []string) {
 		{Name: "go (windows)", State: ui.CheckPassed},
 	})
 	ui.LiveBatchSplit(demoKeys, false, 0, 1, false)
-	demoActivity(*step / 2)
+	demoActivity(w, *step/2)
 	ui.LiveBatchSplit(demoKeys[:2], true, 1, 2, false)
-	demoActivity(*step / 2)
+	demoActivity(w, *step/2)
 	ui.LiveBatchSplit(demoKeys[2:], false, 1, 3, true)
-	demoActivity(*step)
+	demoActivity(w, *step)
 
 	// 6. Done: the cost line first, then what became of each member.
 	ui.LiveBatchMember("OR-223", ui.MemberLanded)
@@ -123,7 +128,7 @@ func runWatchDemo(w io.Writer, args []string) {
 		ui.LiveEnd(k)
 	}
 	ui.LiveChecks(nil)
-	demoActivity(*step)
+	demoActivity(w, *step)
 
 	ui.Say(w, "", events.ActorOrion, ui.VerbOK, "demo complete; nothing was started and nothing was written")
 }
@@ -141,17 +146,49 @@ func actorFor(i int) string {
 	}
 }
 
+// demoChatter is the agents' running commentary: the stream that fills the
+// frozen window and then scrolls out of it.
+//
+// Without it the window never reaches its five-line floor, so the cap and the
+// wall -- the whole subject of the mockup's second state -- cannot be seen.
+// A demo that shows an unfilled window demonstrates nothing about a window
+// whose entire purpose is to bound an unbounded stream.
+var demoChatter = []string{
+	"edited internal/collect/batchrun.go",
+	"ran go test ./internal/work  (14.2s, ok)",
+	"read internal/ui/live.go",
+	"edited internal/ui/livebatch.go",
+	"ran gofmt -l .  (clean)",
+	"pushed orion/or-242  (3 commits)",
+	"ran go build ./...  (ok)",
+	"read internal/watch/watch.go",
+	"edited internal/watch/watch_test.go",
+	"ran go vet ./internal/watch  (ok)",
+}
+
 // demoActivity holds a state for d, feeding tool calls in so the spinners turn
-// and the sparklines move. A frozen screen would not show that the region is
-// redrawing, which is half of what there is to look at.
-func demoActivity(d time.Duration) {
+// and the sparklines move, and emitting chatter so the frozen window fills and
+// then starts losing its oldest line. A frozen screen would not show that the
+// region is redrawing, which is half of what there is to look at.
+func demoActivity(w io.Writer, d time.Duration) {
 	deadline := time.Now().Add(d)
 	for i := 0; time.Now().Before(deadline); i++ {
 		time.Sleep(200 * time.Millisecond)
 		// Not every tick, and not every ticket: an even pulse looks like a
 		// progress bar rather than like work.
 		if i%2 == 0 {
-			ui.LiveActivity(demoKeys[i/2%len(demoKeys)], "")
+			key := demoKeys[i/2%len(demoKeys)]
+			ui.LiveActivity(key, "")
+			line := demoChatter[demoChatterAt%len(demoChatter)]
+			demoChatterAt++
+			// Say, not Trace: Trace is withheld unless --verbose, and a demo
+			// whose whole subject is the scrolling window must not depend on a
+			// flag to have anything to scroll.
+			ui.Say(w, key, actorFor(i/2%len(demoKeys)), ui.VerbWorking, "%s", line)
 		}
 	}
 }
+
+// demoChatterAt walks the chatter so a repeated state does not replay the same
+// three lines, which would read as a stuck screen rather than a moving one.
+var demoChatterAt int
