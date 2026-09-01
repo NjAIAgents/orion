@@ -100,10 +100,15 @@ func TestOutputVolumeCannotDisplaceTheRegion(t *testing.T) {
 	}
 }
 
-// The window has a FLOOR, not a fixed height: it takes whatever room is left
-// after the pinned rows, so a taller terminal shows more history -- and a
-// terminal that never said how tall it is gets the floor rather than a guess.
-func TestATallerTerminalShowsMoreHistory(t *testing.T) {
+// The window is a FIXED HEIGHT: five lines of scrollback, then a wall.
+//
+// It shipped as a floor that grew into whatever the terminal had spare
+// (OR-248), but that could never be observed -- terminalRows read LINES,
+// which no shell exports, so the height was always unknown and the window sat
+// on five by accident. Fixing the detection made it grow to twenty-four lines
+// on a full-screen terminal, which is the unbounded log this feature exists
+// to bound. The spare rows belong to the region (OR-264).
+func TestTheWindowIsCappedHoweverTallTheTerminal(t *testing.T) {
 	t.Setenv("COLUMNS", "")
 	LiveReset()
 	t.Cleanup(LiveReset)
@@ -117,31 +122,35 @@ func TestATallerTerminalShowsMoreHistory(t *testing.T) {
 		}
 	}
 
-	// The region is four rows -- rule, header, blank, one ticket row -- the
-	// window's frame takes two, and the cursor keeps one, so a 40-row
-	// terminal has 33 to spare.
+	// Room for thirty-three lines of history, and it still shows five.
 	t.Setenv("LINES", "40")
 	var tall bytes.Buffer
 	fill(&Live{w: &tall, cursor: true})
-	if n := strings.Count(lastFrame(tall.String()), "chatter-"); n != 33 {
-		t.Errorf("a 40-row terminal showed %d lines of history, want 33", n)
+	if n := strings.Count(lastFrame(tall.String()), "chatter-"); n != liveWindowFloor {
+		t.Errorf("a 40-row terminal showed %d lines of history, want the cap of %d",
+			n, liveWindowFloor)
 	}
 
+	// An unknown height gets the same answer, which is what makes the cap a
+	// height rather than a guess.
 	t.Setenv("LINES", "")
 	var unknown bytes.Buffer
 	fill(&Live{w: &unknown, cursor: true})
 	if n := strings.Count(lastFrame(unknown.String()), "chatter-"); n != liveWindowFloor {
-		t.Errorf("an unknown height showed %d lines, want the floor of %d", n, liveWindowFloor)
+		t.Errorf("an unknown height showed %d lines, want %d", n, liveWindowFloor)
 	}
 
-	// A height too small to be one is not a height. Below the floor the window
-	// keeps its five lines regardless, because a window squeezed to nothing is
-	// the hung-looking screen the region was built to fix.
+	// Below the cap the window yields to the region rather than overflowing:
+	// an eight-row terminal cannot hold five lines of history AND the rows,
+	// and the rows are the thing being watched.
 	t.Setenv("LINES", "8")
 	var tiny bytes.Buffer
 	fill(&Live{w: &tiny, cursor: true})
-	if n := strings.Count(lastFrame(tiny.String()), "chatter-"); n != liveWindowFloor {
-		t.Errorf("a short terminal showed %d lines, want the floor of %d", n, liveWindowFloor)
+	if n := strings.Count(lastFrame(tiny.String()), "chatter-"); n > liveWindowFloor {
+		t.Errorf("a short terminal showed %d lines, more than the cap of %d", n, liveWindowFloor)
+	}
+	if !strings.Contains(lastFrame(tiny.String()), "OR-237") {
+		t.Errorf("the ticket row was pushed off an 8-row terminal:\n%s", lastFrame(tiny.String()))
 	}
 }
 

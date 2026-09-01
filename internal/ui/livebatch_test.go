@@ -470,3 +470,55 @@ func TestANarrowTerminalDoesNotPair(t *testing.T) {
 		}
 	}
 }
+
+// The region is erased on the way out and everything in it goes too. For the
+// ticket rows that is right -- a finished run has nothing left to say. For the
+// BATCH it was wrong: the summary is the cost line and what became of each
+// member, drawn four times a second and then wiped, leaving only the scrolling
+// log, which is the one thing that cannot answer "what did that batch do".
+// The mockup calls it "one durable line" (OR-264).
+func TestTheBatchSummarySurvivesTheRegionBeingErased(t *testing.T) {
+	t.Setenv("COLUMNS", "100")
+	t.Setenv("LINES", "40")
+	LiveReset()
+	defer LiveReset()
+	now := time.Now()
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	LiveBatchStart("orion/batch", "develop", []string{"OR-223", "OR-242"})
+	liveBatchPhase(BatchTesting, now)
+	LiveBatchMember("OR-223", MemberLanded)
+	LiveBatchMember("OR-242", MemberCulprit)
+	liveBatchPhase(BatchDone, now)
+
+	b.Reset()
+	l.Close()
+	got := plain(b.String())
+
+	for _, want := range []string{"OR-223", "landed", "OR-242", "culprit"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the summary lost %q on the way out:\n%s", want, got)
+		}
+	}
+}
+
+// A batch still in flight has no outcome worth keeping, and committing one
+// mid-run would print a summary the next redraw contradicts.
+func TestAnUnfinishedBatchLeavesNoSummary(t *testing.T) {
+	t.Setenv("COLUMNS", "100")
+	LiveReset()
+	defer LiveReset()
+	now := time.Now()
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	LiveBatchStart("orion/batch", "develop", []string{"OR-223"})
+	liveBatchPhase(BatchTesting, now)
+
+	b.Reset()
+	l.Close()
+	if strings.Contains(plain(b.String()), "OR-223") {
+		t.Errorf("a batch mid-CI left a summary behind:\n%s", plain(b.String()))
+	}
+}

@@ -93,15 +93,27 @@ const (
 	liveRuleWidth = 76
 )
 
-// liveWindowFloor is the fewest recent lines the frozen window ever shows.
+// liveWindowFloor is how many recent lines the frozen window shows.
 //
-// A floor rather than a height. Five is what was asked for and it is also the
-// smallest number that still reads as a log rather than as a status line: with
-// one line you cannot see that a second thing happened, and with none the
-// watcher looks hung, which is the failure OR-217 shipped and OR-240 was
-// written to undo. The window grows past it whenever the terminal has the
-// room, and never shrinks below it even when the terminal does not -- a window
-// squeezed to nothing by a busy region is the hung-looking screen again.
+// A HEIGHT, not a floor. OR-248 shipped it as a floor that grew into whatever
+// the terminal had spare, on the reasoning that a taller screen may as well
+// show more history. That reasoning was never tested against a real terminal:
+// terminalRows read LINES, which no shell exports, so the height was always
+// unknown and the window was pinned to five by accident. It looked like the
+// mockup because it could not do anything else.
+//
+// Fixing the height detection made it grow for the first time -- to
+// twenty-four lines on a full-screen terminal -- and the answer to what it
+// SHOULD be is the mockup: "five lines of scrollback, then a wall". A window
+// that expands to fill the screen is the unbounded log this feature exists to
+// bound; the space belongs to the region, which is the part being watched
+// (OR-264).
+//
+// Five is also still the smallest number that reads as a log rather than as a
+// status line: with one you cannot see that a second thing happened, and with
+// none the watcher looks hung, which is the failure OR-217 shipped and OR-240
+// was written to undo. It shrinks below five only when the region itself
+// would not otherwise fit.
 const liveWindowFloor = 5
 
 // The sparkline's resolution: tool calls per 10s over the last two minutes.
@@ -1038,7 +1050,14 @@ func windowLines(recent []string, regionRows, termRows, cols int) []string {
 	start, rows := len(recent), 0
 	for i := len(recent) - 1; i >= 0; i-- {
 		r := screenRows(recent[i], cols)
-		if len(recent)-i > floor && (termRows <= 0 || rows+r > avail) {
+		// The cap is the FIRST condition, so a roomy terminal does not grow
+		// the window into the space the region should have. Past it the
+		// available-rows test still applies, which is what makes a short
+		// terminal shrink below the cap rather than overflow.
+		if len(recent)-i > floor {
+			break
+		}
+		if termRows > 0 && rows+r > avail {
 			break
 		}
 		rows += r
@@ -1326,6 +1345,31 @@ func (l *Live) Close() {
 	defer l.lock.Unlock()
 	l.eraseLocked()
 	l.commitWindowLocked()
+	l.commitSummaryLocked()
+}
+
+// commitSummaryLocked writes the finished batch into real scrollback.
+//
+// The region is erased on the way out, and everything in it goes with it. For
+// the rows that is right -- a run that has ended has nothing left to say, and
+// its outcome was already printed as a line. For the BATCH it was wrong: the
+// summary is the cost line and what became of each member, which the mockup
+// calls "one durable line", and it was being drawn four times a second and
+// then wiped. What survived was the scrolling log, which is the one thing that
+// does not answer "what did that batch actually do" (OR-264).
+//
+// Only the done phase, and only once: a batch still assembling or testing has
+// no outcome to keep, and committing mid-flight would print a summary that the
+// next redraw contradicts.
+func (l *Live) commitSummaryLocked() {
+	st := liveSnapshot()
+	if st.batch == nil || st.batch.phase != BatchDone {
+		return
+	}
+	fmt.Fprintln(l.w)
+	for _, line := range renderBatch(l.w, st.batch, time.Now(), columns()) {
+		fmt.Fprintln(l.w, line)
+	}
 }
 
 func (l *Live) loop() {
