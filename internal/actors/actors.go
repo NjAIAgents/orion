@@ -142,6 +142,21 @@ func defaults() map[string]Actor {
 		// down, so the work is careful reading rather than design, and opus
 		// would be paying implementer prices to author test files.
 		events.ActorQA: {ID: events.ActorQA, Name: "Anita", Designation: "QA engineer", Model: "sonnet"},
+		// The database architect: normalised schema design, migration review,
+		// indexing and query plans (OR-135). Opus, on the ARCHITECT's argument
+		// rather than QA's -- a schema decision is inherited by the next twenty
+		// tickets and is expensive to reverse once there is data in it, which
+		// is the same blast-radius reasoning that buys the architect opus. The
+		// economy argument used for the advisors does not apply: this actor is
+		// not reading a document that already contains the answer, it is making
+		// a decision the documents do not yet hold.
+		//
+		// The initial collides with the dispatcher's, knowingly. The
+		// dispatcher is the lowest-visibility actor here -- one line per
+		// escalation, never a stage of its own -- and the alternative was to
+		// rename an actor the ticket named. Only exact duplicates are refused
+		// (see noDuplicateNames), so this is a judgement rather than a rule.
+		events.ActorDBA: {ID: events.ActorDBA, Name: "Surya", Designation: "database architect", Model: "opus"},
 		// Log triage reads a failing CI log and reports what broke, so the fix
 		// run that follows carries that report instead of the raw log riding
 		// along on every turn (OR-143). Haiku: the reading is mechanical --

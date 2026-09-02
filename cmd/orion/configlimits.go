@@ -289,6 +289,20 @@ var qualifiedLimits = map[string]qualifiedLimit{
 				"round, just an unverified branch and a person sent to read it (OR-248).",
 		},
 	},
+	"dba.max_rounds": {
+		block: "dba", field: "max_rounds",
+		value: func(c config.Config) int { return c.DBA.Rounds() },
+		hazards: []string{
+			"the database review never blocks on its own authority either, so this " +
+				"loop is the only way that stage can stop a run -- and it would do it " +
+				"by spending.",
+			"each round is a full findings-fix-review exchange, and the review runs on " +
+				"opus: a schema decision is inherited by everything written against it " +
+				"afterwards, which is what buys the expensive model.",
+			"this stage only runs on tickets that touch data, so raising it costs " +
+				"nothing on the ones that do not -- and everything on the ones that do.",
+		},
+	},
 	"ci.max_fix_attempts": {
 		block: "ci", field: "max_fix_attempts",
 		value: func(c config.Config) int { return c.CI.Attempts() },

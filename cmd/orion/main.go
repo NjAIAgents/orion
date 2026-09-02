@@ -126,6 +126,12 @@ GUARDRAILS
   orion settle <KEY>          unstick a ticket's worktree: report what is
                               blocking its branch and commit it, so collect can
                               rebase again (--dry-run to look first)
+  orion dba [KEY] ["<q>"]     put a database question to the database architect:
+                              schema, migrations, indexes, why a query is slow.
+                              Works with no ticket -- a performance complaint
+                              usually precedes one. It PROPOSES: it changes
+                              nothing, runs no migration, and only ever reaches
+                              the non-production database in dba.non_prod_dsn
 
 FOR AN AGENT INSIDE A RUN
   orion explore "<q>" ["<q>"] answer questions about this repository, each in a
@@ -303,6 +309,8 @@ func main() {
 		runLessons(os.Args[2:])
 	case "aiops":
 		runAIOps(os.Args[2:])
+	case "dba":
+		runDBACommand(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Printf("orion %s\n", Version)
 	case "help", "--help", "-h":
