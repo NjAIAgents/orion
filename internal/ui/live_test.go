@@ -898,7 +898,11 @@ func TestTheRowCarriesTheTitleAndYieldsItBeforeTheNote(t *testing.T) {
 	now := time.Now()
 	var b bytes.Buffer
 
-	const title = "Add a database architect agent (Surya): schema design at planning time"
+	// A long title, and deliberately NOT a real ticket's: the registry's rule
+	// is that a default agent name appears nowhere but actors.go, and using a
+	// live summary as sample data smuggled one into this file
+	// (TestNoDefaultNameAppearsOutsideTheRegistry catches it).
+	const title = "Add a schema review stage that runs at planning time and reports"
 	const note = "Edit internal/advise/advise.go"
 	liveStart("OR-135", now.Add(-4*time.Minute))
 	liveStage("OR-135", "implementing", events.ActorImplementer)
@@ -908,7 +912,7 @@ func TestTheRowCarriesTheTitleAndYieldsItBeforeTheNote(t *testing.T) {
 
 	// Wide: both, and the title is capped rather than printed in full.
 	wide := row(160)
-	if !strings.Contains(wide, "Add a database") {
+	if !strings.Contains(wide, "Add a schema review") {
 		t.Errorf("the row lost its title:\n%s", wide)
 	}
 	if !strings.Contains(wide, note) {
@@ -921,7 +925,7 @@ func TestTheRowCarriesTheTitleAndYieldsItBeforeTheNote(t *testing.T) {
 	// Narrow: the title goes, the note stays and stays READABLE -- the whole
 	// point of dropping the title rather than sharing the space.
 	narrow := row(110)
-	if strings.Contains(narrow, "Add a database") {
+	if strings.Contains(narrow, "Add a schema review") {
 		t.Errorf("the title must yield when the note cannot fit beside it:\n%s", narrow)
 	}
 	if !strings.Contains(narrow, "Edit internal/advise") {
