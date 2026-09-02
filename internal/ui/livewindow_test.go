@@ -543,3 +543,43 @@ func TestAShortTerminalKeepsTheRowsAndShrinksTheWindow(t *testing.T) {
 		t.Errorf("the block is %d rows on a 12-row terminal:\n%s", rows, got)
 	}
 }
+
+// The region gets breathing room below it, so the status line is not hard
+// against the bottom edge with the cursor sitting on it.
+//
+// The padding is charged to the REGION's budget, not the window's: on a
+// terminal too short for everything the window gives up lines and the ticket
+// rows stay, which is the same precedence the frame follows (OR-264).
+func TestTheRegionIsPaddedAtTheBottomWithoutCostingTheRows(t *testing.T) {
+	t.Setenv("COLUMNS", "100")
+	t.Setenv("LINES", "14")
+	LiveReset()
+	t.Cleanup(LiveReset)
+
+	now := time.Now()
+	for _, k := range []string{"OR-223", "OR-224", "OR-242"} {
+		liveStart(k, now.Add(-10*time.Minute))
+	}
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	for i := 0; i < 12; i++ {
+		if _, err := fmt.Fprintf(l, "chatter-%02d\n", i); err != nil {
+			t.Fatalf("writing: %v", err)
+		}
+	}
+	frame := lastFrame(b.String())
+
+	if !strings.HasSuffix(frame, strings.Repeat("\n", liveBottomPad)) {
+		t.Errorf("the region is not padded at the bottom:\n%q", frame)
+	}
+	// The rows are what the padding must never cost.
+	for _, k := range []string{"OR-223", "OR-224", "OR-242"} {
+		if !strings.Contains(frame, k) {
+			t.Errorf("%s was pushed off to make room for padding:\n%s", k, frame)
+		}
+	}
+	// And the whole block still fits the terminal it was measured against.
+	if l.drawn > 14 {
+		t.Errorf("the block is %d rows on a 14-row terminal", l.drawn)
+	}
+}

@@ -65,7 +65,10 @@ func TestTestingDrawsOneBarForTheWholeBatchAndNotOnePerMember(t *testing.T) {
 	if bars != 1 {
 		t.Errorf("%d lines carry a bar; a shared CI run must have exactly one:\n%s", bars, got)
 	}
-	for _, k := range []string{"OR-223", "OR-224", "OR-242"} {
+	// Named by NUMBER, in the segmented membership bar. The project prefix is
+	// dropped there because it is identical on every member of one batch, so
+	// it would spend a third of each segment saying nothing (OR-264).
+	for _, k := range []string{"223", "224", "242"} {
 		if !strings.Contains(got, k) {
 			t.Errorf("%s is not named in the batch:\n%s", k, got)
 		}
@@ -213,8 +216,14 @@ func TestTheRegionSurvivesOnABatchWithNoRunningRows(t *testing.T) {
 	}
 }
 
-// The batch is what the rows are members of, so it is drawn above them.
-func TestTheBatchIsDrawnAboveTheTicketRows(t *testing.T) {
+// The batch is drawn BELOW the ticket rows, under the status line.
+//
+// It sat above them originally, on the reasoning that a set should be read
+// before its members. In practice the rows are what changes second to second
+// and the batch is the summary they roll up into, so it belongs next to the
+// other summary at the bottom of the region rather than pushing the moving
+// part down the screen (OR-264).
+func TestTheBatchIsDrawnBelowTheTicketRows(t *testing.T) {
 	LiveReset()
 	defer LiveReset()
 	var buf bytes.Buffer
@@ -231,20 +240,17 @@ func TestTheBatchIsDrawnAboveTheTicketRows(t *testing.T) {
 		if batchAt < 0 && strings.Contains(p, "batch") && strings.Contains(p, "CI") {
 			batchAt = i
 		}
-		// Located by KEY, not by stage: while a batch is testing the rows
-		// pair up two to a line and drop the stage, which is the same word
-		// on every member of one CI run. The key is on the row in every
-		// layout. The member list under the batch line also carries the key,
-		// so the row is the LAST line that does.
-		if strings.Contains(p, "OR-9") && !strings.Contains(p, "batch") {
+		// The ticket row is the one carrying the stage; the membership bar
+		// names the key too.
+		if rowAt < 0 && strings.Contains(p, "OR-9") && strings.Contains(p, "starting") {
 			rowAt = i
 		}
 	}
 	if batchAt < 0 || rowAt < 0 {
 		t.Fatalf("batch=%d row=%d in:\n%s", batchAt, rowAt, strings.Join(lines, "\n"))
 	}
-	if batchAt > rowAt {
-		t.Errorf("the batch is drawn below its own members (batch=%d row=%d)", batchAt, rowAt)
+	if batchAt < rowAt {
+		t.Errorf("the batch is drawn above its members (batch=%d row=%d)", batchAt, rowAt)
 	}
 }
 
@@ -385,41 +391,48 @@ func isTicketRow(p string) bool {
 // While the batch is TESTING the rows pair two to a line. That phase is the
 // one where a row each says least -- one CI run covers every member, so the
 // stage, the bar and the sparkline are the same story repeated -- and the
-// vertical space buys back what the batch block and its checks now take.
-func TestTestingPairsTheTicketRowsTwoToALine(t *testing.T) {
+// Every ticket keeps its OWN row while the batch tests, including the stage,
+// the actor and the sparkline.
+//
+// They were paired two to a line for a while, following the mockup's compact
+// testing view. Seen on a real terminal that traded away the columns that say
+// what each agent is DOING for vertical space the region did not need once
+// the batch block moved below the status line, so the pairing came out again
+// (OR-264).
+func TestEveryTicketKeepsItsOwnRowWhileTesting(t *testing.T) {
 	LiveReset()
 	defer LiveReset()
 	now := time.Now()
 	for _, k := range []string{"OR-223", "OR-224", "OR-242"} {
 		liveStart(k, now.Add(-10*time.Minute))
+		liveActivity(k, "implementer", now)
 	}
 	LiveBatchStart("orion/batch", "develop", []string{"OR-223", "OR-224", "OR-242"})
-	liveBatchPhase(BatchTesting, now)
+	liveBatchPhase(BatchTesting, now.Add(-time.Minute))
 
 	var buf bytes.Buffer
 	lines := renderRegion(&buf, liveSnapshot(), now, 200)
 
-	var paired int
-	for _, l := range lines {
-		p := plain(l)
-		if isTicketRow(p) && strings.Contains(p, "OR-223") && strings.Contains(p, "OR-224") {
-			paired++
+	for _, k := range []string{"OR-223", "OR-224", "OR-242"} {
+		var found string
+		for _, l := range lines {
+			p := plain(l)
+			// The membership bar names every member on one line; a ticket ROW
+			// is the one that also carries its stage.
+			if strings.Contains(p, k) && strings.Contains(p, "starting") {
+				found = p
+			}
 		}
-	}
-	if paired != 1 {
-		t.Errorf("three runs must render as two lines of pairs, got %d paired line(s):\n%s",
-			paired, strings.Join(lines, "\n"))
-	}
-	// The odd one out still gets its own line rather than being dropped.
-	var sawThird bool
-	for _, l := range lines {
-		p := plain(l)
-		if isTicketRow(p) && strings.Contains(p, "OR-242") && !strings.Contains(p, "OR-223") {
-			sawThird = true
+		if found == "" {
+			t.Errorf("%s has no row of its own:\n%s", k, strings.Join(lines, "\n"))
+			continue
 		}
-	}
-	if !sawThird {
-		t.Errorf("an odd third run must still have a line:\n%s", strings.Join(lines, "\n"))
+		// One ticket per row: a row naming two keys is the paired layout back.
+		for _, other := range []string{"OR-223", "OR-224", "OR-242"} {
+			if other != k && strings.Contains(found, other) {
+				t.Errorf("%s and %s share a row: %q", k, other, found)
+			}
+		}
 	}
 }
 

@@ -48,6 +48,12 @@ func ActivityLogger(log *events.Log, w io.Writer, key, actor string) func(superv
 			// (OR-240). Counted whatever the verbosity -- the console filter
 			// below decides what is printed, not what happened.
 			ui.LiveActivity(key, actor)
+			// A delegation is a subagent starting, which the row counts
+			// separately: tool calls say the run is busy, this says how many
+			// things are busy on its behalf (ADR 0016).
+			if a.Tool == "Task" || a.Tool == "Agent" {
+				ui.LiveAgents(key)
+			}
 			msg := a.Tool
 			if a.Detail != "" {
 				msg += " " + a.Detail

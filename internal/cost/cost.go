@@ -138,6 +138,11 @@ func Record(log *events.Log, home, actor, key string, r Run) error {
 	// re-summing the append-only history four times a second -- a number in a
 	// header must not be the most expensive thing on the screen.
 	ui.LiveSpend(r.CostUSD)
+	// And the same run against its ticket, for the batch summary's per-member
+	// cost. Accumulated rather than replaced: a ticket that went round a fix
+	// loop spent what all of its runs spent, and reporting only the last one
+	// would understate the branch that cost the most.
+	ui.LiveBatchMemberCost(key, time.Duration(r.Seconds*float64(time.Second)), r.CostUSD)
 	if log != nil {
 		log.Emit(events.Event{
 			Kind: events.KindUsage, Actor: actor, Key: key,

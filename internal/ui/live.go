@@ -149,6 +149,14 @@ func windowHeight() int {
 	return n
 }
 
+// liveBottomPad is how many blank rows sit below the region.
+//
+// Two: enough that the status line is not touching the bottom edge with the
+// cursor parked on it, and few enough that they are not mistaken for the
+// display having ended. They are charged to the region's own budget, so the
+// window gives up the space rather than the ticket rows.
+const liveBottomPad = 2
+
 // liveWindowBuffer is how many recent lines are RETAINED, as opposed to shown.
 //
 // Larger than the visible cap so a window that shrank while the region was
@@ -215,6 +223,18 @@ type liveRun struct {
 	// culprit sets red, so the branch that broke the batch reads as broken in
 	// the bar as well as in the word beside it.
 	barColor string
+	// agents is how many subagents this run has spawned.
+	//
+	// A ticket is usually one agent, but the implementer fans out by package
+	// (ADR 0016) and the advisors are subagents too, so "one row, one agent"
+	// is often wrong -- and a row that says 84 tool calls without saying that
+	// six agents made them describes a different run from the one happening.
+	agents int
+	// verdict is what a batch has decided about this row -- "will land",
+	// "fix round 1 of 3". Set at render time from the batch, not stored on
+	// the run: it is the BATCH's claim about the ticket, and it changes as
+	// the search proceeds.
+	verdict string
 }
 
 // live is the registry. Guarded by its own mutex because a watcher writes to
@@ -273,6 +293,9 @@ func LiveChecks(c []Check) {
 	live.mu.Lock()
 	defer live.mu.Unlock()
 	live.checks = append([]Check(nil), c...)
+	if live.batch != nil {
+		live.batch.checks = live.checks
+	}
 }
 
 // LiveMedians installs the median lookup. Called once by the watcher, which
@@ -316,6 +339,15 @@ func LiveEnd(key string) {
 	delete(live.runs, key)
 }
 
+// LiveAgents records that this run has spawned another subagent.
+func LiveAgents(key string) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if r := live.runs[key]; r != nil {
+		r.agents++
+	}
+}
+
 // LiveActivity records one tool call.
 //
 // The actor rides along because supervisor.Activity is per-run and the run
@@ -337,6 +369,14 @@ func liveActivity(key, actor string, at time.Time) {
 	r.calls++
 	r.last = at
 }
+
+// LiveStage records that a run crossed into a new stage.
+//
+// Exported alongside the unexported form because `orion watch --demo` drives
+// the region directly: it has no agent to cross a boundary, and a demo whose
+// stage column said "starting" for every ticket would misrepresent the one
+// column an operator uses to tell two runs apart.
+func LiveStage(key, stage, actor string) { liveStage(key, stage, actor) }
 
 // liveStage records that a run crossed into a new stage. Called by Stage, so
 // the region cannot show a stage the boundary line did not also print.
@@ -706,12 +746,27 @@ func renderRow(w io.Writer, r liveRun, now time.Time, cols int) string {
 		add(r.sparkline()+"  ", sparkBuckets+2)
 	}
 	add(fmt.Sprintf("%4d", r.calls), 4)
+	// Subagents, when there are any. Suppressed at zero rather than printed
+	// as "0": most rows are one agent, and a column of zeroes teaches the eye
+	// to skip the place where the interesting number appears.
+	if r.agents > 0 && keep(cols, liveAgents) {
+		add("  "+Dim(w, fmt.Sprintf("%dx", r.agents)), 2+len(fmt.Sprint(r.agents))+1)
+	}
 
 	// The notes go last and are clipped to whatever is left, because they are
 	// the only variable-length thing on the row. Clipped as TEXT, before any
 	// colour is applied: cutting a painted string can land inside an escape
 	// sequence, which is how a renderer corrupts the terminal it was meant to
 	// make readable.
+	// The batch's claim about this row, before the notes: it is the most
+	// actionable thing on the line during a search.
+	if r.verdict != "" {
+		c := green
+		if r.barColor == red {
+			c = red
+		}
+		add("  "+paint(w, c, r.verdict), 2+len(r.verdict))
+	}
 	if notes := r.notes(now); len(notes) > 0 {
 		s := strings.Join(notes, " "+liveSep+" ")
 		if cols > 0 {
@@ -757,6 +812,7 @@ const (
 	// are the cheapest thing to lose and the last thing worth wrapping a row
 	// for.
 	liveMedian = iota
+	liveAgents
 	liveSpark
 	liveBar
 	liveActor
@@ -789,6 +845,11 @@ func keep(cols, col int) bool {
 	}
 	need += sparkBuckets + 2
 	if col == liveSpark {
+		return cols >= need
+	}
+	// "  6x".
+	need += 4
+	if col == liveAgents {
 		return cols >= need
 	}
 	// "/ ~24m" and its leading space.
@@ -912,18 +973,20 @@ func renderRegionAt(w io.Writer, st liveState, now time.Time, cols int, collapse
 	if !glyphs() {
 		r = liveRuleASCII
 	}
-	out := []string{
-		Dim(w, strings.Repeat(r, liveRuleWidth)),
-		renderHeaderAt(w, st, now, collapsed),
-		"",
-	}
-	// The batch above the rows: it is the thing the rows are members OF, and
-	// reading the set after its members inverts the containment.
-	out = append(out, renderBatch(w, st.batch, now, cols)...)
-	// Directly under the batch, because it describes that one shared run.
-	if line := renderChecks(w, st.checks, cols); line != "" {
-		out = append(out, line)
-	}
+	// THE STATUS LINE IS THE BOTTOM LINE. The mockup pins it under the rows,
+	// beneath a rule, and that is where it belongs: it is the summary OF what
+	// is above it, and a total printed before its terms reads as a heading.
+	// It is also the line an operator's eye returns to, so it sits nearest
+	// the cursor rather than scrolled furthest from it.
+	//
+	// The region opens with a blank row so the frozen window above it and the
+	// pinned block below are visibly two zones rather than one run-on block.
+	out := []string{""}
+	// THE BATCH IS AT THE BOTTOM, under the status line, in every phase. The
+	// rows are what moves second to second and the batch is what they roll up
+	// into, so the summary sits with the other summary rather than pushing
+	// the live part down the screen.
+	//
 	if collapsed {
 		// Said, rather than left to be inferred from rows that vanished. An
 		// operator who collapsed the region ten minutes ago and came back to
@@ -931,72 +994,73 @@ func renderRegionAt(w io.Writer, st liveState, now time.Time, cols int, collapse
 		if n := len(st.rows); n > 0 {
 			out = append(out, Dim(w, fmt.Sprintf("    %d run(s) hidden · ctrl-o expands", n)))
 		}
-		return out
-	}
-	// Two to a line while the batch is TESTING, per the mockup. That phase is
-	// the one where a full row per ticket says least: one CI run covers all of
-	// them, so the stage, the bar and the sparkline are the same story
-	// repeated, and the rows are worth compressing to buy back the vertical
-	// space the batch block and its checks now take.
-	//
-	// Every other phase keeps one row per ticket, because then the tickets
-	// really are doing different things.
-	if st.batch != nil && st.batch.phase == BatchTesting && pairedFits(cols) {
-		return append(out, renderPairedRows(w, st.rows, now, cols)...)
+		return append(out, statusFooter(w, st, now, cols, collapsed, r)...)
 	}
 	for _, row := range st.rows {
+		// While the search runs, a row says what is about to happen to it:
+		// the innocent land, the culprit goes round a fix loop. That is the
+		// question an operator has during isolation, and the tree above
+		// answers it only for somebody willing to read the leaves.
+		if st.batch != nil && st.batch.phase == BatchIsolating {
+			row.verdict, row.barColor = isolationVerdict(st.batch, row.key)
+		}
 		out = append(out, renderRow(w, row, now, cols))
 	}
+	return append(out, statusFooter(w, st, now, cols, collapsed, r)...)
+}
+
+// statusFooter is the rule and the status line that close the region, plus a
+// finished batch's summary beneath them.
+func statusFooter(w io.Writer, st liveState, now time.Time, cols int, collapsed bool, rule string) []string {
+	out := []string{
+		"",
+		Dim(w, strings.Repeat(rule, liveRuleWidth)),
+		renderHeaderAt(w, st, now, collapsed),
+	}
+	// The batch, last: what it is doing or what it cost, under the live view
+	// rather than above it.
+	if lines := renderBatch(w, st.batch, now, cols); len(lines) > 0 {
+		out = append(out, "")
+		out = append(out, lines...)
+	}
+	if line := renderChecks(w, st.checks, cols); line != "" {
+		out = append(out, "", line)
+	}
 	return out
 }
 
-// pairedColumnWidth is what one half of a paired line gets.
-const pairedColumnWidth = 46
-
-// pairedFits reports whether two compact rows fit side by side.
-//
-// Below this the pair is worse than the thing it replaces: a wrapped row is
-// two rows, and two wrapped rows are four, which is more than the one-per-
-// ticket layout it was meant to compress.
-func pairedFits(cols int) bool {
-	return cols == 0 || cols >= pairedColumnWidth*2
-}
-
-// renderPairedRows draws two runs to a line.
-//
-// The compact cell drops the stage and the call count and keeps what differs
-// between two tickets in the same CI run: which ticket, whether it is moving,
-// how long it has been alive against its own median.
-func renderPairedRows(w io.Writer, rows []liveRun, now time.Time, cols int) []string {
-	var out []string
-	for i := 0; i < len(rows); i += 2 {
-		line := " " + pairedCell(w, rows[i], now)
-		if i+1 < len(rows) {
-			line += "  " + pairedCell(w, rows[i+1], now)
+// isolationVerdict is what the search has decided about one key so far, and
+// the colour its bar should carry.
+func isolationVerdict(b *liveBatch, key string) (string, string) {
+	for _, m := range b.members {
+		if m.key != key {
+			continue
 		}
-		// Trailing pad on the last cell is invisible but real: it is columns
-		// the erase has to account for, and a line that ends in spaces wraps
-		// on a narrow terminal for nothing.
-		out = append(out, clip(strings.TrimRight(line, " "), cols))
+		switch m.state {
+		case MemberCulprit:
+			return "fix round 1 of " + fmt.Sprint(maxFixRounds), red
+		case MemberLanded, MemberMerged:
+			return "will land", ""
+		}
 	}
-	return out
+	// Still being searched for: no claim either way, because the display must
+	// not say "will land" about a branch the next run may convict.
+	for _, s := range b.splits {
+		if !s.green {
+			continue
+		}
+		for _, k := range s.keys {
+			if k == key {
+				return "will land", ""
+			}
+		}
+	}
+	return "", ""
 }
 
-func pairedCell(w io.Writer, r liveRun, now time.Time) string {
-	elapsed := now.Sub(r.started)
-	cell := fmt.Sprintf("%s %s %s %s",
-		spinner(now),
-		paint(w, ticketColor(r.key), pad(r.key, liveKeyWidth)),
-		r.bar(w, elapsed),
-		pad(elapsedString(elapsed), liveElapsedWidth))
-	// Padded on DISPLAY cells, not bytes: paint() wraps the key in escapes
-	// that occupy no columns, and padding on length would stagger the second
-	// column by however much colour the first one used.
-	if n := displayCells(cell); n < pairedColumnWidth {
-		cell += strings.Repeat(" ", pairedColumnWidth-n)
-	}
-	return cell
-}
+// maxFixRounds mirrors the ceiling OR-226 set on a fix loop. Stated rather
+// than counted up to, so the row says how many chances the branch has.
+const maxFixRounds = 3
 
 // renderPlain is the off-terminal form: one line per run, per tick.
 //
@@ -1542,7 +1606,8 @@ func (l *Live) drawLocked() {
 		// l.window here made the trim permanent: a line dropped because the
 		// region was tall at that instant could never come back when the
 		// region shrank again, so the window only ever lost lines.
-		shown := windowLines(l.window, screenRowsOf(region, cols)+windowFrameRows, terminalRows(), cols)
+		shown := windowLines(l.window,
+			screenRowsOf(region, cols)+windowFrameRows+liveBottomPad, terminalRows(), cols)
 		// The buffer itself is bounded separately, or a long run grows it
 		// without limit for lines nothing will ever show again.
 		if len(l.window) > liveWindowBuffer {
@@ -1563,6 +1628,18 @@ func (l *Live) drawLocked() {
 	for _, line := range region {
 		fmt.Fprintln(l.w, line)
 		drawn += screenRows(line, cols)
+	}
+	// Breathing room under the region, so the status line does not sit hard
+	// against the bottom edge of the terminal with the cursor on top of it.
+	//
+	// COUNTED, like every other row drawn here: these are real lines, and an
+	// erase that did not include them would move up short and walk the region
+	// down the screen -- the same fault that made the ticket rows disappear.
+	if len(region) > 0 {
+		for i := 0; i < liveBottomPad; i++ {
+			fmt.Fprintln(l.w)
+			drawn++
+		}
 	}
 	l.drawn = drawn
 }

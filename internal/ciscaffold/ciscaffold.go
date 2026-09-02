@@ -382,6 +382,7 @@ func workflowFor(s Stack) string {
 		setup = `      - uses: actions/setup-go@v5
         with:
           go-version: stable
+          cache-dependency-path: go.mod
 `
 	case StackPython:
 		setup = `      - uses: actions/setup-python@v5
@@ -489,6 +490,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+          cache-dependency-path: go.mod
 
       # Pinned, and verified: go install resolves through the module proxy
       # and checks the module against the public checksum database before

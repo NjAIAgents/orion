@@ -73,6 +73,15 @@ func runWatchDemo(w io.Writer, args []string) {
 	}
 	demoActivity(w, *step)
 
+	// Through the stages a real ticket crosses, so the stage column shows
+	// what a real run shows rather than three tickets frozen at "starting".
+	for _, stage := range []string{"implementing", "qa", "qa→batch"} {
+		for i, k := range demoKeys {
+			ui.LiveStage(k, stage, actorFor(i))
+		}
+		demoActivity(w, *step/2)
+	}
+
 	// 2. Assembling: membership is the information, and one branch is ejected.
 	say("assembling %d branches into orion/batch", len(demoKeys))
 	ui.LiveBatchStart("orion/batch", "develop", append(demoKeys, "OR-229"))
@@ -80,7 +89,7 @@ func runWatchDemo(w io.Writer, args []string) {
 	for _, k := range demoKeys {
 		ui.LiveBatchMember(k, ui.MemberMerged)
 	}
-	ui.LiveBatchMember("OR-229", ui.MemberEjected)
+	ui.LiveBatchMemberDetail("OR-229", ui.MemberEjected, "internal/work/activity_test.go")
 	say("OR-229 conflicts with the batch; it returns to the queue")
 	demoActivity(w, *step)
 
@@ -120,9 +129,12 @@ func runWatchDemo(w io.Writer, args []string) {
 	demoActivity(w, *step)
 
 	// 6. Done: the cost line first, then what became of each member.
+	ui.LiveBatchMemberCost("OR-223", 11*time.Minute, 4.20)
+	ui.LiveBatchMemberCost("OR-224", 14*time.Minute, 5.10)
+	ui.LiveBatchMemberCost("OR-242", 9*time.Minute, 3.10)
 	ui.LiveBatchMember("OR-223", ui.MemberLanded)
 	ui.LiveBatchMember("OR-224", ui.MemberLanded)
-	ui.LiveBatchMember("OR-242", ui.MemberCulprit)
+	ui.LiveBatchMemberDetail("OR-242", ui.MemberCulprit, "go (ubuntu): TestPathLength")
 	ui.LiveBatchPhase(ui.BatchDone)
 	for _, k := range demoKeys {
 		ui.LiveEnd(k)

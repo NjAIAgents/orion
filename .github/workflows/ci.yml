@@ -72,8 +72,17 @@ jobs:
       # runs. go.mod declares the minimum version; Go is backward compatible,
       # so tracking stable is the safer choice for a solo project than a pin
       # that silently rots against the runner image.
+      # setup-go keys its cache on go.sum. This repo has no third-party
+      # modules and therefore no go.sum, so the restore failed as a WARNING
+      # and GOCACHE was never restored -- every run recompiled the whole tree
+      # and all ~40 test binaries cold. Measured on run 33558197328: tests
+      # total 48s on every platform; the Windows step took 472s. Pointing the
+      # key at go.mod gives it a file that exists.
+
       - uses: actions/setup-go@v5
-        with: { go-version: 'stable' }
+        with: 
+          go-version: 'stable'
+          cache-dependency-path: go.mod
 
       # git identity: several tests create real repositories and commit into
       # them. A runner has no global identity, so git refuses with "Please

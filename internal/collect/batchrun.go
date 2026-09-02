@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/config"
@@ -104,6 +105,10 @@ func (t batchTester) Test(ref string) (bool, error) {
 	ui.LiveChecks(liveChecks(pr.Checks))
 	switch {
 	case pr.Verdict == VerdictFailing:
+		// Remembered for the summary: the culprit's row names the check that
+		// actually failed, which is the difference between "CI failed" and a
+		// line an operator can act on without opening the forge.
+		rememberFailingCheck(pr.Checks)
 		return false, nil
 	case pr.Verdict == VerdictPassing && !noChecksYet(pr):
 		return true, nil
@@ -147,6 +152,33 @@ func noChecksYet(pr PR) bool {
 	return strings.Contains(strings.ToLower(pr.Detail), "no checks are configured")
 }
 
+// lastFailingCheck is the check that most recently went red on a batch ref.
+//
+// Package state rather than a field on batchTester because the reader is the
+// observer, which is constructed separately and has nothing threaded to it.
+// One batch runs at a time (see liveBatch), so there is one answer.
+var lastFailingCheck struct {
+	mu   sync.Mutex
+	name string
+}
+
+func rememberFailingCheck(checks []Check) {
+	for _, c := range checks {
+		if c.State == CheckFailed {
+			lastFailingCheck.mu.Lock()
+			lastFailingCheck.name = c.Name
+			lastFailingCheck.mu.Unlock()
+			return
+		}
+	}
+}
+
+func failingCheck() string {
+	lastFailingCheck.mu.Lock()
+	defer lastFailingCheck.mu.Unlock()
+	return lastFailingCheck.name
+}
+
 // liveObserver forwards a batch's progress to the pinned region (OR-246).
 //
 // A thin adapter with no state of its own: everything it knows it was just
@@ -162,7 +194,21 @@ func (liveObserver) Assembling(ref, base string, keys []string) {
 
 func (liveObserver) Merged(key string) { ui.LiveBatchMember(key, ui.MemberMerged) }
 
-func (liveObserver) Ejected(key, _ string) { ui.LiveBatchMember(key, ui.MemberEjected) }
+// The reason rides along: it names the file the branch conflicted on, which
+// is the difference between "go and look" and "go and look at THIS".
+func (liveObserver) Ejected(key, reason string) {
+	ui.LiveBatchMemberDetail(key, ui.MemberEjected, conflictFile(reason))
+}
+
+// conflictFile pulls the path out of a merge error, or returns the reason
+// unchanged. git says "CONFLICT (content): Merge conflict in <path>", and the
+// path is the only part of that sentence a person acts on.
+func conflictFile(reason string) string {
+	if i := strings.LastIndex(reason, "Merge conflict in "); i >= 0 {
+		return strings.TrimSpace(reason[i+len("Merge conflict in "):])
+	}
+	return reason
+}
 
 func (liveObserver) Testing(int) { ui.LiveBatchPhase(ui.BatchTesting) }
 
@@ -183,7 +229,7 @@ func (liveObserver) Settled(landed, ejected, culprits, deferred []string) {
 		ui.LiveBatchMember(k, ui.MemberEjected)
 	}
 	for _, k := range culprits {
-		ui.LiveBatchMember(k, ui.MemberCulprit)
+		ui.LiveBatchMemberDetail(k, ui.MemberCulprit, failingCheck())
 	}
 	// Deferred is deliberately left as it was. A deferred branch is sound and
 	// comes back, which is what "merged" already conveys here; giving it a
