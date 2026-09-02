@@ -721,8 +721,14 @@ func TicketPromptWithChildren(key, summary, description, url, repoPath string,
 		"EVIDENCE",
 		"Add or extend tests that would FAIL if this behaviour regressed. 'I added",
 		"tests' and 'these tests prove the change' are different claims and only the",
-		"second is worth committing. Run the full suite before you finish; a green",
-		"suite you did not run is not evidence.",
+		"second is worth committing. Run the tests for the PACKAGES YOU TOUCHED",
+		"before you finish; a green test you did not run is not evidence.",
+		"",
+		"Do NOT run the whole suite. CI runs it on three platforms for every push,",
+		"which is what regression detection is for, and it costs nothing there.",
+		"Running it here costs model time on the critical path and holds a job",
+		"slot: on OR-135 it was run four times and spent 37 minutes, most of it",
+		"waiting on packages the change never touched (OR-266).",
 	))
 	b.WriteString(testEnv(repoPath))
 	b.WriteString(waitingForALongCommand())
@@ -884,7 +890,10 @@ func testEnv(repoPath string) string {
 	var lines []string
 	if _, err := os.Stat(filepath.Join(repoPath, "scripts", "test.sh")); err == nil {
 		lines = append(lines,
-			"Run ./scripts/test.sh before you finish. It is the same script CI runs.")
+			"./scripts/test.sh runs the whole suite. It is what CI runs on every "+
+				"push, so do NOT run it here -- run `go test ./internal/<pkg>/` "+
+				"(or the equivalent) for what you changed. Read the script when "+
+				"you need to know what CI will check.")
 	}
 	if py := venvPython(repoPath); py != "" {
 		lines = append(lines,

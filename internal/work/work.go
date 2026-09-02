@@ -39,6 +39,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/advise"
 	"github.com/orion-sdlc/orion/internal/budget"
+	"github.com/orion-sdlc/orion/internal/claim"
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
@@ -562,9 +563,45 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}
 
 	branch := branchFor(cfg.VCS.BranchPrefix, key)
-	job, err := workspace.AddWorktree(ws, cfg.VCS.WorkBranch, branch)
+
+	// RESUME rather than restart, when an interrupted run left work behind.
+	//
+	// The claim record names the branch its holder was on. If that claim is
+	// dead, the work on that branch is this ticket's own unfinished attempt,
+	// and cutting a fresh branch would abandon it -- which is how OR-135
+	// reached four worktrees, the last holding an hour of uncommitted work
+	// (OR-265).
+	resumeFrom := ""
+	if rec, err := claim.Read(opts.Home, key); err == nil && rec != nil {
+		if dead, _ := claim.Dead(opts.Home, key); dead {
+			resumeFrom = rec.Branch
+		}
+	}
+	job, err := workspace.ResumeWorktree(ws, cfg.VCS.WorkBranch, branch, resumeFrom)
 	if err != nil {
 		return fail(res, err)
+	}
+	if job.Resumed {
+		ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+			"resumed %s, where the interrupted run stopped", job.Branch)
+		// A tree the previous run left dirty is committed before the agent
+		// touches it. The breaker already does this for its own trips
+		// (docs/BREAKERS.md): unverified work on a branch can be read,
+		// resumed or dropped by a person, and an uncommitted change blocks
+		// the next rebase of the branch.
+		if n, err := workspace.SnapshotDirty(job.Path, key); err != nil {
+			ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+				"the interrupted run left changes that could not be committed: %v", err)
+		} else if n > 0 {
+			ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+				"committed %d file(s) the interrupted run was holding, unverified, so the resume starts clean", n)
+		}
+	}
+
+	// The claim now names the branch this run is on, so a later interruption
+	// can be resumed the same way.
+	if err := claim.Take(opts.Home, key, job.Branch, job.Path); err != nil {
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not record the claim: %v", err)
 	}
 	// Attribution hooks live in the sandbox CLONE, not in the worktree and
 	// not in the user's checkout. Before this, the clone was never
@@ -642,6 +679,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// stops meaning "something new started". It carries everything somebody
 	// scrolling back to the top of a ticket needs at once: the key, the
 	// summary, who is working it, on what, and the branch.
+	ui.LiveTitle(key, issue.Summary)
 	ui.Banner(w, key, issue.Summary, actorID,
 		actors.Model(actorID), job.Branch)
 
@@ -857,9 +895,48 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if !cfg.QA.On() {
 		nextStage, nextActor = "push", events.ActorOrion
 	}
-	handoff(w, log, deps, opts, ui.Handoff{Key: key, From: "implementing", To: nextStage,
-		By: actorID, Next: nextActor,
+
+	// The data model, BEFORE QA (OR-135). A schema finding forces a change to
+	// the schema, and QA's tests are written against the schema as it stands
+	// when QA runs -- so reviewing the data model afterwards would leave a
+	// suite verified against a schema the fix then replaced.
+	//
+	// The gate is asked BEFORE the boundary above is announced, and it is free
+	// -- one `git diff --name-only`, no model call. A run that announced
+	// "implementing -> qa" and then spent a review in between would be
+	// describing a pipeline the operator does not have, which is the thing
+	// OR-189 made the boundaries exist to prevent.
+	dbaWork := dbaJob{
+		Key: key, Summary: issue.Summary, Description: issue.Description,
+		Fields:      routeFields(*issue),
+		ImplSession: runRes.SessionID, Actor: actorID, WS: &jobWS,
+		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
+		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
+		BaseSHA:    baseSHA,
+	}
+	sigs, reviewData := dbaScope(dbaWork, cfg, deps, log, w)
+
+	firstStage, firstActor := nextStage, nextActor
+	if reviewData {
+		firstStage, firstActor = "dba", events.ActorDBA
+	}
+	handoff(w, log, deps, opts, ui.Handoff{Key: key, From: "implementing", To: firstStage,
+		By: actorID, Next: firstActor,
 		Detail: fmt.Sprintf("%d commit(s) on %s", commits, job.Branch)})
+
+	implSession := runRes.SessionID
+	if reviewData {
+		out := runDBA(dbaWork, sigs, cfg, opts, deps, log, w)
+		// A schema fix round resumed the developer and moved its session on.
+		// QA has to resume where the developer ACTUALLY is, or its findings
+		// arrive in a conversation that predates the schema the branch now
+		// carries.
+		if out.ImplSession != "" {
+			implSession = out.ImplSession
+		}
+		handoff(w, log, deps, opts, ui.Handoff{Key: key, From: "dba", To: nextStage,
+			By: events.ActorDBA, Next: nextActor, Detail: out.Verdict()})
+	}
 
 	// QA, before the branch is pushed. The tests QA writes and any fix its
 	// findings force belong in the same pull request as the change they are
@@ -867,7 +944,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// reading the code without its evidence. See qa.go.
 	qa := runQA(qaJob{
 		Key: key, Summary: issue.Summary, Description: issue.Description,
-		ImplSession: runRes.SessionID, Actor: actorID, WS: &jobWS,
+		ImplSession: implSession, Actor: actorID, WS: &jobWS,
 		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
 		BaseSHA:    baseSHA,
@@ -1336,10 +1413,7 @@ func consult(deps Deps, key, actorID, dir, question string, log *events.Log, w i
 	}
 
 	if ans.Verdict == advise.VerdictEscalate {
-		other := advise.RolePM
-		if role == advise.RolePM {
-			other = advise.RoleArchitect
-		}
+		other := escalateTo(role)
 		log.Emit(events.Event{Kind: events.KindEscalate, Actor: string(role),
 			Model: advise.ModelAdvisor,
 			Msg:   fmt.Sprintf("escalated to the %s: %s", other, firstLine(ans.Reason))})
@@ -1389,6 +1463,30 @@ func unreachable(log *events.Log, w io.Writer, key string, role advise.Role, err
 	return ans
 }
 
+// escalateTo is where an advisor's escalation goes.
+//
+// ONE forward, never a search through the remaining roles. The retry exists
+// because routing is a guess and one more cheap call beats declaring the run
+// blocked over a misclassification -- it is not a broadcast, and asking every
+// advisor in turn would pay the full price of the ambiguity on every question
+// the artifacts happen to be silent about.
+//
+// The architect is where an escalation from either specialist goes, and where
+// the architect's own goes is the product manager. That follows from what the
+// roles read: the database architect and the product manager each hold one
+// narrow body of committed truth, so a question outside it is most likely a
+// build question, and the architect holds the widest one. A question that is
+// genuinely nobody's comes back refused, which is a correct outcome here (see
+// internal/advise) rather than a loop looking for someone to answer it.
+func escalateTo(role advise.Role) advise.Role {
+	switch role {
+	case advise.RoleArchitect:
+		return advise.RolePM
+	default:
+		return advise.RoleArchitect
+	}
+}
+
 // actorFor maps an advisor's role to its actor identifier.
 //
 // They happen to be the same strings today, and mapping them anyway is the
@@ -1401,6 +1499,8 @@ func actorFor(role advise.Role) string {
 		return events.ActorArchitect
 	case advise.RolePM:
 		return events.ActorPM
+	case advise.RoleDBA:
+		return events.ActorDBA
 	case advise.RoleHuman:
 		return events.ActorHuman
 	}

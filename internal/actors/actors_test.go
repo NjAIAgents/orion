@@ -450,3 +450,57 @@ func TestRosterResolvesTheSameValuesConfigureDoes(t *testing.T) {
 		}
 	}
 }
+
+// The database architect is the roster's only opus entry besides the
+// developers and the architect, and the reason is the architect's rather than
+// QA's: a schema decision is inherited by everything written against it
+// afterwards and is expensive to reverse once there is data in it (OR-135).
+// Pinning it cheap would be the same mistake as pinning the architect cheap.
+func TestDBAIsInTheRosterAndPinnedOnBlastRadius(t *testing.T) {
+	a := Get(events.ActorDBA)
+	if a.Name == "" || a.Designation == "" {
+		t.Errorf("the database architect renders as %q; every acting agent needs a name "+
+			"and a job title", a.Display())
+	}
+	if a.Model != "opus" {
+		t.Errorf("database architect model = %q, want opus: this actor is pinned on blast "+
+			"radius, not on the economy argument used for the advisors", a.Model)
+	}
+	// Configurable like every other actor (OR-132), or the roster file cannot
+	// express a project that wants it cheaper.
+	if err := Configure(map[string]config.Agent{
+		events.ActorDBA: {Model: "sonnet", Effort: "high"},
+	}); err != nil {
+		t.Fatalf("the database architect must be configurable like any other agent: %v", err)
+	}
+	if Model(events.ActorDBA) != "sonnet" || Effort(events.ActorDBA) != "high" {
+		t.Errorf("after Configure, model=%q effort=%q, want sonnet/high",
+			Model(events.ActorDBA), Effort(events.ActorDBA))
+	}
+	t.Cleanup(func() { _ = Configure(nil) })
+}
+
+// It holds a claim, so it needs a stage label -- and the label carries the
+// IDENTIFIER, never the name. A Jira label is persisted data with no render
+// step between it and a human eye, so a name written into one is frozen at the
+// moment it was written; see StageLabel.
+func TestDBAHasAStageLabelCarryingTheIdentifier(t *testing.T) {
+	got := StageLabel(events.ActorDBA)
+	if got != StageLabelPrefix+events.ActorDBA {
+		t.Errorf("StageLabel(dba) = %q, want %q", got, StageLabelPrefix+events.ActorDBA)
+	}
+	if name := Get(events.ActorDBA).Name; name != "" && strings.Contains(got, name) {
+		t.Errorf("the stage label %q carries the display name; names are an operator "+
+			"setting and a label is frozen at the moment it is written", got)
+	}
+	var found bool
+	for _, l := range StageLabels() {
+		if l == got {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("%q is not in StageLabels(), so releasing a claim would leave the board "+
+			"saying a stage for a ticket nobody is working", got)
+	}
+}

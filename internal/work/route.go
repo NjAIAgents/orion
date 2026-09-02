@@ -29,6 +29,7 @@ package work
 import (
 	"strings"
 
+	"github.com/orion-sdlc/orion/internal/dba"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/tracker"
 )
@@ -67,6 +68,19 @@ var routeRules = []Rule{
 	{events.ActorFrontend, []string{"ui", "frontend", "front-end"}},
 	{events.ActorArchitect, []string{"architecture", "architect", "adr"}},
 	{events.ActorPM, []string{"product", "pm", "requirements"}},
+	// The database architect is routable because a performance complaint is a
+	// ticket in its own right -- "this query got slow" -- not a stage of
+	// somebody else's change. That is why this actor has three ways in and
+	// most have one: it is an ADVISOR at planning time, a STAGE when a change
+	// touches data, and the actor a data ticket routes to. OR-176's rule is
+	// that a second path to ONE job drifts; these are three different jobs
+	// (OR-135).
+	//
+	// The keyword set is dba.TicketWords ITSELF, not a copy: the same list the
+	// pipeline stage triggers on, so a planner who learned the marker has
+	// learned both, and `orion routes` prints the one list rather than a
+	// second one that drifts.
+	{events.ActorDBA, dba.TicketWords},
 }
 
 // Rules is the published table, in precedence order.
@@ -139,19 +153,31 @@ func OtherPaths() []OtherPath { return append([]OtherPath(nil), otherPaths...) }
 // phrasing that as "nothing matched a route" reads as a failure of the run
 // rather than a description of the ticket (OR-191).
 func Route(issue tracker.Issue) (actor, why string) {
-	fields := make([]string, 0, 2+len(issue.Components)+len(issue.Labels))
-	if issue.IssueType != "" {
-		fields = append(fields, issue.IssueType)
-	}
-	fields = append(fields, issue.Components...)
-	fields = append(fields, issue.Labels...)
-
+	fields := routeFields(issue)
 	for _, rule := range routeRules {
 		if field, ok := matches(fields, rule.Keywords); ok {
 			return rule.Actor, "matched " + field
 		}
 	}
 	return DefaultActor, "defaulting to the implementer; no routing marker on this ticket"
+}
+
+// routeFields is the ticket metadata routing reads: issue type, components and
+// labels, in that order.
+//
+// Its own function because the database stage reads the SAME fields to decide
+// whether a ticket is about data (OR-135). One assembly, so the two can never
+// disagree about what counts as a marker -- a stage triggering on a field
+// routing does not look at would be a second vocabulary, which is what OR-191
+// established there is exactly one of.
+func routeFields(issue tracker.Issue) []string {
+	fields := make([]string, 0, 1+len(issue.Components)+len(issue.Labels))
+	if issue.IssueType != "" {
+		fields = append(fields, issue.IssueType)
+	}
+	fields = append(fields, issue.Components...)
+	fields = append(fields, issue.Labels...)
+	return fields
 }
 
 // Tally is one actor's share of a set of tickets.

@@ -112,6 +112,13 @@
     "e2e_base_url": ""
   },
 
+  "_comment_dba": "The database stage: after the change is committed and BEFORE QA, a database architect reviews the schema, the migrations and the indexes the change introduces and reports findings back through the developer. Before QA on purpose -- a schema finding forces a change to the schema, and QA's tests are written against the schema as it stands when QA runs. It reports; it never blocks. IT ONLY RUNS ON TICKETS THAT TOUCH DATA, decided for free from the paths in the diff and the ticket's own labels -- not by a model call, so a ticket with no schema in it pays nothing. non_prod_dsn is the explicit NON-PRODUCTION database an EXPLAIN may be run against; EMPTY MEANS STATIC REVIEW of the schema and migrations as text, and the report says that is what it did. It is never inferred from the environment, a compose file, or anything else lying around: a discovered database is one nobody chose to hand an agent, and the one you would most regret it finding is the one most likely to be there. A value naming itself production is refused rather than used. This stage proposes and never applies -- it runs no migration in either direction. max_rounds bounds the findings-fix-review exchange exactly as qa.max_rounds does, and for the same reason. Set it with `orion config limits dba.max_rounds N`, not by hand.",
+  "dba": {
+    "enabled": true,
+    "max_rounds": 3,
+    "non_prod_dsn": ""
+  },
+
   "_comment_ci": "auto_fix sends a red build back to an agent on the same branch. OFF by default: it spends money without being asked, and on a repository whose tests are flaky it will spend it on nothing. max_fix_attempts is the SAME ceiling as qa.max_rounds and the same trade -- three buys the round that has been productive here, at half again the worst case on a ticket that never converges. It is the OUTER bound, not the usual stop: an identical repeated failure ends the loop immediately, because an agent handed back a byte-identical error has learned nothing, so a third attempt is only ever reached by a run producing a DIFFERENT failure each round. require_up_to_date refuses to merge a branch whose base moved after its checks ran -- a green check is evidence about one commit, and two tickets worked in parallel can each pass alone and break the trunk together. Set the ceiling with `orion config limits ci.max_fix_attempts N`, not by hand.",
   "ci": {
     "auto_fix": false,
