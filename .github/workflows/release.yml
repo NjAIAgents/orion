@@ -77,7 +77,13 @@ jobs:
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
           echo "releasing ${TAG} on the ${CHANNEL} channel"
 
-      - run: make dist VERSION=${{ inputs.tag }}
+      # Through env rather than ${{ }} inside the run: inputs.tag is free
+      # text a dispatcher types, and ${{ }} splices it in before the shell
+      # ever sees it.
+      - name: Build the release archives
+        env:
+          TAG: ${{ inputs.tag }}
+        run: make dist VERSION="$TAG"
 
 
       - name: Render brew formula and scoop manifest
