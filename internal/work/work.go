@@ -39,6 +39,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/advise"
 	"github.com/orion-sdlc/orion/internal/budget"
+	"github.com/orion-sdlc/orion/internal/claim"
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
@@ -562,9 +563,45 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}
 
 	branch := branchFor(cfg.VCS.BranchPrefix, key)
-	job, err := workspace.AddWorktree(ws, cfg.VCS.WorkBranch, branch)
+
+	// RESUME rather than restart, when an interrupted run left work behind.
+	//
+	// The claim record names the branch its holder was on. If that claim is
+	// dead, the work on that branch is this ticket's own unfinished attempt,
+	// and cutting a fresh branch would abandon it -- which is how OR-135
+	// reached four worktrees, the last holding an hour of uncommitted work
+	// (OR-265).
+	resumeFrom := ""
+	if rec, err := claim.Read(opts.Home, key); err == nil && rec != nil {
+		if dead, _ := claim.Dead(opts.Home, key); dead {
+			resumeFrom = rec.Branch
+		}
+	}
+	job, err := workspace.ResumeWorktree(ws, cfg.VCS.WorkBranch, branch, resumeFrom)
 	if err != nil {
 		return fail(res, err)
+	}
+	if job.Resumed {
+		ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+			"resumed %s, where the interrupted run stopped", job.Branch)
+		// A tree the previous run left dirty is committed before the agent
+		// touches it. The breaker already does this for its own trips
+		// (docs/BREAKERS.md): unverified work on a branch can be read,
+		// resumed or dropped by a person, and an uncommitted change blocks
+		// the next rebase of the branch.
+		if n, err := workspace.SnapshotDirty(job.Path, key); err != nil {
+			ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+				"the interrupted run left changes that could not be committed: %v", err)
+		} else if n > 0 {
+			ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+				"committed %d file(s) the interrupted run was holding, unverified, so the resume starts clean", n)
+		}
+	}
+
+	// The claim now names the branch this run is on, so a later interruption
+	// can be resumed the same way.
+	if err := claim.Take(opts.Home, key, job.Branch, job.Path); err != nil {
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not record the claim: %v", err)
 	}
 	// Attribution hooks live in the sandbox CLONE, not in the worktree and
 	// not in the user's checkout. Before this, the clone was never
@@ -642,6 +679,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// stops meaning "something new started". It carries everything somebody
 	// scrolling back to the top of a ticket needs at once: the key, the
 	// summary, who is working it, on what, and the branch.
+	ui.LiveTitle(key, issue.Summary)
 	ui.Banner(w, key, issue.Summary, actorID,
 		actors.Model(actorID), job.Branch)
 

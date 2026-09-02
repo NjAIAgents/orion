@@ -928,3 +928,98 @@ func TestCommitAllSucceedsWhenAnExclusionIsAlreadyGitignored(t *testing.T) {
 		t.Errorf("the agent's work is missing from the commit: %q", out)
 	}
 }
+
+// A resume reattaches to the interrupted run's worktree instead of cutting
+// the next free branch name.
+//
+// AddWorktree's uniqueness is right for a RETRY -- a fresh attempt must not
+// land on a failed one, and must not rewrite a branch under a reviewer. A
+// resume is the same attempt continuing, and starting it over throws away
+// what the interrupted run produced: OR-135 reached four worktrees this way,
+// the last holding 375 uncommitted lines from an hour of work (OR-265).
+func TestAResumeReattachesInsteadOfCuttingANewBranch(t *testing.T) {
+	ws := sandbox(t)
+
+	first, err := AddWorktree(ws, "develop", "orion/or-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Resumed {
+		t.Error("a first claim is not a resume")
+	}
+
+	// The interrupted run left a file behind, uncommitted.
+	if err := os.WriteFile(filepath.Join(first.Path, "wip.txt"), []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := ResumeWorktree(ws, "develop", "orion/or-1", first.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.Resumed {
+		t.Error("the job does not report that it resumed, so the console cannot say so")
+	}
+	if again.Branch != first.Branch {
+		t.Errorf("a resume cut a new branch %q instead of reattaching to %q", again.Branch, first.Branch)
+	}
+	if _, err := os.Stat(filepath.Join(again.Path, "wip.txt")); err != nil {
+		t.Errorf("the interrupted run's work is gone: %v", err)
+	}
+}
+
+// A resume whose branch has since been pruned falls back to a fresh one.
+// Refusing to run would be worse than starting over.
+func TestAResumeFallsBackWhenTheWorkIsGone(t *testing.T) {
+	ws := sandbox(t)
+	job, err := ResumeWorktree(ws, "develop", "orion/or-2", "orion/or-2-vanished")
+	if err != nil {
+		t.Fatalf("a resume with no work to resume must still run: %v", err)
+	}
+	if job.Resumed {
+		t.Error("nothing was resumed, so the job must not claim it was")
+	}
+	if job.Branch != "orion/or-2" {
+		t.Errorf("want a fresh branch, got %q", job.Branch)
+	}
+}
+
+// What a killed run was holding is committed before the agent touches it: an
+// uncommitted change blocks the branch's next rebase, and work that lives
+// only in a working tree cannot be read, resumed or dropped by anyone.
+func TestSnapshotDirtyCommitsWhatAnInterruptedRunLeft(t *testing.T) {
+	ws := sandbox(t)
+	job, err := AddWorktree(ws, "develop", "orion/or-3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A modified file and a new one: the new file is often the most valuable
+	// thing an interrupted run produced.
+	if err := os.WriteFile(filepath.Join(job.Path, "new.go"), []byte("package p\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := SnapshotDirty(job.Path, "OR-3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Fatal("the snapshot committed nothing but the tree was dirty")
+	}
+	if out, _ := git(job.Path, "status", "--porcelain"); strings.TrimSpace(out) != "" {
+		t.Errorf("the tree is still dirty after the snapshot, so a rebase is still blocked:\n%s", out)
+	}
+	// The message must say the work is unverified, because it is.
+	out, err := git(job.Path, "log", "-1", "--pretty=%B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "unverified") {
+		t.Errorf("the snapshot does not say it is unverified:\n%s", out)
+	}
+
+	// A clean tree snapshots nothing rather than making an empty commit.
+	if n, err := SnapshotDirty(job.Path, "OR-3"); err != nil || n != 0 {
+		t.Errorf("a clean tree must produce no commit, got n=%d err=%v", n, err)
+	}
+}

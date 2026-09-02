@@ -83,6 +83,24 @@ func enabled(w io.Writer) bool {
 // (live.go), which asks the same question for a different reason -- colour is
 // unreadable off a terminal, and cursor control is corruption.
 func isTerminal(w io.Writer) bool {
+	// A WRAPPED writer is still the terminal it wraps. internal/watch puts
+	// every line through a syncWriter so two agents cannot interleave
+	// mid-word, and that wrapper is not an *os.File -- so this said "not a
+	// terminal" and the pinned region never engaged on a real `orion watch`
+	// at all. It has been that way since OR-184 and was invisible because
+	// the fallback, one plain line per tick, is a legitimate display in its
+	// own right (OR-265).
+	//
+	// Anything that can name its underlying writer is asked about that
+	// instead, so the check follows the chain to whatever is really on the
+	// far end.
+	for {
+		u, ok := w.(interface{ Unwrap() io.Writer })
+		if !ok {
+			break
+		}
+		w = u.Unwrap()
+	}
 	f, ok := w.(*os.File)
 	if !ok {
 		return false
