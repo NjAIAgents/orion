@@ -118,6 +118,7 @@ func TestAHeldTicketIsReportedRatherThanSilentlySkipped(t *testing.T) {
 			"so it will not be claimed"},
 	}
 
+	ui.ConsoleReset() // OR-262
 	var buf bytes.Buffer
 	if err := Run(Options{Out: &buf, Home: t.TempDir(), Once: true,
 		Interval: time.Millisecond}, s.deps()); err != nil {
@@ -140,6 +141,7 @@ func TestAHeldTicketIsReportedRatherThanSilentlySkipped(t *testing.T) {
 // alternate and defeat it, putting a growing block on screen every tick all
 // night -- which is how a report becomes noise and stops being read.
 func TestHeldTicketsSharingAReasonAreReportedOnOneLine(t *testing.T) {
+	ui.ConsoleReset() // OR-262
 	var buf bytes.Buffer
 	reason := "labelled ORION but not attached to a release, so it will not be claimed"
 	ui.Reset(&buf)

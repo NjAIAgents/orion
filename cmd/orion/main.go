@@ -42,6 +42,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
+	"github.com/orion-sdlc/orion/internal/update"
 	"github.com/orion-sdlc/orion/internal/work"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -100,7 +101,8 @@ RUNNING
                               which actors are reached another way (read-only)
   orion watch [PROJECT...]    run the queue by itself: work, collect, repeat
                               (--once, --interval S, --max-jobs N, --dry-run,
-                              --verbose for the full tool-call stream)
+                              --verbose for the full tool-call stream,
+                              --demo to see the live display with no agents)
   orion collect [KEY...]      finish tickets awaiting CI: close, refresh, prune
                               (--dry-run for verdicts only, --no-prune, --no-fix)
   orion protect               require the checks CI actually runs, and that
@@ -125,6 +127,12 @@ GUARDRAILS
   orion settle <KEY>          unstick a ticket's worktree: report what is
                               blocking its branch and commit it, so collect can
                               rebase again (--dry-run to look first)
+  orion dba [KEY] ["<q>"]     put a database question to the database architect:
+                              schema, migrations, indexes, why a query is slow.
+                              Works with no ticket -- a performance complaint
+                              usually precedes one. It PROPOSES: it changes
+                              nothing, runs no migration, and only ever reaches
+                              the non-production database in dba.non_prod_dsn
 
 FOR AN AGENT INSIDE A RUN
   orion explore "<q>" ["<q>"] answer questions about this repository, each in a
@@ -203,9 +211,18 @@ func main() {
 		return creds.Get(workspace.Home(), creds.Webhook)
 	})
 
+	if showsUpdateNotice(os.Args[1]) {
+		update.Notice(os.Stdout, Version)
+	}
+
 	switch os.Args[1] {
 	case "hook":
 		runHook(os.Args[2:])
+	case "update-check":
+		// Not in the usage: this is the detached child internal/update
+		// spawns to refresh its cache without the command in front of the
+		// user waiting on a network call. Prints nothing, ever.
+		update.Refresh()
 	case "doctor":
 		os.Exit(doctor.Run(os.Stdout, argFlag(os.Args[2:], "--path", "."), hasFlag(os.Args[2:], "--fix")))
 	case "config":
@@ -302,6 +319,8 @@ func main() {
 		runLessons(os.Args[2:])
 	case "aiops":
 		runAIOps(os.Args[2:])
+	case "dba":
+		runDBACommand(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Printf("orion %s\n", Version)
 	case "help", "--help", "-h":
@@ -310,6 +329,38 @@ func main() {
 		fmt.Fprintf(os.Stderr, "orion: unknown command %q\n\n%s", os.Args[1], usage)
 		os.Exit(64)
 	}
+}
+
+// showsUpdateNotice reports whether a command may print the "a newer orion
+// exists" line (OR-92).
+//
+// The list is commands a PERSON runs and reads. `hook` is the one hard
+// exclusion and the reason this is a list rather than a default: hooks fire
+// on every matching tool call inside a Claude Code session, so a version
+// notice there would be printed hundreds of times a day into somebody's
+// editor. Every other non-listed command is excluded for the milder reason
+// that its output is usually piped or read by another program.
+func showsUpdateNotice(cmd string) bool {
+	switch cmd {
+	case "status", "doctor", "watch", "collect", "work", "init":
+		return true
+	}
+	return false
+}
+
+// supervisedRun reports whether this process is inside a run Orion started.
+//
+// ORION_WORKSPACE is exported by the supervisor into every agent run
+// (internal/supervisor.childEnv) and by nothing else in the tree, so its
+// presence is the existing answer to "am I supervised?" -- `orion explore`
+// already reads it for exactly that. Reusing it keeps one signal rather
+// than inventing a second that could disagree with the first.
+//
+// ORION_BREAKER_FORCE is the way back in: it keeps the breaker reachable
+// from a shell for testing, and lets a future non-supervised runner opt in
+// without having to fake a workspace.
+func supervisedRun() bool {
+	return os.Getenv("ORION_WORKSPACE") != "" || os.Getenv("ORION_BREAKER_FORCE") == "1"
 }
 
 // runHook is the hot path: it runs on every matching tool call, so it
@@ -346,6 +397,19 @@ func runHook(args []string) {
 
 	switch name {
 	case "breaker":
+		// The breaker bounds an UNATTENDED AGENT: loops, failure budgets,
+		// tool-call and wall-clock ceilings. None of that describes a person
+		// at a keyboard, who can simply stop typing -- and the cost of
+		// applying it to one is not merely noise. On 2026-09-01 the
+		// session-time breaker tripped in an interactive session and
+		// committed seven files to develop as an unverified snapshot,
+		// because a trip commits so "the run's work survives the run". A
+		// chat session is not a run (OR-263).
+		if !supervisedRun() {
+			fmt.Fprintln(os.Stderr,
+				"orion: not a supervised run (ORION_WORKSPACE unset); breaker inactive")
+			os.Exit(hook.ExitAllow)
+		}
 		hook.Emit(hook.Breaker(in, cfg, store))
 	case "gate":
 		hook.Emit(hook.Gate(in, cfg))

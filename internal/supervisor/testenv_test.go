@@ -46,8 +46,19 @@ func TestThePromptNamesTheTestCommand(t *testing.T) {
 	if !strings.Contains(p, "./scripts/test.sh") {
 		t.Errorf("the prompt must name the test entry point:\n%s", p)
 	}
-	if !strings.Contains(p, "the same script CI runs") {
-		t.Errorf("the prompt must say why that script and not another:\n%s", p)
+	if !strings.Contains(p, "what CI runs on every push") {
+		t.Errorf("the prompt must say what that script is for:\n%s", p)
+	}
+	// And it must tell the agent NOT to run it. CI runs the whole suite on
+	// three platforms for every push, so running it again on the critical
+	// path buys nothing and costs model time while holding a job slot: on
+	// OR-135 the agent ran it four times and spent 37 minutes, most of that
+	// waiting on packages the change never touched (OR-266).
+	if !strings.Contains(p, "do NOT run it here") {
+		t.Errorf("the prompt must not ask the agent to run the whole suite:\n%s", p)
+	}
+	if !strings.Contains(p, "go test ./internal/<pkg>/") {
+		t.Errorf("the prompt must name the scoped alternative:\n%s", p)
 	}
 	// The script itself must not be inlined: it would go stale the first time
 	// somebody edited it, and a prompt that confidently describes a command

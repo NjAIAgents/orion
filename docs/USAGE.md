@@ -33,6 +33,24 @@ make test          # build, vet, gofmt and the full suite
 make install       # to ~/.local/bin
 ```
 
+### Staying current
+
+`status`, `doctor`, `watch`, `collect`, `work` and `init` print one yellow
+line when a newer release exists, naming the upgrade command for how this
+machine installed Orion:
+
+```
+update    orion v0.5.1 is available (you have v0.5.0)
+          brew upgrade navjyotnishant/tap/orion
+```
+
+The check is cached for 24 hours in `~/.orion/state/update.json` and
+refreshed by a background process, so no command waits on it; with no network
+nothing is printed and nothing fails. It never runs in hook mode, off a
+terminal, or when `CI` is set. To silence it permanently — you are pinned to
+a version on purpose — set `ORION_NO_UPDATE_CHECK=1` in the environment or
+add the same line to `~/.orion/config.env`.
+
 ### Install nj-agents, which is not optional
 
 Orion delegates review, secret scanning, test and build verification, PR

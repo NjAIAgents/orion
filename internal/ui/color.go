@@ -28,7 +28,12 @@ const (
 	cyan   = "\x1b[36m"
 	blue   = "\x1b[34m"
 	dim    = "\x1b[2m"
-	bold   = "\x1b[1m"
+	// reverse swaps foreground and background, so text painted with it reads
+	// OUT of the colour rather than sitting beside it. Used for a bar's
+	// label: the segment keeps its state colour and the label rides on top
+	// of that cell rather than punching a hole in the fill.
+	reverse = "\x1b[7m"
+	bold    = "\x1b[1m"
 	// The non-semantic set, for colouring things that are IDENTITIES rather
 	// than outcomes -- a ticket, an actor. Green, red and yellow are spoken
 	// for: a ticket rendered in red reads as broken on every line it emits.
@@ -78,6 +83,24 @@ func enabled(w io.Writer) bool {
 // (live.go), which asks the same question for a different reason -- colour is
 // unreadable off a terminal, and cursor control is corruption.
 func isTerminal(w io.Writer) bool {
+	// A WRAPPED writer is still the terminal it wraps. internal/watch puts
+	// every line through a syncWriter so two agents cannot interleave
+	// mid-word, and that wrapper is not an *os.File -- so this said "not a
+	// terminal" and the pinned region never engaged on a real `orion watch`
+	// at all. It has been that way since OR-184 and was invisible because
+	// the fallback, one plain line per tick, is a legitimate display in its
+	// own right (OR-265).
+	//
+	// Anything that can name its underlying writer is asked about that
+	// instead, so the check follows the chain to whatever is really on the
+	// far end.
+	for {
+		u, ok := w.(interface{ Unwrap() io.Writer })
+		if !ok {
+			break
+		}
+		w = u.Unwrap()
+	}
 	f, ok := w.(*os.File)
 	if !ok {
 		return false
@@ -173,7 +196,10 @@ func Label(w io.Writer, verb, detail string) string {
 		// Distinct from success: a claimed ticket is in flight, not finished.
 		// Colouring it green would say "done" for work that may still fail.
 		code = cyan
-	case "warning", "skipped", "queued":
+	case "warning", "skipped", "queued", "update":
+		// update is yellow like a warning but is NOT one: nothing is broken
+		// and no action is required (OR-92). The distinct verb is what keeps
+		// the two apart for someone scanning, which colour alone cannot do.
 		code = yellow
 	default:
 		code = dim
@@ -199,3 +225,15 @@ func Heading(w io.Writer, s string) string { return paint(w, bold, s) }
 
 // Dim renders secondary detail, for continuation lines under a status.
 func Dim(w io.Writer, s string) string { return paint(w, dim, s) }
+
+// Detail renders a continuation line indented to a status line's detail
+// column, so a two-line status reads as one thing rather than two.
+func Detail(w io.Writer, s string) string {
+	return fmt.Sprintf("%*s%s", verbWidth+1, "", Dim(w, s))
+}
+
+// IsTerminal reports whether w is attached to a terminal.
+//
+// Exported for callers that must not write to a pipe at all, rather than
+// merely write to one without colour -- see internal/update.
+func IsTerminal(w io.Writer) bool { return isTerminal(w) }

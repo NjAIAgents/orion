@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/config"
@@ -97,8 +98,17 @@ func (t batchTester) Test(ref string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("reading the checks on %s: %w", ref, err)
 	}
+	// Pushed, not pulled: this read already happened for the verdict, so the
+	// display costs nothing extra and cannot disagree with the decision made
+	// two lines below it. Same model as LiveSpend -- a number in the region
+	// must not be the most expensive thing on the screen.
+	ui.LiveChecks(liveChecks(pr.Checks))
 	switch {
 	case pr.Verdict == VerdictFailing:
+		// Remembered for the summary: the culprit's row names the check that
+		// actually failed, which is the difference between "CI failed" and a
+		// line an operator can act on without opening the forge.
+		rememberFailingCheck(pr.Checks)
 		return false, nil
 	case pr.Verdict == VerdictPassing && !noChecksYet(pr):
 		return true, nil
@@ -107,6 +117,27 @@ func (t batchTester) Test(ref string) (bool, error) {
 	// nothing has reported. Silence is not success, and it is not failure
 	// either -- it is "come back".
 	return false, ErrCheckPending
+}
+
+// liveChecks converts this package's checks into the display's.
+//
+// Two types rather than one shared: internal/ui cannot import this package
+// (it is imported BY it, for rendering), and a display type that had to
+// track a forge's vocabulary would drag GitHub's dozen conclusions into a
+// file whose whole job is to draw three states.
+func liveChecks(in []Check) []ui.Check {
+	out := make([]ui.Check, 0, len(in))
+	for _, c := range in {
+		state := ui.CheckPassed
+		switch c.State {
+		case CheckFailed:
+			state = ui.CheckFailed
+		case CheckRunning:
+			state = ui.CheckRunning
+		}
+		out = append(out, ui.Check{Name: c.Name, State: state})
+	}
+	return out
 }
 
 // noChecksYet reports the empty rollup that cmd/orion/collect.go turns into a
@@ -119,6 +150,33 @@ func (t batchTester) Test(ref string) (bool, error) {
 // disappears the day it ships.
 func noChecksYet(pr PR) bool {
 	return strings.Contains(strings.ToLower(pr.Detail), "no checks are configured")
+}
+
+// lastFailingCheck is the check that most recently went red on a batch ref.
+//
+// Package state rather than a field on batchTester because the reader is the
+// observer, which is constructed separately and has nothing threaded to it.
+// One batch runs at a time (see liveBatch), so there is one answer.
+var lastFailingCheck struct {
+	mu   sync.Mutex
+	name string
+}
+
+func rememberFailingCheck(checks []Check) {
+	for _, c := range checks {
+		if c.State == CheckFailed {
+			lastFailingCheck.mu.Lock()
+			lastFailingCheck.name = c.Name
+			lastFailingCheck.mu.Unlock()
+			return
+		}
+	}
+}
+
+func failingCheck() string {
+	lastFailingCheck.mu.Lock()
+	defer lastFailingCheck.mu.Unlock()
+	return lastFailingCheck.name
 }
 
 // liveObserver forwards a batch's progress to the pinned region (OR-246).
@@ -136,7 +194,21 @@ func (liveObserver) Assembling(ref, base string, keys []string) {
 
 func (liveObserver) Merged(key string) { ui.LiveBatchMember(key, ui.MemberMerged) }
 
-func (liveObserver) Ejected(key, _ string) { ui.LiveBatchMember(key, ui.MemberEjected) }
+// The reason rides along: it names the file the branch conflicted on, which
+// is the difference between "go and look" and "go and look at THIS".
+func (liveObserver) Ejected(key, reason string) {
+	ui.LiveBatchMemberDetail(key, ui.MemberEjected, conflictFile(reason))
+}
+
+// conflictFile pulls the path out of a merge error, or returns the reason
+// unchanged. git says "CONFLICT (content): Merge conflict in <path>", and the
+// path is the only part of that sentence a person acts on.
+func conflictFile(reason string) string {
+	if i := strings.LastIndex(reason, "Merge conflict in "); i >= 0 {
+		return strings.TrimSpace(reason[i+len("Merge conflict in "):])
+	}
+	return reason
+}
 
 func (liveObserver) Testing(int) { ui.LiveBatchPhase(ui.BatchTesting) }
 
@@ -157,7 +229,7 @@ func (liveObserver) Settled(landed, ejected, culprits, deferred []string) {
 		ui.LiveBatchMember(k, ui.MemberEjected)
 	}
 	for _, k := range culprits {
-		ui.LiveBatchMember(k, ui.MemberCulprit)
+		ui.LiveBatchMemberDetail(k, ui.MemberCulprit, failingCheck())
 	}
 	// Deferred is deliberately left as it was. A deferred branch is sound and
 	// comes back, which is what "merged" already conveys here; giving it a
@@ -187,6 +259,28 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 	}
 	base := cfg.VCS.WorkBranch
 	baseSHA, err := g.SHAOf(base)
+
+	// A TESTING batch is resumed before the validated-batch gate below, and
+	// the order is the whole of OR-261.
+	//
+	// resumable() answers "may this PROOF still be used to merge?", so it
+	// requires a validated status by construction. A batch whose CI is still
+	// running has no proof yet -- and asking that question of it returned
+	// false, cleared the state and reassembled. Every tick. The testing branch
+	// twenty lines down was unreachable from the day it was written, which is
+	// exactly the re-proving OR-251 exists to prevent, and the reassembly then
+	// failed on the ref's own leftover worktree so nothing ever landed.
+	//
+	// The checks that DO apply to a testing batch are made here rather than
+	// borrowed from resumable(): same base branch, same members, and a base
+	// that has not moved. A moved base is not merely stale here, it means the
+	// build being waited on is testing a tree that no longer exists.
+	if err == nil && st.Status == batchTesting &&
+		st.Base == base && st.BaseSHA != "" && st.BaseSHA == baseSHA &&
+		sameMembers(st.Members, members) {
+		return resumeTesting(st, members, cfg, opts, deps, g, ws, log, w), true
+	}
+
 	if err != nil || !st.resumable(base, baseSHA, members) {
 		if st.BaseSHA != "" && baseSHA != "" && st.BaseSHA != baseSHA {
 			ui.Warn(w, "%s moved since the batch was proved green; "+
@@ -195,14 +289,6 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 		}
 		clearBatchState(ws.Dir)
 		return nil, false
-	}
-
-	// A batch still building resumes to ONE more status read, never to a
-	// fresh assembly: the ref is published, its pull request is open, and the
-	// build being waited for is already running. Re-cutting would abandon it
-	// and buy another.
-	if st.Status == batchTesting {
-		return resumeTesting(st, members, cfg, opts, deps, g, ws, log, w), true
 	}
 
 	approve := batchApprover(cfg, opts, deps, ws, log, w)
@@ -277,6 +363,14 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	// Built before the membership loop, which now asks git what is ready
 	// rather than asking the forge whether a pull request exists.
 	g := repoGit{ws: ws, merge: deps.Merge, openPR: deps.OpenPR}
+
+	// The CI bar's reference, pushed once per batch. Read here rather than in
+	// liveObserver because the observer has no workspace to read the log
+	// from, and pulled once rather than per redraw for the reason
+	// internal/cost states: a number in the region must not be the most
+	// expensive thing on the screen. Zero samples leaves it unset, and the
+	// bar then says "no baseline yet" instead of inventing one (OR-250).
+	ui.LiveBatchMedian(batchBaseline(events.Path(ws.Dir)).Median)
 
 	var members []Member
 	for _, key := range pass {
@@ -411,12 +505,31 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	// a merge; their median is what the old path actually cost here, on this
 	// machine, with this CI.
 	base := perBranchBaseline(events.Path(ws.Dir))
-	ui.Say(w, "", events.ActorOrion, ui.VerbOK,
-		"the batch cost %s", costLine(b.Runs, len(members), b.Elapsed, base))
-	// Built by events.BatchNote rather than by a Printf here, because the
-	// dashboard reads this sentence back and the two used to agree only by
-	// coincidence (OR-258). One format, one place, tested against itself.
 	landed := b.Members(Landed)
+
+	// A BATCH THAT LANDED NOTHING IS NOT A COST, IT IS A FAILURE (OR-261).
+	//
+	// This printed "the batch cost 0 CI runs for 2 branches, in 1s" with a
+	// green tick, once a minute all night, while develop never moved and both
+	// members sat unmerged. Zero runs in one second is the shape of a cycle
+	// that did no work; rendering it as an accomplishment is how a stall reads
+	// as success to somebody scrolling past.
+	if len(landed) == 0 {
+		ui.Warn(w, "the batch landed nothing: %s",
+			costLine(b.Runs, len(members), b.Elapsed, base))
+	} else {
+		ui.Say(w, "", events.ActorOrion, ui.VerbOK,
+			"the batch cost %s", costLine(b.Runs, len(members), b.Elapsed, base))
+	}
+
+	// The note is emitted either way. A batch that landed nothing is still a
+	// batch that happened, and the dashboard reads this sentence to count
+	// runs spent -- dropping it would hide the cost of exactly the cycles
+	// worth seeing.
+	//
+	// Built by events.BatchNote rather than by a Printf here, because the
+	// dashboard reads it back and the two used to agree only by coincidence
+	// (OR-258). One format, one place, tested against itself.
 	log.Emitf(events.KindNote, events.ActorOrion, "%s", events.BatchNote{
 		Ref: ref, Runs: b.Runs, Elapsed: b.Elapsed,
 		Landed: landed, Ejected: b.Members(Ejected),

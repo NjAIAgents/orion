@@ -11,6 +11,27 @@ A breaker fires when a session has demonstrated it is not making progress.
 Continuing costs money and produces confident, wrong work. Stopping is the
 designed outcome, not a failure to handle.
 
+## Where it applies
+
+**Supervised runs only.** Everything here bounds an unattended agent, and a
+trip *commits* so the run's work survives the run — which is the wrong thing
+to do to a person at a keyboard, who can already stop typing (OR-263).
+
+The breaker arms when `ORION_WORKSPACE` is set, which the supervisor exports
+into every agent run and nothing else does. Outside one it says so and allows
+the call:
+
+```
+orion: not a supervised run (ORION_WORKSPACE unset); breaker inactive
+```
+
+`ORION_BREAKER_FORCE=1` arms it anyway, for testing from a shell.
+
+This scoping is the breaker's alone. `gate` (dangerous shell commands) and
+`shield` (an agent editing its own guardrails, or weakening the test that
+defines a fix) guard against anyone holding the tool, and stay armed
+everywhere.
+
 ## What each trip allows
 
 | Trip | Meaning | Self-service recovery |

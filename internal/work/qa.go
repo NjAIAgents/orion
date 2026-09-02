@@ -519,14 +519,8 @@ const (
 // quotes its own instructions back ("write QA CLEAN when everything passes")
 // would otherwise declare a clean branch by describing one.
 func qaVerdict(final string) (said string, kind qaVerdictKind) {
-	for _, line := range strings.Split(final, "\n") {
-		line = strings.TrimLeft(strings.TrimSpace(line), "*#->_ ")
-		if len(line) < len(supervisor.QAClean) {
-			continue
-		}
-		if strings.EqualFold(line[:len(supervisor.QAClean)], supervisor.QAClean) {
-			return "", qaVerdictClean
-		}
+	if hasSentinel(final, supervisor.QAClean) {
+		return "", qaVerdictClean
 	}
 	said = strings.TrimSpace(final)
 	if said == "" {
@@ -539,6 +533,28 @@ func qaVerdict(final string) (said string, kind qaVerdictKind) {
 		return said, qaVerdictNone
 	}
 	return said, qaVerdictFindings
+}
+
+// hasSentinel reports whether a closing message contains a sentinel at the
+// start of a line, ignoring the decoration a model puts in front of one.
+//
+// AT THE START OF A LINE is what makes a sentinel a sentinel: an agent that
+// quotes its own instructions back ("write QA CLEAN when everything passes")
+// would otherwise declare a clean branch by describing one. Shared with the
+// database stage (OR-135), which reports through sentinels of its own -- the
+// rule is the same rule, and a second copy of it would be a second place for
+// the quoting hazard to be forgotten.
+func hasSentinel(final, sentinel string) bool {
+	for _, line := range strings.Split(final, "\n") {
+		line = strings.TrimLeft(strings.TrimSpace(line), "*#->_ ")
+		if len(line) < len(sentinel) {
+			continue
+		}
+		if strings.EqualFold(line[:len(sentinel)], sentinel) {
+			return true
+		}
+	}
+	return false
 }
 
 // failureStems are what a findings report says and a passing one does not,

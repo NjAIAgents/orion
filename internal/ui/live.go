@@ -87,22 +87,96 @@ const (
 	liveStageWidth   = 12
 	liveBarWidth     = 14
 	liveElapsedWidth = 6
+	// liveTitleWidth is the ticket summary's column.
+	//
+	// Enough for a title to be recognised, not enough for it to take the row:
+	// what identifies a ticket is its first few words, and the whole summary
+	// is one `orion status` away. Padded to the width so the notes after it
+	// start in the same column on every row (OR-265).
+	liveTitleWidth = 34
+	// liveTitleFloor is the least a title may be shown in. Below this it is
+	// dropped: a six-character stub identifies nothing and costs the note the
+	// room it needed.
+	liveTitleFloor = 16
+	// liveNoteFloor is the room kept for the note when both compete.
+	liveNoteFloor = 24
 	// liveRuleWidth is the rule that separates the scrollback above from the
 	// region below. Narrower than the terminal on purpose: it is a seam, not
 	// a banner.
 	liveRuleWidth = 76
 )
 
-// liveWindowFloor is the fewest recent lines the frozen window ever shows.
+// liveWindowFloor is how many recent lines the frozen window shows.
 //
-// A floor rather than a height. Five is what was asked for and it is also the
-// smallest number that still reads as a log rather than as a status line: with
-// one line you cannot see that a second thing happened, and with none the
-// watcher looks hung, which is the failure OR-217 shipped and OR-240 was
-// written to undo. The window grows past it whenever the terminal has the
-// room, and never shrinks below it even when the terminal does not -- a window
-// squeezed to nothing by a busy region is the hung-looking screen again.
+// A HEIGHT, not a floor. OR-248 shipped it as a floor that grew into whatever
+// the terminal had spare, on the reasoning that a taller screen may as well
+// show more history. That reasoning was never tested against a real terminal:
+// terminalRows read LINES, which no shell exports, so the height was always
+// unknown and the window was pinned to five by accident. It looked like the
+// mockup because it could not do anything else.
+//
+// Fixing the height detection made it grow for the first time -- to
+// twenty-four lines on a full-screen terminal -- and the answer to what it
+// SHOULD be is the mockup: "five lines of scrollback, then a wall". A window
+// that expands to fill the screen is the unbounded log this feature exists to
+// bound; the space belongs to the region, which is the part being watched
+// (OR-264).
+//
+// Five is also still the smallest number that reads as a log rather than as a
+// status line: with one you cannot see that a second thing happened, and with
+// none the watcher looks hung, which is the failure OR-217 shipped and OR-240
+// was written to undo. It shrinks below five only when the region itself
+// would not otherwise fit.
 const liveWindowFloor = 5
+
+// liveWindowCap is the most lines the window will show, set from the
+// watcher's max_concurrent_tickets.
+//
+// The window's job is to show what the agents are saying, so the volume it
+// has to keep up with is proportional to how many are talking. Five lines is
+// right for one or two agents and starves at eight, where a single ticket's
+// output can push the other seven off the window between glances.
+//
+// Zero means "not set", which falls back to the floor. Package-level for the
+// same reason the rest of this file's state is: the number lives in the
+// watcher's config and the renderer is three packages away from it.
+var liveWindowCap int
+
+// LiveWindowCap sets the visible window's maximum. Called once by the
+// watcher, which is the only thing that knows the concurrency limit.
+func LiveWindowCap(n int) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	liveWindowCap = n
+}
+
+// windowHeight is how many lines the window may show: at least the floor, at
+// most the concurrency cap.
+func windowHeight() int {
+	live.mu.Lock()
+	n := liveWindowCap
+	live.mu.Unlock()
+	if n < liveWindowFloor {
+		return liveWindowFloor
+	}
+	return n
+}
+
+// liveBottomPad is how many blank rows sit below the region.
+//
+// Two: enough that the status line is not touching the bottom edge with the
+// cursor parked on it, and few enough that they are not mistaken for the
+// display having ended. They are charged to the region's own budget, so the
+// window gives up the space rather than the ticket rows.
+const liveBottomPad = 2
+
+// liveWindowBuffer is how many recent lines are RETAINED, as opposed to shown.
+//
+// Larger than the visible cap so a window that shrank while the region was
+// tall can fill again when it is not, and bounded so a watcher left running
+// overnight does not accumulate a line per tool call forever. The complete
+// record is events.jsonl either way.
+const liveWindowBuffer = 200
 
 // The sparkline's resolution: tool calls per 10s over the last two minutes.
 //
@@ -130,6 +204,14 @@ const quietAfter = time.Minute
 // loop.
 const liveRedraw = 250 * time.Millisecond
 
+// actorOrion is the orchestrator's own actor id, matching events.ActorOrion.
+//
+// A literal rather than the import: internal/events imports nothing from
+// here, but this package renders for three others and adding a dependency for
+// one string is the wrong trade. internal/actors registers the same id, so a
+// rename that missed this would be caught by the registry's own tests.
+const actorOrion = "orion"
+
 // liveRun is one dispatched ticket's live state.
 //
 // Everything here is derived from facts that already exist somewhere in
@@ -154,10 +236,50 @@ type liveRun struct {
 	// calls a minute and this must cost the same at any rate.
 	newest  int64
 	buckets [sparkBuckets]int
+	// done marks a run that has finished. Its row stays on screen, carrying
+	// the outcome, until the watcher stops.
+	done bool
+	// title is the ticket's summary, so the row says what the work IS as well
+	// as what it is doing. Without it a row is an identifier and a verb, and
+	// answering "what is OR-135 again" means going to the tracker (OR-265).
+	title string
+	// note is the run's most recent tool call, in its own words: the file it
+	// read, the command it ran. One line per ticket, replaced rather than
+	// accumulated.
+	//
+	// This is what the frozen window used to do for all tickets at once, and
+	// doing it per ROW is strictly better for the question being asked. Five
+	// interleaved lines from three agents have to be read to work out which
+	// belongs to whom; a line on the ticket's own row needs no reading at
+	// all. The history the window kept is not lost -- `orion logs` and
+	// events.jsonl have every line in full, which is where a record belongs
+	// (OR-265).
+	note string
+	// reported marks a finished row whose ending the OFF-TERMINAL path has
+	// already printed. The region redraws in place and needs no such flag;
+	// a log appends, and repeating a finished row every tick buries the
+	// lines a reader needs (OR-265).
+	reported bool
 	// median is the actor's median completed-run duration in this project,
 	// resolved when the actor becomes known. Zero means unknown, which is
 	// rendered as no bar at all rather than as an empty one.
 	median time.Duration
+	// barColor overrides the bar's colour. Empty means green -- progress. A
+	// culprit sets red, so the branch that broke the batch reads as broken in
+	// the bar as well as in the word beside it.
+	barColor string
+	// agents is how many subagents this run has spawned.
+	//
+	// A ticket is usually one agent, but the implementer fans out by package
+	// (ADR 0016) and the advisors are subagents too, so "one row, one agent"
+	// is often wrong -- and a row that says 84 tool calls without saying that
+	// six agents made them describes a different run from the one happening.
+	agents int
+	// verdict is what a batch has decided about this row -- "will land",
+	// "fix round 1 of 3". Set at render time from the batch, not stored on
+	// the run: it is the BATCH's claim about the ticket, and it changes as
+	// the search proceeds.
+	verdict string
 }
 
 // live is the registry. Guarded by its own mutex because a watcher writes to
@@ -180,6 +302,45 @@ var live struct {
 	// assembled from one pass in one repository's sandbox, so a second would
 	// mean two passes racing on one clone -- which collect does not do.
 	batch *liveBatch
+	// since is when this watcher started, set on the first LiveStart.
+	since time.Time
+	// checks is the current CI run's individual checks, newest reading wins.
+	//
+	// ci above is the COUNT of tickets waiting; this is what the one shared
+	// run is actually doing. During a batch that distinction is the whole
+	// point: three tickets share one run, and "2 in CI" says nothing about
+	// which of the three platforms is still going (OR-264).
+	checks []Check
+}
+
+// Check is one CI check and where it got to, as the display needs it.
+//
+// Declared here rather than imported from internal/collect because that
+// package already depends on this one for rendering; the dependency can only
+// point one way. Three states, because that is what a reader acts on.
+type Check struct {
+	Name  string
+	State string
+}
+
+// The check states, matching internal/collect's vocabulary.
+const (
+	CheckPassed  = "passed"
+	CheckFailed  = "failed"
+	CheckRunning = "running"
+)
+
+// LiveChecks records what the current CI run's checks are doing. Replaces
+// the previous reading rather than merging: a rollup is a complete picture
+// of one moment, and merging would leave a finished check on screen after
+// a re-run dropped it.
+func LiveChecks(c []Check) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	live.checks = append([]Check(nil), c...)
+	if live.batch != nil {
+		live.batch.checks = live.checks
+	}
 }
 
 // LiveMedians installs the median lookup. Called once by the watcher, which
@@ -204,17 +365,60 @@ func liveStart(key string, at time.Time) {
 	if live.runs == nil {
 		live.runs = map[string]*liveRun{}
 	}
+	// The session clock starts at the first dispatch rather than at process
+	// start: what the header reports is how long this watcher has been
+	// WORKING, and the seconds spent reading config are not that.
+	if live.since.IsZero() {
+		live.since = at
+	}
 	live.runs[key] = &liveRun{
-		key: key, stage: "starting", started: at,
+		// ORION holds the ticket until an agent is routed: it is claiming the
+		// label, provisioning the worktree and choosing who gets it. A blank
+		// actor column there reads as missing data rather than as the truth,
+		// which is that nobody has been handed the work yet (OR-265).
+		//
+		// Replaced by the real actor at the first stage boundary or tool
+		// call, both of which call setActorLocked.
+		key: key, actor: actorOrion, stage: "starting", started: at,
 		newest: at.UnixNano() / int64(sparkBucket),
 	}
 }
 
 // LiveEnd removes a run. Called when the watcher reaps it.
-func LiveEnd(key string) {
+func LiveEnd(key string) { LiveDone(key, "") }
+
+// LiveDone finishes a run and leaves its row on screen, carrying the outcome.
+//
+// The row used to be DELETED here, so a ticket that finished simply vanished
+// from the region -- the operator watching two tickets saw one of them
+// disappear with no statement of what became of it, and had to go read the
+// scrollback to find out (OR-265). Work that finishes is the thing they were
+// waiting for; it is the worst possible moment to stop saying anything.
+//
+// The row stops being counted as running and stops spinning, which is what
+// "finished" has to mean for the header to stay honest.
+func LiveDone(key, outcome string) {
 	live.mu.Lock()
 	defer live.mu.Unlock()
-	delete(live.runs, key)
+	r := live.runs[key]
+	if r == nil {
+		return
+	}
+	r.done = true
+	r.stage = outcome
+	if r.stage == "" {
+		r.stage = "done"
+	}
+	r.note = ""
+}
+
+// LiveAgents records that this run has spawned another subagent.
+func LiveAgents(key string) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if r := live.runs[key]; r != nil {
+		r.agents++
+	}
 }
 
 // LiveActivity records one tool call.
@@ -225,12 +429,23 @@ func LiveEnd(key string) {
 // stage.
 func LiveActivity(key, actor string) { liveActivity(key, actor, time.Now()) }
 
-func liveActivity(key, actor string, at time.Time) {
+func liveActivity(key, actor string, at time.Time) { liveActivityNote(key, actor, "", at) }
+
+// LiveActivityNote is LiveActivity plus what the call actually was, shown on
+// the ticket's own row.
+func LiveActivityNote(key, actor, note string) {
+	liveActivityNote(key, actor, note, time.Now())
+}
+
+func liveActivityNote(key, actor, note string, at time.Time) {
 	live.mu.Lock()
 	defer live.mu.Unlock()
 	r := live.runs[key]
 	if r == nil {
 		return
+	}
+	if note != "" {
+		r.note = note
 	}
 	r.setActorLocked(actor)
 	r.advance(at)
@@ -238,6 +453,27 @@ func liveActivity(key, actor string, at time.Time) {
 	r.calls++
 	r.last = at
 }
+
+// LiveTitle records the ticket's summary for its row.
+//
+// Pushed rather than looked up: the tracker issue is already in hand where
+// the banner is printed, and the region must never make a network call to
+// draw itself.
+func LiveTitle(key, title string) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if r := live.runs[key]; r != nil {
+		r.title = title
+	}
+}
+
+// LiveStage records that a run crossed into a new stage.
+//
+// Exported alongside the unexported form because `orion watch --demo` drives
+// the region directly: it has no agent to cross a boundary, and a demo whose
+// stage column said "starting" for every ticket would misrepresent the one
+// column an operator uses to tell two runs apart.
+func LiveStage(key, stage, actor string) { liveStage(key, stage, actor) }
 
 // liveStage records that a run crossed into a new stage. Called by Stage, so
 // the region cannot show a stage the boundary line did not also print.
@@ -296,7 +532,7 @@ func LiveReset() {
 	live.mu.Lock()
 	defer live.mu.Unlock()
 	live.runs, live.spend, live.ci, live.median = nil, 0, 0, nil
-	live.batch = nil
+	live.batch, live.checks, live.since = nil, nil, time.Time{}
 }
 
 // liveState is one consistent read of the registry: rows in key order, plus
@@ -314,12 +550,17 @@ type liveState struct {
 	// would let a member resolve between drawing the batch and drawing the
 	// ticket it belongs to.
 	batch *liveBatch
+	// checks is copied for the same reason the batch is.
+	checks []Check
+	// since is when this watcher started, for the header's elapsed.
+	since time.Time
 }
 
 func liveSnapshot() liveState {
 	live.mu.Lock()
 	defer live.mu.Unlock()
-	st := liveState{spend: live.spend, ci: live.ci}
+	st := liveState{spend: live.spend, ci: live.ci, since: live.since}
+	st.checks = append([]Check(nil), live.checks...)
 	if live.batch != nil {
 		st.batch = live.batch.snapshotLocked()
 	}
@@ -372,9 +613,13 @@ const (
 	spinnerASCII  = `|/-\`
 	sparkGlyphs   = "▁▂▃▄▅▆▇█"
 	sparkASCII    = "_.-=+*#%"
-	barFullGlyph  = "━"
-	barHeadGlyph  = "╸"
-	barEmptyGlyph = "─"
+	// A BLOCK bar, not a rule. The mockup draws a filled band against a
+	// stippled remainder, which reads as a quantity at a glance where a thin
+	// line reads as a divider -- and the region already has two real rules in
+	// it, so a bar shaped like one competes with them.
+	barFullGlyph  = "█"
+	barHeadGlyph  = "▓"
+	barEmptyGlyph = "░"
 	barFullASCII  = "#"
 	barHeadASCII  = ">"
 	barEmptyASCII = "-"
@@ -445,10 +690,18 @@ func (r liveRun) bar(w io.Writer, elapsed time.Duration) string {
 	if n < 0 {
 		n = 0
 	}
-	if n >= liveBarWidth {
-		return paint(w, cyan, strings.Repeat(full, liveBarWidth))
+	// Green for progress, matching the mockup and the ok/failed palette the
+	// rest of the display already uses. barColor lets a culprit's row draw
+	// its bar red, so the one branch that broke the batch is red in the
+	// glyph, the word and the bar rather than only in the word.
+	c := r.barColor
+	if c == "" {
+		c = green
 	}
-	return paint(w, cyan, strings.Repeat(full, n)+head) +
+	if n >= liveBarWidth {
+		return paint(w, c, strings.Repeat(full, liveBarWidth))
+	}
+	return paint(w, c, strings.Repeat(full, n)+head) +
 		Dim(w, strings.Repeat(empty, liveBarWidth-n-1))
 }
 
@@ -460,6 +713,18 @@ func (r liveRun) bar(w io.Writer, elapsed time.Duration) string {
 func (r liveRun) notes(now time.Time) []string {
 	var out []string
 	elapsed := now.Sub(r.started)
+	// A bar with no median draws nothing, which is right -- inventing a
+	// baseline is what OR-250 forbids -- and silent, which is not. Fourteen
+	// blank columns where every other row has a bar reads as a display that
+	// was never built rather than as a measurement that cannot honestly be
+	// made yet, and it was read exactly that way.
+	//
+	// So the absence is stated, in words, per OR-163. The vocabulary is
+	// batchcost.go's, deliberately: the same idea should read the same way
+	// wherever a baseline is missing.
+	if r.median <= 0 {
+		out = append(out, "no baseline yet")
+	}
 	if r.median > 0 && elapsed > r.median {
 		out = append(out, "running long "+liveSep+" median "+coarse(r.median))
 	}
@@ -476,6 +741,49 @@ func (r liveRun) notes(now time.Time) []string {
 // liveSep is the middle dot the roster already uses to join two facts on one
 // line. One separator, so the display reads as one system.
 const liveSep = "·"
+
+// renderChecks is the individual checks of the ONE shared CI run.
+//
+// The count in the header answers "how many tickets are waiting"; this
+// answers "what is that run actually doing". During a batch the two are very
+// different questions -- three tickets share one run, so a count says nothing
+// about which platform is still going, and "still running" for nine minutes
+// with no way to see that it is only Windows is the thing an operator sits
+// and wonders about.
+//
+// One line, not a row each: they belong to a single run, and stacking them
+// would push the ticket rows off a short terminal to say what fits in eighty
+// columns.
+func renderChecks(w io.Writer, checks []Check, cols int) string {
+	if len(checks) == 0 {
+		return ""
+	}
+	ascii := !glyphs()
+	var cells []string
+	for _, c := range checks {
+		var mark string
+		switch c.State {
+		case CheckFailed:
+			g := "✗"
+			if ascii {
+				g = "x"
+			}
+			mark = paint(w, red, g)
+		case CheckRunning:
+			// The same braille the ticket rows use, so "still going" reads
+			// identically wherever it appears.
+			mark = spinner(time.Now())
+		default:
+			g := "✓"
+			if ascii {
+				g = "+"
+			}
+			mark = paint(w, green, g)
+		}
+		cells = append(cells, fmt.Sprintf("%s %s", c.Name, mark))
+	}
+	return clip("    "+strings.Join(cells, "   "), cols)
+}
 
 // renderRow is one run's line.
 //
@@ -508,7 +816,19 @@ func renderRow(w io.Writer, r liveRun, now time.Time, cols int) string {
 		used += cells
 	}
 
-	add(" "+paint(w, cyan, spinner(now))+"  ", 4)
+	// A FINISHED row does not spin: a spinner is the claim that something is
+	// happening, and nothing is. It carries a tick instead, in the outcome's
+	// own colour, so a completed ticket reads as complete at a glance rather
+	// than as one more moving row (OR-265).
+	mark := paint(w, cyan, spinner(now))
+	if r.done {
+		g := "✓"
+		if !glyphs() {
+			g = "+"
+		}
+		mark = paint(w, green, g)
+	}
+	add(" "+mark+"  ", 4)
 	// The key is NOT clipped: it is the row's identifier, and an over-long one
 	// pushes the row wide rather than becoming unidentifiable.
 	add(paint(w, ticketColor(r.key), pad(r.key, liveKeyWidth))+"  ", fieldCells(r.key, liveKeyWidth)+2)
@@ -520,17 +840,87 @@ func renderRow(w io.Writer, r liveRun, now time.Time, cols int) string {
 	if keep(cols, liveBar) {
 		add(r.bar(w, elapsed)+"  ", liveBarWidth+2)
 	}
-	add(pad(elapsedString(elapsed), liveElapsedWidth)+"  ", liveElapsedWidth+2)
+	// Elapsed AND the median it is measured against, as the mockup has it:
+	// "18m / ~24m". The bar shows the ratio and the numbers say what the
+	// ratio is of -- a bar alone cannot be read aloud, quoted in a ticket, or
+	// seen in a NO_COLOR terminal (OR-163).
+	el := elapsedString(elapsed)
+	if r.median > 0 && keep(cols, liveMedian) {
+		add(pad(el, liveElapsedWidth)+" "+Dim(w, "/ ~"+coarse(r.median))+"  ",
+			liveElapsedWidth+1+3+len(coarse(r.median))+2)
+	} else {
+		add(pad(el, liveElapsedWidth)+"  ", liveElapsedWidth+2)
+	}
 	if keep(cols, liveSpark) {
 		add(r.sparkline()+"  ", sparkBuckets+2)
 	}
 	add(fmt.Sprintf("%4d", r.calls), 4)
+	// Subagents, when there are any. Suppressed at zero rather than printed
+	// as "0": most rows are one agent, and a column of zeroes teaches the eye
+	// to skip the place where the interesting number appears.
+	if r.agents > 0 && keep(cols, liveAgents) {
+		add("  "+Dim(w, fmt.Sprintf("%dx", r.agents)), 2+len(fmt.Sprint(r.agents))+1)
+	}
 
 	// The notes go last and are clipped to whatever is left, because they are
 	// the only variable-length thing on the row. Clipped as TEXT, before any
 	// colour is applied: cutting a painted string can land inside an escape
 	// sequence, which is how a renderer corrupts the terminal it was meant to
 	// make readable.
+	// The batch's claim about this row, before the notes: it is the most
+	// actionable thing on the line during a search.
+	if r.verdict != "" {
+		c := green
+		if r.barColor == red {
+			c = red
+		}
+		add("  "+paint(w, c, r.verdict), 2+len(r.verdict))
+	}
+	// The ticket's TITLE, then what the agent is doing right now.
+	//
+	// The title first because it is the stable half: it answers "what is this
+	// ticket" and does not change for the life of the row, so the eye learns
+	// where it sits. The note after it changes four times a second.
+	//
+	// Both are clipped to whatever the row has left, title first, so a narrow
+	// terminal keeps the identity and loses the transcript rather than the
+	// other way round.
+	if r.title != "" && cols > 0 {
+		// A FIXED cap rather than a share of what is left. Titles run to a
+		// hundred characters and the note is the half that changes, so
+		// splitting the remainder evenly let one long title crowd out the
+		// thing the row exists to show moving.
+		// The title yields to the NOTE, not the other way round. Squeezed to
+		// a few characters it says nothing an operator can use, while the
+		// note stays legible much narrower -- and the note is the half that
+		// answers "is this moving". Below the room for both, the title goes
+		// entirely rather than becoming a stub.
+		room := liveTitleWidth
+		if left := cols - used - 2 - liveNoteFloor; left < room {
+			room = left
+		}
+		if room >= liveTitleFloor {
+			if s := clip(r.title, room); s != "" {
+				add("  "+pad(s, room), 2+room)
+			}
+		}
+	}
+	// What this agent is doing RIGHT NOW, in its own words, last on the row
+	// and dim: it is the transcript rather than the status, and it changes
+	// four times a second while everything left of it holds still.
+	//
+	// This replaces the frozen window (OR-248). Five interleaved lines from
+	// three agents had to be READ to work out which belonged to whom; a line
+	// on the ticket's own row needs no reading. The record the window used to
+	// hold is not lost -- `orion logs` and events.jsonl carry every line in
+	// full (OR-265).
+	if r.note != "" {
+		if s := clip(r.note, cols-used-2); s != "" && cols > 0 {
+			add("  "+Dim(w, s), 2+utf8.RuneCountInString(s))
+		} else if cols <= 0 {
+			add("  "+Dim(w, r.note), 2+utf8.RuneCountInString(r.note))
+		}
+	}
 	if notes := r.notes(now); len(notes) > 0 {
 		s := strings.Join(notes, " "+liveSep+" ")
 		if cols > 0 {
@@ -572,7 +962,12 @@ func clip(s string, n int) string {
 
 // The optional columns.
 const (
-	liveSpark = iota
+	// Surrendered first: the bar already carries this ratio, so the numbers
+	// are the cheapest thing to lose and the last thing worth wrapping a row
+	// for.
+	liveMedian = iota
+	liveAgents
+	liveSpark
 	liveBar
 	liveActor
 )
@@ -602,7 +997,17 @@ func keep(cols, col int) bool {
 	if col == liveBar {
 		return cols >= need
 	}
-	return cols >= need+sparkBuckets+2
+	need += sparkBuckets + 2
+	if col == liveSpark {
+		return cols >= need
+	}
+	// "  6x".
+	need += 4
+	if col == liveAgents {
+		return cols >= need
+	}
+	// "/ ~24m" and its leading space.
+	return cols >= need+7
 }
 
 // renderHeader is the one line above the rows: when, which project, how much
@@ -637,12 +1042,42 @@ func renderHeaderAt(w io.Writer, st liveState, now time.Time, collapsed bool) st
 	if p := projectsOf(st.rows); p != "" {
 		parts = append(parts, p)
 	}
-	parts = append(parts, fmt.Sprintf("%d running", len(st.rows)))
+	// "3 running", or "idle" when nothing is: a bare "0 running" reads as a
+	// counter that failed rather than as a watcher with nothing to do, and
+	// the mockup's finished state says idle.
+	if len(st.rows) == 0 {
+		parts = append(parts, "idle")
+	} else {
+		// RUNNING, not "rows": a finished ticket keeps its row so the operator
+		// can see what became of it, and counting those as running would make
+		// the header claim work that has stopped.
+		running := 0
+		for _, r := range st.rows {
+			if !r.done {
+				running++
+			}
+		}
+		if running > 0 {
+			parts = append(parts, fmt.Sprintf("%d running", running))
+		}
+		if n := len(st.rows) - running; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d done", n))
+		}
+	}
+	if st.batch != nil {
+		parts = append(parts, "1 batch")
+	}
 	if st.ci > 0 {
 		parts = append(parts, fmt.Sprintf("%d in CI", st.ci))
 	}
 	if st.spend > 0 {
 		parts = append(parts, fmt.Sprintf("$%.2f this session", st.spend))
+	}
+	// How long this watcher has been up. The mockup's last field, and the one
+	// that answers "is this the run I started before lunch" without reading
+	// back through the log.
+	if !st.since.IsZero() {
+		parts = append(parts, coarse(now.Sub(st.since)))
 	}
 	if h := hintFor(st, collapsed); h != "" {
 		parts = append(parts, h)
@@ -706,14 +1141,20 @@ func renderRegionAt(w io.Writer, st liveState, now time.Time, cols int, collapse
 	if !glyphs() {
 		r = liveRuleASCII
 	}
-	out := []string{
-		Dim(w, strings.Repeat(r, liveRuleWidth)),
-		renderHeaderAt(w, st, now, collapsed),
-		"",
-	}
-	// The batch above the rows: it is the thing the rows are members OF, and
-	// reading the set after its members inverts the containment.
-	out = append(out, renderBatch(w, st.batch, now, cols)...)
+	// THE STATUS LINE IS THE BOTTOM LINE. The mockup pins it under the rows,
+	// beneath a rule, and that is where it belongs: it is the summary OF what
+	// is above it, and a total printed before its terms reads as a heading.
+	// It is also the line an operator's eye returns to, so it sits nearest
+	// the cursor rather than scrolled furthest from it.
+	//
+	// The region opens with a blank row so the frozen window above it and the
+	// pinned block below are visibly two zones rather than one run-on block.
+	out := []string{""}
+	// THE BATCH IS AT THE BOTTOM, under the status line, in every phase. The
+	// rows are what moves second to second and the batch is what they roll up
+	// into, so the summary sits with the other summary rather than pushing
+	// the live part down the screen.
+	//
 	if collapsed {
 		// Said, rather than left to be inferred from rows that vanished. An
 		// operator who collapsed the region ten minutes ago and came back to
@@ -721,13 +1162,73 @@ func renderRegionAt(w io.Writer, st liveState, now time.Time, cols int, collapse
 		if n := len(st.rows); n > 0 {
 			out = append(out, Dim(w, fmt.Sprintf("    %d run(s) hidden · ctrl-o expands", n)))
 		}
-		return out
+		return append(out, statusFooter(w, st, now, cols, collapsed, r)...)
 	}
 	for _, row := range st.rows {
+		// While the search runs, a row says what is about to happen to it:
+		// the innocent land, the culprit goes round a fix loop. That is the
+		// question an operator has during isolation, and the tree above
+		// answers it only for somebody willing to read the leaves.
+		if st.batch != nil && st.batch.phase == BatchIsolating {
+			row.verdict, row.barColor = isolationVerdict(st.batch, row.key)
+		}
 		out = append(out, renderRow(w, row, now, cols))
+	}
+	return append(out, statusFooter(w, st, now, cols, collapsed, r)...)
+}
+
+// statusFooter is the rule and the status line that close the region, plus a
+// finished batch's summary beneath them.
+func statusFooter(w io.Writer, st liveState, now time.Time, cols int, collapsed bool, rule string) []string {
+	out := []string{
+		"",
+		Dim(w, strings.Repeat(rule, liveRuleWidth)),
+		renderHeaderAt(w, st, now, collapsed),
+	}
+	// The batch, last: what it is doing or what it cost, under the live view
+	// rather than above it.
+	if lines := renderBatch(w, st.batch, now, cols); len(lines) > 0 {
+		out = append(out, "")
+		out = append(out, lines...)
+	}
+	if line := renderChecks(w, st.checks, cols); line != "" {
+		out = append(out, "", line)
 	}
 	return out
 }
+
+// isolationVerdict is what the search has decided about one key so far, and
+// the colour its bar should carry.
+func isolationVerdict(b *liveBatch, key string) (string, string) {
+	for _, m := range b.members {
+		if m.key != key {
+			continue
+		}
+		switch m.state {
+		case MemberCulprit:
+			return "fix round 1 of " + fmt.Sprint(maxFixRounds), red
+		case MemberLanded, MemberMerged:
+			return "will land", ""
+		}
+	}
+	// Still being searched for: no claim either way, because the display must
+	// not say "will land" about a branch the next run may convict.
+	for _, s := range b.splits {
+		if !s.green {
+			continue
+		}
+		for _, k := range s.keys {
+			if k == key {
+				return "will land", ""
+			}
+		}
+	}
+	return "", ""
+}
+
+// maxFixRounds mirrors the ceiling OR-226 set on a fix loop. Stated rather
+// than counted up to, so the row says how many chances the branch has.
+const maxFixRounds = 3
 
 // renderPlain is the off-terminal form: one line per run, per tick.
 //
@@ -743,6 +1244,19 @@ func renderPlain(st liveState, now time.Time) []string {
 		out = append(out, line)
 	}
 	for _, r := range st.rows {
+		// A FINISHED row is reported once and then goes quiet.
+		//
+		// The region keeps a finished ticket on screen so it can say what
+		// became of it, which is right for a display redrawn in place. Off a
+		// terminal there is no redraw: every tick APPENDS, so a row that
+		// outlives its work printed the same line every minute forever. That
+		// buried the lines that mattered -- on CI it pushed a held run's
+		// "claude is not authenticated" out of the captured output entirely,
+		// which is OR-240's rule broken by OR-265's fix: a tick with nothing
+		// to say must say nothing.
+		if r.done && r.reported {
+			continue
+		}
 		line := fmt.Sprintf("%s  %s  %s  %s  %d calls",
 			now.Local().Format("15:04"), pad(r.key, liveKeyWidth),
 			pad(r.stage, liveStageWidth), elapsedString(now.Sub(r.started)), r.calls)
@@ -752,6 +1266,22 @@ func renderPlain(st liveState, now time.Time) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+// markReported records that the plain path has printed these rows' endings,
+// so the next tick does not repeat them. Separate from renderPlain because
+// that is a pure function of a snapshot and this mutates the registry.
+func markReported(rows []liveRun) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	for _, r := range rows {
+		if !r.done {
+			continue
+		}
+		if live.runs[r.key] != nil {
+			live.runs[r.key].reported = true
+		}
+	}
 }
 
 // displayCells is how many columns a rendered line occupies once the terminal
@@ -820,13 +1350,77 @@ func screenRowsOf(lines []string, cols int) int {
 // rows it needs are rows the region does not. A terminal that has not told us
 // its height gets the floor: guessing tall enough would be guessing the region
 // off the top of the screen, which is the failure this exists to prevent.
+// windowFrameRows is what the frame costs: one rule above, one below.
+const windowFrameRows = 2
+
+// windowFrame draws the labelled rules that bound the frozen window.
+//
+// The frame is not decoration. Three zones share the screen and exactly one
+// of them scrolls (OR-248); without a boundary the scrolling zone and the
+// pinned rows below it read as one continuous log, and the whole point is
+// that they behave differently. The labels say which is which and how much
+// history is being kept, so a line vanishing off the top is explained rather
+// than merely noticed.
+func windowFrame(w io.Writer, n, cols int) (string, string) {
+	tl, tr, bl, br, h := "╭", "╮", "╰", "╯", "─"
+	if !glyphs() {
+		tl, tr, bl, br, h = "+", "+", "+", "+", "-"
+	}
+	width := liveRuleWidth
+	if cols > 0 && cols-1 < width {
+		width = cols - 1
+	}
+
+	label := func(left, right, text string) string {
+		// text sits at the right end, as the mockup has it: the left corner
+		// is the anchor the eye follows down the screen.
+		body := " " + text + " "
+		fill := width - 2 - utf8.RuneCountInString(body)
+		if fill < 0 {
+			return Dim(w, left+strings.Repeat(h, max0(width-2))+right)
+		}
+		return Dim(w, left+strings.Repeat(h, fill)+body+right)
+	}
+	return label(tl, tr, fmt.Sprintf("recent %d line(s)", n)),
+		label(bl, br, "scrolls, then gone")
+}
+
+func max0(n int) int {
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
 func windowLines(recent []string, regionRows, termRows, cols int) []string {
 	// One row for the cursor itself, which sits below everything drawn.
 	avail := termRows - regionRows - 1
+
+	// THE REGION OUTRANKS THE FLOOR. The floor keeps five lines of history so
+	// the screen does not look dead, but on a terminal too short for both, an
+	// unconditional floor spends rows the region needs and the ticket rows go
+	// off the top -- the header still saying "3 running" over the empty space
+	// where they were. History is a convenience; the rows are the thing being
+	// watched, so the window yields (OR-264).
+	floor := windowHeight()
+	if termRows > 0 && avail < floor {
+		floor = avail
+	}
+	if floor < 0 {
+		floor = 0
+	}
+
 	start, rows := len(recent), 0
 	for i := len(recent) - 1; i >= 0; i-- {
 		r := screenRows(recent[i], cols)
-		if len(recent)-i > liveWindowFloor && (termRows <= 0 || rows+r > avail) {
+		// The cap is the FIRST condition, so a roomy terminal does not grow
+		// the window into the space the region should have. Past it the
+		// available-rows test still applies, which is what makes a short
+		// terminal shrink below the cap rather than overflow.
+		if len(recent)-i > floor {
+			break
+		}
+		if termRows > 0 && rows+r > avail {
 			break
 		}
 		rows += r
@@ -1040,12 +1634,16 @@ func (l *Live) Write(p []byte) (int, error) {
 		return l.w.Write(p)
 	}
 	l.eraseLocked()
-	n, err := len(p), error(nil)
-	if l.full {
-		n, err = l.w.Write(p)
-	} else {
-		l.capture(string(p))
-	}
+	// Written straight through to the terminal's own scrollback, which is
+	// what a scrollback is for. The window used to hold these instead and
+	// redraw a bounded five of them above the region (OR-248); now that each
+	// ticket's latest line rides on its own row, holding them back would
+	// only mean the operator cannot scroll up to read what happened
+	// (OR-265).
+	//
+	// The erase above has already cleared the region, so this lands where the
+	// region was and the region is redrawn below it.
+	n, err := l.w.Write(p)
 	// A write that did not finish its line leaves the cursor mid-row, and
 	// drawing the region there would splice the two together. Held until the
 	// line is closed, which every caller in this codebase does with Fprintln.
@@ -1092,9 +1690,11 @@ func (l *Live) Tick() {
 	if l.cursor {
 		return
 	}
-	for _, line := range renderPlain(liveSnapshot(), time.Now()) {
+	st := liveSnapshot()
+	for _, line := range renderPlain(st, time.Now()) {
 		fmt.Fprintln(l.w, line)
 	}
+	markReported(st.rows)
 }
 
 // Close stops the redraw and clears the region, leaving the scrollback as the
@@ -1114,16 +1714,53 @@ func (l *Live) Close() {
 	defer l.lock.Unlock()
 	l.eraseLocked()
 	l.commitWindowLocked()
+	l.commitSummaryLocked()
+}
+
+// commitSummaryLocked writes the finished batch into real scrollback.
+//
+// The region is erased on the way out, and everything in it goes with it. For
+// the rows that is right -- a run that has ended has nothing left to say, and
+// its outcome was already printed as a line. For the BATCH it was wrong: the
+// summary is the cost line and what became of each member, which the mockup
+// calls "one durable line", and it was being drawn four times a second and
+// then wiped. What survived was the scrolling log, which is the one thing that
+// does not answer "what did that batch actually do" (OR-264).
+//
+// Only the done phase, and only once: a batch still assembling or testing has
+// no outcome to keep, and committing mid-flight would print a summary that the
+// next redraw contradicts.
+func (l *Live) commitSummaryLocked() {
+	st := liveSnapshot()
+	if st.batch == nil || st.batch.phase != BatchDone {
+		return
+	}
+	fmt.Fprintln(l.w)
+	for _, line := range renderBatch(l.w, st.batch, time.Now(), columns()) {
+		fmt.Fprintln(l.w, line)
+	}
 }
 
 func (l *Live) loop() {
 	defer l.wg.Done()
 	t := time.NewTicker(liveRedraw)
 	defer t.Stop()
+	// The cached terminal size is dropped every so often so a resized window
+	// is picked up. A poll rather than SIGWINCH: the signal needs a
+	// platform-specific constant on six cross-compile targets, and re-asking
+	// stty once a second costs one exec where the alternative costs a
+	// build-tagged file per platform. A resize takes at most a second to
+	// reflow, which is below what anyone notices while dragging a window.
+	const resizeCheck = time.Second
+	resize := time.NewTicker(resizeCheck)
+	defer resize.Stop()
+
 	for {
 		select {
 		case <-l.done:
 			return
+		case <-resize.C:
+			invalidateTerminalSize()
 		case <-t.C:
 			l.lock.Lock()
 			l.eraseLocked()
@@ -1160,19 +1797,40 @@ func (l *Live) drawLocked() {
 	cols := columns()
 	region := renderRegionAt(l.w, liveSnapshot(), time.Now(), cols, l.collapsed)
 	drawn := 0
-	if !l.full {
-		// Trimmed to what is shown, so the window is the buffer: a line that
-		// scrolled off the screen is dropped here and is thereafter only in
-		// events.jsonl, which is exactly what "gone from the screen" means.
-		l.window = windowLines(l.window, screenRowsOf(region, cols), terminalRows(), cols)
-		for _, line := range l.window {
-			fmt.Fprintln(l.w, line)
-			drawn += screenRows(line, cols)
-		}
+	// THE WINDOW IS GONE (OR-265). Every ticket's latest tool call now rides
+	// on its own row, which answers the same question without the reading:
+	// five interleaved lines from three agents had to be parsed to work out
+	// which belonged to whom, and a line on the ticket's own row does not.
+	//
+	// The record is not lost. `orion logs KEY` and events.jsonl carry every
+	// line in full, which is where a record belongs -- the window was a
+	// SCREEN affordance pretending to be one.
+	//
+	// It also removes the frame's own failure mode, seen on the first real
+	// run the region ever engaged for: ui.Banner writes a multi-line block,
+	// each line captured separately, and the frame redrew mid-block leaving
+	// three orphaned top borders stacked up the screen.
+	//
+	// The buffer stays, bounded, because Full() still commits it when the cap
+	// is dropped and the off-terminal path still writes through.
+	if !l.full && len(l.window) > liveWindowBuffer {
+		l.window = l.window[len(l.window)-liveWindowBuffer:]
 	}
 	for _, line := range region {
 		fmt.Fprintln(l.w, line)
 		drawn += screenRows(line, cols)
+	}
+	// Breathing room under the region, so the status line does not sit hard
+	// against the bottom edge of the terminal with the cursor on top of it.
+	//
+	// COUNTED, like every other row drawn here: these are real lines, and an
+	// erase that did not include them would move up short and walk the region
+	// down the screen -- the same fault that made the ticket rows disappear.
+	if len(region) > 0 {
+		for i := 0; i < liveBottomPad; i++ {
+			fmt.Fprintln(l.w)
+			drawn++
+		}
 	}
 	l.drawn = drawn
 }

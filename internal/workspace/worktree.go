@@ -27,6 +27,11 @@ type Job struct {
 	Key    string // the tracker issue, when there is one
 	Branch string
 	Path   string
+	// Resumed reports that this job reattached to an interrupted run's
+	// worktree rather than starting a new branch. The caller says so on the
+	// console: a resume that looked identical to a fresh start would leave an
+	// operator wondering why the diff already had work in it.
+	Resumed bool
 }
 
 // AddWorktree creates a worktree for a job, on a branch that is guaranteed
@@ -43,6 +48,33 @@ type Job struct {
 // second `worktree add -b` fails on a ref lock -- or, worse, succeeds after the
 // first has moved on, and two runs share a branch.
 func AddWorktree(ws *Workspace, base, desired string) (*Job, error) {
+	return addWorktree(ws, base, desired, "")
+}
+
+// ResumeWorktree reattaches to the worktree an interrupted run left behind,
+// instead of cutting the next free branch name.
+//
+// AddWorktree's uniqueness is right for a RETRY -- a fresh attempt must not
+// land on top of a failed one, and must not rewrite a branch a reviewer has
+// open. A RESUME is the same attempt continuing, and starting it over throws
+// away everything the interrupted run produced: OR-135 accumulated four
+// worktrees this way, the last holding 375 uncommitted lines and a whole new
+// package from an hour of work nothing would ever have used again (OR-265).
+//
+// The caller proves the claim is dead before calling this. If the branch or
+// its worktree has since gone, this falls back to a new one rather than
+// failing: a resume that cannot find its work is a fresh start, and saying so
+// is better than refusing to run.
+func ResumeWorktree(ws *Workspace, base, desired, branch string) (*Job, error) {
+	if branch == "" {
+		return AddWorktree(ws, base, desired)
+	}
+	return addWorktree(ws, base, desired, branch)
+}
+
+// addWorktree creates a job's worktree. A non-empty resume branch reattaches
+// to that branch's existing worktree; otherwise a fresh unique branch is cut.
+func addWorktree(ws *Workspace, base, desired, resume string) (*Job, error) {
 	defer LockRepo(ws)()
 
 	repo := filepath.Join(ws.Dir, "repo")
@@ -66,6 +98,26 @@ func AddWorktree(ws *Workspace, base, desired string) (*Job, error) {
 		}
 	}
 
+	// A resume reattaches; anything else cuts a fresh name.
+	if resume != "" {
+		path := filepath.Join(ws.Dir, "worktrees", strings.ReplaceAll(resume, "/", "-"))
+		_, branchErr := git(repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+resume)
+		_, statErr := os.Stat(path)
+		if branchErr == nil && statErr == nil {
+			// The settings refresh below is deliberately still applied: a
+			// worktree from an older release keeps that release's sandbox
+			// policy otherwise, and a resumed run is exactly the long-lived
+			// case where that matters most.
+			if err := writeSettings(ws); err != nil {
+				return nil, fmt.Errorf("refreshing the sandbox settings: %w", err)
+			}
+			return &Job{Branch: resume, Path: path, Resumed: true}, nil
+		}
+		// Fall through to a fresh branch. The work is gone -- pruned, or
+		// removed by hand -- and refusing to run would be worse than
+		// starting over, provided the caller says which happened.
+	}
+
 	branch, err := uniqueBranch(repo, desired)
 	if err != nil {
 		return nil, err
@@ -87,6 +139,49 @@ func AddWorktree(ws *Workspace, base, desired string) (*Job, error) {
 		return nil, fmt.Errorf("refreshing the sandbox settings: %w", err)
 	}
 	return &Job{Branch: branch, Path: path}, nil
+}
+
+// SnapshotDirty commits whatever a worktree is holding, as an unverified
+// snapshot, and reports how many files it took.
+//
+// A resumed worktree can be dirty: the run that owned it was killed, so
+// nothing committed what it had. Leaving that is worse than committing it --
+// an uncommitted change blocks the branch's next rebase, and work that only
+// exists in a working tree cannot be read, resumed or dropped by anyone.
+// This is the same trade docs/BREAKERS.md already makes for a tripped run,
+// and it cost OR-189 and OR-191 258 and 439 lines between them before it did.
+//
+// The message says the work is unverified, because it is: nothing ran a test
+// against it and nothing reviewed it. It is preserved for a person to read,
+// not blessed.
+func SnapshotDirty(worktree, key string) (int, error) {
+	out, err := git(worktree, "status", "--porcelain")
+	if err != nil {
+		return 0, fmt.Errorf("reading the worktree state: %w\n%s", err, out)
+	}
+	files := 0
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) != "" {
+			files++
+		}
+	}
+	if files == 0 {
+		return 0, nil
+	}
+	// -A, so new files are included: an interrupted run's most valuable
+	// output is often a file that did not exist before, and `git add .`
+	// behaves differently across git versions on deletions.
+	if out, err := git(worktree, "add", "-A"); err != nil {
+		return 0, fmt.Errorf("staging what the interrupted run left: %w\n%s", err, out)
+	}
+	msg := fmt.Sprintf("wip(%s): snapshot of an interrupted run, unverified\n\n"+
+		"Committed when the ticket was resumed, so the work survives and the\n"+
+		"branch can be rebased. NOTHING here has been verified: the run that\n"+
+		"produced it was interrupted before it could finish or test.", key)
+	if out, err := git(worktree, "commit", "-q", "-m", msg); err != nil {
+		return 0, fmt.Errorf("committing what the interrupted run left: %w\n%s", err, out)
+	}
+	return files, nil
 }
 
 // uniqueBranch returns desired, or desired-2, -3 ... for the first name that

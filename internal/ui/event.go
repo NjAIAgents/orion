@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -309,13 +311,24 @@ func Banner(w io.Writer, key, summary, actor, model, branch string) {
 		model = noModel
 	}
 	who := actors.Display(actor)
-	rule := strings.Repeat("=", 60)
 	c := ticketColor(key)
+	// ONE LINE, not a five-line block between two 60-character rules.
+	//
+	// The heavy form predates the pinned region, when scrollback was the only
+	// display and a ticket starting had to be findable by scrolling. The
+	// region now carries the key, the actor, the model and the branch on the
+	// ticket's own row, continuously, so the banner was restating what was
+	// already on screen -- and its rules fought the region's own lighter one
+	// for the eye (OR-265).
+	//
+	// What a banner is still FOR is the moment: this ticket started, here is
+	// what it is. That is a sentence, and the summary is the part of it a
+	// person cannot get anywhere else on the row.
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, paint(w, c, rule))
-	fmt.Fprintf(w, "  %s   %s\n", paint(w, c, key), summary)
-	fmt.Fprintf(w, "  %s\n", Dim(w, strings.Join(nonEmpty(who, shortModel(model), branch), " - ")))
-	fmt.Fprintln(w, paint(w, c, rule))
+	fmt.Fprintf(w, "%s  %s\n", paint(w, c, pad(key, keyWidth)), summary)
+	if detail := strings.Join(nonEmpty(who, shortModel(model), branch), " · "); detail != "" {
+		fmt.Fprintf(w, "%s  %s\n", strings.Repeat(" ", keyWidth), Dim(w, detail))
+	}
 }
 
 func nonEmpty(in ...string) []string {
@@ -466,28 +479,115 @@ func metaWidth(l Line, identity bool) int {
 	return n
 }
 
-// columns reads the terminal width from COLUMNS, the only source available
-// without a dependency. Absent means "do not clip".
+// columns is the terminal width: COLUMNS if a shell exported it, else asked
+// of the terminal itself. Absent means "do not clip".
+//
+// COLUMNS is shell-internal in the same way LINES is, so this was 0 on every
+// interactive terminal Orion has ever run in. Clipping was therefore off --
+// survivable, and not the expensive part. The expensive part was screenRows,
+// which cannot tell whether a line WRAPS without a width and so counted every
+// line as one row. A block of fifteen counted rows that really occupies
+// eighteen is erased three rows short at every redraw, and the region walks
+// down the screen until the ticket rows scroll off the top: the reported
+// "agents disappear after a while", with the header still counting them
+// because the rows were drawn every frame and then only partly erased
+// (OR-264).
 func columns() int {
-	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("COLUMNS")))
-	if err != nil || n < 40 {
-		return 0
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("COLUMNS"))); err == nil && n >= 40 {
+		return n
 	}
-	return n
+	_, cols := sttySize()
+	return cols
 }
 
-// terminalRows reads the terminal height from LINES, the counterpart to
-// columns() and limited the same way: it is the only source available without
-// a dependency, and a shell that does not export it leaves the height unknown.
+// terminalRows is the terminal height: LINES if a shell exported it, else
+// asked of the terminal itself.
 //
-// Absent means "do not grow". The frozen window (live.go) falls back to its
-// floor, which is the safe answer in a way that a guessed height is not: guess
-// too tall and the region goes off the top of the screen, which is the thing
-// the window exists to prevent.
+// LINES ALONE WAS NOT ENOUGH, and the way that failed is worth keeping. It is
+// a shell-internal variable: bash and zsh set it for themselves and do not
+// export it, so a child process sees nothing. Orion therefore never knew the
+// height of any interactive terminal it has ever run in, and the frozen window
+// sat permanently on its five-line floor. That was survivable while the block
+// was small; it stopped being survivable the moment the window grew a frame,
+// because a block sized without knowing the screen scrolls the region off the
+// top -- which is precisely the outcome the comment here used to say the
+// fallback was avoiding (OR-264).
+//
+// So ask stty, following internal/creds/prompt.go: Orion builds with an empty
+// go.sum, and a raw TIOCGWINSZ would need per-platform constants across six
+// cross-compile targets to save one exec that happens on resize, not per
+// frame. If that fails too the answer is still zero -- unknown, do not grow.
 func terminalRows() int {
-	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("LINES")))
-	if err != nil || n < 10 {
-		return 0
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("LINES"))); err == nil && n >= 10 {
+		return n
 	}
-	return n
+	rows, _ := sttySize()
+	return rows
 }
+
+// sttySize asks the controlling terminal for its size, as (rows, cols), or
+// (0, 0).
+//
+// Cached, because both dimensions are read on every redraw -- four times a
+// second, per draw -- and forking a process at that rate to learn two numbers
+// that change only when somebody drags a window would be the most expensive
+// thing on the screen by a wide margin. One call for both, since stty prints
+// them together. invalidateTerminalSize drops it so a resize is picked up.
+func sttySize() (int, int) {
+	sttyOnce.Lock()
+	defer sttyOnce.Unlock()
+	if sttyAsked {
+		return sttyRowsCached, sttyColsCached
+	}
+	// Asked once per invalidation whether it works or not: a terminal that
+	// has no /dev/tty will not grow one, and retrying four times a second
+	// would be the fork storm this cache exists to avoid.
+	sttyAsked = true
+
+	// /dev/tty rather than stdin: the region is drawn to stdout, and a piped
+	// stdin must not make a real terminal look sizeless.
+	tty, err := os.Open("/dev/tty")
+	if err != nil {
+		return 0, 0
+	}
+	defer tty.Close()
+	cmd := exec.Command("stty", "size")
+	cmd.Stdin = tty
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, 0
+	}
+	// "rows cols".
+	f := strings.Fields(string(out))
+	if len(f) != 2 {
+		return 0, 0
+	}
+	rows, rerr := strconv.Atoi(f[0])
+	cols, cerr := strconv.Atoi(f[1])
+	if rerr != nil || cerr != nil {
+		return 0, 0
+	}
+	if rows >= 10 {
+		sttyRowsCached = rows
+	}
+	if cols >= 40 {
+		sttyColsCached = cols
+	}
+	return sttyRowsCached, sttyColsCached
+}
+
+// invalidateTerminalSize drops the cached size, so the next read asks again.
+// Called from the redraw loop once a second.
+func invalidateTerminalSize() {
+	sttyOnce.Lock()
+	sttyAsked = false
+	sttyRowsCached, sttyColsCached = 0, 0
+	sttyOnce.Unlock()
+}
+
+var (
+	sttyOnce       sync.Mutex
+	sttyAsked      bool
+	sttyRowsCached int
+	sttyColsCached int
+)

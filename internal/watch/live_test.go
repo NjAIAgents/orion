@@ -81,13 +81,63 @@ func TestAReapedJobLeavesTheDisplay(t *testing.T) {
 
 	s := &spy{maxSleeps: 2, queued: issues("FCIA-7"), hold: make(chan struct{})}
 	releaseAfter(s, 20*time.Millisecond)
-	runWatch(t, s, Options{MaxConcurrent: 1, MaxJobs: 1})
+	runOutput := runWatch(t, s, Options{MaxConcurrent: 1, MaxJobs: 1})
+
+	// A SECOND Live would print nothing: the loop's own Tick already reported
+	// this row's ending, and a finished row is reported once (OR-265). So the
+	// assertion is on what the RUN printed, which is where an operator would
+	// actually read it.
+	out := runOutput
+
+	// The row STAYS, carrying what became of the ticket.
+	//
+	// It used to vanish the instant the job was reaped, which answered "is
+	// anything running" and threw away "what happened to the thing that just
+	// finished" -- so a ticket that pushed and a ticket that failed both left
+	// the same way: silently (OR-265).
+	if !strings.Contains(out, "FCIA-7") {
+		t.Errorf("a finished job left no trace of itself: %q", out)
+	}
+	if !strings.Contains(out, "ci-wait") {
+		t.Errorf("the row must say what became of the ticket: %q", out)
+	}
+	// And it is no longer counted as RUNNING, which is the half that must
+	// still be true: a finished ticket holds no slot.
+	if strings.Contains(out, "1 running") {
+		t.Errorf("a finished job is still counted as running: %q", out)
+	}
+}
+
+// A FINISHED row is reported once off a terminal, then goes quiet.
+//
+// The region keeps a finished ticket on screen to say what became of it,
+// which is right for a display redrawn in place. A log APPENDS, so a row that
+// outlives its work printed the same line every tick forever -- and on CI
+// that buried a held run's "claude is not authenticated" out of the captured
+// output entirely. OR-240's rule, broken by OR-265's fix: a tick with nothing
+// to say must say nothing.
+func TestAFinishedRowIsReportedOnceOffATerminal(t *testing.T) {
+	ui.LiveReset()
+	t.Cleanup(ui.LiveReset)
 
 	var buf bytes.Buffer
 	live := ui.NewLive(&buf)
+	ui.LiveStart("OR-1")
+	ui.LiveDone("OR-1", "held")
+
 	live.Tick()
-	live.Close()
-	if buf.Len() != 0 {
-		t.Errorf("a finished job is still on the display: %q", buf.String())
+	first := buf.String()
+	if !strings.Contains(first, "OR-1") || !strings.Contains(first, "held") {
+		t.Fatalf("a finished ticket must report its ending once: %q", first)
 	}
+
+	// Every tick after it says nothing about that ticket.
+	buf.Reset()
+	for i := 0; i < 3; i++ {
+		live.Tick()
+	}
+	if got := buf.String(); strings.Contains(got, "OR-1") {
+		t.Errorf("a finished row repeated after it was reported, which buries the lines that matter:\n%q", got)
+	}
+	live.Close()
 }

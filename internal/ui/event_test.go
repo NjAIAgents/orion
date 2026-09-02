@@ -330,3 +330,31 @@ func resetTicketColors() {
 	ticketColors = map[string]string{}
 	ticketNext = 0
 }
+
+// The banner is two lines, not a block between two 60-character rules.
+//
+// The heavy form predates the pinned region, when scrollback was the only
+// display. The region now carries the key, actor, model and branch on the
+// ticket's own row continuously, so the rules were weight spent restating
+// what was already on screen -- and they fought the region's own lighter
+// rule for the eye (OR-265).
+func TestTheBannerIsTwoLinesWithNoRules(t *testing.T) {
+	var b bytes.Buffer
+	Banner(&b, "OR-135", "Add a database architect agent", events.ActorImplementer, "", "orion/or-135")
+	got := b.String()
+
+	if strings.Contains(got, strings.Repeat("=", 10)) {
+		t.Errorf("the banner drew a rule:\n%s", got)
+	}
+	// A leading blank separates it from what came before; the two lines are
+	// the summary and its detail.
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	if len(lines) != 3 || lines[0] != "" {
+		t.Errorf("want a blank line then two lines, got %d:\n%q", len(lines), got)
+	}
+	// The detail line is indented to the key column, so the banner and the
+	// rows below it read as one table rather than two.
+	if len(lines) > 2 && !strings.HasPrefix(lines[2], strings.Repeat(" ", keyWidth)) {
+		t.Errorf("the detail line is not aligned to the key column: %q", lines[2])
+	}
+}

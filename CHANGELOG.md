@@ -6,6 +6,209 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.8.10
+
+### Added
+
+- **A database architect actor, reachable three ways.** Normalised schema
+  design, migration review, indexing and query plans now belong to their own
+  actor rather than to the implementer, on the argument that gave QA its own
+  actor: a schema decision is inherited by the next twenty tickets and is
+  expensive to reverse once there is data in it, and an implementer optimising
+  for "make this ticket pass" is the wrong incentive for it. Its runs get their
+  own row in the cost report.
+  - **As an advisor**, when an implementer stops on a data-model question. The
+    router now classifies questions as technical, product *or* data, and the
+    new advisor reasons only from the schema, the migrations and the ORM model
+    definitions — not from `spec.md` or `intent.md`, for the same reason the
+    architect is deliberately not handed `intent.md`.
+  - **As a pipeline stage**, after the change is committed and *before* QA, when
+    the ticket actually touches data. Whether it does is decided for free from
+    the paths in the diff and the ticket's own markers — no model call — so a
+    ticket with no schema in it pays nothing. Before QA on purpose: a schema
+    finding forces a change to the schema, and QA's tests are written against
+    the schema as it stands when QA runs. Like QA it reports and never blocks;
+    `dba.max_rounds` bounds the findings-fix-review exchange.
+  - **As a command**, `orion dba [KEY] ["this query got slow"]`, which works
+    with no ticket at all — a performance complaint usually arrives before
+    anybody writes one down.
+- **`orion routes` now routes data tickets to it.** `database`, `schema`,
+  `migration`, `sql`, `index`, `query` and their siblings reach the database
+  architect. That is the same word list the pipeline stage triggers on, so a
+  planner who learned the marker has learned both.
+
+- **The region names each CI check.** `N in CI` counts tickets waiting; during a batch
+  three tickets share one run, so the count says nothing about what the run is doing.
+  A row under the batch now names each check and its state —
+  `go (ubuntu) ✓  go (macos) ⠹  go (windows) ⠹` — so nine minutes of "still running"
+  shows which platform is actually holding it up. The data was already fetched and
+  discarded; it costs no extra call.
+- **The frozen window is bounded by a labelled frame.** Three zones share the screen
+  and exactly one scrolls, but nothing said so. `recent N line(s)` above and
+  `scrolls, then gone` below make the boundary visible and explain a line that
+  vanishes off the top.
+- **An ejected member keeps its row while the batch is testing.** It is out of that CI
+  run, not out of the picture, and dropping it left a batch of four naming three
+  members with nothing accounting for the fourth.
+- **The ticket rows pair two to a line while the batch is testing.** That is the phase
+  where a row each says least — one run covers every member — and the space pays for
+  the batch block above it. Every other phase keeps one row per ticket, and a terminal
+  under 92 columns never pairs.
+
+- Claiming a ticket now assigns it, so a board's assignee column names whoever
+  is holding it instead of showing an unassigned ticket moving itself to In
+  Progress. The assignee is the account Orion's Jira credentials belong to: a
+  bot account where one exists, the operator otherwise — nothing to configure
+  and no new account needed. The assignment is best-effort and can never fail a
+  run; a tracker that refuses it costs one warning line. Nothing unassigns on
+  release, so a finished ticket keeps the record of who did the work and a
+  failed one keeps a name to go to.
+
+- `status`, `doctor`, `watch`, `collect`, `work` and `init` now print one
+  yellow `update` line when a newer release exists, naming the version gap
+  and the upgrade command for how this machine installed Orion (`brew`,
+  `scoop`, or the release page when it cannot tell). Until now an installed
+  binary that was months old looked exactly like a current one, so a bug that
+  had already been fixed and released was still there to be debugged.
+  The answer is cached for 24 hours under `~/.orion/state` and refreshed in
+  the background, so no command waits on the network and an offline machine
+  behaves exactly as before — same output, same exit codes. The notice never
+  appears in hook mode, off a terminal, or when `CI` is set, and
+  `ORION_NO_UPDATE_CHECK=1` (environment or `~/.orion/config.env`) silences
+  it for good.
+
+### Changed
+
+- The batch bar labels its number as a **median**. `/ ~11m` alone reads as an estimate
+  of when the run will finish, which is the prediction the bar deliberately refuses to
+  make.
+
+- **An agent runs the tests for the packages it touched, not the whole suite.** The
+  prompt asked for the full suite before finishing, and named `./scripts/test.sh` as
+  "the same script CI runs" — which is exactly why running it again was waste. CI runs
+  it on three platforms for every push; running it on the critical path buys a signal
+  that is already coming, at model rates, while holding a job slot. One ticket spent
+  37 of its 58 minutes on four full-suite runs, two of which hit Go's per-package
+  timeout. Package-scoped runs in that same log took 22 to 25 seconds.
+- **The test suite builds its git fixture once per package rather than once per test.**
+  `internal/work` was creating a repository per test — eight git subprocesses, about a
+  second — for 106 tests. Profiling showed 1.8% CPU: the tests were not computing, they
+  were waiting on process spawn. 435s to 355s, and it is the package whose length used
+  to tip the whole suite past the timeout.
+
+### Fixed
+
+- A failed release gate now says what failed. `scripts/release.sh` ended its
+  gate in `go test ./... >/dev/null`, so the one step likely to fail
+  non-obviously was the one whose output was discarded, and a release that
+  stopped with the promotion already merged reported only `exit status 1`.
+  The gate now names which of its four steps failed and prints that step's
+  output, and `orion release ship` carries the failing output into the event
+  log so it survives the terminal. A successful run stays as quiet as before.
+- The release gate runs `go test -count=1`, so a green gate is a green gate
+  from now rather than possibly a cached one from an earlier tree.
+
+- **A batch waiting on CI now resumes instead of stalling the queue forever.**
+  `resumeBatch` asked `resumable()` before it reached its own testing branch —
+  and `resumable()` answers "may this *proof* be used to merge?", so it requires
+  a validated status by construction. A batch whose CI was still running failed
+  that question, had its record cleared, and was reassembled. Every tick. The
+  testing-resume path was unreachable from the day it was written, which
+  defeated the whole of OR-251.
+- **A batch can be cut when a previous one left its worktree behind.** `MergeInto`
+  checks the ref out in a worktree, and a batch that parks to wait for CI returns
+  before `DropRef` by design — so the worktree outlives the tick and git refuses
+  to force-update the branch it holds: `cannot force update the branch
+  'orion/batch' used by worktree at …`. Observed looping every minute overnight,
+  landing nothing. `CutRef` releases that worktree and prunes the records first.
+- The prune is not tidiness: an operator who deletes the worktree *directory* by
+  hand — which is what a person does when this wedges — leaves git still
+  believing the branch is checked out, so the fatal survives the cleanup meant
+  to fix it.
+- `CutRef`'s doc claimed the ref was "created DETACHED from any worktree, so
+  nothing has it checked out". `MergeInto` made that false and the comment
+  outlived it. It is true again because the code now makes it true.
+- **A batch that landed nothing no longer reports a cost in green.** `the batch
+  cost 0 CI runs for 2 branchs, in 1s` printed with a tick once a minute all
+  night while `develop` never moved. Zero runs in one second is the shape of a
+  cycle that did no work. The event note is still emitted either way — a batch
+  that landed nothing still happened, and the dashboard counts its runs.
+- `plural()` said "2 branchs" in every batch line this repository has ever
+  printed.
+
+- Found by the first unattended overnight run of v0.8.9, not by a test. Second
+  defect a single live run has exposed, after OR-258 — both of them in the
+  batch integration path, and neither reachable from a green suite.
+
+- **A repeated line is no longer swallowed on a long watch.** The console collapses a
+  run of identical lines to one plus a count, and it decided "identical" by comparing
+  the destination by pointer. A writer allocated where a finished run's writer used to
+  live compared equal to the stale one, so the new run's first line was counted as a
+  repeat of a line belonging to a run that had already ended — and counted, not
+  printed. It was invisible when it happened, and it depended on the allocator, so it
+  showed up as a test that passed locally and failed about one run in three on CI.
+  It also means a `orion watch` fault line could be silently withheld, which is the
+  shape of a release gate that reported only `exit status 1`.
+
+- **The circuit breaker no longer fires in an interactive session.** It bounds an
+  unattended agent — loop detection, failure budgets, tool-call and wall-clock
+  ceilings — and none of that describes a person at a keyboard, who can stop
+  typing. The hook gated only on finding an Orion project root, so every session
+  in an Orion repo was breakered, human or agent. The cost was not merely noise:
+  a trip commits, so that a run's work survives the run, and an interactive
+  session past the ninety-minute ceiling had seven files committed to `develop`
+  as an unverified snapshot and every subsequent call refused. A chat session is
+  not a run. The breaker now arms only inside a supervised run, and says once
+  that it did not: `not a supervised run (ORION_WORKSPACE unset); breaker
+  inactive`. Set `ORION_BREAKER_FORCE=1` to arm it anyway.
+
+  `ORION_WORKSPACE` is exported by the supervisor into every agent run and by
+  nothing else, and `orion explore` already reads it as the answer to "am I
+  supervised?" — so this reuses the existing signal rather than adding a second
+  one that could disagree with it.
+
+  Nothing is relaxed inside a run, and the scope change is deliberately limited
+  to the breaker: `gate` (dangerous shell commands) and `shield` (an agent
+  editing its own guardrails, or weakening the test that defines a fix) guard
+  against anyone holding the tool and stay armed everywhere.
+
+- **A ticket interrupted mid-agent is released, and resumes where it stopped.** The
+  queue excludes `orion-working` so two watchers cannot claim the same ticket, but
+  nothing distinguished "in flight" from "the process holding this is gone" — so a
+  run killed mid-agent left the label on forever and no watcher would pick it up
+  again. A claim now records its holder's process and a heartbeat, and is released
+  only when both say the holder is gone: a live process and a missing record both
+  read as running, so a working agent is never robbed of its ticket.
+- **Re-claiming a ticket no longer starts it over.** A re-claimed ticket was given
+  the next free branch name — `-2`, `-3`, `-4` — and began from nothing. One ticket
+  accumulated four worktrees this way, the last holding an hour of uncommitted work
+  that the next attempt would have ignored. A resume now reattaches to the branch the
+  interrupted run was on. Fresh names are still cut for a genuine retry, which must
+  not land on a failed attempt or rewrite a branch someone is reviewing.
+- **What a killed run was holding is committed before the resume touches it.** An
+  uncommitted change blocks the branch's next rebase, and work that exists only in a
+  working tree cannot be read, resumed or dropped by anyone. It is committed as an
+  unverified snapshot, in those words: nothing tested it and nothing reviewed it.
+
+- **A missing baseline now says so instead of rendering as blank space.** The live
+  region drew fourteen empty columns whenever an actor had no median, with nothing
+  beside them explaining why. Drawing no bar is right — inventing a baseline is what
+  OR-250 forbids — but drawing nothing silently is not: a blank where every other row
+  has a bar reads as a display that was never built, and the batch view was believed
+  unimplemented on that evidence months after it shipped. The row now says
+  `no baseline yet`, in words, and the bar still draws nothing.
+
+### Security
+
+- **The database architect can never reach a production database, and never
+  runs a migration.** It connects only to the explicit non-production DSN in
+  `dba.non_prod_dsn` and to nothing else — never one inferred from the
+  environment, a compose file, or anything else lying around. With no DSN
+  configured it reviews the schema and migrations as text and says in its
+  report that is what it did. A DSN naming itself production is refused rather
+  than used, and every prompt that can reach a database forbids running a
+  migration or any statement that writes: it proposes, and a person applies.
+
 ## v0.8.9
 
 ### Added
