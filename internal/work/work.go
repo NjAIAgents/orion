@@ -857,9 +857,48 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if !cfg.QA.On() {
 		nextStage, nextActor = "push", events.ActorOrion
 	}
-	handoff(w, log, deps, opts, ui.Handoff{Key: key, From: "implementing", To: nextStage,
-		By: actorID, Next: nextActor,
+
+	// The data model, BEFORE QA (OR-135). A schema finding forces a change to
+	// the schema, and QA's tests are written against the schema as it stands
+	// when QA runs -- so reviewing the data model afterwards would leave a
+	// suite verified against a schema the fix then replaced.
+	//
+	// The gate is asked BEFORE the boundary above is announced, and it is free
+	// -- one `git diff --name-only`, no model call. A run that announced
+	// "implementing -> qa" and then spent a review in between would be
+	// describing a pipeline the operator does not have, which is the thing
+	// OR-189 made the boundaries exist to prevent.
+	dbaWork := dbaJob{
+		Key: key, Summary: issue.Summary, Description: issue.Description,
+		Fields:      routeFields(*issue),
+		ImplSession: runRes.SessionID, Actor: actorID, WS: &jobWS,
+		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
+		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
+		BaseSHA:    baseSHA,
+	}
+	sigs, reviewData := dbaScope(dbaWork, cfg, deps, log, w)
+
+	firstStage, firstActor := nextStage, nextActor
+	if reviewData {
+		firstStage, firstActor = "dba", events.ActorDBA
+	}
+	handoff(w, log, deps, opts, ui.Handoff{Key: key, From: "implementing", To: firstStage,
+		By: actorID, Next: firstActor,
 		Detail: fmt.Sprintf("%d commit(s) on %s", commits, job.Branch)})
+
+	implSession := runRes.SessionID
+	if reviewData {
+		out := runDBA(dbaWork, sigs, cfg, opts, deps, log, w)
+		// A schema fix round resumed the developer and moved its session on.
+		// QA has to resume where the developer ACTUALLY is, or its findings
+		// arrive in a conversation that predates the schema the branch now
+		// carries.
+		if out.ImplSession != "" {
+			implSession = out.ImplSession
+		}
+		handoff(w, log, deps, opts, ui.Handoff{Key: key, From: "dba", To: nextStage,
+			By: events.ActorDBA, Next: nextActor, Detail: out.Verdict()})
+	}
 
 	// QA, before the branch is pushed. The tests QA writes and any fix its
 	// findings force belong in the same pull request as the change they are
@@ -867,7 +906,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// reading the code without its evidence. See qa.go.
 	qa := runQA(qaJob{
 		Key: key, Summary: issue.Summary, Description: issue.Description,
-		ImplSession: runRes.SessionID, Actor: actorID, WS: &jobWS,
+		ImplSession: implSession, Actor: actorID, WS: &jobWS,
 		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
 		BaseSHA:    baseSHA,
@@ -1336,10 +1375,7 @@ func consult(deps Deps, key, actorID, dir, question string, log *events.Log, w i
 	}
 
 	if ans.Verdict == advise.VerdictEscalate {
-		other := advise.RolePM
-		if role == advise.RolePM {
-			other = advise.RoleArchitect
-		}
+		other := escalateTo(role)
 		log.Emit(events.Event{Kind: events.KindEscalate, Actor: string(role),
 			Model: advise.ModelAdvisor,
 			Msg:   fmt.Sprintf("escalated to the %s: %s", other, firstLine(ans.Reason))})
@@ -1389,6 +1425,30 @@ func unreachable(log *events.Log, w io.Writer, key string, role advise.Role, err
 	return ans
 }
 
+// escalateTo is where an advisor's escalation goes.
+//
+// ONE forward, never a search through the remaining roles. The retry exists
+// because routing is a guess and one more cheap call beats declaring the run
+// blocked over a misclassification -- it is not a broadcast, and asking every
+// advisor in turn would pay the full price of the ambiguity on every question
+// the artifacts happen to be silent about.
+//
+// The architect is where an escalation from either specialist goes, and where
+// the architect's own goes is the product manager. That follows from what the
+// roles read: the database architect and the product manager each hold one
+// narrow body of committed truth, so a question outside it is most likely a
+// build question, and the architect holds the widest one. A question that is
+// genuinely nobody's comes back refused, which is a correct outcome here (see
+// internal/advise) rather than a loop looking for someone to answer it.
+func escalateTo(role advise.Role) advise.Role {
+	switch role {
+	case advise.RoleArchitect:
+		return advise.RolePM
+	default:
+		return advise.RoleArchitect
+	}
+}
+
 // actorFor maps an advisor's role to its actor identifier.
 //
 // They happen to be the same strings today, and mapping them anyway is the
@@ -1401,6 +1461,8 @@ func actorFor(role advise.Role) string {
 		return events.ActorArchitect
 	case advise.RolePM:
 		return events.ActorPM
+	case advise.RoleDBA:
+		return events.ActorDBA
 	case advise.RoleHuman:
 		return events.ActorHuman
 	}

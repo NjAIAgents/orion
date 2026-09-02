@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 type Limits struct {
@@ -669,6 +670,88 @@ func (q QA) Rounds() int {
 	return FixRounds
 }
 
+// DBA is the database stage: an agent that reviews the schema, the migrations
+// and the indexes a change introduces, and reports what it found (OR-135).
+//
+// Shaped like QA on purpose. Enabled is a POINTER for the same reason: absent
+// is "run it" and an explicit false is a project saying it has no database and
+// does not want the spend. MaxRounds bounds the same findings-fix-reverify
+// exchange, and for the same reason -- the DBA does not block on its own
+// authority either, so an unbounded loop is the only way this stage could stop
+// a run and it would do it by spending.
+type DBA struct {
+	Enabled   *bool `json:"enabled"`
+	MaxRounds int   `json:"max_rounds"`
+	// NonProdDSN is the explicit non-production database an EXPLAIN may be run
+	// against. EMPTY MEANS STATIC REVIEW, never "find one": the agent reads the
+	// schema and the migrations as text, and says in its report that is what it
+	// did. This is qa.e2e_base_url's hazard with a sharper edge -- a suite that
+	// quietly found production reads data, and a session that quietly found
+	// production can be asked to write it -- so the same rule applies and the
+	// name says which side of the line the value has to be on.
+	//
+	// It is a CONNECTION STRING, so it is credential-shaped. Set it to a
+	// throwaway local or staging database and nothing else; it is written into
+	// the agent's prompt, and a prompt is not a secret store.
+	NonProdDSN string `json:"non_prod_dsn,omitempty"`
+}
+
+// On reports whether the stage runs. See the Enabled comment: absent is on.
+func (d DBA) On() bool { return d.Enabled == nil || *d.Enabled }
+
+// Rounds is MaxRounds with the default applied, exactly as QA.Rounds is: zero
+// means the shipped default rather than no rounds, because no rounds at all
+// would escalate the first finding with nobody having tried to fix it.
+func (d DBA) Rounds() int {
+	if d.MaxRounds > 0 {
+		return d.MaxRounds
+	}
+	return FixRounds
+}
+
+// Live reports whether a real database is available to run EXPLAIN against.
+//
+// The whole of the production guard is on this side of the function: false
+// means the stage reviews schema and migrations as TEXT and says so, which is
+// the honest degraded answer. There is no path that infers a DSN from the
+// environment, from a docker-compose file, or from anything else the
+// repository happens to contain -- inference is how a tuning session finds
+// production.
+func (d DBA) Live() bool { return strings.TrimSpace(d.NonProdDSN) != "" }
+
+// productionish are the words that make a DSN look like production.
+//
+// A blunt instrument, and it is meant to be. It cannot prove a DSN is safe --
+// nothing here can, which is why the setting is explicit in the first place --
+// but the failure it catches is the one that actually happens: a value copied
+// from somewhere else with the environment left in it. Refusing costs an
+// operator one rename of a staging database; not refusing costs an EXPLAIN
+// against live data.
+var productionish = []string{"prod", "production", "live"}
+
+// ProductionDSN reports whether the configured DSN names itself as production,
+// and which word gave it away.
+//
+// Checked WORD BY WORD over the DSN's punctuation, not by substring: a host
+// called "reproducible-db" contains "prod" and is not production, and a guard
+// that refused it would be a guard operators route around.
+func (d DBA) ProductionDSN() (string, bool) {
+	for _, f := range strings.FieldsFunc(strings.ToLower(d.NonProdDSN), func(r rune) bool {
+		return r != '-' && r != '_' && !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	}) {
+		for _, part := range strings.FieldsFunc(f, func(r rune) bool {
+			return r == '-' || r == '_'
+		}) {
+			for _, p := range productionish {
+				if part == p {
+					return p, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
 // Agent overrides how one actor is displayed, and which model and effort it
 // runs on. Global, not per-project: see LoadAgents. Keyed by the STABLE
 // actor identifier ("implementer"), never by the display name, which is the
@@ -712,6 +795,7 @@ type Config struct {
 	Slack       Slack             `json:"slack"`
 	CI          CI                `json:"ci"`
 	QA          QA                `json:"qa"`
+	DBA         DBA               `json:"dba"`
 	Collect     Collect           `json:"collect"`
 	VCS         VCS               `json:"vcs"`
 	Tracker     Tracker           `json:"tracker"`

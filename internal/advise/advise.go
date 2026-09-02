@@ -12,12 +12,14 @@
 // automatable at all: the context the human was supplying from a ChatGPT
 // conversation is already on disk.
 //
-// Two roles, because two different documents decide two different questions:
+// Three roles, because three different bodies of committed truth decide
+// three different questions:
 //
-//	architect  reads spec.md and plan.md   "how should this be built"
-//	pm         reads intent.md              "what are we building, and why"
+//	architect  reads spec.md and plan.md            "how should this be built"
+//	pm         reads intent.md                       "what are we building, and why"
+//	dba        reads the schema and the migrations   "how should this data be shaped"
 //
-// One rule binds both: DERIVE FROM THE ARTIFACT, CITE IT, OR REFUSE.
+// One rule binds all three: DERIVE FROM THE ARTIFACT, CITE IT, OR REFUSE.
 //
 // Refusal is a success. If an advisor invents an answer, the invention now
 // carries a citation-shaped wrapper and reads as authoritative -- two agents
@@ -41,7 +43,15 @@ type Role string
 const (
 	RoleArchitect Role = "architect"
 	RolePM        Role = "pm"
-	RoleHuman     Role = "human"
+	// RoleDBA answers a data-model question: what the schema should look like,
+	// how a migration should be shaped, what should be indexed. Its own role
+	// rather than the architect's for the reason the whole package is split by
+	// document: the committed truth about the data model is the schema and the
+	// migrations, and an architect handed those alongside spec.md would answer
+	// a schema question out of a document that does not describe the schema
+	// (OR-135).
+	RoleDBA   Role = "dba"
+	RoleHuman Role = "human"
 )
 
 // Verdict is what came back.
@@ -123,12 +133,44 @@ func Route(run Runner, dir, question string) Role {
 	if err != nil {
 		return RoleArchitect
 	}
-	switch {
-	case strings.Contains(strings.ToLower(out), "product"):
+	switch low := strings.ToLower(out); {
+	// DATA before PRODUCT before the fallback, because the classes are read in
+	// order of how specific the word is. "data" appears in no other class name
+	// here, so a reply naming it is naming this one.
+	case strings.Contains(low, "data"):
+		return RoleDBA
+	case strings.Contains(low, "product"):
 		return RolePM
 	default:
 		return RoleArchitect
 	}
+}
+
+// dbaArtifacts are where a repository's committed truth about its data model
+// lives, across the conventions Orion is likely to meet.
+//
+// A CANDIDATE LIST, filtered by what actually exists, because unlike spec.md
+// and intent.md -- which Orion itself creates -- the schema lives wherever the
+// repository's own framework puts it. Listing several conventions and keeping
+// the ones present is the only way to scope this role without either assuming
+// one stack or handing it the whole tree.
+//
+// Migrations, schema dumps and ORM model definitions, and nothing else. Not
+// the application code that queries them: a role that can read everything
+// answers out of scope, which is the failure the architect's narrowness exists
+// to prevent, and "what should this column be" answered from the handler that
+// happens to read it today is exactly the inference from implementation this
+// package forbids.
+var dbaArtifacts = []string{
+	// Migrations, by convention.
+	"migrations", "migration", "db/migrate", "db/migrations", "alembic",
+	// Schema dumps and declarations.
+	"schema.sql", "structure.sql", "db/schema.rb", "db/schema.sql",
+	"prisma/schema.prisma", "schema.prisma",
+	// ORM model definitions.
+	"models", "entities", "app/models", "internal/models",
+	// The decisions that already settled a data question.
+	"docs/decisions",
 }
 
 // Artifacts lists the design documents a role is allowed to reason from.
@@ -143,6 +185,8 @@ func Artifacts(dir string, role Role) []string {
 		want = []string{"spec.md", "plan.md", "docs/decisions"}
 	case RolePM:
 		want = []string{"intent.md", "docs/decisions"}
+	case RoleDBA:
+		want = dbaArtifacts
 	}
 	var out []string
 	for _, rel := range want {
@@ -155,7 +199,7 @@ func Artifacts(dir string, role Role) []string {
 
 func routePrompt(question string) string {
 	return strings.Join([]string{
-		"Classify this question as TECHNICAL or PRODUCT. Answer with one word.",
+		"Classify this question as TECHNICAL, PRODUCT or DATA. Answer with one word.",
 		"",
 		"TECHNICAL: how something should be built, structured, named, or",
 		"sequenced. Decidable from an architecture specification.",
@@ -163,6 +207,11 @@ func routePrompt(question string) string {
 		"PRODUCT: what the software should do for whom, what is in or out of",
 		"scope, what a business rule ought to be. Decidable only from a",
 		"statement of intent, or by a person.",
+		"",
+		"DATA: how the data itself should be shaped -- tables, columns, keys,",
+		"constraints, normalisation, what a migration should do, what should be",
+		"indexed, why a query is slow. Decidable from the schema and the",
+		"migrations that are already committed.",
 		"",
 		"The question:",
 		question,
@@ -184,6 +233,10 @@ func promptFor(role Role, question string, artifacts []string) string {
 	case RolePM:
 		who = "the product manager for this project"
 		scope = "what it should DO: scope, non-goals, business rules, who it serves"
+	case RoleDBA:
+		who = "the database architect for this project"
+		scope = "how the DATA is shaped: tables, columns, keys, constraints, " +
+			"normalisation, migrations and indexes"
 	}
 
 	lines := []string{
@@ -227,9 +280,11 @@ func promptFor(role Role, question string, artifacts []string) string {
 		` "grounding":"the file and clause it comes from, empty unless derived",`,
 		` "reason":"why you refused or escalated, empty if derived"}`,
 		"",
-		"Use escalate when the question is real but belongs to the other role:",
-		"a product decision if you are the architect, a technical one if you",
-		"are the product manager.",
+		"Use escalate when the question is real but belongs to one of the other",
+		"advisors. The architect decides how it is built, the product manager",
+		"decides what it should do, and the database architect decides how the",
+		"data is shaped. A question outside your own scope is theirs, not a",
+		"refusal.",
 	)
 	return strings.Join(lines, "\n")
 }
