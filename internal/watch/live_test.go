@@ -87,7 +87,23 @@ func TestAReapedJobLeavesTheDisplay(t *testing.T) {
 	live := ui.NewLive(&buf)
 	live.Tick()
 	live.Close()
-	if buf.Len() != 0 {
-		t.Errorf("a finished job is still on the display: %q", buf.String())
+
+	// The row STAYS, carrying what became of the ticket.
+	//
+	// It used to vanish the instant the job was reaped, which answered "is
+	// anything running" and threw away "what happened to the thing that just
+	// finished" -- so a ticket that pushed and a ticket that failed both left
+	// the same way: silently (OR-265).
+	out := buf.String()
+	if !strings.Contains(out, "FCIA-7") {
+		t.Errorf("a finished job left no trace of itself: %q", out)
+	}
+	if !strings.Contains(out, "ci-wait") {
+		t.Errorf("the row must say what became of the ticket: %q", out)
+	}
+	// And it is no longer counted as RUNNING, which is the half that must
+	// still be true: a finished ticket holds no slot.
+	if strings.Contains(out, "1 running") {
+		t.Errorf("a finished job is still counted as running: %q", out)
 	}
 }

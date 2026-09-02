@@ -642,6 +642,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// stops meaning "something new started". It carries everything somebody
 	// scrolling back to the top of a ticket needs at once: the key, the
 	// summary, who is working it, on what, and the branch.
+	ui.LiveTitle(key, issue.Summary)
 	ui.Banner(w, key, issue.Summary, actorID,
 		actors.Model(actorID), job.Branch)
 

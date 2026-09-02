@@ -311,13 +311,24 @@ func Banner(w io.Writer, key, summary, actor, model, branch string) {
 		model = noModel
 	}
 	who := actors.Display(actor)
-	rule := strings.Repeat("=", 60)
 	c := ticketColor(key)
+	// ONE LINE, not a five-line block between two 60-character rules.
+	//
+	// The heavy form predates the pinned region, when scrollback was the only
+	// display and a ticket starting had to be findable by scrolling. The
+	// region now carries the key, the actor, the model and the branch on the
+	// ticket's own row, continuously, so the banner was restating what was
+	// already on screen -- and its rules fought the region's own lighter one
+	// for the eye (OR-265).
+	//
+	// What a banner is still FOR is the moment: this ticket started, here is
+	// what it is. That is a sentence, and the summary is the part of it a
+	// person cannot get anywhere else on the row.
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, paint(w, c, rule))
-	fmt.Fprintf(w, "  %s   %s\n", paint(w, c, key), summary)
-	fmt.Fprintf(w, "  %s\n", Dim(w, strings.Join(nonEmpty(who, shortModel(model), branch), " - ")))
-	fmt.Fprintln(w, paint(w, c, rule))
+	fmt.Fprintf(w, "%s  %s\n", paint(w, c, pad(key, keyWidth)), summary)
+	if detail := strings.Join(nonEmpty(who, shortModel(model), branch), " · "); detail != "" {
+		fmt.Fprintf(w, "%s  %s\n", strings.Repeat(" ", keyWidth), Dim(w, detail))
+	}
 }
 
 func nonEmpty(in ...string) []string {

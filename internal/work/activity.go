@@ -29,6 +29,17 @@ import (
 // copy is how the two drift apart: OR-176 was exactly that, a hand-rolled
 // OnActivity that printed unattributed lines and emitted nothing to the
 // event log at all.
+// activityNote is one tool call as a row-width phrase: the tool, and enough
+// of its detail to say WHICH file or command. Trimmed here rather than at
+// render time so the renderer never has to know what a tool call looks like.
+func activityNote(a supervisor.Activity) string {
+	n := a.Tool
+	if a.Detail != "" {
+		n += " " + a.Detail
+	}
+	return strings.TrimSpace(n)
+}
+
 func ActivityLogger(log *events.Log, w io.Writer, key, actor string) func(supervisor.Activity) {
 	return func(a supervisor.Activity) {
 		switch a.Kind {
@@ -47,7 +58,8 @@ func ActivityLogger(log *events.Log, w io.Writer, key, actor string) func(superv
 			// the spinner says the watcher is alive, this says the AGENT is
 			// (OR-240). Counted whatever the verbosity -- the console filter
 			// below decides what is printed, not what happened.
-			ui.LiveActivity(key, actor)
+			// The call itself, for the ticket's own row (OR-265).
+			ui.LiveActivityNote(key, actor, activityNote(a))
 			// A delegation is a subagent starting, which the row counts
 			// separately: tool calls say the run is busy, this says how many
 			// things are busy on its behalf (ADR 0016).

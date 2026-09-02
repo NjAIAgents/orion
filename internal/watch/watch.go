@@ -900,7 +900,10 @@ func (p *pool) dispatch(deps Deps, opts Options, w io.Writer, key string) {
 		p.mu.Lock()
 		delete(p.live, key)
 		p.mu.Unlock()
-		ui.LiveEnd(key)
+		// The row STAYS, carrying what became of the ticket. Deleting it here
+		// meant a ticket that finished vanished from the region with no
+		// statement of its outcome (OR-265).
+		ui.LiveDone(key, outcomeWord(res))
 		for _, r := range res {
 			p.done <- r
 		}
@@ -930,6 +933,21 @@ func (p *pool) wait() []work.Result {
 	return p.reap()
 }
 
+// outcomeWord is what a finished run's row says in its stage column.
+//
+// The Outcome vocabulary as-is: it is already the word Orion uses for this
+// everywhere else, and inventing a display synonym would mean two names for
+// one state.
+func outcomeWord(res []work.Result) string {
+	if len(res) == 0 {
+		return "done"
+	}
+	if o := string(res[0].Outcome); o != "" {
+		return o
+	}
+	return "done"
+}
+
 // syncWriter serialises writes from concurrent jobs.
 //
 // Without it two agents' progress lines interleave mid-word on the terminal,
@@ -940,6 +958,10 @@ type syncWriter struct {
 	mu sync.Mutex
 	w  io.Writer
 }
+
+// Unwrap names the writer underneath, so ui.isTerminal can see through this
+// wrapper to the terminal it serialises onto (OR-265).
+func (s *syncWriter) Unwrap() io.Writer { return s.w }
 
 func (s *syncWriter) Write(b []byte) (int, error) {
 	s.mu.Lock()

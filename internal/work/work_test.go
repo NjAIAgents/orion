@@ -2,10 +2,12 @@ package work
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -87,29 +89,106 @@ func git(t *testing.T, dir string, args ...string) string {
 
 // project sets up ORION_HOME with a sandbox bound to project FCIA, mirroring
 // what orion init produces.
+// seedCache holds one built repository per config, for the life of the
+// package's test binary.
+//
+// project() was building a fresh one every time: init --bare, clone, two
+// commits and two pushes, then workspace.Bind's own FULL clone on top --
+// eight git subprocesses, about a second, for 106 calls. That was ~108s of
+// the package's 435s, and the package sits under `go test`'s 600s per-package
+// default, so it was the reason a single new test could tip the whole suite
+// into a timeout (OR-266).
+//
+// git is deterministic given the same inputs, so the repository is built once
+// and COPIED thereafter. A copy is a file walk of a few kilobytes; the build
+// is eight processes.
+var seedCache sync.Map // cfgJSON -> *builtSeed
+
+type builtSeed struct {
+	once sync.Once
+	dir  string // holds origin.git and seed/
+	err  error
+}
+
+// buildSeed makes the origin and its seed clone once per config.
+func buildSeed(t *testing.T, cfgJSON string) string {
+	t.Helper()
+	v, _ := seedCache.LoadOrStore(cfgJSON, &builtSeed{})
+	b := v.(*builtSeed)
+	b.once.Do(func() {
+		// NOT t.TempDir(): that is removed when the test that first asked for
+		// it ends, and every later test would then copy from a deleted
+		// directory. This outlives the whole binary and is cleaned by the OS.
+		root, err := os.MkdirTemp("", "orion-seed-")
+		if err != nil {
+			b.err = err
+			return
+		}
+		origin := filepath.Join(root, "origin.git")
+		seed := filepath.Join(root, "seed")
+		git(t, root, "init", "-q", "--bare", "-b", "main", origin)
+		git(t, root, "clone", "-q", origin, seed)
+		if err := os.WriteFile(filepath.Join(seed, "spec.md"), []byte("# spec\n"), 0o644); err != nil {
+			b.err = err
+			return
+		}
+		if cfgJSON != "" {
+			if err := os.WriteFile(filepath.Join(seed, "orion.json"), []byte(cfgJSON), 0o644); err != nil {
+				b.err = err
+				return
+			}
+		}
+		git(t, seed, "add", ".")
+		git(t, seed, "commit", "-q", "-m", "seed")
+		git(t, seed, "push", "-q", "origin", "main")
+		git(t, seed, "checkout", "-q", "-b", "develop")
+		git(t, seed, "push", "-q", "origin", "develop")
+		b.dir = root
+	})
+	if b.err != nil {
+		t.Fatal(b.err)
+	}
+	return b.dir
+}
+
+// copyTree copies src to dst, preserving the executable bit. Enough for a git
+// repository: no symlinks, no devices, no sparse files.
+func copyTree(t *testing.T, src, dst string) {
+	t.Helper()
+	if err := filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode().Perm())
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func project(t *testing.T, cfgJSON string) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("ORION_HOME", home)
 
 	root := t.TempDir()
-	origin := filepath.Join(root, "origin.git")
 	seed := filepath.Join(root, "seed")
-	git(t, root, "init", "-q", "--bare", "-b", "main", origin)
-	git(t, root, "clone", "-q", origin, seed)
-	if err := os.WriteFile(filepath.Join(seed, "spec.md"), []byte("# spec\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if cfgJSON != "" {
-		if err := os.WriteFile(filepath.Join(seed, "orion.json"), []byte(cfgJSON), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	git(t, seed, "add", ".")
-	git(t, seed, "commit", "-q", "-m", "seed")
-	git(t, seed, "push", "-q", "origin", "main")
-	git(t, seed, "checkout", "-q", "-b", "develop")
-	git(t, seed, "push", "-q", "origin", "develop")
+	copyTree(t, buildSeed(t, cfgJSON), root)
 
 	ws, err := workspace.Bind(workspace.BindOptions{
 		SourcePath: seed, DefaultBranch: "main", WorkBranch: "develop",
