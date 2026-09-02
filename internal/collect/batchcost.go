@@ -49,6 +49,38 @@ type baseline struct {
 // baseline yet rather than printing a figure nobody should act on.
 const minBaselineSamples = 3
 
+// batchBaseline is the median ELAPSED of this project's past batches.
+//
+// A different quantity from perBranchBaseline below, and the one the live
+// region's CI bar fills against: that measures what the per-branch path costs
+// per ticket, this measures how long a batch's own run takes. Filling a
+// batch's bar against the per-branch number would compare a shared CI run to
+// a single branch's whole life, which is off by roughly the member count.
+//
+// Read from the batch notes each finished batch already writes (OR-258), so
+// this needs no new record -- and, like the per-branch baseline, it refuses
+// to answer below minBaselineSamples rather than call two runs a median
+// (OR-250).
+func batchBaseline(path string) baseline {
+	all, err := events.Read(path)
+	if err != nil {
+		return baseline{}
+	}
+	var spans []time.Duration
+	for _, e := range all {
+		n, ok := events.ParseBatchNote(e.Msg)
+		if !ok || n.Elapsed <= 0 {
+			continue
+		}
+		spans = append(spans, n.Elapsed)
+	}
+	if len(spans) < minBaselineSamples {
+		return baseline{Samples: len(spans)}
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i] < spans[j] })
+	return baseline{Median: spans[len(spans)/2], Samples: len(spans)}
+}
+
 // perBranchBaseline reads the event log and reports what a per-branch landing
 // used to cost.
 //

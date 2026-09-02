@@ -364,6 +364,14 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	// rather than asking the forge whether a pull request exists.
 	g := repoGit{ws: ws, merge: deps.Merge, openPR: deps.OpenPR}
 
+	// The CI bar's reference, pushed once per batch. Read here rather than in
+	// liveObserver because the observer has no workspace to read the log
+	// from, and pulled once rather than per redraw for the reason
+	// internal/cost states: a number in the region must not be the most
+	// expensive thing on the screen. Zero samples leaves it unset, and the
+	// bar then says "no baseline yet" instead of inventing one (OR-250).
+	ui.LiveBatchMedian(batchBaseline(events.Path(ws.Dir)).Median)
+
 	var members []Member
 	for _, key := range pass {
 		if len(members) >= size {
