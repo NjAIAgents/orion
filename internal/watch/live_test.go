@@ -141,3 +141,45 @@ func TestAFinishedRowIsReportedOnceOffATerminal(t *testing.T) {
 	}
 	live.Close()
 }
+
+// A HELD row that has nothing new to say prints nothing.
+//
+// The first fix for repeated rows (OR-265, #378) silenced only FINISHED rows.
+// A held run never finishes: it stays "starting", was exempt from the guard,
+// and re-printed the identical line every tick -- six copies on the macOS
+// runner -- burying "claude is not authenticated" exactly as the finished row
+// had before. OR-240's rule is a tick with nothing to SAY, not a tick with
+// nothing finished, so an unchanged line is suppressed whatever the row's
+// state.
+func TestAHeldRowWithNothingNewIsNotRepeatedOffATerminal(t *testing.T) {
+	ui.LiveReset()
+	t.Cleanup(ui.LiveReset)
+
+	var buf bytes.Buffer
+	live := ui.NewLive(&buf)
+	ui.LiveStart("OR-1") // held: never finishes, stage stays as it started
+
+	live.Tick()
+	first := buf.String()
+	if !strings.Contains(first, "OR-1") {
+		t.Fatalf("a new row must print once: %q", first)
+	}
+
+	// Nothing about the row changes, so the next ticks must be silent.
+	buf.Reset()
+	for i := 0; i < 5; i++ {
+		live.Tick()
+	}
+	if got := buf.String(); strings.Contains(got, "OR-1") {
+		t.Errorf("an unchanged held row repeated, which buries the fault line beside it:\n%q", got)
+	}
+
+	// And a real change prints again: the guard is on the LINE, not the row.
+	ui.LiveActivity("OR-1", "implementer")
+	buf.Reset()
+	live.Tick()
+	if got := buf.String(); !strings.Contains(got, "OR-1") {
+		t.Errorf("a row whose line changed must print: %q", got)
+	}
+	live.Close()
+}

@@ -207,8 +207,13 @@ type lessonNotice struct {
 //
 // Best-effort throughout. The merge has already happened, and a memory-keeping
 // failure must never turn a successful merge into a reported failure.
+// home is passed rather than read from the environment. workspace.Home()
+// consults ORION_HOME, which is process-global, so a caller that set
+// Options.Home explicitly still had its lessons written wherever the
+// environment pointed -- the option was honoured everywhere else in this
+// package and silently ignored here (OR-264).
 func recordLesson(key string, pr PR, state FixState, source string,
-	ws *workspace.Workspace, log *events.Log) *lessonNotice {
+	ws *workspace.Workspace, home string, log *events.Log) *lessonNotice {
 
 	if len(state.Attempts) == 0 {
 		return nil // it merged without ever going red; there is no mistake to learn from
@@ -247,7 +252,10 @@ func recordLesson(key string, pr PR, state FixState, source string,
 	evidence := fmt.Sprintf("%s in %s on %s: CI failed with %q, %d fix attempt(s), merged %s",
 		key, project, last.Format("2006-01-02"), state.Attempts[0].Detail, state.Count(), pr.URL)
 
-	store := lessons.New(workspace.Home())
+	if home == "" {
+		home = workspace.Home()
+	}
+	store := lessons.New(home)
 	c, err := store.Observe(lessons.Proposal{
 		Text:     text,
 		Kind:     lessons.KindReview,

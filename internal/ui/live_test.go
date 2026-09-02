@@ -340,8 +340,12 @@ func TestOffTerminalIsPlainLinesAndNoCursorControl(t *testing.T) {
 	if !strings.Contains(got, "a scrollback line\n") {
 		t.Errorf("the scrollback line must pass through untouched:\n%q", got)
 	}
-	if n := strings.Count(got, "OR-237"); n != 2 {
-		t.Errorf("expected one plain line per run per tick (2 ticks); got %d:\n%s", n, got)
+	// Printed ONCE across two ticks, not once per tick: nothing about the row
+	// changed between them, and an unchanged line re-printed on the minute
+	// is the noise that buried a held run's fault line on the macOS runner
+	// (OR-265). One plain line per run per CHANGE is the contract now.
+	if n := strings.Count(got, "OR-237"); n != 1 {
+		t.Errorf("expected the row printed once for two unchanged ticks; got %d:\n%s", n, got)
 	}
 	for _, want := range []string{"implementing", "1 calls"} {
 		if !strings.Contains(got, want) {
