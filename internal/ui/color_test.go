@@ -202,6 +202,32 @@ func TestHeadingAndDimAreTransparentWhenColourIsOff(t *testing.T) {
 	}
 }
 
+// The update notice (OR-92) is yellow, as asked for, but it is not a
+// warning: nothing is broken and no action is required. The distinct VERB is
+// what keeps it apart from "your branch is stale" for someone scanning, so
+// it must never be rendered as WARNING.
+func TestUpdateIsItsOwnVerbAtTheWarningColour(t *testing.T) {
+	forceColour(t)
+	code := func(verb string) string { return escapes.FindString(Label(os.Stdout, verb, "")) }
+	if code("update") != code("warning") {
+		t.Errorf("update is %q, warning is %q; the ticket asks for yellow", code("update"), code("warning"))
+	}
+	noColour(t)
+	if !strings.HasPrefix(Label(nil, "update", "x"), "update") {
+		t.Errorf("the line must lead with its own verb: %q", Label(nil, "update", "x"))
+	}
+}
+
+// A continuation line sits under the detail column, so the command to run
+// reads as part of the status above it rather than as a new one.
+func TestDetailAlignsUnderTheDetailColumn(t *testing.T) {
+	noColour(t)
+	status := Label(nil, "update", "orion v0.5.1 is available")
+	if got, want := len(Detail(nil, "")), strings.Index(status, "orion"); got != want {
+		t.Errorf("continuation indents %d columns, detail starts at %d", got, want)
+	}
+}
+
 // A nil writer must not panic: callers pass one when they only want the
 // string, and a formatting helper that crashes takes the run with it.
 func TestNilWriterIsSafe(t *testing.T) {
