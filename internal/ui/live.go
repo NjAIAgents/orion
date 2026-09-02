@@ -255,6 +255,11 @@ type liveRun struct {
 	// events.jsonl have every line in full, which is where a record belongs
 	// (OR-265).
 	note string
+	// reported marks a finished row whose ending the OFF-TERMINAL path has
+	// already printed. The region redraws in place and needs no such flag;
+	// a log appends, and repeating a finished row every tick buries the
+	// lines a reader needs (OR-265).
+	reported bool
 	// median is the actor's median completed-run duration in this project,
 	// resolved when the actor becomes known. Zero means unknown, which is
 	// rendered as no bar at all rather than as an empty one.
@@ -1239,6 +1244,19 @@ func renderPlain(st liveState, now time.Time) []string {
 		out = append(out, line)
 	}
 	for _, r := range st.rows {
+		// A FINISHED row is reported once and then goes quiet.
+		//
+		// The region keeps a finished ticket on screen so it can say what
+		// became of it, which is right for a display redrawn in place. Off a
+		// terminal there is no redraw: every tick APPENDS, so a row that
+		// outlives its work printed the same line every minute forever. That
+		// buried the lines that mattered -- on CI it pushed a held run's
+		// "claude is not authenticated" out of the captured output entirely,
+		// which is OR-240's rule broken by OR-265's fix: a tick with nothing
+		// to say must say nothing.
+		if r.done && r.reported {
+			continue
+		}
 		line := fmt.Sprintf("%s  %s  %s  %s  %d calls",
 			now.Local().Format("15:04"), pad(r.key, liveKeyWidth),
 			pad(r.stage, liveStageWidth), elapsedString(now.Sub(r.started)), r.calls)
@@ -1248,6 +1266,22 @@ func renderPlain(st liveState, now time.Time) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+// markReported records that the plain path has printed these rows' endings,
+// so the next tick does not repeat them. Separate from renderPlain because
+// that is a pure function of a snapshot and this mutates the registry.
+func markReported(rows []liveRun) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	for _, r := range rows {
+		if !r.done {
+			continue
+		}
+		if live.runs[r.key] != nil {
+			live.runs[r.key].reported = true
+		}
+	}
 }
 
 // displayCells is how many columns a rendered line occupies once the terminal
@@ -1656,9 +1690,11 @@ func (l *Live) Tick() {
 	if l.cursor {
 		return
 	}
-	for _, line := range renderPlain(liveSnapshot(), time.Now()) {
+	st := liveSnapshot()
+	for _, line := range renderPlain(st, time.Now()) {
 		fmt.Fprintln(l.w, line)
 	}
+	markReported(st.rows)
 }
 
 // Close stops the redraw and clears the region, leaving the scrollback as the
