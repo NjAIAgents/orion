@@ -92,7 +92,33 @@ type PR struct {
 	// could be determined. Carried into the tracker comment, since a bare
 	// "CI failed" sends the reader to GitHub to find out anything.
 	Detail string
+	// Checks is the rollup unflattened: one entry per check, kept as data
+	// rather than folded into Detail's sentence.
+	//
+	// Detail answers "what should the ticket say"; this answers "what is the
+	// screen showing right now", and a batch's whole point is that several
+	// tickets share one run -- so the operator needs to see WHICH of the
+	// three platforms is still going, not a count (OR-264).
+	Checks []Check
 }
+
+// Check is one CI check and where it got to.
+type Check struct {
+	Name string
+	// State is passed, failed or running. Three values rather than GitHub's
+	// dozen conclusions: the display distinguishes what a person acts on,
+	// and neutral, skipped and cancelled are all "not something to wait for".
+	State CheckState
+}
+
+// CheckState is what became of one check.
+type CheckState string
+
+const (
+	CheckPassed  CheckState = "passed"
+	CheckFailed  CheckState = "failed"
+	CheckRunning CheckState = "running"
+)
 
 // Deps are the seams: everything that touches a network or a disk.
 type Deps struct {

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // lastFrame is what is on screen: everything after the final erase.
@@ -61,10 +62,17 @@ func TestTheFrozenWindowCapsTheChatter(t *testing.T) {
 	if strings.Contains(frame, "chatter-34") {
 		t.Errorf("a line past the cap is still on screen:\n%q", frame)
 	}
-	// And the buffer is the window: an eight-hour run must not accumulate every
-	// line it ever printed in memory for a cap that might never be dropped.
-	if len(l.window) != liveWindowFloor {
-		t.Errorf("the window retained %d lines, want %d", len(l.window), liveWindowFloor)
+	// The buffer is BOUNDED, which is what this was always about: an
+	// eight-hour run must not accumulate every line it ever printed for a cap
+	// that might never be dropped.
+	//
+	// Bounded at liveWindowBuffer rather than at the visible cap, because
+	// trimming the buffer to what fits made the loss permanent -- a line
+	// dropped while the region was tall could never come back when it shrank,
+	// so the window only ever emptied (OR-264).
+	if len(l.window) > liveWindowBuffer {
+		t.Errorf("the window retained %d lines, more than the %d it bounds at",
+			len(l.window), liveWindowBuffer)
 	}
 }
 
@@ -99,10 +107,15 @@ func TestOutputVolumeCannotDisplaceTheRegion(t *testing.T) {
 	}
 }
 
-// The window has a FLOOR, not a fixed height: it takes whatever room is left
-// after the pinned rows, so a taller terminal shows more history -- and a
-// terminal that never said how tall it is gets the floor rather than a guess.
-func TestATallerTerminalShowsMoreHistory(t *testing.T) {
+// The window is a FIXED HEIGHT: five lines of scrollback, then a wall.
+//
+// It shipped as a floor that grew into whatever the terminal had spare
+// (OR-248), but that could never be observed -- terminalRows read LINES,
+// which no shell exports, so the height was always unknown and the window sat
+// on five by accident. Fixing the detection made it grow to twenty-four lines
+// on a full-screen terminal, which is the unbounded log this feature exists
+// to bound. The spare rows belong to the region (OR-264).
+func TestTheWindowIsCappedHoweverTallTheTerminal(t *testing.T) {
 	t.Setenv("COLUMNS", "")
 	LiveReset()
 	t.Cleanup(LiveReset)
@@ -116,30 +129,35 @@ func TestATallerTerminalShowsMoreHistory(t *testing.T) {
 		}
 	}
 
-	// The region is four rows -- rule, header, blank, one ticket row -- and the
-	// cursor keeps one, so a 40-row terminal has 35 to spare.
+	// Room for thirty-three lines of history, and it still shows five.
 	t.Setenv("LINES", "40")
 	var tall bytes.Buffer
 	fill(&Live{w: &tall, cursor: true})
-	if n := strings.Count(lastFrame(tall.String()), "chatter-"); n != 35 {
-		t.Errorf("a 40-row terminal showed %d lines of history, want 35", n)
+	if n := strings.Count(lastFrame(tall.String()), "chatter-"); n != liveWindowFloor {
+		t.Errorf("a 40-row terminal showed %d lines of history, want the cap of %d",
+			n, liveWindowFloor)
 	}
 
+	// An unknown height gets the same answer, which is what makes the cap a
+	// height rather than a guess.
 	t.Setenv("LINES", "")
 	var unknown bytes.Buffer
 	fill(&Live{w: &unknown, cursor: true})
 	if n := strings.Count(lastFrame(unknown.String()), "chatter-"); n != liveWindowFloor {
-		t.Errorf("an unknown height showed %d lines, want the floor of %d", n, liveWindowFloor)
+		t.Errorf("an unknown height showed %d lines, want %d", n, liveWindowFloor)
 	}
 
-	// A height too small to be one is not a height. Below the floor the window
-	// keeps its five lines regardless, because a window squeezed to nothing is
-	// the hung-looking screen the region was built to fix.
+	// Below the cap the window yields to the region rather than overflowing:
+	// an eight-row terminal cannot hold five lines of history AND the rows,
+	// and the rows are the thing being watched.
 	t.Setenv("LINES", "8")
 	var tiny bytes.Buffer
 	fill(&Live{w: &tiny, cursor: true})
-	if n := strings.Count(lastFrame(tiny.String()), "chatter-"); n != liveWindowFloor {
-		t.Errorf("a short terminal showed %d lines, want the floor of %d", n, liveWindowFloor)
+	if n := strings.Count(lastFrame(tiny.String()), "chatter-"); n > liveWindowFloor {
+		t.Errorf("a short terminal showed %d lines, more than the cap of %d", n, liveWindowFloor)
+	}
+	if !strings.Contains(lastFrame(tiny.String()), "OR-237") {
+		t.Errorf("the ticket row was pushed off an 8-row terminal:\n%s", lastFrame(tiny.String()))
 	}
 }
 
@@ -159,20 +177,22 @@ func TestResizingReflowsWithoutStrandingRows(t *testing.T) {
 	if _, err := fmt.Fprintf(l, "%s\n", strings.Repeat("x", 100)); err != nil {
 		t.Fatalf("writing: %v", err)
 	}
-	if l.drawn != 3 {
-		t.Errorf("100 cells at 40 columns is 3 rows, not %d", l.drawn)
+	// Three rows for the wrapped line, plus the frame's two.
+	if l.drawn != 5 {
+		t.Errorf("100 cells at 40 columns is 3 rows plus a 2-row frame, not %d", l.drawn)
 	}
 
-	// Widen the terminal. The next redraw erases what the last one drew -- three
-	// rows, measured at the old width -- and the same line now needs one.
+	// Widen the terminal. The next redraw erases what the last one drew -- five
+	// rows, measured at the old width -- and the same line now needs one plus
+	// the frame.
 	t.Setenv("COLUMNS", "120")
 	b.Reset()
 	redraw(l)
-	if got := b.String(); !strings.HasPrefix(got, "\x1b[3A\x1b[0J") {
+	if got := b.String(); !strings.HasPrefix(got, "\x1b[5A\x1b[0J") {
 		t.Errorf("the erase must undo the rows actually drawn:\n%q", got)
 	}
-	if l.drawn != 1 {
-		t.Errorf("100 cells at 120 columns is 1 row, not %d", l.drawn)
+	if l.drawn != 3 {
+		t.Errorf("100 cells at 120 columns is 1 row plus a 2-row frame, not %d", l.drawn)
 	}
 }
 
@@ -415,5 +435,151 @@ func TestTheWindowCountsLinesNotWrites(t *testing.T) {
 	}
 	if got := l.window[len(l.window)-1]; got != "half a line" {
 		t.Errorf("the completed line is %q, want %q", got, "half a line")
+	}
+}
+
+// Three zones share the screen and exactly one of them scrolls (OR-248).
+// Without a boundary the scrolling zone and the pinned rows below it read as
+// one continuous log, which is precisely the distinction that matters. The
+// labels say which zone is which and how much history is being kept, so a
+// line vanishing off the top is explained rather than merely noticed.
+func TestTheFrozenWindowIsBoundedByALabelledFrame(t *testing.T) {
+	t.Setenv("LINES", "24")
+	t.Setenv("COLUMNS", "100")
+	LiveReset()
+	t.Cleanup(LiveReset)
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	for i := 0; i < 3; i++ {
+		if _, err := fmt.Fprintf(l, "chatter-%d\n", i); err != nil {
+			t.Fatalf("writing: %v", err)
+		}
+	}
+	got := lastFrame(b.String())
+
+	if !strings.Contains(got, "recent") {
+		t.Errorf("the window does not say what it is:\n%s", got)
+	}
+	if !strings.Contains(got, "3 line(s)") {
+		t.Errorf("the window does not say how much history it is holding:\n%s", got)
+	}
+	if !strings.Contains(got, "scrolls, then gone") {
+		t.Errorf("the window does not say its lines are transient:\n%s", got)
+	}
+	// The frame bounds the chatter: every captured line falls between the two
+	// rules, not outside them.
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	top, bottom := -1, -1
+	for i, ln := range lines {
+		if strings.Contains(ln, "recent") {
+			top = i
+		}
+		if strings.Contains(ln, "scrolls, then gone") {
+			bottom = i
+		}
+	}
+	if top < 0 || bottom < 0 || bottom <= top {
+		t.Fatalf("the frame is not a pair of rules around the window:\n%s", got)
+	}
+	for i, ln := range lines {
+		if strings.Contains(ln, "chatter-") && (i < top || i > bottom) {
+			t.Errorf("line %d escaped the frame:\n%s", i, got)
+		}
+	}
+}
+
+// Nothing captured yet, no frame. An empty box above an empty region is two
+// rules saying nothing.
+func TestNoChatterDrawsNoFrame(t *testing.T) {
+	t.Setenv("LINES", "24")
+	LiveReset()
+	t.Cleanup(LiveReset)
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	redraw(l)
+	if strings.Contains(b.String(), "recent") {
+		t.Errorf("an empty window must not draw a frame:\n%s", b.String())
+	}
+}
+
+// THE REGION OUTRANKS THE WINDOW FLOOR. On a terminal too short for both, an
+// unconditional five-line floor spends rows the region needs and the ticket
+// rows go off the top -- with the header still saying "3 running" over the
+// empty space where they were, which is exactly how this was reported
+// (OR-264).
+func TestAShortTerminalKeepsTheRowsAndShrinksTheWindow(t *testing.T) {
+	t.Setenv("COLUMNS", "100")
+	// Twelve rows for a region that needs most of them: rule, header, blank
+	// and three ticket rows, plus the window's own frame.
+	t.Setenv("LINES", "12")
+	LiveReset()
+	t.Cleanup(LiveReset)
+
+	now := time.Now()
+	for _, k := range []string{"OR-223", "OR-224", "OR-242"} {
+		liveStart(k, now.Add(-10*time.Minute))
+	}
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	for i := 0; i < 20; i++ {
+		if _, err := fmt.Fprintf(l, "chatter-%02d\n", i); err != nil {
+			t.Fatalf("writing: %v", err)
+		}
+	}
+	got := lastFrame(b.String())
+
+	// Every ticket row survived.
+	for _, k := range []string{"OR-223", "OR-224", "OR-242"} {
+		if !strings.Contains(got, k) {
+			t.Errorf("%s was pushed off a short terminal:\n%s", k, got)
+		}
+	}
+	// And the whole block still fits, which is what makes that true on a real
+	// terminal rather than only in a buffer.
+	if rows := strings.Count(strings.TrimRight(got, "\n"), "\n") + 1; rows > 12 {
+		t.Errorf("the block is %d rows on a 12-row terminal:\n%s", rows, got)
+	}
+}
+
+// The region gets breathing room below it, so the status line is not hard
+// against the bottom edge with the cursor sitting on it.
+//
+// The padding is charged to the REGION's budget, not the window's: on a
+// terminal too short for everything the window gives up lines and the ticket
+// rows stay, which is the same precedence the frame follows (OR-264).
+func TestTheRegionIsPaddedAtTheBottomWithoutCostingTheRows(t *testing.T) {
+	t.Setenv("COLUMNS", "100")
+	t.Setenv("LINES", "14")
+	LiveReset()
+	t.Cleanup(LiveReset)
+
+	now := time.Now()
+	for _, k := range []string{"OR-223", "OR-224", "OR-242"} {
+		liveStart(k, now.Add(-10*time.Minute))
+	}
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	for i := 0; i < 12; i++ {
+		if _, err := fmt.Fprintf(l, "chatter-%02d\n", i); err != nil {
+			t.Fatalf("writing: %v", err)
+		}
+	}
+	frame := lastFrame(b.String())
+
+	if !strings.HasSuffix(frame, strings.Repeat("\n", liveBottomPad)) {
+		t.Errorf("the region is not padded at the bottom:\n%q", frame)
+	}
+	// The rows are what the padding must never cost.
+	for _, k := range []string{"OR-223", "OR-224", "OR-242"} {
+		if !strings.Contains(frame, k) {
+			t.Errorf("%s was pushed off to make room for padding:\n%s", k, frame)
+		}
+	}
+	// And the whole block still fits the terminal it was measured against.
+	if l.drawn > 14 {
+		t.Errorf("the block is %d rows on a 14-row terminal", l.drawn)
 	}
 }

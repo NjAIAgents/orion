@@ -28,7 +28,12 @@ const (
 	cyan   = "\x1b[36m"
 	blue   = "\x1b[34m"
 	dim    = "\x1b[2m"
-	bold   = "\x1b[1m"
+	// reverse swaps foreground and background, so text painted with it reads
+	// OUT of the colour rather than sitting beside it. Used for a bar's
+	// label: the segment keeps its state colour and the label rides on top
+	// of that cell rather than punching a hole in the fill.
+	reverse = "\x1b[7m"
+	bold    = "\x1b[1m"
 	// The non-semantic set, for colouring things that are IDENTITIES rather
 	// than outcomes -- a ticket, an actor. Green, red and yellow are spoken
 	// for: a ticket rendered in red reads as broken on every line it emits.

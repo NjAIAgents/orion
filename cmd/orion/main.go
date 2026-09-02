@@ -100,7 +100,8 @@ RUNNING
                               which actors are reached another way (read-only)
   orion watch [PROJECT...]    run the queue by itself: work, collect, repeat
                               (--once, --interval S, --max-jobs N, --dry-run,
-                              --verbose for the full tool-call stream)
+                              --verbose for the full tool-call stream,
+                              --demo to see the live display with no agents)
   orion collect [KEY...]      finish tickets awaiting CI: close, refresh, prune
                               (--dry-run for verdicts only, --no-prune, --no-fix)
   orion protect               require the checks CI actually runs, and that

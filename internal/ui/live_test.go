@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -56,36 +57,50 @@ func TestRegionShowsEveryElementPerRun(t *testing.T) {
 
 	got := regionOf(t, stateOf(now, a, b), now, 0)
 	lines := strings.Split(got, "\n")
-	// rule, header, blank, two rows.
-	if len(lines) != 5 {
-		t.Fatalf("expected a rule, a header, a blank and two rows; got %d lines:\n%s", len(lines), got)
-	}
-	if !strings.Contains(lines[1], "2 running") {
-		t.Errorf("the header must say how many are running; got %q", lines[1])
-	}
-	if !strings.Contains(lines[1], "OR") {
-		t.Errorf("the header must name the project; got %q", lines[1])
-	}
-	for _, want := range []string{
-		"OR-237",                           // the ticket
-		"implementing",                     // the stage
-		"6m02s",                            // elapsed
-		"84",                               // the tool-call count
-		barFullGlyph,                       // progress against the median
-		string([]rune(spinnerGlyphs)[0:1]), // any spinner frame is one of these
-	} {
-		if want == string([]rune(spinnerGlyphs)[0:1]) {
-			if !strings.ContainsAny(lines[3], spinnerGlyphs) {
-				t.Errorf("row has no spinner: %q", lines[3])
+
+	// Located by CONTENT rather than by index. The status line moved to the
+	// bottom of the region and the batch block below it (OR-264), and a test
+	// that indexes rows by position fails on a layout change while saying
+	// nothing about whether the display is still correct.
+	find := func(want string) string {
+		t.Helper()
+		for _, l := range lines {
+			if strings.Contains(l, want) {
+				return l
 			}
-			continue
 		}
-		if !strings.Contains(lines[3], want) {
-			t.Errorf("row is missing %q: %q", want, lines[3])
+		t.Fatalf("no line contains %q:\n%s", want, got)
+		return ""
+	}
+
+	header := find("running")
+	if !strings.Contains(header, "2 running") {
+		t.Errorf("the header must say how many are running; got %q", header)
+	}
+	if !strings.Contains(header, "OR") {
+		t.Errorf("the header must name the project; got %q", header)
+	}
+
+	row := find("OR-237")
+	for _, want := range []string{
+		"implementing", // the stage
+		"6m02s",        // elapsed
+		"84",           // the tool-call count
+		barFullGlyph,   // progress against the median
+	} {
+		if !strings.Contains(row, want) {
+			t.Errorf("row is missing %q: %q", want, row)
 		}
 	}
-	if !strings.ContainsAny(lines[3], sparkGlyphs) {
-		t.Errorf("row has no sparkline: %q", lines[3])
+	if !strings.ContainsAny(row, spinnerGlyphs) {
+		t.Errorf("row has no spinner: %q", row)
+	}
+	if !strings.ContainsAny(row, sparkGlyphs) {
+		t.Errorf("row has no sparkline: %q", row)
+	}
+	// And the second run has its own row, which is the "per run" in the name.
+	if second := find("OR-238"); !strings.Contains(second, "qa") {
+		t.Errorf("the second run's row lost its stage: %q", second)
 	}
 }
 
@@ -219,15 +234,18 @@ func TestNarrowTerminalDropsColumnsRightToLeft(t *testing.T) {
 	var b bytes.Buffer
 	has := func(row, glyphs string) bool { return strings.ContainsAny(row, glyphs) }
 
+	// The sparkline is detected by the glyphs the BAR cannot draw: both use
+	// the full block now, so testing for sparkGlyphs alone matches a bar.
+	sparkOnly := strings.TrimRight(sparkGlyphs, barFullGlyph)
 	full := renderRow(&b, *r, now, 200)
-	if !has(full, sparkGlyphs) || !strings.Contains(full, barHeadGlyph) || !strings.Contains(full, who) {
+	if !has(full, sparkOnly) || !strings.Contains(full, barHeadGlyph) || !strings.Contains(full, who) {
 		t.Fatalf("a wide terminal should keep every column: %q", full)
 	}
 
 	// One column narrower than the full row: the sparkline is the first thing
 	// given up, and everything to its left survives.
 	noSpark := renderRow(&b, *r, now, 79)
-	if has(noSpark, sparkGlyphs) {
+	if has(noSpark, sparkOnly) {
 		t.Errorf("the sparkline goes first: %q", noSpark)
 	}
 	if !strings.Contains(noSpark, barHeadGlyph) || !strings.Contains(noSpark, who) {
@@ -371,11 +389,12 @@ func TestScrollbackSurvivesTheRegion(t *testing.T) {
 	if !(fi < si && si < ti) {
 		t.Errorf("scrollback came out of order:\n%q", got)
 	}
-	// The region is four lines -- rule, header, blank, one row -- and the window
-	// grows by one at each write, so the block is 5, then 6, then 7 rows and
-	// each erase names the one before it. The first write had nothing yet to
-	// erase; Close erases the last block.
-	for _, want := range []string{"\x1b[5A\x1b[0J", "\x1b[6A\x1b[0J", "\x1b[7A\x1b[0J"} {
+	// The region is a blank, one row, a blank, the rule and the status line;
+	// the window's frame takes two, two blank rows pad the bottom, and the
+	// window grows by one at each write. So the block is 10, then 11, then 12
+	// rows and each erase names the one before it. The first write had
+	// nothing yet to erase; Close erases the last block.
+	for _, want := range []string{"\x1b[10A\x1b[0J", "\x1b[11A\x1b[0J", "\x1b[12A\x1b[0J"} {
 		if n := strings.Count(got, want); n != 1 {
 			t.Errorf("expected exactly one %q erase, got %d:\n%q", want, n, got)
 		}
@@ -383,7 +402,7 @@ func TestScrollbackSurvivesTheRegion(t *testing.T) {
 	// Close commits the window rather than erasing it with the region: those
 	// three lines are the only ones the terminal has not seen, and ending a run
 	// on a blank screen answers "what just happened" worse than they do.
-	if !strings.HasSuffix(got, "\x1b[7A\x1b[0Jfirst\nsecond\nthird\n") {
+	if !strings.HasSuffix(got, "\x1b[12A\x1b[0Jfirst\nsecond\nthird\n") {
 		t.Errorf("Close must clear the region and leave the window on screen:\n%q", got)
 	}
 	if l.drawn != 0 {
@@ -580,10 +599,22 @@ func TestQuietMeasuredFromDispatchWhenNeverActive(t *testing.T) {
 	r := run("OR-237", events.ActorImplementer, "starting", now.Add(-90*time.Second))
 	// r.last is left at its zero value: no tool call has ever been recorded.
 
-	notes := r.notes(now)
-	if len(notes) != 1 || !strings.Contains(notes[0], "quiet 1m30s") {
+	// Asserted by presence rather than by position: this run has no median,
+	// so it also carries "no baseline yet", and which note comes first is not
+	// what this test is about.
+	if notes := r.notes(now); !hasNote(notes, "quiet 1m30s") {
 		t.Errorf("a run with no activity must be quiet from its dispatch time: %+v", notes)
 	}
+}
+
+// hasNote reports whether any note contains want.
+func hasNote(notes []string, want string) bool {
+	for _, n := range notes {
+		if strings.Contains(n, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // The quiet threshold is exactly 60 seconds: one tick short must not say it,
@@ -594,11 +625,11 @@ func TestQuietThresholdIsExactlySixtySeconds(t *testing.T) {
 	r.last = start
 
 	notAt59 := r.notes(start.Add(59 * time.Second))
-	if len(notAt59) != 0 {
+	if hasNote(notAt59, "quiet") {
 		t.Errorf("59 seconds of silence must not be reported quiet: %+v", notAt59)
 	}
 	atExactly60 := r.notes(start.Add(60 * time.Second))
-	if len(atExactly60) == 0 || !strings.Contains(atExactly60[0], "quiet") {
+	if !hasNote(atExactly60, "quiet") {
 		t.Errorf("exactly 60 seconds of silence must be reported quiet: %+v", atExactly60)
 	}
 }
@@ -750,5 +781,52 @@ func TestElapsedString(t *testing.T) {
 		if got := elapsedString(c.d); got != c.want {
 			t.Errorf("elapsedString(%v) = %q, want %q", c.d, got, c.want)
 		}
+	}
+}
+
+// The header's CI count answers "how many tickets are waiting". It cannot
+// answer "what is that run doing" -- during a batch three tickets share ONE
+// run, so a count says nothing about which platform is still going, and an
+// operator watching "still running" for nine minutes has no way to see that
+// only Windows is left (OR-264).
+func TestTheChecksRowNamesEachCheckAndItsState(t *testing.T) {
+	got := renderChecks(io.Discard, []Check{
+		{Name: "go (ubuntu)", State: CheckPassed},
+		{Name: "go (macos)", State: CheckRunning},
+		{Name: "go (windows)", State: CheckFailed},
+	}, 200)
+
+	for _, want := range []string{"go (ubuntu)", "go (macos)", "go (windows)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the checks row does not name %q:\n%s", want, got)
+		}
+	}
+	// One line, not a row each: they belong to a single run, and stacking
+	// them would push the ticket rows off a short terminal.
+	if strings.Contains(got, "\n") {
+		t.Errorf("the checks must render as one line:\n%s", got)
+	}
+}
+
+// Nothing to say, nothing drawn. A repository with no checks configured must
+// not gain a blank row for them.
+func TestNoChecksDrawsNoRow(t *testing.T) {
+	if got := renderChecks(io.Discard, nil, 200); got != "" {
+		t.Errorf("an empty check set must draw nothing, got %q", got)
+	}
+}
+
+// A rollup is a complete picture of one moment, so a later reading REPLACES
+// the previous one. Merging would leave a finished check on screen after a
+// re-run dropped it.
+func TestChecksReplaceRatherThanAccumulate(t *testing.T) {
+	LiveReset()
+	defer LiveReset()
+	LiveChecks([]Check{{Name: "go (ubuntu)", State: CheckRunning}, {Name: "go (macos)", State: CheckRunning}})
+	LiveChecks([]Check{{Name: "go (ubuntu)", State: CheckPassed}})
+
+	st := liveSnapshot()
+	if len(st.checks) != 1 || st.checks[0].Name != "go (ubuntu)" || st.checks[0].State != CheckPassed {
+		t.Errorf("the second reading must replace the first, got %+v", st.checks)
 	}
 }
