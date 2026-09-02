@@ -73,23 +73,30 @@ jobs:
       fail-fast: true
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-    # Windows runs on PROMOTION, not on every pull request.
-    #
-    # It is the slowest leg by 5-6x -- internal/collect and internal/work
-    # spawn git roughly 20x slower there (OR-292) -- and it is the critical
-    # path on every run, so every PR waited on it. What it proves is that the
-    # code compiles and passes on Windows, and that is worth knowing before
-    # a release, not before every review.
-    #
-    # A push to develop or main still runs it, so nothing reaches a release
-    # tag without a Windows verdict. Pull requests gate on Linux and macOS
-    # and finish in roughly a third of the time.
-    #
-    # develop's branch protection must NOT require go (windows-latest) for
-    # this to work: a skipped job never reports, and a required check that
-    # never reports blocks the merge forever. main keeps requiring it, because
-    # a promotion is a push and the leg runs there.
-    if: matrix.os != 'windows-latest' || github.event_name == 'push'
+        # Windows runs on PROMOTION, not on every pull request.
+        #
+        # It is the slowest leg by 5-6x -- internal/collect and internal/work
+        # spawn git roughly 20x slower there (OR-292) -- and it is the
+        # critical path on every run, so every PR waited on it. What it
+        # proves is that the code compiles and passes on Windows, which is
+        # worth knowing before a release, not before every review.
+        #
+        # A push to develop or main still runs it, so nothing reaches a
+        # release tag without a Windows verdict. Pull requests gate on Linux
+        # and macOS and finish in roughly a third of the time.
+        #
+        # Done as a matrix EXCLUDE rather than a job-level `if`: matrix.os is
+        # not in scope for a job-level condition -- the matrix expands after
+        # it is evaluated -- and a job-level `if` referencing it is a parse
+        # error that kills the whole workflow with zero jobs and no log.
+        # That happened on the first attempt at this change.
+        #
+        # develop's branch protection must NOT require go (windows-latest):
+        # an excluded job never reports, and a required check that never
+        # reports blocks the merge forever. main keeps requiring it, because
+        # a promotion is a push and the leg runs there.
+        exclude:
+          - os: ${{ github.event_name == 'pull_request' && 'windows-latest' || '__none__' }}
     steps:
       - uses: actions/checkout@v4
       # 'stable' rather than a pin. Pinning to 1.22 broke the macOS leg:
