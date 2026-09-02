@@ -140,6 +140,71 @@ func TestSuppressed(t *testing.T) {
 			t.Errorf("a released build on a terminal must be eligible, got %q", got)
 		}
 	})
+
+	// "false" is spelled out in the ticket alongside "0" as a value that must
+	// NOT suppress -- only an explicit true-ish value opts out.
+	t.Run("the environment variable set to false", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv(DisableKey, "false")
+		if got := Suppressed(tty, home, "v0.5.0"); got != "" {
+			t.Errorf("ORION_NO_UPDATE_CHECK=false must not silence it, got %q", got)
+		}
+	})
+
+	// The config file honours the same "0"/"false"/empty carve-out as the
+	// environment variable -- a file is just the other place this value can
+	// live, not a different rule.
+	t.Run("the config key set to false or 0 does not suppress", func(t *testing.T) {
+		for _, v := range []string{"0", "false", ""} {
+			cfgHome := t.TempDir()
+			if err := os.WriteFile(filepath.Join(cfgHome, "config.env"),
+				[]byte(DisableKey+"="+v+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			clearEnv(t)
+			if got := Suppressed(tty, cfgHome, "v0.5.0"); got != "" {
+				t.Errorf("%s=%q in config.env must not silence it, got %q", DisableKey, v, got)
+			}
+		}
+	})
+
+	// Environment first, file second (creds.Get's own contract) -- an
+	// explicit per-invocation override must win even when a file says the
+	// opposite, or a deliberate "just this once" cannot be expressed.
+	t.Run("environment overrides the config file", func(t *testing.T) {
+		cfgHome := t.TempDir()
+		if err := os.WriteFile(filepath.Join(cfgHome, "config.env"),
+			[]byte(DisableKey+"=1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		clearEnv(t)
+		t.Setenv(DisableKey, "0")
+		if got := Suppressed(tty, cfgHome, "v0.5.0"); got != "" {
+			t.Errorf("env %s=0 must win over config.env=1, got %q", DisableKey, got)
+		}
+	})
+
+}
+
+// A cache file that exists but is not valid JSON must be treated the same as
+// a missing one -- silence, not a crash and not a notice built on garbage.
+func TestEmitIgnoresACorruptCacheFile(t *testing.T) {
+	corrupt := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(corrupt, "state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(CachePath(corrupt), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	refreshed := false
+	emit(&buf, corrupt, "v0.5.0", func() { refreshed = true })
+	if buf.Len() != 0 {
+		t.Errorf("printed %q from a corrupt cache", buf.String())
+	}
+	if !refreshed {
+		t.Error("a corrupt cache reads as no known CheckedAt, so it must still trigger a refresh")
+	}
 }
 
 func TestEmit(t *testing.T) {
