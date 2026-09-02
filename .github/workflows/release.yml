@@ -77,7 +77,8 @@ jobs:
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
           echo "releasing ${TAG} on the ${CHANNEL} channel"
 
-      - run: make dist
+      - run: make dist VERSION=${{ inputs.tag }}
+
 
       - name: Render brew formula and scoop manifest
         env:
