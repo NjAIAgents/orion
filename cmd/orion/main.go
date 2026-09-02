@@ -42,6 +42,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
+	"github.com/orion-sdlc/orion/internal/update"
 	"github.com/orion-sdlc/orion/internal/work"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -204,9 +205,18 @@ func main() {
 		return creds.Get(workspace.Home(), creds.Webhook)
 	})
 
+	if showsUpdateNotice(os.Args[1]) {
+		update.Notice(os.Stdout, Version)
+	}
+
 	switch os.Args[1] {
 	case "hook":
 		runHook(os.Args[2:])
+	case "update-check":
+		// Not in the usage: this is the detached child internal/update
+		// spawns to refresh its cache without the command in front of the
+		// user waiting on a network call. Prints nothing, ever.
+		update.Refresh()
 	case "doctor":
 		os.Exit(doctor.Run(os.Stdout, argFlag(os.Args[2:], "--path", "."), hasFlag(os.Args[2:], "--fix")))
 	case "config":
@@ -311,6 +321,23 @@ func main() {
 		fmt.Fprintf(os.Stderr, "orion: unknown command %q\n\n%s", os.Args[1], usage)
 		os.Exit(64)
 	}
+}
+
+// showsUpdateNotice reports whether a command may print the "a newer orion
+// exists" line (OR-92).
+//
+// The list is commands a PERSON runs and reads. `hook` is the one hard
+// exclusion and the reason this is a list rather than a default: hooks fire
+// on every matching tool call inside a Claude Code session, so a version
+// notice there would be printed hundreds of times a day into somebody's
+// editor. Every other non-listed command is excluded for the milder reason
+// that its output is usually piped or read by another program.
+func showsUpdateNotice(cmd string) bool {
+	switch cmd {
+	case "status", "doctor", "watch", "collect", "work", "init":
+		return true
+	}
+	return false
 }
 
 // supervisedRun reports whether this process is inside a run Orion started.
