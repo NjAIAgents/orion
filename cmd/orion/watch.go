@@ -145,6 +145,7 @@ func runWatch(args []string) {
 		Work: func(o work.Options) []work.Result {
 			return work.Run(o, work.Deps{
 				Jira: mustJira(), Supervise: supervisor.Run, Advise: adviseRunner,
+				Fan:      supervisor.Fan,
 				Describe: describeRunner,
 				Push:     pushBranch, OpenPR: openPR, Merged: mergedBranch,
 				Slack: slackForHold(), Preflight: preflightEnv,

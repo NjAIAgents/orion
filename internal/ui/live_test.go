@@ -340,8 +340,12 @@ func TestOffTerminalIsPlainLinesAndNoCursorControl(t *testing.T) {
 	if !strings.Contains(got, "a scrollback line\n") {
 		t.Errorf("the scrollback line must pass through untouched:\n%q", got)
 	}
-	if n := strings.Count(got, "OR-237"); n != 2 {
-		t.Errorf("expected one plain line per run per tick (2 ticks); got %d:\n%s", n, got)
+	// Printed ONCE across two ticks, not once per tick: nothing about the row
+	// changed between them, and an unchanged line re-printed on the minute
+	// is the noise that buried a held run's fault line on the macOS runner
+	// (OR-265). One plain line per run per CHANGE is the contract now.
+	if n := strings.Count(got, "OR-237"); n != 1 {
+		t.Errorf("expected the row printed once for two unchanged ticks; got %d:\n%s", n, got)
 	}
 	for _, want := range []string{"implementing", "1 calls"} {
 		if !strings.Contains(got, want) {
@@ -977,5 +981,27 @@ func TestAFinishedRunKeepsItsRowAndSaysWhatBecameOfIt(t *testing.T) {
 	}
 	if !strings.Contains(header, "1 done") {
 		t.Errorf("the header does not report the finished run: %q", header)
+	}
+}
+
+// TestTheActivityNoteIsVisibleOffATerminal.
+//
+// The note is how a stage says what it is doing right now -- "authoring x5",
+// "running the suite" (OR-305, OR-306). The terminal path drew it and the
+// plain path did not, so a watch piped to a log showed a row that had gone
+// quiet with no explanation, while the same run on a terminal explained
+// itself. The log is the one read after something has gone wrong, which is
+// the worse half to leave silent.
+func TestTheActivityNoteIsVisibleOffATerminal(t *testing.T) {
+	LiveReset()
+	var buf bytes.Buffer
+	live := NewLive(&buf)
+	LiveStart("OR-1")
+	LiveStage("OR-1", "qa", "qa")
+	LiveActivityNote("OR-1", "qa", "authoring x5")
+	live.Tick()
+
+	if !strings.Contains(buf.String(), "authoring x5") {
+		t.Errorf("the activity note is missing from the plain output:\n%s", buf.String())
 	}
 }

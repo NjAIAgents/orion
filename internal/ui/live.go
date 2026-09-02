@@ -53,7 +53,8 @@ package ui
 //
 // DEGRADATION IS NOT OPTIONAL. A redirected log must stay a log: off a
 // terminal there is no cursor control at all, just one plain line per run per
-// tick. NO_COLOR keeps the layout and drops the escapes; TERM=dumb is a
+// CHANGE -- a row whose line is identical to the last tick's prints nothing, so
+// a redirected log carries what happened rather than a heartbeat on the minute. NO_COLOR keeps the layout and drops the escapes; TERM=dumb is a
 // terminal saying it cannot do anything clever, so it gets the plain form
 // too. This reuses color.go's existing opt-outs rather than inventing a
 // second set -- one place decides what a terminal can do.
@@ -255,11 +256,12 @@ type liveRun struct {
 	// events.jsonl have every line in full, which is where a record belongs
 	// (OR-265).
 	note string
-	// reported marks a finished row whose ending the OFF-TERMINAL path has
-	// already printed. The region redraws in place and needs no such flag;
-	// a log appends, and repeating a finished row every tick buries the
-	// lines a reader needs (OR-265).
-	reported bool
+	// lastPlain is the body of the line the OFF-TERMINAL path printed for
+	// this row last tick, so it prints again only when something changed.
+	// The region redraws in place and needs no such record; a log appends,
+	// and a row repeating an unchanged line every tick buries the lines a
+	// reader needs (OR-265).
+	lastPlain string
 	// median is the actor's median completed-run duration in this project,
 	// resolved when the actor becomes known. Zero means unknown, which is
 	// rendered as no bar at all rather than as an empty one.
@@ -1239,7 +1241,19 @@ const maxFixRounds = 3
 // than four per second, because the file is read afterwards and a redraw
 // stream is not a record of anything.
 func renderPlain(st liveState, now time.Time) []string {
+	lines, _ := renderPlainTracked(st, now)
+	return lines
+}
+
+// plainPrinted is one row's rendered body, recorded so the next tick can
+// tell whether it has anything new to say.
+type plainPrinted struct{ key, body string }
+
+// renderPlainTracked is renderPlain plus the bodies it chose to print, so
+// the caller can record them against the registry.
+func renderPlainTracked(st liveState, now time.Time) ([]string, []plainPrinted) {
 	var out []string
+	var printed []plainPrinted
 	if line := renderBatchPlain(st.batch, now); line != "" {
 		out = append(out, line)
 	}
@@ -1254,32 +1268,53 @@ func renderPlain(st liveState, now time.Time) []string {
 		// "claude is not authenticated" out of the captured output entirely,
 		// which is OR-240's rule broken by OR-265's fix: a tick with nothing
 		// to say must say nothing.
-		if r.done && r.reported {
+		// A row that would print the SAME line it printed last tick says
+		// nothing, done or not. The first cut of this guard only silenced
+		// finished rows, which was right for the region and wrong for a log:
+		// a HELD run never finishes, so it stayed "starting" and re-printed
+		// every tick, six times in a row, and buried the one line that
+		// mattered -- "claude is not authenticated" -- exactly as the finished
+		// row had before. OR-240's rule is a tick with nothing to SAY, not a
+		// tick with nothing finished. Timing-dependent, so it showed only on
+		// the macOS runner.
+		//
+		// The clock is left out of the comparison on purpose: it changes
+		// every minute whether or not anything happened, and a row that
+		// re-printed on the minute for no other reason is the noise this
+		// removes.
+		body := fmt.Sprintf("%s  %s  %s  %d calls", pad(r.key, liveKeyWidth),
+			pad(r.stage, liveStageWidth), elapsedString(now.Sub(r.started)), r.calls)
+		// The activity note, which the terminal path already draws and this
+		// one did not. A stage that says what it is doing on a terminal and
+		// stays silent in a piped log is telling two different stories about
+		// the same run, and the log is the one read after something went
+		// wrong. It sits before the derived notes for the same reason it does
+		// on a terminal: it says what is happening now, where those say how
+		// long it has been happening.
+		if r.note != "" {
+			body += "  " + r.note
+		}
+		if notes := r.notes(now); len(notes) > 0 {
+			body += "  " + strings.Join(notes, " "+liveSep+" ")
+		}
+		if r.lastPlain == body {
 			continue
 		}
-		line := fmt.Sprintf("%s  %s  %s  %s  %d calls",
-			now.Local().Format("15:04"), pad(r.key, liveKeyWidth),
-			pad(r.stage, liveStageWidth), elapsedString(now.Sub(r.started)), r.calls)
-		if notes := r.notes(now); len(notes) > 0 {
-			line += "  " + strings.Join(notes, " "+liveSep+" ")
-		}
-		out = append(out, line)
+		out = append(out, now.Local().Format("15:04")+"  "+body)
+		printed = append(printed, plainPrinted{key: r.key, body: body})
 	}
-	return out
+	return out, printed
 }
 
 // markReported records that the plain path has printed these rows' endings,
 // so the next tick does not repeat them. Separate from renderPlain because
 // that is a pure function of a snapshot and this mutates the registry.
-func markReported(rows []liveRun) {
+func markReported(printed []plainPrinted) {
 	live.mu.Lock()
 	defer live.mu.Unlock()
-	for _, r := range rows {
-		if !r.done {
-			continue
-		}
-		if live.runs[r.key] != nil {
-			live.runs[r.key].reported = true
+	for _, p := range printed {
+		if r := live.runs[p.key]; r != nil {
+			r.lastPlain = p.body
 		}
 	}
 }
@@ -1678,7 +1713,8 @@ func (l *Live) commitWindowLocked() {
 	l.window = nil
 }
 
-// Tick is the off-terminal heartbeat: one plain line per run.
+// Tick is the off-terminal heartbeat: one plain line per run, and only when
+// that line changed since the last tick.
 //
 // Called once per watcher tick rather than on a timer, because the file this
 // lands in is read afterwards and four lines a second would bury the run it
@@ -1691,10 +1727,11 @@ func (l *Live) Tick() {
 		return
 	}
 	st := liveSnapshot()
-	for _, line := range renderPlain(st, time.Now()) {
+	lines, printed := renderPlainTracked(st, time.Now())
+	for _, line := range lines {
 		fmt.Fprintln(l.w, line)
 	}
-	markReported(st.rows)
+	markReported(printed)
 }
 
 // Close stops the redraw and clears the region, leaving the scrollback as the

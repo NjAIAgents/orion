@@ -289,6 +289,28 @@ var qualifiedLimits = map[string]qualifiedLimit{
 				"round, just an unverified branch and a person sent to read it (OR-248).",
 		},
 	},
+	"qa.author_agents": {
+		block: "qa", field: "author_agents",
+		value: func(c config.Config) int { return c.QA.Authors() },
+		hazards: []string{
+			"this bounds AGENTS, which contend for one rate limit -- not processes, " +
+				"which contend for CPU. qa.exec_procs is the other one.",
+			"limits.max_concurrent_children is still the hard ceiling: supervisor.Fan " +
+				"reads it directly, so a larger number here cannot widen the real fan.",
+			"a wider fan is more agents writing at once, and every one of them is a " +
+				"session that reads the ticket before it writes anything.",
+		},
+	},
+	"qa.exec_procs": {
+		block: "qa", field: "exec_procs",
+		value: func(c config.Config) int { return c.QA.Procs() },
+		hazards: []string{
+			"this bounds PROCESSES on this machine, not agents: it is passed to the " +
+				"runner's own flag (go test -p), not used to spawn anything here.",
+			"too high contends for CPU, disk and any port the tests bind, and a suite " +
+				"that fails only under load reads exactly like a flaky one.",
+		},
+	},
 	"dba.max_rounds": {
 		block: "dba", field: "max_rounds",
 		value: func(c config.Config) int { return c.DBA.Rounds() },
