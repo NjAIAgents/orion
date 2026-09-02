@@ -81,12 +81,13 @@ func TestAReapedJobLeavesTheDisplay(t *testing.T) {
 
 	s := &spy{maxSleeps: 2, queued: issues("FCIA-7"), hold: make(chan struct{})}
 	releaseAfter(s, 20*time.Millisecond)
-	runWatch(t, s, Options{MaxConcurrent: 1, MaxJobs: 1})
+	runOutput := runWatch(t, s, Options{MaxConcurrent: 1, MaxJobs: 1})
 
-	var buf bytes.Buffer
-	live := ui.NewLive(&buf)
-	live.Tick()
-	live.Close()
+	// A SECOND Live would print nothing: the loop's own Tick already reported
+	// this row's ending, and a finished row is reported once (OR-265). So the
+	// assertion is on what the RUN printed, which is where an operator would
+	// actually read it.
+	out := runOutput
 
 	// The row STAYS, carrying what became of the ticket.
 	//
@@ -94,7 +95,6 @@ func TestAReapedJobLeavesTheDisplay(t *testing.T) {
 	// anything running" and threw away "what happened to the thing that just
 	// finished" -- so a ticket that pushed and a ticket that failed both left
 	// the same way: silently (OR-265).
-	out := buf.String()
 	if !strings.Contains(out, "FCIA-7") {
 		t.Errorf("a finished job left no trace of itself: %q", out)
 	}

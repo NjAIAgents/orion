@@ -237,6 +237,15 @@ func Run(opts Options, deps Deps) error {
 		for _, r := range p.wait() {
 			reportFinished(w, r)
 		}
+		// One last plain tick, so the endings recorded by that drain reach a
+		// redirected log. The loop's own Tick has already stopped by the time
+		// this runs, and a job that finished on the final pass would
+		// otherwise have its outcome recorded and never printed -- the row
+		// said "starting" for a ticket that had reached ci-wait (OR-265).
+		//
+		// Off a terminal only: on one, the region has been drawing this
+		// continuously and Close leaves it on screen.
+		live.Tick()
 	}()
 
 	started := 0
