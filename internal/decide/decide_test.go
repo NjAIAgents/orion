@@ -1,6 +1,7 @@
 package decide
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -288,5 +289,137 @@ func TestConfirmRefusesARecordThatIsNotPending(t *testing.T) {
 	}
 	if _, ok, err := Confirm(Deps{}, dir, "OR-153"); err == nil || ok {
 		t.Fatalf("promoted a record with no pending status (ok=%v, err=%v)", ok, err)
+	}
+}
+
+// The question itself carries the affordance: a phone user taps the emoji
+// rather than typing a reply, so the posted text has to name it.
+func TestSlackQuestionIsPostedWithTheConfirmationEmojiAffordance(t *testing.T) {
+	s := &fakeSlack{ts: "111.222"}
+	recommended(t, s, &fakeTracker{})
+
+	if !strings.Contains(s.posted, ":"+confirmEmoji+":") {
+		t.Errorf("the posted question does not carry the confirmation affordance:\n%s", s.posted)
+	}
+	if len(s.reacted) != 1 || s.reacted[0] != confirmEmoji {
+		t.Errorf("Orion did not react with its own affordance: %v", s.reacted)
+	}
+}
+
+// An allowlisted approver's reaction is what actually promotes the record --
+// the positive case the bystander and self-reaction tests are the negative
+// of.
+func TestAnAllowlistedReactionConfirms(t *testing.T) {
+	s := &fakeSlack{ts: "111.222",
+		names:     map[string]string{"U-APPROVER": "ops-lead"},
+		reactions: []slack.Reaction{{Name: "white_check_mark", Users: []string{"U-APPROVER"}}}}
+	dir, deps := recommended(t, s, &fakeTracker{})
+
+	d, ok, err := Confirm(deps, dir, "OR-153")
+	if err != nil || !ok || !d.Approved {
+		t.Fatalf("an allowlisted reaction did not confirm: ok=%v err=%v decision=%+v", ok, err, d)
+	}
+}
+
+// A Slack call that errors out (as opposed to Slack never being configured,
+// covered above) still leaves the record written and unconfirmed -- the safe
+// state to be stuck in -- but the caller is told, not left to assume success.
+func TestASlackPostFailureStillWritesTheRecordUnconfirmedButReturnsTheError(t *testing.T) {
+	dir := t.TempDir()
+	deps := Deps{Slack: &failingSlack{}, Now: func() time.Time { return at("2026-09-02T10:00:00Z") }}
+
+	_, err := Recommend(deps, dir, Record{
+		Key: "OR-153", Title: "t", Recommendation: "do the thing",
+		By: events.ActorArchitect, Channel: "C1",
+	})
+	if err == nil {
+		t.Fatal("Recommend swallowed the Slack error")
+	}
+
+	body := read(t, pendingPath(dir))
+	if !strings.Contains(body, statusUnconfirmed) {
+		t.Errorf("the record was not written unconfirmed after the Slack failure:\n%s", body)
+	}
+}
+
+// failingSlack always fails to post, as if the connection were down.
+type failingSlack struct{}
+
+func (failingSlack) PostTS(string, string) (string, error) { return "", errors.New("connection refused") }
+func (failingSlack) React(string, string, string)          {}
+func (failingSlack) BotID() string                         { return "UBOT" }
+func (failingSlack) Reactions(string, string) ([]slack.Reaction, error) {
+	return nil, nil
+}
+func (failingSlack) Replies(string, string) ([]slack.Message, error) { return nil, nil }
+func (failingSlack) UserName(id string) string                       { return id }
+
+// Confirming a key that was never recommended has no pending file to read,
+// so it errors rather than silently doing nothing.
+func TestConfirmWithNoPendingFileReturnsAnError(t *testing.T) {
+	dir := t.TempDir()
+	if _, ok, err := Confirm(Deps{}, dir, "OR-153"); err == nil || ok {
+		t.Fatalf("confirmed a recommendation that was never written (ok=%v, err=%v)", ok, err)
+	}
+}
+
+// The allowlist is a comma-separated header field written by hand as often
+// as by Recommend, so stray spaces around a name or a comma must not survive
+// into the parsed list -- a leading space would silently mismatch the ID
+// ReadDecision compares against.
+func TestApproversWithCommasAndSpacesParseCorrectly(t *testing.T) {
+	body := "# OR-153: t\n\n" + statusUnconfirmed + "\n" +
+		"- Ticket: OR-153\n" +
+		"- Approvers: U1,  U2 ,@someone ,  U3\n\n" +
+		"## Recommendation\n\nr\n"
+	got := parseHeader(body)
+	want := []string{"U1", "U2", "@someone", "U3"}
+	if strings.Join(got.Approvers, ",") != strings.Join(want, ",") {
+		t.Errorf("approvers = %v, want %v", got.Approvers, want)
+	}
+}
+
+// The header is parsed field by field, but the prose is never touched --
+// markdown() writes it out trimmed, and nothing downstream is allowed to
+// reflow or reword what an advisor or a person actually wrote.
+func TestProseInRecommendationAndGroundingSurvivesRoundTripUnchanged(t *testing.T) {
+	r := Record{
+		Key: "OR-153", Title: "t", By: events.ActorPM,
+		At:             at("2026-09-02T10:00:00Z"),
+		Recommendation: "Partition the ledger by issuer.\n\nNot by date -- reads dominate.",
+		Grounding:      "spec.md, section 4 -- read patterns, not write patterns.",
+	}
+	body := r.markdown()
+	if !strings.Contains(body, r.Recommendation) {
+		t.Errorf("recommendation prose did not survive rendering unchanged:\n%s", body)
+	}
+	if !strings.Contains(body, r.Grounding) {
+		t.Errorf("grounding prose did not survive rendering unchanged:\n%s", body)
+	}
+}
+
+// parseHeader stops at the first "## " line and never looks at the prose
+// beneath it, so a person editing the recommendation or grounding text by
+// hand -- fixing a typo, adding a caveat -- does not touch anything Confirm
+// reads and cannot block or corrupt the confirmation.
+func TestManuallyEditedRecordProseDoesNotPreventConfirmation(t *testing.T) {
+	s := &fakeSlack{ts: "111.222",
+		names:     map[string]string{"U-APPROVER": "ops-lead"},
+		reactions: []slack.Reaction{{Name: "white_check_mark", Users: []string{"U-APPROVER"}}}}
+	dir, deps := recommended(t, s, &fakeTracker{})
+
+	body := read(t, pendingPath(dir))
+	edited := strings.Replace(body,
+		"Partition the ledger by issuer, not by date.",
+		"Partition the ledger by issuer, not by date. (amended by a human reviewer)", 1)
+	if edited == body {
+		t.Fatal("test setup did not actually change the prose")
+	}
+	if err := os.WriteFile(pendingPath(dir), []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok, err := Confirm(deps, dir, "OR-153"); err != nil || !ok {
+		t.Fatalf("a hand-edited prose section blocked confirmation: ok=%v err=%v", ok, err)
 	}
 }
