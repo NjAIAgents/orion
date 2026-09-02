@@ -37,59 +37,81 @@ func gateModule(t *testing.T, files map[string]string) string {
 
 // runGate runs scripts/release-gate.sh with dir as the working directory, the
 // way release.sh runs it from the repository root.
-func runGate(t *testing.T, dir string) (string, error) {
+// gateScript is the absolute path to the gate, so a test can run it from a
+// temporary module of its own.
+func gateScript(t *testing.T) string {
 	t.Helper()
 	script, err := filepath.Abs(filepath.Join("..", "..", "scripts", "release-gate.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	return script
+}
+
+func runGate(t *testing.T, dir string) (string, error) {
+	t.Helper()
+	script := gateScript(t)
 	cmd := exec.Command("bash", script)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 
-// The acceptance criterion, proved the way the ticket asked for it: break one
-// test on purpose and read what the operator gets.
+// OR-259's acceptance criterion, applied to the step that now stands where
+// the test run used to.
 //
-// Two things have to be there. Which step failed -- a four-command gate
-// reporting a bare status leaves four guesses (flaky test, parallel-test
-// collision, stale build cache, environment difference) that call for
-// different responses. And enough of the output to tell them apart, because
-// `go test ./... >/dev/null` threw away the evidence at the exact moment it
-// existed, and by the time anyone re-ran it the tree was green again.
-func TestTheGateNamesTheFailingTestStepAndShowsItsOutput(t *testing.T) {
-	dir := gateModule(t, map[string]string{
-		"m.go": "package gatecanary\n",
-		"m_test.go": `package gatecanary
-
-import "testing"
-
-func TestDeliberatelyBroken(t *testing.T) {
-	t.Fatal("GATE-CANARY-a-transient-failure")
-}
-`,
-	})
+// The gate no longer runs the suite: CI runs it on three platforms for every
+// push, and running it again here added only this machine's flakiness --
+// v0.8.10 failed four times on four such artefacts and none on a real defect.
+// What the gate asks now is whether CI passed on the exact commit being
+// tagged, which is the stronger claim.
+//
+// OR-259's rule is unchanged and is what this test still proves: a gate that
+// stops must say WHICH step stopped it and WHY. A bare status leaves the
+// operator guessing, and the evidence exists for one second.
+func TestTheGateNamesTheFailingCIStepAndSaysWhy(t *testing.T) {
+	// A module with no git repository at all: `git rev-parse HEAD` fails, so
+	// there is no commit to ask CI about. That is the same refusal path as an
+	// unbuilt commit and needs no network.
+	dir := gateModule(t, map[string]string{"m.go": "package gatecanary\n"})
 
 	out, err := runGate(t, dir)
 	if err == nil {
-		t.Fatalf("a red test suite must fail the gate:\n%s", out)
+		t.Fatalf("a commit CI has not reported on must fail the gate:\n%s", out)
 	}
-	if !strings.Contains(out, "FAILED: go test") {
+	if !strings.Contains(out, "FAILED: CI green for HEAD") {
 		t.Errorf("the gate does not name the step that failed, so the operator is "+
 			"back to guessing which of four commands it was:\n%s", out)
 	}
-	if !strings.Contains(out, "GATE-CANARY-a-transient-failure") {
-		t.Errorf("the failing test's own output was discarded, which is the whole of "+
-			"OR-259: a release stops, the evidence exists for one second, and nobody "+
-			"can reconstruct it afterwards:\n%s", out)
+	// The words matter as much as the refusal: "nothing reported" and "CI
+	// said failure" call for different responses, and so does "gh is not
+	// installed" -- which must never be mistaken for a green build.
+	if !strings.Contains(out, "CI has reported nothing") &&
+		!strings.Contains(out, "gh is not installed") {
+		t.Errorf("the gate refused without saying why, which is the whole of OR-259:\n%s", out)
 	}
-	if !strings.Contains(out, "TestDeliberatelyBroken") {
-		t.Errorf("the output does not name the test that failed:\n%s", out)
+}
+
+// The escape hatch is LOUD. A release that skipped its only verification must
+// say so on the way past, or the flag becomes a habit nobody remembers using.
+func TestSkippingTheCICheckIsAnnounced(t *testing.T) {
+	dir := gateModule(t, map[string]string{"m.go": "package gatecanary\n"})
+
+	cmd := exec.Command("bash", gateScript(t))
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "ORION_SKIP_CI_CHECK=1")
+	b, err := cmd.CombinedOutput()
+	out := string(b)
+	if err != nil {
+		t.Fatalf("the skip must let the gate pass, not merely change its message:\n%s", out)
+	}
+	if !strings.Contains(out, "WARNING") || !strings.Contains(out, "without a CI verdict") {
+		t.Errorf("a gate that shipped without verification must say so:\n%s", out)
 	}
 }
 
 // The other three steps named themselves before this ticket and must keep
+// doing so.// The other three steps named themselves before this ticket and must keep
 // doing so. Table rather than one test because the property is the gate's,
 // not any one command's: whichever step fails, its name is on the line above
 // its output.
@@ -185,6 +207,9 @@ func TestTheGateStopsAtTheFirstFailure(t *testing.T) {
 // The other half of the fix, and the easier half to lose: keeping the failing
 // output means nothing if a passing run now buries the release in a thousand
 // lines of test output. Success says one thing, exactly as it did before.
+// A clean tree passes quietly. The CI check is skipped here on purpose: this
+// test is about the gate's VOLUME on success, and a temporary module has no
+// commit for CI to have an opinion about.
 func TestASuccessfulGateStaysQuiet(t *testing.T) {
 	dir := gateModule(t, map[string]string{
 		"m.go": "package gatecanary\n\nfunc X() int { return 1 }\n",
@@ -200,43 +225,69 @@ func TestX(t *testing.T) {
 `,
 	})
 
-	out, err := runGate(t, dir)
+	cmd := exec.Command("bash", gateScript(t))
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "ORION_SKIP_CI_CHECK=1")
+	b, err := cmd.CombinedOutput()
+	out := string(b)
 	if err != nil {
 		t.Fatalf("a clean tree must pass the gate: %v\n%s", err, out)
 	}
-	if strings.TrimSpace(out) != "all green" {
+	// The skip's own warning is expected and is asserted by
+	// TestSkippingTheCICheckIsAnnounced; what this test cares about is that
+	// nothing ELSE is printed on success.
+	quiet := strings.TrimSpace(strings.ReplaceAll(out, "\n", " "))
+	if !strings.Contains(quiet, "all green") {
+		t.Errorf("a successful gate must say it passed, got:\n%s", out)
+	}
+	if strings.Count(out, "\n") > 3 {
 		t.Errorf("a successful gate must stay as quiet as it was, got:\n%s", out)
 	}
 }
 
-// A cached pass and a fresh failure are indistinguishable after the fact, and
-// a release is the wrong place to be reading a cache. A source check because
-// proving the absence of caching end to end would mean poisoning GOCACHE,
-// which is slower and less direct than reading the one flag that matters.
-func TestTheGateRunsTestsWithoutTheCache(t *testing.T) {
+// The gate VERIFIES CI rather than re-running the suite, and refuses when
+// there is no verdict to read.
+//
+// A source check because the property is the script's shape: it must ask CI
+// about the exact commit, and it must treat silence as a refusal. Proving
+// that end to end would mean standing up a fake forge, which is slower and
+// less direct than reading the three lines that matter.
+//
+// It replaces a check that the gate ran `go test -count=1`. That was the
+// right contract while the gate ran the suite; it ran it a third time after
+// CI had already done so on three platforms, and every one of v0.8.10's four
+// gate failures was an artefact of running it here rather than a defect.
+func TestTheGateVerifiesCIRatherThanRunningTheSuite(t *testing.T) {
 	src := repoFile(t, "scripts", "release-gate.sh")
-	if !strings.Contains(src, "go test -count=1 ./...") {
-		t.Error("the release gate runs `go test` without -count=1, so a green gate can " +
-			"be a cached green from an hour ago against a tree that has since moved")
+
+	if !strings.Contains(src, "gh run list --commit") {
+		t.Error("the gate does not ask CI about the commit being tagged")
 	}
+	// Silence is a refusal. An unbuilt commit is exactly what this gate
+	// exists to stop, so "no answer" must never read as "green".
+	if !strings.Contains(src, "CI has reported nothing") {
+		t.Error("the gate does not refuse a commit CI has said nothing about")
+	}
+	// And a missing gh is a refusal too, for the same reason.
+	if !strings.Contains(src, "gh is not installed") {
+		t.Error("a missing gh could be mistaken for a green build")
+	}
+
 	// Comment lines excluded: the script's header quotes the old command as
 	// the thing that went wrong, and a check that cannot tell a warning from
 	// the mistake it warns about would fire on the fix.
 	for i, line := range strings.Split(src, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		if strings.Contains(line, ">/dev/null") {
-			t.Errorf("line %d discards a gate step's output, which is OR-259 exactly: "+
-				"the slow step is the only one likely to fail non-obviously, and it was "+
-				"the only one whose evidence was thrown away: %s", i+1, strings.TrimSpace(line))
+		if strings.Contains(trimmed, "go test") {
+			t.Errorf("line %d still runs the suite locally, which is the twenty minutes "+
+				"this change removed: %s", i+1, trimmed)
 		}
 	}
 }
 
-// release.sh must keep delegating to the gate script rather than growing its
-// own copy. Two gates drift, and the direction they drift in is the one that
-// discards output again.
 func TestTheReleaseScriptDelegatesToTheGate(t *testing.T) {
 	src := repoFile(t, "scripts", "release.sh")
 	if !strings.Contains(src, "release-gate.sh") {

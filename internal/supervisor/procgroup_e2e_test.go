@@ -67,7 +67,21 @@ func TestRunKillsGrandchildrenOnWallClockTimeout(t *testing.T) {
 	}
 
 	var grandchildPID int
-	deadline := time.Now().Add(2 * time.Second)
+	// Generous, because this wait is SETUP rather than the assertion.
+	//
+	// Two seconds was enough on an idle machine and not on a loaded one: the
+	// grandchild is a real shell that has to be scheduled, start, and write a
+	// file, and under the full suite -- fourteen packages, internal/work
+	// spawning hundreds of git processes -- that can take longer than the
+	// budget. The test then failed saying "test setup is broken", which was
+	// true and read as a product bug: it failed the release gate three times
+	// while passing five out of five in isolation.
+	//
+	// The check this exists to make is whether the grandchild is KILLED, and
+	// waiting longer for it to appear cannot make a surviving process look
+	// dead. The same reasoning is already applied to the timing budget above,
+	// which was deliberately made non-fatal for a loaded runner.
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if b, err := os.ReadFile(pidFile); err == nil && strings.TrimSpace(string(b)) != "" {
 			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
@@ -122,7 +136,21 @@ func TestGrandchildSurvivesTheAgentEndingItsOwnTurn(t *testing.T) {
 	}
 
 	var grandchildPID int
-	deadline := time.Now().Add(2 * time.Second)
+	// Generous, because this wait is SETUP rather than the assertion.
+	//
+	// Two seconds was enough on an idle machine and not on a loaded one: the
+	// grandchild is a real shell that has to be scheduled, start, and write a
+	// file, and under the full suite -- fourteen packages, internal/work
+	// spawning hundreds of git processes -- that can take longer than the
+	// budget. The test then failed saying "test setup is broken", which was
+	// true and read as a product bug: it failed the release gate three times
+	// while passing five out of five in isolation.
+	//
+	// The check this exists to make is whether the grandchild is KILLED, and
+	// waiting longer for it to appear cannot make a surviving process look
+	// dead. The same reasoning is already applied to the timing budget above,
+	// which was deliberately made non-fatal for a loaded runner.
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if b, err := os.ReadFile(pidFile); err == nil && strings.TrimSpace(string(b)) != "" {
 			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {

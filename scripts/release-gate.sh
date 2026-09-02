@@ -61,21 +61,69 @@ gofmt_clean() {
 gate "go build ./..." go build ./...
 gate "go vet ./..."   go vet ./...
 gate "gofmt -l ."     gofmt_clean
-# -count=1 on the release gate specifically. Everywhere else a cached pass is
-# a feature; here it means a green gate can be a green gate from an hour ago,
-# and afterwards a cached pass and a fresh failure look identical. A release
-# is the wrong place to be reading a cache.
-# -timeout, because go's per-package default is 600s and internal/work takes
-# about 645s. A package that exceeds it is KILLED and reported as FAIL with a
-# goroutine dump and no test named, so the gate blamed whichever tests were
-# mid-flight -- twice, on v0.8.10, while every one of them passed given time.
-# Measured, not guessed: 600s default FAILs at 600.4s; -timeout 20m passes at
-# 645.5s with zero failures.
+
+# THE TESTS ARE VERIFIED, NOT RE-RUN.
 #
-# The number is generous on purpose. It is a CEILING that catches a genuinely
-# hung test, not a target: shortening the suite is OR-264's job, and a limit
-# tuned close to the current runtime would fail again the next time a test is
-# added.
-gate "go test -count=1 ./..." go test -count=1 -timeout 20m ./...
+# This gate used to run the whole suite a third time. CI already runs it on
+# ubuntu, macos and windows for every push, so a local pass added exactly one
+# thing those three cannot give -- proof it works on THIS machine -- and one
+# thing nobody wanted: this machine's flakiness.
+#
+# v0.8.10 is the evidence. The gate failed four times and not once on a real
+# defect:
+#
+#   1. internal/work takes ~645s; go's per-package default is 600s, so the
+#      package was killed and reported FAIL with no test named.
+#   2. scripts/test.sh had the same gap, hidden because -coverprofile shifts
+#      the timing under the limit.
+#   3. A test asserted on a message that ui.Say clips to COLUMNS, so it
+#      passed on a wide terminal and failed on a 100-column one.
+#   4. A process-tree test waited 2s for a grandchild to write its pid file,
+#      which is not enough while internal/work is spawning hundreds of git
+#      processes beside it.
+#
+# Every one of those is an artefact of running the suite HERE, and each cost
+# a twenty-minute round trip to find. CI reported success on the same commit
+# throughout.
+#
+# So the question this step asks changed from "do the tests pass on my
+# laptop" to "did CI pass on the exact commit being tagged" -- which is the
+# stronger claim, because it is three platforms rather than one.
+#
+# The build, vet and gofmt steps above stay. They are seconds, they catch a
+# dirty or half-merged tree, and they are the part a local gate is actually
+# good for.
+ci_green_for_head() {
+  local sha state
+  sha="$(git rev-parse HEAD)"
+  # A release is cut from a branch CI builds on push. No answer at all is a
+  # refusal, not a pass: an unbuilt commit is exactly what this gate exists
+  # to stop, and "gh is missing" must never read as "CI was green".
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "gh is not installed, so CI's verdict for $sha cannot be read."
+    echo "Install gh, or run the suite by hand and re-run with ORION_SKIP_CI_CHECK=1."
+    return 1
+  fi
+  state="$(gh run list --commit "$sha" --json conclusion,name \
+    --jq '[.[] | select(.name == "ci")] | first | .conclusion // ""' 2>/dev/null || true)"
+  case "$state" in
+    success) return 0 ;;
+    "")
+      echo "CI has reported nothing for $sha."
+      echo "It may still be running -- check: gh run list --commit $sha"
+      return 1
+      ;;
+    *)
+      echo "CI reported '$state' for $sha; a release needs a green build."
+      return 1
+      ;;
+  esac
+}
+
+if [ "${ORION_SKIP_CI_CHECK:-}" = "1" ]; then
+  echo "    WARNING: ORION_SKIP_CI_CHECK=1 -- shipping without a CI verdict"
+else
+  gate "CI green for HEAD" ci_green_for_head
+fi
 
 echo "    all green"
