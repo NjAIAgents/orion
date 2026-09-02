@@ -26,6 +26,16 @@ jobs:
         with:
           go-version: 'stable'
           cache-dependency-path: go.mod
+      # Several tests create real repositories and commit into them. A runner
+      # has no global identity, so git refuses with "Author identity unknown"
+      # and the failure looks like a broken test rather than a missing
+      # environment. ci.yml has always done this; release.yml did not, which
+      # is why the same suite passes there and fails here.
+      - name: configure git
+        run: |
+          git config --global user.email ci@example.com
+          git config --global user.name CI
+          git config --global init.defaultBranch main
       - run: go vet ./...
       - run: go test ./... -count=1
 
