@@ -65,6 +65,17 @@ gate "gofmt -l ."     gofmt_clean
 # a feature; here it means a green gate can be a green gate from an hour ago,
 # and afterwards a cached pass and a fresh failure look identical. A release
 # is the wrong place to be reading a cache.
-gate "go test -count=1 ./..." go test -count=1 ./...
+# -timeout, because go's per-package default is 600s and internal/work takes
+# about 645s. A package that exceeds it is KILLED and reported as FAIL with a
+# goroutine dump and no test named, so the gate blamed whichever tests were
+# mid-flight -- twice, on v0.8.10, while every one of them passed given time.
+# Measured, not guessed: 600s default FAILs at 600.4s; -timeout 20m passes at
+# 645.5s with zero failures.
+#
+# The number is generous on purpose. It is a CEILING that catches a genuinely
+# hung test, not a target: shortening the suite is OR-264's job, and a limit
+# tuned close to the current runtime would fail again the next time a test is
+# added.
+gate "go test -count=1 ./..." go test -count=1 -timeout 20m ./...
 
 echo "    all green"
