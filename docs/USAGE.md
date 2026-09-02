@@ -392,6 +392,65 @@ After a breaker trips, a human decides whether to continue:
 orion reset --session <id>
 ```
 
+### Declaring which toolkit you delegate to
+
+The optional `toolkit` block in `orion.json` names the skill repository Orion
+delegates to, and what each stage invokes inside it. **Leaving it out changes
+nothing**: `toolkit.repo` falls back to the nj-agents URL Orion has always
+used, `toolkit.dir` and `toolkit.ref` fall back to the older
+`delegation.nj_agents_dir` / `delegation.nj_agents_ref` spellings, and a stage
+with no command declared runs Orion's own built-in prompt.
+
+```jsonc
+{
+  "toolkit": {
+    "repo": "https://github.com/navjyotnishant/nj-agents.git",  // the default
+    "ref": "v1.4.0",                 // pin a tag; empty clones the default branch
+    "dir": "/home/me/nj-agents",     // an existing clone; overrides the vendor path
+    "stages": {
+      "review": "/pre-push-review",
+      "pr": "/pr-describe"
+    }
+  }
+}
+```
+
+A team with its own skill repository points Orion at it without a Go change:
+
+```jsonc
+{
+  "toolkit": {
+    "repo": "https://github.com/github/spec-kit.git",
+    "stages": {
+      "intent": "/specify",
+      "spec": "/plan",
+      "plan": "/tasks",
+      "decompose": "/breakdown",
+      "review": "/analyze"
+    }
+  }
+}
+```
+
+Orion clones a toolkit it manages into `<ORION_HOME>/vendor/<repo-name>` —
+`vendor/spec-kit` above, `vendor/nj-agents` for the default — so two toolkits
+never land on the same directory. `toolkit.dir` overrides that entirely.
+
+**Stage names.** Only the stages Orion runs: `intent`, `spec` (or `design`),
+`plan`, `ticket`, `scaffold`, `decompose`, `build` (or `implement`), `verify`
+(or `test`), `review`, `pr` (or `ship`). Either spelling of a pair means the
+same stage. Naming a stage twice with two different commands is refused, with
+both keys quoted, rather than one being picked silently; so is a stage name
+Orion does not run, because a typo that is ignored is a stage nobody notices
+is still unconfigured.
+
+**No ordering.** `stages` is a map — what a stage runs — and never a list, an
+`order` key or a `sequence` key. Those express what runs *after* what, and
+sequencing across stages is Orion's, not a toolkit's
+([decisions/0001](decisions/0001-precedence-rule-orion-owns-orchestration.md)).
+A block that expresses order is rejected with an error citing that decision,
+so the rule holds by shape rather than by prose.
+
 ---
 
 ## 6. Weekly budget checkpoints
