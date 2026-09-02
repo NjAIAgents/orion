@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -176,5 +177,208 @@ func TestPlanRosterAnnouncementSaysWhenTheIdeaSelectedNobody(t *testing.T) {
 	printPlanRoster(&buf, "Take card payments from the web app.")
 	if !strings.Contains(buf.String(), "names no other actor") {
 		t.Errorf("the roster is silent about having selected nobody:\n%s", buf.String())
+	}
+}
+
+// An empty idea has no words to match, so the only actors on the run are the
+// stage actors -- nothing is attributed to the idea, and nothing else is on
+// the roster at all.
+func TestPlanRosterOnAnEmptyIdeaHasOnlyTheStageActors(t *testing.T) {
+	got := rosterOf(t, "")
+
+	stageActors := map[string]bool{}
+	for _, s := range planStages {
+		stageActors[s.Actor] = true
+	}
+	if len(got) != len(stageActors) {
+		t.Fatalf("empty idea rostered %d actors, want exactly the %d stage actors: %v", len(got), len(stageActors), got)
+	}
+	for id, a := range got {
+		if a.FromIdea {
+			t.Errorf("%s is attributed to the idea, but the idea was empty: %q", id, a.Signal)
+		}
+		if !stageActors[id] {
+			t.Errorf("%s is on the roster for an empty idea but runs no stage", id)
+		}
+	}
+}
+
+// A single word is enough to match the actor it belongs to, with no other
+// words in the idea needed to disambiguate it.
+func TestPlanRosterSingleWordIdeaMatchesItsActor(t *testing.T) {
+	got := rosterOf(t, "database")
+	a, ok := got[events.ActorDBA]
+	if !ok {
+		t.Fatalf("the single word %q did not select the database architect: %v", "database", got)
+	}
+	if !a.FromIdea {
+		t.Errorf("the database architect is on the roster but not attributed to the idea")
+	}
+	if !strings.Contains(a.Signal, `"database"`) {
+		t.Errorf("signal %q does not name the word that selected the actor", a.Signal)
+	}
+}
+
+// A multi-word idea can name several actors at once, each on its own word,
+// with neither word bleeding into the other actor's match.
+func TestPlanRosterMultiWordIdeaSelectsEachActorItsWordNames(t *testing.T) {
+	got := rosterOf(t, "database frontend")
+
+	dba, ok := got[events.ActorDBA]
+	if !ok || !dba.FromIdea {
+		t.Fatalf(`"database" did not select the database architect: %v`, got)
+	}
+	if !strings.Contains(dba.Signal, `"database"`) {
+		t.Errorf("database architect signal %q does not name its word", dba.Signal)
+	}
+
+	fe, ok := got[events.ActorFrontend]
+	if !ok || !fe.FromIdea {
+		t.Fatalf(`"frontend" did not select the frontend developer: %v`, got)
+	}
+	if !strings.Contains(fe.Signal, `"frontend"`) {
+		t.Errorf("frontend developer signal %q does not name its word", fe.Signal)
+	}
+}
+
+// log-triage is a hyphenated actor identifier. The idea can name it as a
+// standalone word, or as one component of a longer hyphenated word -- both
+// forms have to reach the same actor.
+func TestPlanRosterMatchesHyphenatedIdentifierWholeAndAsComponent(t *testing.T) {
+	whole, ok := rosterOf(t, "run log-triage on this")[events.ActorLogTriage]
+	if !ok || !whole.FromIdea {
+		t.Fatalf("the identifier log-triage, named whole, did not select its actor: %v", whole)
+	}
+
+	component, ok := rosterOf(t, "a log-triage-followup for the ci failure")[events.ActorLogTriage]
+	if !ok || !component.FromIdea {
+		t.Fatalf("log-triage, named as a component of a longer hyphenated word, did not select its actor: %v", component)
+	}
+}
+
+// The architect runs two stages (spec and plan), so its signal has to name
+// both -- not just whichever one a test happens to check.
+func TestPlanRosterStageActorSignalNamesEveryStageItRuns(t *testing.T) {
+	got := rosterOf(t, "")
+	a, ok := got[events.ActorArchitect]
+	if !ok {
+		t.Fatalf("the architect runs stages but is not on the roster: %v", got)
+	}
+	if !strings.Contains(a.Signal, "spec") {
+		t.Errorf("signal %q does not name the spec stage the architect runs", a.Signal)
+	}
+	if !strings.Contains(a.Signal, "plan") {
+		t.Errorf("signal %q does not name the plan stage the architect runs", a.Signal)
+	}
+}
+
+// Each idea-selected actor's own signal names the specific word that put it
+// on the run -- not some other selected actor's word.
+func TestPlanRosterEachIdeaSelectedActorSignalNamesItsOwnWord(t *testing.T) {
+	got := rosterOf(t, "we need a database architect and a frontend developer for this")
+
+	dba, ok := got[events.ActorDBA]
+	if !ok || !dba.FromIdea || !strings.Contains(dba.Signal, `"database"`) {
+		t.Fatalf("the database architect's signal does not name \"database\": %+v", dba)
+	}
+	fe, ok := got[events.ActorFrontend]
+	if !ok || !fe.FromIdea || !strings.Contains(fe.Signal, `"frontend"`) {
+		t.Fatalf("the frontend developer's signal does not name \"frontend\": %+v", fe)
+	}
+	if strings.Contains(dba.Signal, `"frontend"`) || strings.Contains(fe.Signal, `"database"`) {
+		t.Errorf("a signal names the other actor's word: dba=%q frontend=%q", dba.Signal, fe.Signal)
+	}
+}
+
+// When the idea names nobody beyond the stage actors, the announcement has to
+// say so explicitly rather than just printing a roster that is silently
+// shorter than it could have been.
+func TestPlanRosterAnnouncementExplicitlyStatesTheIdeaSelectedNoOne(t *testing.T) {
+	t.Cleanup(actors.Reset)
+	var buf bytes.Buffer
+	printPlanRoster(&buf, "a plain idea with nothing any actor answers to")
+	got := buf.String()
+	if !strings.Contains(got, "names no other actor") {
+		t.Errorf("announcement does not explicitly state the idea selected nobody:\n%s", got)
+	}
+	for _, id := range []string{events.ActorDBA, events.ActorFrontend, events.ActorLogTriage} {
+		if strings.Contains(got, `the idea says`) && strings.Contains(got, actors.Display(id)) {
+			t.Errorf("%s appears as idea-selected even though nothing should have matched:\n%s", id, got)
+		}
+	}
+}
+
+// The roster's own §R legibility rule: actor names and signals line up in
+// columns, so a reader scans down one column rather than re-parsing every
+// line -- checked here on two actors with different-length display names.
+func TestPlanRosterAnnouncementColumnsAreAligned(t *testing.T) {
+	t.Cleanup(actors.Reset)
+	var buf bytes.Buffer
+	printPlanRoster(&buf, "we need a database architect and a qa engineer for this")
+
+	var chosen []string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.HasPrefix(line, "     ") {
+			chosen = append(chosen, line)
+		}
+	}
+	if len(chosen) < 2 {
+		t.Fatalf("need at least two selected-actor lines to check column alignment, got %d:\n%s", len(chosen), buf.String())
+	}
+
+	gap := regexp.MustCompile(`\s{2,}`)
+	col := -1
+	for _, line := range chosen {
+		loc := gap.FindStringIndex(line)
+		if loc == nil {
+			t.Fatalf("line has no column gap to align on: %q", line)
+		}
+		if col == -1 {
+			col = loc[0]
+			continue
+		}
+		if loc[0] != col {
+			t.Errorf("columns are not aligned: %q starts its next column at %d, want %d", line, loc[0], col)
+		}
+	}
+}
+
+// A designation with punctuation around its words -- parentheses, commas, a
+// trailing period -- still yields clean words a plain idea can match; the
+// punctuation must not fuse into the word and silently break the match.
+func TestPlanRosterDesignationWithSpecialCharactersStillExtractsWords(t *testing.T) {
+	t.Cleanup(actors.Reset)
+	if err := actors.Configure(map[string]config.Agent{
+		events.ActorQA: {Designation: "payments, (specialist)."},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a, ok := rosterOf(t, "we need a payments specialist on this")[events.ActorQA]
+	if !ok || !a.FromIdea {
+		t.Fatalf("a designation with surrounding punctuation did not extract a matchable word: %v", a)
+	}
+}
+
+// A designation that is only whitespace contributes no words at all -- it
+// must not make the actor selectable, and it must not do anything worse
+// (panic, a stray empty-string word matching everything).
+func TestPlanRosterWhitespaceOnlyDesignationDoesNotMakeActorSelectable(t *testing.T) {
+	t.Cleanup(actors.Reset)
+	if err := actors.Configure(map[string]config.Agent{
+		events.ActorQA: {Designation: "   "},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := rosterOf(t, "we need help with payments and reviews and everything else")
+	if a, ok := got[events.ActorQA]; ok && a.FromIdea {
+		t.Errorf("a whitespace-only designation still selected qa via some word: %q", a.Signal)
+	}
+
+	// The identifier itself is still a word, whitespace designation or not.
+	got2 := rosterOf(t, "run qa on this")
+	if a, ok := got2[events.ActorQA]; !ok || !a.FromIdea {
+		t.Errorf("qa is not selectable by its own identifier when its designation is whitespace-only: %v", got2)
 	}
 }
