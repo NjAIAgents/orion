@@ -983,3 +983,25 @@ func TestAFinishedRunKeepsItsRowAndSaysWhatBecameOfIt(t *testing.T) {
 		t.Errorf("the header does not report the finished run: %q", header)
 	}
 }
+
+// TestTheActivityNoteIsVisibleOffATerminal.
+//
+// The note is how a stage says what it is doing right now -- "authoring x5",
+// "running the suite" (OR-305, OR-306). The terminal path drew it and the
+// plain path did not, so a watch piped to a log showed a row that had gone
+// quiet with no explanation, while the same run on a terminal explained
+// itself. The log is the one read after something has gone wrong, which is
+// the worse half to leave silent.
+func TestTheActivityNoteIsVisibleOffATerminal(t *testing.T) {
+	LiveReset()
+	var buf bytes.Buffer
+	live := NewLive(&buf)
+	LiveStart("OR-1")
+	LiveStage("OR-1", "qa", "qa")
+	LiveActivityNote("OR-1", "qa", "authoring x5")
+	live.Tick()
+
+	if !strings.Contains(buf.String(), "authoring x5") {
+		t.Errorf("the activity note is missing from the plain output:\n%s", buf.String())
+	}
+}

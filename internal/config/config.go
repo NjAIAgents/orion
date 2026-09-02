@@ -615,6 +615,68 @@ type QA struct {
 	// that rule exists to prevent. Without it the stage still authors and
 	// runs unit and integration tests, and says that is what it did.
 	E2EBaseURL string `json:"e2e_base_url,omitempty"`
+	// AuthorAgents is how many subagents write the derived cases at once
+	// (OR-305). Zero means the built-in default.
+	//
+	// One agent writing fifty spec files writes them one after another, in
+	// one session, and that serial cost is the whole reason this exists. The
+	// cases are independent by construction -- being independently checkable
+	// is what makes something a case -- so the split is by case group.
+	//
+	// BOUNDS AGENTS, NOT PROCESSES. Agents contend for a rate limit;
+	// ExecProcs below contends for CPU and disk. They are separate numbers
+	// because they are separate resources, and one value reused for both
+	// would be wrong for whichever it was not chosen for.
+	//
+	// Limits.MaxConcurrentChildren stays the hard ceiling: supervisor.Fan
+	// reads it directly, so a larger value here cannot widen the real fan.
+	// That limit exists to stop a stampede against a rate limit (OR-162),
+	// and a per-stage setting must not be able to lift it.
+	AuthorAgents int `json:"author_agents,omitempty"`
+	// ExecProcs is how much concurrency the test RUN gets (OR-306). Zero
+	// means the built-in default.
+	//
+	// Passed to the runner where the runner has its own flag for it --
+	// `go test` already runs packages concurrently, and -parallel governs
+	// within a package -- rather than spending Orion-side processes to
+	// reimplement, worse, what the toolchain does for free. Sharding across
+	// processes is for runners that cannot do it themselves.
+	//
+	// BOUNDS PROCESSES, NOT AGENTS. See AuthorAgents above.
+	ExecProcs int `json:"exec_procs,omitempty"`
+}
+
+// defaultAuthorAgents and defaultExecProcs are the shipped widths.
+//
+// Five for both, which is a starting point rather than a measured optimum:
+// it is enough concurrency to matter on a fifty-case ticket and small enough
+// that a first run against a rate limit or a laptop is not a stampede. The
+// real ceiling on the agent side is Limits.MaxConcurrentChildren, which is
+// four by default, so the shipped behaviour is four-wide until an operator
+// raises that deliberately.
+const (
+	defaultAuthorAgents = 5
+	defaultExecProcs    = 5
+)
+
+// Authors is the configured authoring width, or the built-in default.
+//
+// Zero means the default, never unlimited. An absent value must never widen
+// a control: that is this package's rule, stated at the top, and a fan width
+// is exactly the kind of control it is about.
+func (q QA) Authors() int {
+	if q.AuthorAgents > 0 {
+		return q.AuthorAgents
+	}
+	return defaultAuthorAgents
+}
+
+// Procs is the configured execution concurrency, or the built-in default.
+func (q QA) Procs() int {
+	if q.ExecProcs > 0 {
+		return q.ExecProcs
+	}
+	return defaultExecProcs
 }
 
 // On reports whether the stage runs. See the Enabled comment: absent is on.

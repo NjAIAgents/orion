@@ -128,6 +128,25 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 
 	cases := deriveCases(job, deps, log, w)
 
+	// Authoring is fanned across subagents when there is enough to fan
+	// (OR-305). It writes files and returns; the QA session below still runs,
+	// still reads the diff, and still owns the verdict -- so a fan that does
+	// nothing leaves this stage exactly as it was.
+	cases = fanAuthoring(job, cfg, cases, deps, log, w)
+
+	// Then the suite, once, as a process Orion owns (OR-306).
+	//
+	// OUTSIDE the fan on purpose. These are two independent changes, and
+	// running the suite only when the fan ran would leave every small ticket
+	// -- the common case -- verified the old way, with the agent deciding
+	// what to run and whether to run it. The whole point is that the verdict
+	// comes from an exit code.
+	//
+	// It is also the right ORDER: nothing compiles until every author has
+	// stopped writing, which is what keeps ADR 0016's "builds are not
+	// isolated" hazard out of reach for a fanned stage.
+	runAuthoredSuite(job, cfg, log, w)
+
 	tools := qaTools(cfg, opts.Home)
 	// Which path it took, said out loud. A stage that silently degraded to
 	// half its coverage reads exactly like one that did not, and the

@@ -268,3 +268,50 @@ func QAReverifyMessage() string {
 		"already correct.",
 	)
 }
+
+// QAAuthorPrompt is what one authoring subagent gets when QA fans its case
+// list across several writers (OR-305).
+//
+// IT WRITES; IT DOES NOT RUN, AND IT DOES NOT JUDGE. Two reasons, and both
+// are load-bearing.
+//
+// Running is forbidden because the other authors are still writing. A child
+// that compiles here compiles against its peers' half-written files and sees
+// failures that are not its own -- ADR 0016's first hazard, which is exactly
+// what keeps that ADR's package unit right for implementation. Test authoring
+// escapes it only by nobody building until every writer has stopped.
+//
+// Judging is forbidden because the verdict belongs to the QA session that
+// follows, which sees the whole diff and the whole case list. A child that
+// returned a verdict on a fifth of the cases would be a second opinion on a
+// question it cannot see all of.
+func QAAuthorPrompt(key, summary, cases string) string {
+	return join(
+		"You are writing tests for one part of a change that is already committed",
+		"on this branch. Other writers are working on the rest of it at the same",
+		"time.",
+		"",
+		key+": "+summary,
+		"",
+		"YOUR CASES. These, and only these:",
+		quote(cases),
+		"",
+		"WHAT TO DO",
+		"1. Read the diff and the tests that already exist around the code you are",
+		"   covering, so what you add matches how this repository writes tests",
+		"   rather than how you would write them elsewhere.",
+		"2. Write a test for each case above. Put them where this repository puts",
+		"   its tests; do not invent a new location or a new framework.",
+		"3. Leave every other file alone. Another writer is in this worktree.",
+		"",
+		"DO NOT RUN THE TESTS. Not yours, not the suite, not a single package.",
+		"The other writers have not finished, so anything you compile now builds",
+		"against half-written files and fails for reasons that are not yours.",
+		"Orion runs everything once, after all the writers are done.",
+		"",
+		"DO NOT CHANGE THE IMPLEMENTATION. If a case cannot be tested as written,",
+		"say so and move on; do not make it pass by editing the code under test.",
+		"",
+		"Finish by listing the files you wrote, one per line, and nothing else.",
+	)
+}

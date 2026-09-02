@@ -1033,6 +1033,7 @@ func runWork(args []string) {
 		Jira:      mustJira(),
 		Supervise: supervisor.Run,
 		Advise:    adviseRunner,
+		Fan:       supervisor.Fan,
 		Describe:  describeRunner,
 		Push:      pushBranch,
 		OpenPR:    openPR,

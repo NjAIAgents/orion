@@ -133,7 +133,15 @@ type Deps struct {
 	// architect that "just fixes it while it is there" destroys the
 	// separation that makes its answer worth anything.
 	Advise advise.Runner
-	Push   func(dir, branch string) error
+	// Fan runs several agent turns concurrently, bounded by
+	// Limits.MaxConcurrentChildren. Used by QA to write a derived case list
+	// in parallel (OR-305).
+	//
+	// Nil takes the serial path, which is what makes this safe to add: a fan
+	// is an optimisation, and the tests are the point. Anything that cannot
+	// fan must cost wall time, never coverage.
+	Fan  func(ws *workspace.Workspace, jobs []supervisor.Options) []supervisor.FanResult
+	Push func(dir, branch string) error
 	// Describe drafts the pull request text, read-only. Nil falls back to
 	// Orion's own two-line description -- which is accurate, and says
 	// nothing a reviewer did not already know from the ticket.

@@ -1284,6 +1284,16 @@ func renderPlainTracked(st liveState, now time.Time) ([]string, []plainPrinted) 
 		// removes.
 		body := fmt.Sprintf("%s  %s  %s  %d calls", pad(r.key, liveKeyWidth),
 			pad(r.stage, liveStageWidth), elapsedString(now.Sub(r.started)), r.calls)
+		// The activity note, which the terminal path already draws and this
+		// one did not. A stage that says what it is doing on a terminal and
+		// stays silent in a piped log is telling two different stories about
+		// the same run, and the log is the one read after something went
+		// wrong. It sits before the derived notes for the same reason it does
+		// on a terminal: it says what is happening now, where those say how
+		// long it has been happening.
+		if r.note != "" {
+			body += "  " + r.note
+		}
 		if notes := r.notes(now); len(notes) > 0 {
 			body += "  " + strings.Join(notes, " "+liveSep+" ")
 		}
