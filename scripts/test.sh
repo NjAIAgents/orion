@@ -79,7 +79,13 @@ step "tests"
 # ./internal/... pass measured. Adding -coverpkg=./internal/... would credit
 # cmd's tests to internal packages and move the number three points -- a
 # different measurement, not the same one made cheaper.
-go test ./... -coverprofile=coverage.raw.out -covermode=atomic
+# -timeout for the same reason release-gate.sh carries one: internal/work runs
+# close to go's 600s per-package default, and a package that crosses it is
+# killed and reported as FAIL with no test named. This script has been passing
+# on luck rather than margin -- coverage instrumentation happens to change the
+# timing -- and "it passed locally" has to mean the same thing here as it does
+# on the release gate.
+go test ./... -timeout 20m -coverprofile=coverage.raw.out -covermode=atomic
 
 step "coverage"
 # Drop the packages the floor deliberately excludes. The profile keeps its
