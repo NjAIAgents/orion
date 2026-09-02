@@ -53,6 +53,7 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/actors"
+	"github.com/orion-sdlc/orion/internal/claim"
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/cost"
@@ -887,9 +888,28 @@ func (p *pool) dispatch(deps Deps, opts Options, w io.Writer, key string) {
 	// exactly the window the live region exists to fill (OR-240).
 	ui.LiveStart(key)
 
+	// WHO IS HOLDING THIS, on disk, before any work begins.
+	//
+	// The label says a ticket is claimed and cannot say whether anyone is
+	// still holding it, so a run killed mid-agent left `orion-working` on a
+	// ticket no watcher would ever pick up again. Written at dispatch rather
+	// than at the first stage boundary, so a run killed in its first second
+	// still leaves a record naming its holder (OR-265).
+	//
+	// Best effort: a claim that cannot be recorded is the behaviour this
+	// repository already had, and failing the dispatch over it would turn a
+	// bookkeeping problem into a ticket that never runs.
+	if err := claim.Take(opts.Home, key, "", ""); err != nil {
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
+			"could not record the claim, so an interrupted run will need its label cleared by hand: %v", err)
+	}
+
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
+		// However this ends. A claim outliving its work is the residue that
+		// strands the next run.
+		defer func() { _ = claim.Release(opts.Home, key) }()
 		res := deps.Work(work.Options{
 			Keys: []string{key}, Out: w, Home: opts.Home,
 			MaxMinutes: opts.MaxMinutes, MaxTurns: opts.MaxTurns,
@@ -1258,6 +1278,33 @@ func InFlight(j LockAPI, home string, projects []string, w io.Writer) ([]string,
 	var running []string
 	for _, i := range issues {
 		if !i.Resolved() {
+			// A claim whose HOLDER IS GONE is not work in flight, it is
+			// residue. The label alone cannot tell the two apart -- that is
+			// why an interrupted ticket used to sit here forever, excluded
+			// from the queue by a lock nobody was holding (OR-265).
+			//
+			// claim.Dead answers only where it can prove it: no record, or a
+			// live process, both read as running. So this never steals a
+			// ticket from a working agent, and tickets claimed before the
+			// record existed still need a human.
+			if dead, rec := claim.Dead(home, i.Key); dead {
+				if err := j.SetLabels(i.Key, nil,
+					append([]string{tracker.LabelWorking}, actors.StageLabels()...)); err != nil {
+					ui.Say(w, i.Key, events.ActorOrion, ui.VerbWarn,
+						"the claim is abandoned but its label could not be cleared: %v", err)
+					running = append(running, i.Key)
+					continue
+				}
+				_ = claim.Release(home, i.Key)
+				where := ""
+				if rec != nil && rec.Branch != "" {
+					where = ", its work is on " + rec.Branch
+				}
+				ui.Say(w, i.Key, events.ActorOrion, ui.VerbOK,
+					"released: the run holding this ended without finishing%s. "+
+						"Re-label it %s to pick it up again", where, tracker.QueueLabelDefault)
+				continue
+			}
 			running = append(running, i.Key)
 			continue
 		}
