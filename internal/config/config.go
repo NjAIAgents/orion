@@ -771,6 +771,46 @@ func (d DBA) Rounds() int {
 	return FixRounds
 }
 
+// DiscoveryRounds is the shipped ceiling for the multi-agent question round
+// that precedes design (OR-152).
+//
+// TWO, not FixRounds' three, and the difference is what a round buys. A fix
+// round buys an attempt at a fix: the same problem, tried again, and the
+// evidence here is that a second attempt often lands. A discovery round buys
+// MORE QUESTIONS -- every agent in the round is free to add, so the gate the
+// round is trying to reach can be further away at the end of it than at the
+// start. A ceiling on that is not "how many tries before we give up", it is
+// how much elaboration is worth paying a fan of agents for before a person is
+// better placed to answer than another round is to ask.
+//
+// The spend argues the same way: a fix round is one agent, a discovery round
+// is all of them.
+const DiscoveryRounds = 2
+
+// Discovery bounds the question-adding rounds that run before the discovery
+// gate ("zero open questions") is checked.
+//
+// It exists because that gate has a failure mode a single-agent gate does not:
+// several agents each free to add questions, each round able to add more, can
+// move the gate away faster than the round moves toward it, and every receding
+// round is paid for. MaxRounds is what makes that terminate. At the ceiling
+// Orion escalates to a person with what is still open; it never proceeds with
+// an unanswered question, because designing from one means inventing the
+// answer and every later stage inherits the invention.
+type Discovery struct {
+	MaxRounds int `json:"max_rounds"`
+}
+
+// Rounds is MaxRounds with the default applied. Zero means the shipped default
+// rather than no rounds, exactly as QA.Rounds and DBA.Rounds do -- three
+// ceilings that read alike are three that stay explicable together.
+func (d Discovery) Rounds() int {
+	if d.MaxRounds > 0 {
+		return d.MaxRounds
+	}
+	return DiscoveryRounds
+}
+
 // Live reports whether a real database is available to run EXPLAIN against.
 //
 // The whole of the production guard is on this side of the function: false
@@ -858,6 +898,7 @@ type Config struct {
 	CI          CI                `json:"ci"`
 	QA          QA                `json:"qa"`
 	DBA         DBA               `json:"dba"`
+	Discovery   Discovery         `json:"discovery"`
 	Collect     Collect           `json:"collect"`
 	VCS         VCS               `json:"vcs"`
 	Tracker     Tracker           `json:"tracker"`
