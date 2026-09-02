@@ -94,11 +94,35 @@ jobs:
           # same reason scripts/release.sh passes this flag.
           PRERELEASE=""
           [ "$CHANNEL" = "beta" ] && PRERELEASE="--prerelease"
+
+          # NOTES COME FROM CHANGELOG.md, as scripts/release.sh has always
+          # done: "Release notes come from CHANGELOG.md, not from a generic
+          # sentence." This workflow shipped the generic sentence, so a
+          # release cut here would throw away the section somebody collated
+          # on purpose -- v0.8.10's was eighteen entries.
+          #
+          # A missing section is NOT fatal: the tag and the binaries are
+          # still worth publishing, and a release with a thin note beats no
+          # release. It warns rather than pretending.
+          NOTES_FILE="$(mktemp)"
+          awk -v want="## v${VERSION}" '
+            $0 ~ "^"want"($| )" { grab = 1; next }
+            grab && /^## / { exit }
+            grab { print }
+          ' CHANGELOG.md > "$NOTES_FILE"
+          if [ -s "$NOTES_FILE" ]; then
+            echo "notes from CHANGELOG.md ($(wc -l < "$NOTES_FILE" | tr -d ' ') lines)"
+          else
+            echo "WARNING: no ## v${VERSION} section in CHANGELOG.md; using a generic note" >&2
+            printf 'Binaries for orion v%s. Source is maintained privately; these archives include LICENSE and NOTICE.\n' \
+              "$VERSION" > "$NOTES_FILE"
+          fi
+
           gh release create "v${VERSION}" \
             --repo NjAIAgents/orion-releases \
             --title "orion v${VERSION}" \
             $PRERELEASE \
-            --notes "Binaries for orion v${VERSION}. Source is maintained privately; these archives include LICENSE and NOTICE." \
+            --notes-file "$NOTES_FILE" \
             dist/orion_* dist/checksums.txt
 
       - uses: actions/upload-artifact@v4
