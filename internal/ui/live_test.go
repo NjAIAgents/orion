@@ -2,7 +2,9 @@ package ui
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -363,48 +365,46 @@ func TestTermDumbGetsNoCursorControl(t *testing.T) {
 	}
 }
 
-// The window above the region keeps its lines in order, and every redraw
-// erases exactly the block it drew -- window rows included. An erase measured
-// against the region alone would leave a window row stranded on screen at every
-// write, and the strandings would walk the region down the terminal.
+// Scrollback is the TERMINAL's, and a line written during a run stays in it.
+//
+// The frozen window used to hold these lines back and redraw a bounded five
+// of them above the region (OR-248); they now go straight through, because
+// each ticket's latest line rides on its own row and holding the rest back
+// would only stop the operator scrolling up to read what happened (OR-265).
+//
+// What must still hold is that the region is erased before each write and
+// redrawn after it, so a line lands in the scrollback rather than on top of
+// the pinned block.
 func TestScrollbackSurvivesTheRegion(t *testing.T) {
+	t.Setenv("LINES", "24")
+	t.Setenv("COLUMNS", "")
 	LiveReset()
 	t.Cleanup(LiveReset)
 	LiveStart("OR-237")
 
 	var b bytes.Buffer
 	l := &Live{w: &b, cursor: true}
-	for _, s := range []string{"first\n", "second\n", "third\n"} {
-		if _, err := l.Write([]byte(s)); err != nil {
+	for _, line := range []string{"first", "second", "third"} {
+		if _, err := fmt.Fprintln(l, line); err != nil {
 			t.Fatalf("writing: %v", err)
 		}
 	}
 	l.Close()
-
 	got := b.String()
-	fi, si, ti := strings.Index(got, "first"), strings.Index(got, "second"), strings.Index(got, "third")
-	if fi < 0 || si < 0 || ti < 0 {
-		t.Fatalf("a scrollback line was lost:\n%q", got)
-	}
-	if !(fi < si && si < ti) {
-		t.Errorf("scrollback came out of order:\n%q", got)
-	}
-	// The region is a blank, one row, a blank, the rule and the status line;
-	// the window's frame takes two, two blank rows pad the bottom, and the
-	// window grows by one at each write. So the block is 10, then 11, then 12
-	// rows and each erase names the one before it. The first write had
-	// nothing yet to erase; Close erases the last block.
-	for _, want := range []string{"\x1b[10A\x1b[0J", "\x1b[11A\x1b[0J", "\x1b[12A\x1b[0J"} {
+
+	// Every line reaches the terminal exactly once: written through, not
+	// captured and replayed.
+	for _, want := range []string{"first", "second", "third"} {
 		if n := strings.Count(got, want); n != 1 {
-			t.Errorf("expected exactly one %q erase, got %d:\n%q", want, n, got)
+			t.Errorf("%q appears %d times, want exactly 1:\n%q", want, n, got)
 		}
 	}
-	// Close commits the window rather than erasing it with the region: those
-	// three lines are the only ones the terminal has not seen, and ending a run
-	// on a blank screen answers "what just happened" worse than they do.
-	if !strings.HasSuffix(got, "\x1b[12A\x1b[0Jfirst\nsecond\nthird\n") {
-		t.Errorf("Close must clear the region and leave the window on screen:\n%q", got)
+	// And each write erased the region before printing, or the line would
+	// have landed on top of the pinned rows.
+	if !strings.Contains(got, "\x1b[0J") {
+		t.Errorf("the region was never erased around a write:\n%q", got)
 	}
+	// The region is gone at the end; the scrollback is not.
 	if l.drawn != 0 {
 		t.Errorf("Close left %d rows recorded as drawn", l.drawn)
 	}
@@ -547,9 +547,19 @@ func TestRegistryTracksARunEndToEnd(t *testing.T) {
 		t.Errorf("median = %v after handing to an actor with no history, want 0", got)
 	}
 
+	// A reaped run KEEPS its row, marked done, rather than leaving the
+	// region: work finishing is what the operator was waiting for, and it is
+	// the worst moment to stop saying anything (OR-265).
 	LiveEnd("OR-237")
-	if got := liveSnapshot().rows; len(got) != 0 {
-		t.Errorf("a reaped run should leave the region: %+v", got)
+	got := liveSnapshot().rows
+	if len(got) != 1 {
+		t.Fatalf("a reaped run should keep its row: %+v", got)
+	}
+	if !got[0].done {
+		t.Errorf("a reaped run must be marked done: %+v", got[0])
+	}
+	if got[0].stage != "done" {
+		t.Errorf("stage = %q, want the outcome", got[0].stage)
 	}
 }
 
@@ -828,5 +838,140 @@ func TestChecksReplaceRatherThanAccumulate(t *testing.T) {
 	st := liveSnapshot()
 	if len(st.checks) != 1 || st.checks[0].Name != "go (ubuntu)" || st.checks[0].State != CheckPassed {
 		t.Errorf("the second reading must replace the first, got %+v", st.checks)
+	}
+}
+
+// A WRAPPED writer is still the terminal it wraps.
+//
+// internal/watch puts every line through a syncWriter so two agents cannot
+// interleave mid-word, and it does that BEFORE handing the writer to NewLive.
+// isTerminal type-asserted *os.File, a wrapper is not one, so cursorControl
+// said "not a terminal" and the pinned region never engaged on a real
+// `orion watch` at all -- since OR-184. It was invisible because the
+// fallback, one plain line per tick, is a legitimate display in its own
+// right, so nothing looked broken; the batch view was simply never seen and
+// was believed unimplemented for weeks (OR-265).
+func TestAWrappedWriterIsStillTheTerminalItWraps(t *testing.T) {
+	// A char device rather than a tty: what is under test is whether the
+	// unwrapping REACHES the *os.File, not whether that file is a terminal.
+	f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+
+	if !isTerminal(f) {
+		t.Fatal("a char device must read as a terminal, or this test proves nothing")
+	}
+	if !isTerminal(&testWrap{f}) {
+		t.Error("a wrapped terminal must still be a terminal, or the region never engages")
+	}
+	if !isTerminal(&testWrap{&testWrap{f}}) {
+		t.Error("the chain must be followed to the end, not one link")
+	}
+	// A wrapper that will not name what it wraps is opaque by construction,
+	// and guessing past it would be worse than the fallback.
+	if isTerminal(&testOpaque{f}) {
+		t.Error("a writer that cannot be unwrapped must not be assumed to be a terminal")
+	}
+}
+
+type testWrap struct{ w io.Writer }
+
+func (x *testWrap) Write(p []byte) (int, error) { return x.w.Write(p) }
+func (x *testWrap) Unwrap() io.Writer           { return x.w }
+
+type testOpaque struct{ w io.Writer }
+
+func (x *testOpaque) Write(p []byte) (int, error) { return x.w.Write(p) }
+
+// The row carries the ticket's TITLE as well as its identifier, so "what is
+// OR-135 again" is answered on screen rather than in the tracker.
+//
+// Capped, and it yields to the note when both cannot fit: squeezed to a few
+// characters a title identifies nothing, while a note stays useful much
+// narrower -- and the note is the half that answers "is this moving"
+// (OR-265).
+func TestTheRowCarriesTheTitleAndYieldsItBeforeTheNote(t *testing.T) {
+	LiveReset()
+	t.Cleanup(LiveReset)
+	now := time.Now()
+	var b bytes.Buffer
+
+	const title = "Add a database architect agent (Surya): schema design at planning time"
+	const note = "Edit internal/advise/advise.go"
+	liveStart("OR-135", now.Add(-4*time.Minute))
+	liveStage("OR-135", "implementing", events.ActorImplementer)
+	LiveTitle("OR-135", title)
+	liveActivityNote("OR-135", events.ActorImplementer, note, now)
+	row := func(cols int) string { return renderRow(&b, liveSnapshot().rows[0], now, cols) }
+
+	// Wide: both, and the title is capped rather than printed in full.
+	wide := row(160)
+	if !strings.Contains(wide, "Add a database") {
+		t.Errorf("the row lost its title:\n%s", wide)
+	}
+	if !strings.Contains(wide, note) {
+		t.Errorf("the row lost its note:\n%s", wide)
+	}
+	if strings.Contains(wide, title) {
+		t.Errorf("a long title must be clipped, not printed whole:\n%s", wide)
+	}
+
+	// Narrow: the title goes, the note stays and stays READABLE -- the whole
+	// point of dropping the title rather than sharing the space.
+	narrow := row(110)
+	if strings.Contains(narrow, "Add a database") {
+		t.Errorf("the title must yield when the note cannot fit beside it:\n%s", narrow)
+	}
+	if !strings.Contains(narrow, "Edit internal/advise") {
+		t.Errorf("the note must survive the squeeze:\n%s", narrow)
+	}
+}
+
+// A ticket that FINISHES keeps its row, carrying the outcome.
+//
+// The row used to be deleted the moment the job returned, so an operator
+// watching two tickets saw one of them vanish with no statement of what
+// became of it -- at the exact moment the thing they were waiting for
+// happened. It stops spinning and stops counting as running, because a
+// header that claimed otherwise would be lying (OR-265).
+func TestAFinishedRunKeepsItsRowAndSaysWhatBecameOfIt(t *testing.T) {
+	LiveReset()
+	t.Cleanup(LiveReset)
+	now := time.Now()
+	var b bytes.Buffer
+
+	liveStart("OR-92", now.Add(-40*time.Minute))
+	liveStage("OR-92", "implementing", events.ActorImplementer)
+	liveStart("OR-135", now.Add(-38*time.Minute))
+	liveStage("OR-135", "implementing", events.ActorImplementer)
+	LiveDone("OR-92", "ready")
+
+	st := liveSnapshot()
+	if len(st.rows) != 2 {
+		t.Fatalf("a finished run lost its row: %d row(s)", len(st.rows))
+	}
+	var done liveRun
+	for _, r := range st.rows {
+		if r.key == "OR-92" {
+			done = r
+		}
+	}
+	row := renderRow(&b, done, now, 150)
+	if !strings.Contains(row, "ready") {
+		t.Errorf("the row does not say what became of the ticket: %q", row)
+	}
+	if strings.ContainsAny(row, spinnerGlyphs) {
+		t.Errorf("a finished run must not spin: %q", row)
+	}
+	// The header counts it as done rather than running, or it claims work
+	// that has stopped.
+	header := renderHeaderAt(&b, st, now, false)
+	if !strings.Contains(header, "1 running") {
+		t.Errorf("want exactly one running: %q", header)
+	}
+	if !strings.Contains(header, "1 done") {
+		t.Errorf("the header does not report the finished run: %q", header)
 	}
 }
