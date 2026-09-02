@@ -691,7 +691,7 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 	// cleared below -- this is the only moment both halves exist. The
 	// resulting notice is not printed until after the merge report closes
 	// (OR-178); only the recording happens here.
-	lesson := recordLesson(key, pr, loadFixes(ws.Dir).States[key], entry.Source, ws, log)
+	lesson := recordLesson(key, pr, loadFixes(ws.Dir).States[key], entry.Source, ws, opts.Home, log)
 	// Forget the fix history, and the rebase count with it. A ticket reopened
 	// later must not start with either allowance already spent.
 	_ = clearFixes(ws.Dir, key)
