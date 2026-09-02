@@ -178,7 +178,10 @@ func Label(w io.Writer, verb, detail string) string {
 		// Distinct from success: a claimed ticket is in flight, not finished.
 		// Colouring it green would say "done" for work that may still fail.
 		code = cyan
-	case "warning", "skipped", "queued":
+	case "warning", "skipped", "queued", "update":
+		// update is yellow like a warning but is NOT one: nothing is broken
+		// and no action is required (OR-92). The distinct verb is what keeps
+		// the two apart for someone scanning, which colour alone cannot do.
 		code = yellow
 	default:
 		code = dim
@@ -204,3 +207,15 @@ func Heading(w io.Writer, s string) string { return paint(w, bold, s) }
 
 // Dim renders secondary detail, for continuation lines under a status.
 func Dim(w io.Writer, s string) string { return paint(w, dim, s) }
+
+// Detail renders a continuation line indented to a status line's detail
+// column, so a two-line status reads as one thing rather than two.
+func Detail(w io.Writer, s string) string {
+	return fmt.Sprintf("%*s%s", verbWidth+1, "", Dim(w, s))
+}
+
+// IsTerminal reports whether w is attached to a terminal.
+//
+// Exported for callers that must not write to a pipe at all, rather than
+// merely write to one without colour -- see internal/update.
+func IsTerminal(w io.Writer) bool { return isTerminal(w) }
