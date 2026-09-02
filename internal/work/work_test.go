@@ -169,10 +169,24 @@ func copyTree(t *testing.T, src, dst string) {
 		}
 		info, err := d.Info()
 		if err != nil {
+			// A file that was listed and is gone by the time it is read was
+			// never part of the fixture: git's background maintenance writes
+			// transient files under .git/objects (maintenance.lock) and
+			// removes them again, and the Ubuntu runner's git does exactly
+			// that mid-copy. lstat then fails on a path that no longer
+			// exists, and one test in the package dies on a file nothing
+			// wanted. It cannot happen locally, where maintenance never
+			// runs, which is why this only showed on CI (OR-293).
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
 			return err
 		}
 		data, err := os.ReadFile(p)
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
 			return err
 		}
 		return os.WriteFile(target, data, info.Mode().Perm())
