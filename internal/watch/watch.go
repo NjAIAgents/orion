@@ -455,6 +455,7 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 	// takes the shared-clone lock (workspace/gitlock.go).
 	if deps.Collect != nil {
 		inCI := 0
+		var pending []collect.Result
 		for _, r := range deps.Collect(collect.Options{
 			Out: w, Home: opts.Home, DryRun: opts.DryRun,
 			// A tick is not a person at a terminal. Without this the
@@ -475,9 +476,11 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 			// one holding it up.
 			if r.Verdict == collect.VerdictPending {
 				inCI++
+				pending = append(pending, r)
 			}
 		}
 		ui.LiveCI(inCI)
+		liveChecks(inCI, pending)
 	}
 
 	// 2. How much is already claimed? The label is the lock, and it lives on
@@ -577,6 +580,57 @@ func reportHeld(w io.Writer, held []HeldTicket) {
 	for _, r := range reasons {
 		ui.Say(w, "", events.ActorOrion, ui.VerbWarn, "%s: %s", strings.Join(keys[r], ", "), r)
 	}
+}
+
+// liveChecks pushes what the tickets awaiting CI are actually doing into the
+// display, so an ordinary watch names the checks instead of counting tickets.
+//
+// The count in the header answers "how many tickets are waiting"; it cannot
+// answer "is ubuntu done and windows still going", which on this project is
+// the question worth asking -- the Windows leg runs several times longer than
+// Linux (OR-292), so nine minutes of "1 in CI" is usually one platform.
+//
+// PUSHED, NEVER PULLED. Every check here came out of the `gh pr view` the
+// reconciler ALREADY made to decide the verdict; nothing extra is fetched, and
+// nothing at all happens on a redraw tick. That is the same rule
+// internal/cost/cost.go states about spend: a number in the header must not be
+// the most expensive thing on the screen.
+//
+// One line for the whole watch, not a row per ticket. The rows below already
+// belong to the tickets THIS process is working; a ticket awaiting CI is not
+// one of them, and giving it a row would mean inventing an elapsed for work
+// this process did not start -- the reason LiveCI is a count in the first
+// place. When more than one ticket is waiting their checks share the line, so
+// each name is prefixed with its key: two tickets both running "go (ubuntu)"
+// would otherwise render as two identical cells.
+//
+// Silence when there is nothing collected AND nothing in CI: that clears a
+// finished run's row. A batch reports its own checks from batchrun.go and its
+// members come back PENDING with no per-ticket rollup, so inCI is non-zero
+// there and this leaves the batch's line exactly as it found it.
+func liveChecks(inCI int, pending []collect.Result) {
+	rows := checkRows(pending)
+	if len(rows) == 0 && inCI > 0 {
+		return
+	}
+	ui.LiveChecks(rows)
+}
+
+// checkRows is the display's rows for the tickets awaiting CI, in key order so
+// a cell does not move between redraws.
+func checkRows(pending []collect.Result) []ui.Check {
+	pending = append([]collect.Result(nil), pending...)
+	sort.Slice(pending, func(i, j int) bool { return pending[i].Key < pending[j].Key })
+	var out []ui.Check
+	for _, r := range pending {
+		for _, c := range collect.UIChecks(r.Checks) {
+			if len(pending) > 1 {
+				c.Name = r.Key + " " + c.Name
+			}
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // slots is one tick's slot arithmetic: the cap, everything that took a slot,

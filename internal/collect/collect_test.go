@@ -131,6 +131,53 @@ func TestPendingChecksChangeNothing(t *testing.T) {
 	}
 }
 
+// The rollup the verdict was decided from is CARRIED OUT, so the watcher can
+// name the checks without asking the forge again (OR-310).
+//
+// This is the only thing that makes the per-check row free on an ordinary
+// watch: drop Checks here and the display can only get them with a second
+// `gh pr view` per redraw, which is the pull this design refuses.
+func TestAPendingResultCarriesTheChecksItWasDecidedFrom(t *testing.T) {
+	home, _ := bound(t)
+	res, _, _ := run(t, home, newTracker(), PR{
+		Verdict: VerdictPending, Detail: "1 running",
+		Checks: []Check{
+			{Name: "go (ubuntu)", State: CheckPassed},
+			{Name: "go (windows)", State: CheckRunning},
+		},
+	}, Options{})
+
+	if len(res[0].Checks) != 2 {
+		t.Fatalf("the result must carry the rollup, got %+v", res[0].Checks)
+	}
+	if res[0].Checks[1].Name != "go (windows)" || res[0].Checks[1].State != CheckRunning {
+		t.Errorf("the checks must arrive as read: %+v", res[0].Checks)
+	}
+}
+
+// Result.Checks is a field on the struct, not something derived from the
+// verdict -- so a failing read carries the rollup exactly as a pending one
+// does (OR-310). The prior test only proved this for VerdictPending; a
+// watcher naming the check that actually failed needs the same field
+// populated on the verdict that ends the wait.
+func TestResultCarriesChecksWhateverTheVerdict(t *testing.T) {
+	home, _ := bound(t)
+	res, _, _ := run(t, home, newTracker(), PR{
+		Verdict: VerdictFailing, Detail: "1 failed",
+		Checks: []Check{
+			{Name: "go (ubuntu)", State: CheckPassed},
+			{Name: "go (windows)", State: CheckFailed},
+		},
+	}, Options{})
+
+	if len(res[0].Checks) != 2 {
+		t.Fatalf("the Checks field must be populated regardless of verdict, got %+v", res[0].Checks)
+	}
+	if res[0].Checks[1].Name != "go (windows)" || res[0].Checks[1].State != CheckFailed {
+		t.Errorf("the checks must arrive as read: %+v", res[0].Checks)
+	}
+}
+
 // Green but unmerged must NOT merge. Approving is the one step in this
 // pipeline that is deliberately a person's, and a tool that merges its own
 // work has removed the review it exists to produce.
