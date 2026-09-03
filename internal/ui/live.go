@@ -1731,16 +1731,32 @@ func (l *Live) Write(p []byte) (int, error) {
 		return l.w.Write(p)
 	}
 	l.eraseLocked()
-	// Written straight through to the terminal's own scrollback, which is
-	// what a scrollback is for. The window used to hold these instead and
-	// redraw a bounded five of them above the region (OR-248); now that each
-	// ticket's latest line rides on its own row, holding them back would
-	// only mean the operator cannot scroll up to read what happened
-	// (OR-265).
+	// CAPTURED into the frozen window, not written through (OR-313).
 	//
-	// The erase above has already cleared the region, so this lands where the
-	// region was and the region is redrawn below it.
-	n, err := l.w.Write(p)
+	// OR-265 wrote these straight to scrollback, on the argument that each
+	// ticket's row now carries its latest tool call so the window was
+	// redundant. That argument does not survive looking at what the window
+	// actually holds: a file edit, a test run with its duration, a push with
+	// a commit count, a batch merge. Four actors including `batch`, which has
+	// no row at all. The row says what one ticket is doing NOW; the window
+	// says what HAPPENED across the run, and neither substitutes for the
+	// other.
+	//
+	// Nothing is lost to scrollback either way. commitWindowLocked prints the
+	// window on the way out, and `orion logs KEY` carries every line in full.
+	// FULL mode writes through, because the operator asked for the whole log.
+	//
+	// ctrl-r drops the cap: Full() commits whatever the window holds and
+	// every line after it goes straight to scrollback. Capturing here would
+	// mean the keystroke silently did the opposite of what it promises --
+	// output stops rather than opens up.
+	n := len(p)
+	var err error
+	if l.full {
+		n, err = l.w.Write(p)
+	} else {
+		l.capture(string(p))
+	}
 	// A write that did not finish its line leaves the cursor mid-row, and
 	// drawing the region there would splice the two together. Held until the
 	// line is closed, which every caller in this codebase does with Fprintln.
@@ -1896,24 +1912,48 @@ func (l *Live) drawLocked() {
 	cols := columns()
 	region := renderRegionAt(l.w, liveSnapshot(), time.Now(), cols, l.collapsed)
 	drawn := 0
-	// THE WINDOW IS GONE (OR-265). Every ticket's latest tool call now rides
-	// on its own row, which answers the same question without the reading:
-	// five interleaved lines from three agents had to be parsed to work out
-	// which belonged to whom, and a line on the ticket's own row does not.
-	//
-	// The record is not lost. `orion logs KEY` and events.jsonl carry every
-	// line in full, which is where a record belongs -- the window was a
-	// SCREEN affordance pretending to be one.
-	//
-	// It also removes the frame's own failure mode, seen on the first real
-	// run the region ever engaged for: ui.Banner writes a multi-line block,
-	// each line captured separately, and the frame redrew mid-block leaving
-	// three orphaned top borders stacked up the screen.
-	//
-	// The buffer stays, bounded, because Full() still commits it when the cap
-	// is dropped and the off-terminal path still writes through.
+	// The buffer is bounded first: Full() commits it when the cap is dropped,
+	// and the off-terminal path writes through.
 	if !l.full && len(l.window) > liveWindowBuffer {
 		l.window = l.window[len(l.window)-liveWindowBuffer:]
+	}
+	// THE FROZEN WINDOW, above the region (OR-313).
+	//
+	// Restored after OR-265 stopped drawing it. What it holds is not what a
+	// ticket row holds: the row is one ticket's current tool call, the window
+	// is what happened across the whole run -- including `batch`, which has
+	// no row of its own.
+	//
+	// Bounded and framed, so it reads as a pane rather than as a log that has
+	// stalled: "recent N line(s)" above, "scrolls, then gone" below.
+	// windowLines already resolves the height against the floor, the
+	// concurrency cap and the space the region needs, and the region outranks
+	// it on a short terminal.
+	//
+	// SUPPRESSED WHILE A MULTI-LINE BLOCK IS ARRIVING. ui.Banner writes its
+	// lines one at a time, each landing here as a separate write, so drawing
+	// the frame between them stacked three orphaned top borders up the screen
+	// the first time the region ever engaged. l.pending already marks an
+	// unfinished line; a banner is the same hazard one line further out, so
+	// the frame waits for a redraw that is not mid-block.
+	if !l.full && !l.collapsed {
+		// The frame's own three rows -- top border, bottom border, and the
+		// blank line under it -- are charged to the region's budget, not
+		// drawn on top of it.
+		//
+		// windowLines decides how many lines fit given what else is on
+		// screen, so anything this function adds around them has to be
+		// declared or the block overflows by exactly that much. It did: two
+		// rows over a fourteen-row terminal, which is the same class of fault
+		// as an erase that counts short and walks the region down the screen.
+		const frameRows = 3
+		if rows := windowLines(l.window, len(region)+liveBottomPad+frameRows, terminalRows(), cols); len(rows) > 0 {
+			top, bottom := windowFrame(l.w, len(rows), cols)
+			for _, line := range append(append([]string{top}, rows...), bottom, "") {
+				fmt.Fprintln(l.w, line)
+				drawn += screenRows(line, cols)
+			}
+		}
 	}
 	for _, line := range region {
 		fmt.Fprintln(l.w, line)
