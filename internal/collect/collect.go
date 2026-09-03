@@ -741,28 +741,11 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 		return res
 	}
 
-	// Clear EVERY label Orion owns, not just the one that brought us here.
-	//
-	// A ticket that failed earlier, was fixed, and then merged kept its
-	// orion-failed label forever -- so `orion queue` reported it as "failed"
-	// on the same line as its status, "Done". Orion contradicting itself in
-	// one line is worse than either state alone, because the reader cannot
-	// tell which half to believe.
-	//
-	// The ticket is finished. Nothing Orion tracked about it is true any more.
-	if err := deps.Jira.SetLabels(key, nil,
-		tracker.Managed(cfg.Tracker.QueueLabel)); err != nil {
+	if err := closeTicket(key, pr.URL, cfg.Tracker.QueueLabel, deps, w); err != nil {
 		res.Err = err
 		ui.Warn(w, "%s: merged, but its labels could not be cleared: %v", key, err)
 		return res
 	}
-	// Best effort: a workflow without a Done transition must not turn a
-	// successful merge into a failure.
-	if err := deps.Jira.TransitionTo(key, "Done"); err != nil {
-		ui.Warn(w, "%s: merged and released, but could not transition to Done: %v", key, err)
-	}
-	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion, "merged: "+pr.URL))
-	closeChildren(key, pr.URL, cfg.Tracker.QueueLabel, deps, w)
 	// A branch that went red and then merged is a mistake with its own
 	// correction attached, which is the one shape a lesson can be built from
 	// without an agent inferring anything. Read the history BEFORE it is
@@ -903,6 +886,41 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// closeTicket is the sequence that says "this ticket is finished".
+//
+// ONE definition of finished, shared by the per-branch path and the batch
+// path. It used to exist only inside merged(), so a batch that landed three
+// tickets closed none of them: they stayed In Progress carrying the queue
+// label, and a merged ticket that keeps that label is collected again on the
+// next pass, and the one after, forever (OR-314).
+//
+// Clear EVERY label Orion owns, not just the one that brought us here.
+//
+// A ticket that failed earlier, was fixed, and then merged kept its
+// orion-failed label forever -- so `orion queue` reported it as "failed" on
+// the same line as its status, "Done". Orion contradicting itself in one line
+// is worse than either state alone, because the reader cannot tell which half
+// to believe.
+//
+// The ticket is finished. Nothing Orion tracked about it is true any more.
+//
+// The label clear is the ONLY step whose failure is returned: it is the record
+// everything else is reconciled against, and the one whose failure means this
+// ticket gets processed again. Everything after it is best effort, because by
+// then the merge has already happened -- a workflow without a Done transition
+// must not turn a successful merge into a failure.
+func closeTicket(key, prURL, queueLabel string, deps Deps, w io.Writer) error {
+	if err := deps.Jira.SetLabels(key, nil, tracker.Managed(queueLabel)); err != nil {
+		return err
+	}
+	if err := deps.Jira.TransitionTo(key, "Done"); err != nil {
+		ui.Warn(w, "%s: merged and released, but could not transition to Done: %v", key, err)
+	}
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion, "merged: "+prURL))
+	closeChildren(key, prURL, queueLabel, deps, w)
+	return nil
 }
 
 // closeChildren moves a merged story's sub-tasks to Done.

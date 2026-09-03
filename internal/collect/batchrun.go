@@ -103,6 +103,12 @@ func (t batchTester) Test(ref string) (bool, error) {
 	// two lines below it. Same model as LiveSpend -- a number in the region
 	// must not be the most expensive thing on the screen.
 	ui.LiveChecks(UIChecks(pr.Checks))
+	// From the STATUS read, not from openPR's return: a ref whose pull
+	// request already exists gets an error and no URL from openPR, which is
+	// the ordinary case on every tick after the first. This read answers on
+	// every one of them, and it is the URL a landed member's ticket is
+	// commented with (OR-314).
+	rememberBatchPR(pr.URL)
 	switch {
 	case pr.Verdict == VerdictFailing:
 		// Remembered for the summary: the culprit's row names the check that
@@ -182,6 +188,36 @@ func failingCheck() string {
 	lastFailingCheck.mu.Lock()
 	defer lastFailingCheck.mu.Unlock()
 	return lastFailingCheck.name
+}
+
+// lastBatchPR is the pull request the batch ref was last read through.
+//
+// Package state for the same reason lastFailingCheck is: Test learns it and
+// runBatch needs it, with Land() in between carrying neither. One batch runs
+// at a time (see liveBatch), so there is one answer.
+//
+// It is ALSO written to the batch record, because a batch waiting on an
+// approver spans ticks and may span processes -- and the URL is what a landed
+// member's ticket is commented with, which must survive a restart rather than
+// silently become "the batch" with no address (OR-314).
+var lastBatchPR struct {
+	mu  sync.Mutex
+	url string
+}
+
+func rememberBatchPR(url string) {
+	if url == "" {
+		return
+	}
+	lastBatchPR.mu.Lock()
+	lastBatchPR.url = url
+	lastBatchPR.mu.Unlock()
+}
+
+func batchPR() string {
+	lastBatchPR.mu.Lock()
+	defer lastBatchPR.mu.Unlock()
+	return lastBatchPR.url
 }
 
 // liveObserver forwards a batch's progress to the pinned region (OR-246).
@@ -300,7 +336,7 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 	if approve == nil {
 		// The gate was removed while a batch waited on it. Landing without
 		// asking is the configured behaviour now, and the proof still stands.
-		return landResumed(st, members, g, ws, w), true
+		return landResumed(st, members, cfg, deps, g, ws, w), true
 	}
 	okd, err := approve(st.Ref, st.Members)
 	if err != nil {
@@ -315,7 +351,7 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 		}
 		return out, true
 	}
-	return landResumed(st, members, g, ws, w), true
+	return landResumed(st, members, cfg, deps, g, ws, w), true
 }
 
 // landResumed merges a proof recorded on an earlier pass.
@@ -323,8 +359,8 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 // The base is re-read one final time even though resumable() just compared
 // it: approval is a human-length gap, and the whole point of ADR 0017's
 // precondition is that the base can move in exactly such a gap.
-func landResumed(st batchState, members []Member, g repoGit,
-	ws *workspace.Workspace, w io.Writer) []Result {
+func landResumed(st batchState, members []Member, cfg config.Config, deps Deps,
+	g repoGit, ws *workspace.Workspace, w io.Writer) []Result {
 
 	now, err := g.SHAOf(st.Base)
 	if err != nil || now != st.BaseSHA {
@@ -346,6 +382,17 @@ func landResumed(st batchState, members []Member, g repoGit,
 
 	ui.Say(w, "", events.ActorOrion, ui.VerbOK,
 		"landed %d approved branch(es) as one, with no further CI run", len(members))
+
+	// Every member of a resumed batch landed: the proof covers the recorded
+	// set, and LandRef merged that set whole. The URL comes from the record
+	// first -- an approval is a human-length gap and this may be a different
+	// process from the one that opened the pull request (OR-314).
+	prURL := st.PRURL
+	if prURL == "" {
+		prURL = batchPR()
+	}
+	closeLanded(keysOf(members), prURL, cfg.Tracker.QueueLabel, deps, w)
+
 	var out []Result
 	for _, m := range members {
 		out = append(out, Result{Key: m.Key, Verdict: VerdictMerged, Changed: true})
@@ -463,7 +510,8 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	if b.Pending {
 		if err := saveBatchState(ws.Dir, batchState{
 			Ref: ref, Base: cfg.VCS.WorkBranch, Members: keysOf(members),
-			Status: batchTesting, BaseSHA: b.BaseSHA, TestingSince: time.Now(),
+			Status: batchTesting, BaseSHA: b.BaseSHA, PRURL: batchPR(),
+			TestingSince: time.Now(),
 		}); err != nil {
 			ui.Warn(w, "the batch is building but its record could not be written "+
 				"(%v); the next pass will assemble it again", err)
@@ -487,6 +535,7 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		if err := saveBatchState(ws.Dir, batchState{
 			Ref: ref, Base: cfg.VCS.WorkBranch, Members: keysOf(members),
 			Status: batchValidated, BaseSHA: b.BaseSHA, ValidatedSHA: b.ValidatedSHA,
+			PRURL: batchPR(),
 		}); err != nil {
 			ui.Warn(w, "the batch is green but its record could not be written (%v); "+
 				"the next pass will test it again", err)
@@ -559,6 +608,13 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 			Key: key, Msg: "landed in the batch on " + ref})
 	}
 
+	// AND THE TRACKER, which knew none of this (OR-314). The batch names its
+	// landed members exactly -- it just told the screen and the log about them
+	// and stopped there, so three tickets merged in one pull request sat In
+	// Progress carrying orion-ready until somebody closed them by hand, and
+	// the label brought them back into the queue in the meantime.
+	closeLanded(landed, batchPR(), cfg.Tracker.QueueLabel, deps, w)
+
 	var out []Result
 	for _, r := range b.Results {
 		res := Result{Key: r.Key, Changed: true}
@@ -588,6 +644,31 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		out = append(out, Result{Err: err})
 	}
 	return out
+}
+
+// closeLanded finishes every ticket the batch actually landed.
+//
+// THE MEMBERS IT IS GIVEN AND NO OTHERS. An ejected member did not land -- its
+// branch is still waiting and will be offered to the next batch -- and a
+// culprit is the reason the batch went red. Closing either would report work
+// as delivered that is not on the trunk, which is the worse half of the bug
+// this fixes: OR-314's symptom was tickets left open, but a batch that closed
+// its ejections would strand branches nobody was looking for any more.
+//
+// Every failure is a warning. The merge HAS happened by the time this runs --
+// the ref is on the work branch -- so turning a tracker hiccup into a failed
+// collect would report a successful merge as a failure. Same judgement, and
+// for the same reason, as closeChildren's.
+func closeLanded(landed []string, prURL, queueLabel string, deps Deps, w io.Writer) {
+	if deps.Jira == nil {
+		return
+	}
+	for _, key := range landed {
+		if err := closeTicket(key, prURL, queueLabel, deps, w); err != nil {
+			ui.Warn(w, "%s: landed in the batch, but its labels could not be "+
+				"cleared: %v. It will be collected again until they are.", key, err)
+		}
+	}
 }
 
 // batchContext resolves the workspace, log and config a batch needs.
@@ -676,12 +757,17 @@ func resumeTesting(st batchState, members []Member, cfg config.Config, opts Opti
 	// first-pass green batch goes through; nothing here is a second copy of
 	// that decision.
 	st.Status, st.ValidatedSHA = batchValidated, st.Ref
+	// Test just read the pull request, so this is the freshest the record will
+	// get before an approver is asked to look at it.
+	if url := batchPR(); url != "" {
+		st.PRURL = url
+	}
 	if err := saveBatchState(ws.Dir, st); err != nil {
 		ui.Warn(w, "the batch is green but its record could not be updated (%v)", err)
 	}
 	approve := batchApprover(cfg, opts, deps, ws, log, w)
 	if approve == nil {
-		return landResumed(st, members, g, ws, w)
+		return landResumed(st, members, cfg, deps, g, ws, w)
 	}
 	okd, err := approve(st.Ref, st.Members)
 	if err != nil {
@@ -690,7 +776,7 @@ func resumeTesting(st batchState, members []Member, cfg config.Config, opts Opti
 	if !okd {
 		return pendingResults(members)
 	}
-	return landResumed(st, members, g, ws, w)
+	return landResumed(st, members, cfg, deps, g, ws, w)
 }
 
 // batchCheckDeadline is how long a batch may wait for its checks to report.
