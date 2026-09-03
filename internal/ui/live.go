@@ -320,6 +320,12 @@ var live struct {
 	batch *liveBatch
 	// since is when this watcher started, set on the first LiveStart.
 	since time.Time
+	// plainChecks is the body of the checks line the OFF-TERMINAL path
+	// printed last tick, so it prints again only when a check changed
+	// state. The same contract each row's lastPlain keeps, for the same
+	// reason: a log appends, and "go (ubuntu) passed" repeated once a
+	// minute for an hour buries the lines a reader needs (OR-310).
+	plainChecks string
 	// checks is the current CI run's individual checks, newest reading wins.
 	//
 	// ci above is the COUNT of tickets waiting; this is what the one shared
@@ -563,6 +569,7 @@ func LiveReset() {
 	defer live.mu.Unlock()
 	live.runs, live.spend, live.ci, live.median = nil, 0, 0, nil
 	live.batch, live.checks, live.since = nil, nil, time.Time{}
+	live.plainChecks = ""
 }
 
 // liveState is one consistent read of the registry: rows in key order, plus
@@ -582,6 +589,8 @@ type liveState struct {
 	batch *liveBatch
 	// checks is copied for the same reason the batch is.
 	checks []Check
+	// plainChecks is what the off-terminal path last printed about them.
+	plainChecks string
 	// since is when this watcher started, for the header's elapsed.
 	since time.Time
 }
@@ -589,7 +598,8 @@ type liveState struct {
 func liveSnapshot() liveState {
 	live.mu.Lock()
 	defer live.mu.Unlock()
-	st := liveState{spend: live.spend, ci: live.ci, since: live.since}
+	st := liveState{spend: live.spend, ci: live.ci, since: live.since,
+		plainChecks: live.plainChecks}
 	st.checks = append([]Check(nil), live.checks...)
 	if live.batch != nil {
 		st.batch = live.batch.snapshotLocked()
@@ -1303,7 +1313,7 @@ const maxFixRounds = 3
 // than four per second, because the file is read afterwards and a redraw
 // stream is not a record of anything.
 func renderPlain(st liveState, now time.Time) []string {
-	lines, _ := renderPlainTracked(st, now)
+	lines, _, _ := renderPlainTracked(st, now)
 	return lines
 }
 
@@ -1312,12 +1322,22 @@ func renderPlain(st liveState, now time.Time) []string {
 type plainPrinted struct{ key, body string }
 
 // renderPlainTracked is renderPlain plus the bodies it chose to print, so
-// the caller can record them against the registry.
-func renderPlainTracked(st liveState, now time.Time) ([]string, []plainPrinted) {
+// the caller can record them against the registry. The third value is what
+// the checks now say, printed or not, for the same record.
+func renderPlainTracked(st liveState, now time.Time) ([]string, []plainPrinted, string) {
 	var out []string
 	var printed []plainPrinted
 	if line := renderBatchPlain(st.batch, now); line != "" {
 		out = append(out, line)
+	}
+	// The CI checks, which the region draws under its rule and this path did
+	// not draw at all -- so a watch piped to a file said "1 in CI" and never
+	// which platform that was, the very gap the row exists to close (OR-310).
+	// Printed only when a check changed state, per the lastPlain contract the
+	// rows below keep.
+	checks := plainChecksBody(st.checks)
+	if checks != "" && checks != st.plainChecks {
+		out = append(out, now.Local().Format("15:04")+"  "+checks)
 	}
 	for _, r := range st.rows {
 		// A FINISHED row is reported once and then goes quiet.
@@ -1365,13 +1385,28 @@ func renderPlainTracked(st liveState, now time.Time) ([]string, []plainPrinted) 
 		out = append(out, now.Local().Format("15:04")+"  "+body)
 		printed = append(printed, plainPrinted{key: r.key, body: body})
 	}
-	return out, printed
+	return out, printed, checks
 }
 
-// markReported records that the plain path has printed these rows' endings,
-// so the next tick does not repeat them. Separate from renderPlain because
-// that is a pure function of a snapshot and this mutates the registry.
-func markReported(printed []plainPrinted) {
+// plainChecksBody is the checks as a log line: no spinner, no colour, the
+// state spelled out. A file is read afterwards, where a braille frame is a
+// character rather than motion.
+func plainChecksBody(checks []Check) string {
+	if len(checks) == 0 {
+		return ""
+	}
+	cells := make([]string, 0, len(checks))
+	for _, c := range checks {
+		cells = append(cells, c.Name+" "+c.State)
+	}
+	return "ci  " + strings.Join(cells, "  "+liveSep+"  ")
+}
+
+// markReported records that the plain path has printed these rows' endings
+// and what the checks last said, so the next tick does not repeat either.
+// Separate from renderPlain because that is a pure function of a snapshot
+// and this mutates the registry.
+func markReported(printed []plainPrinted, checks string) {
 	live.mu.Lock()
 	defer live.mu.Unlock()
 	for _, p := range printed {
@@ -1379,6 +1414,10 @@ func markReported(printed []plainPrinted) {
 			r.lastPlain = p.body
 		}
 	}
+	// Recorded even when nothing was printed: an emptied rollup has to clear
+	// the record, or the next run's first identical reading would be taken
+	// for a repeat and swallowed.
+	live.plainChecks = checks
 }
 
 // displayCells is how many columns a rendered line occupies once the terminal
@@ -1805,11 +1844,11 @@ func (l *Live) Tick() {
 		return
 	}
 	st := liveSnapshot()
-	lines, printed := renderPlainTracked(st, time.Now())
+	lines, printed, checks := renderPlainTracked(st, time.Now())
 	for _, line := range lines {
 		fmt.Fprintln(l.w, line)
 	}
-	markReported(printed)
+	markReported(printed, checks)
 }
 
 // Close stops the redraw and clears the region, leaving the scrollback as the

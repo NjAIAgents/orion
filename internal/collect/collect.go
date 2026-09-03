@@ -245,6 +245,15 @@ type Result struct {
 	PR      string
 	Changed bool // whether anything was actually done
 	Err     error
+	// Checks is what THIS ticket's CI run is doing, carried out of the read
+	// the verdict was already made from.
+	//
+	// Pushed rather than pulled, for the reason internal/cost/cost.go gives
+	// about spend: the watcher redraws four times a second, and a display
+	// that asked the forge what the checks were would be the most expensive
+	// thing on the screen. `gh pr view` was called once, for the verdict;
+	// this is the same answer, kept instead of thrown away (OR-310).
+	Checks []Check
 }
 
 // Run reconciles every ticket awaiting CI.
@@ -503,7 +512,7 @@ func one(key string, pass []string, opts Options, deps Deps) (res Result) {
 		ui.Fail(w, "%s: could not read the pull request: %v", key, err)
 		return res
 	}
-	res.Verdict, res.PR = pr.Verdict, pr.URL
+	res.Verdict, res.PR, res.Checks = pr.Verdict, pr.URL, pr.Checks
 	log.Emit(events.Event{Kind: events.KindCI, Actor: events.ActorCI,
 		Msg: string(pr.Verdict) + ": " + firstLine(pr.Detail)})
 

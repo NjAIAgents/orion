@@ -102,7 +102,7 @@ func (t batchTester) Test(ref string) (bool, error) {
 	// display costs nothing extra and cannot disagree with the decision made
 	// two lines below it. Same model as LiveSpend -- a number in the region
 	// must not be the most expensive thing on the screen.
-	ui.LiveChecks(liveChecks(pr.Checks))
+	ui.LiveChecks(UIChecks(pr.Checks))
 	switch {
 	case pr.Verdict == VerdictFailing:
 		// Remembered for the summary: the culprit's row names the check that
@@ -119,13 +119,18 @@ func (t batchTester) Test(ref string) (bool, error) {
 	return false, ErrCheckPending
 }
 
-// liveChecks converts this package's checks into the display's.
+// UIChecks converts this package's checks into the display's.
 //
 // Two types rather than one shared: internal/ui cannot import this package
 // (it is imported BY it, for rendering), and a display type that had to
 // track a forge's vocabulary would drag GitHub's dozen conclusions into a
 // file whose whole job is to draw three states.
-func liveChecks(in []Check) []ui.Check {
+//
+// Exported because the batch is no longer the only caller: internal/watch
+// pushes the same rows for an ordinary run's tickets (OR-310), and a second
+// copy of this switch is how the two paths would start disagreeing about
+// what "running" looks like.
+func UIChecks(in []Check) []ui.Check {
 	out := make([]ui.Check, 0, len(in))
 	for _, c := range in {
 		state := ui.CheckPassed

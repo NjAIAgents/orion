@@ -6,8 +6,70 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/ui"
 )
+
+// OR-310: an ordinary watch says WHICH check is holding a ticket up, not just
+// how many tickets are waiting.
+//
+// The row existed and only the batch path fed it, so a single ticket waiting
+// on CI got "1 in CI" and nothing else -- and on this project that is the
+// question worth answering, because the Windows leg runs several times longer
+// than Linux (OR-292) and "still running" for nine minutes is usually one
+// platform. Asserted off a terminal, which is also the lastPlain contract: the
+// log a failure is read out of afterwards must carry what the region drew.
+func TestAnOrdinaryWatchNamesTheChecksItIsWaitingOn(t *testing.T) {
+	ui.LiveReset()
+	t.Cleanup(ui.LiveReset)
+
+	s := &spy{
+		maxSleeps: 4, queued: issues("FCIA-7"), hold: make(chan struct{}),
+		pendingTicks: 3,
+		pendingChecks: []collect.Check{
+			{Name: "go (ubuntu)", State: collect.CheckPassed},
+			{Name: "go (windows)", State: collect.CheckRunning},
+		},
+	}
+	releaseAfter(s, 40*time.Millisecond)
+	out := runWatch(t, s, Options{MaxConcurrent: 1})
+
+	if !strings.Contains(out, "go (windows) running") {
+		t.Errorf("the watch must name the check still going, not only count tickets:\n%s", out)
+	}
+	if !strings.Contains(out, "go (ubuntu) passed") {
+		t.Errorf("the watch must say which checks have landed:\n%s", out)
+	}
+}
+
+// Two tickets awaiting CI have two independent runs, so their cells are named
+// by ticket. Without the prefix both would render "go (ubuntu)" and the line
+// would say nothing about which ticket is waiting on what.
+func TestChecksFromSeveralTicketsAreNamedByTicket(t *testing.T) {
+	rows := checkRows([]collect.Result{
+		{Key: "OR-2", Checks: []collect.Check{{Name: "go (ubuntu)", State: collect.CheckRunning}}},
+		{Key: "OR-1", Checks: []collect.Check{{Name: "go (ubuntu)", State: collect.CheckPassed}}},
+	})
+
+	if len(rows) != 2 {
+		t.Fatalf("both tickets' checks belong on the line, got %+v", rows)
+	}
+	// Key order, so a cell does not move under the reader between redraws.
+	if rows[0].Name != "OR-1 go (ubuntu)" || rows[1].Name != "OR-2 go (ubuntu)" {
+		t.Errorf("checks must be named by ticket, in key order: %+v", rows)
+	}
+}
+
+// One ticket keeps the bare check names: prefixing a single run's checks with
+// the only key on screen is noise in the narrowest line of the display.
+func TestOneTicketsChecksAreNotPrefixed(t *testing.T) {
+	rows := checkRows([]collect.Result{
+		{Key: "OR-1", Checks: []collect.Check{{Name: "go (macos)", State: collect.CheckRunning}}},
+	})
+	if len(rows) != 1 || rows[0].Name != "go (macos)" {
+		t.Errorf("a lone ticket's checks must keep their own names: %+v", rows)
+	}
+}
 
 // releaseAfter frees the spy's held jobs once the watcher has had time to
 // dispatch and tick. The hold blocks the JOB goroutine, never the loop, so

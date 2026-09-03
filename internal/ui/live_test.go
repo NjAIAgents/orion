@@ -871,6 +871,57 @@ func TestChecksReplaceRatherThanAccumulate(t *testing.T) {
 	}
 }
 
+// Off a terminal the checks reach the log too, and only when one of them
+// moved (OR-310).
+//
+// The region draws them under its rule; a piped watch drew nothing at all, so
+// the file a failure is read out of afterwards said "1 in CI" and never which
+// platform that was. The repeat guard is the lastPlain contract the rows keep:
+// a check that has said "running" for nine minutes must not say it once a
+// minute for nine minutes.
+func TestOffATerminalTheChecksArePrintedOnceUntilOneMoves(t *testing.T) {
+	LiveReset()
+	defer LiveReset()
+
+	var buf bytes.Buffer
+	live := NewLive(&buf)
+	defer live.Close()
+	LiveChecks([]Check{
+		{Name: "go (ubuntu)", State: CheckPassed},
+		{Name: "go (windows)", State: CheckRunning},
+	})
+
+	live.Tick()
+	first := buf.String()
+	if !strings.Contains(first, "go (windows) running") || !strings.Contains(first, "go (ubuntu) passed") {
+		t.Fatalf("the plain path must name the checks and their states: %q", first)
+	}
+	// No spinner, no colour: a log is read afterwards, where a braille frame
+	// is a character rather than motion.
+	if strings.ContainsAny(first, "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏") || strings.Contains(first, "\x1b[") {
+		t.Errorf("the plain form must carry no animation or colour: %q", first)
+	}
+
+	buf.Reset()
+	for i := 0; i < 3; i++ {
+		live.Tick()
+	}
+	if got := buf.String(); strings.Contains(got, "go (windows)") {
+		t.Errorf("an unchanged rollup repeated, which buries the lines that matter:\n%q", got)
+	}
+
+	// A check that MOVES is news, and prints again.
+	LiveChecks([]Check{
+		{Name: "go (ubuntu)", State: CheckPassed},
+		{Name: "go (windows)", State: CheckPassed},
+	})
+	buf.Reset()
+	live.Tick()
+	if got := buf.String(); !strings.Contains(got, "go (windows) passed") {
+		t.Errorf("a check that changed state must print: %q", got)
+	}
+}
+
 // A WRAPPED writer is still the terminal it wraps.
 //
 // internal/watch puts every line through a syncWriter so two agents cannot

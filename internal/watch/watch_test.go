@@ -51,6 +51,9 @@ type spy struct {
 	// fiction made TestTheJobLimitDrains... pass against code that exits
 	// immediately, and the bug reached a real run.
 	pendingTicks int
+	// pendingChecks is the rollup the pending result carries, as a real
+	// collect carries the read its verdict came from (OR-310).
+	pendingChecks []collect.Check
 }
 
 func (s *spy) workedKeys() []string {
@@ -75,7 +78,8 @@ func (s *spy) deps() Deps {
 			if started == 0 || pending == 0 {
 				return nil
 			}
-			return []collect.Result{{Key: "FCIA-7", Verdict: collect.VerdictPending}}
+			return []collect.Result{{Key: "FCIA-7", Verdict: collect.VerdictPending,
+				Checks: s.pendingChecks}}
 		},
 		Work: func(o work.Options) []work.Result {
 			s.mu.Lock()
