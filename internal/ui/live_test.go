@@ -650,14 +650,28 @@ func TestConcurrentWritesAndRedrawsDoNotSplice(t *testing.T) {
 	// into the middle of it. A line is redrawn for as long as it stays in the
 	// window, so the count is a floor rather than an equality -- but a line that
 	// was ever spliced is a line that does not end where it should.
-	got := b.String()
-	if n := strings.Count(got, "SENTINEL-line\n"); n < 8*40 {
-		t.Errorf("expected at least 320 whole sentinel lines, got %d", n)
+	// Inside the window a line sits between the frame's side bars; the frame
+	// is stripped before the line is judged, and a spliced line still fails
+	// because the row lands inside the sentinel, not after it.
+	unframe := func(line string) string {
+		line = plain(line)
+		line = strings.TrimRight(line, " ")
+		line = strings.TrimSuffix(strings.TrimSuffix(line, "│"), "|")
+		return strings.TrimRight(line, " ")
 	}
+	got := b.String()
+	whole := 0
 	for _, line := range strings.Split(got, "\n") {
-		if strings.Contains(line, "SENTINEL") && !strings.HasSuffix(line, "SENTINEL-line") {
+		if !strings.Contains(line, "SENTINEL") {
+			continue
+		}
+		if !strings.HasSuffix(unframe(line), "SENTINEL-line") {
 			t.Fatalf("a sentinel was spliced: %q", line)
 		}
+		whole++
+	}
+	if whole < 8*40 {
+		t.Errorf("expected at least 320 whole sentinel lines, got %d", whole)
 	}
 }
 
@@ -942,7 +956,7 @@ func TestHeaderReportsSpendAndCI(t *testing.T) {
 
 	var b bytes.Buffer
 	got := renderHeader(&b, liveSnapshot(), time.Date(2026, 8, 30, 23, 47, 12, 0, time.UTC))
-	for _, want := range []string{"1 running", "1 in CI", "$4.12 this session"} {
+	for _, want := range []string{"1 running", "1 in CI", "$4.12"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("header is missing %q: %q", want, got)
 		}
@@ -1076,7 +1090,7 @@ func TestHeaderOmitsCIAndSpendWhenZero(t *testing.T) {
 	if strings.Contains(got, "in CI") {
 		t.Errorf("with nothing pending in CI the header must not mention it: %q", got)
 	}
-	if strings.Contains(got, "this session") {
+	if strings.Contains(got, "$") {
 		t.Errorf("with no spend recorded the header must not print a dollar figure: %q", got)
 	}
 }

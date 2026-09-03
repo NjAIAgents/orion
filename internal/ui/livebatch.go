@@ -322,39 +322,34 @@ func renderBatch(w io.Writer, b *liveBatch, now time.Time, cols int) []string {
 	}
 	switch b.phase {
 	case BatchAssembling:
-		return renderAssembling(w, b, cols)
+		return renderAssembling(w, b, now, cols)
 	case BatchTesting:
 		return renderTesting(w, b, now, cols)
 	case BatchIsolating:
-		return renderIsolating(w, b, cols)
+		return renderIsolating(w, b, now, cols)
 	default:
-		return renderBatchDone(w, b, cols)
+		return renderBatchDone(w, b, now, cols)
 	}
 }
 
-func batchHead(w io.Writer, b *liveBatch, right string) string {
-	left := fmt.Sprintf("  %s  %d members  %s",
-		paint(w, bold, "batch"), len(b.members), b.phase)
-	if right == "" {
-		return left
-	}
-	return left + "  " + Dim(w, right)
+// batchHeadLine opens every phase: `batch  3 members   orion/batch ← develop`.
+//
+// One shape in every phase, so the block does not change width as the batch
+// moves -- which reads as the display redrawing rather than as work
+// progressing. Everything measured lives in the CI block beneath.
+func batchHeadLine(w io.Writer, b *liveBatch, extra string) string {
+	head := fmt.Sprintf("  %s  %s", paint(w, bold, "batch"), extra)
+	return head + "   " + Dim(w, fmt.Sprintf("%s ← %s", b.ref, b.base))
 }
 
 // renderAssembling shows MEMBERSHIP, because that is the only thing that
 // differs between branches while the ref is being built. Nothing is measured
 // here, so nothing is drawn as though it were.
-func renderAssembling(w io.Writer, b *liveBatch, cols int) []string {
-	// The CI track, empty: no run has started, and the line keeps the shape
-	// it will have when one does rather than growing a bar mid-phase.
-	head := fmt.Sprintf("  %s  %s  %d members  %s  CI %s",
-		paint(w, bold, "batch"), b.memberBar(w), len(b.members), b.phase, b.bar(w, 0))
-	head += "   " + Dim(w, fmt.Sprintf("%s ← %s", b.ref, b.base))
-	out := []string{clip(head, cols), ""}
+func renderAssembling(w io.Writer, b *liveBatch, now time.Time, cols int) []string {
+	out := []string{clip(batchHeadLine(w, b, string(b.phase)), cols)}
 	// A ROW EACH, as the mockup has it. Membership is the information here,
 	// and a row carries what a cell cannot: whether the branch got in, and
-	// for the one that did not, the file it conflicted on. Cramming four
-	// members onto one line saved three rows and cost the reason.
+	// for the one that did not, the file it conflicted on.
 	for _, m := range b.members {
 		g, note := memberGlyph(w, m.state)
 		what := "merged into the ref"
@@ -367,7 +362,7 @@ func renderAssembling(w io.Writer, b *liveBatch, cols int) []string {
 		line := fmt.Sprintf("    %s %s  %s",
 			g, paint(w, ticketColor(m.key), pad(m.key, liveKeyWidth)), Dim(w, what))
 		if note != "" {
-			line += "  " + note
+			line += " " + Dim(w, "—") + " " + note
 		}
 		out = append(out, clip(strings.TrimRight(line, " "), cols))
 		// The conflicting file on its own line under the row it belongs to,
@@ -377,75 +372,53 @@ func renderAssembling(w io.Writer, b *liveBatch, cols int) []string {
 			out = append(out, clip("               "+Dim(w, m.detail), cols))
 		}
 	}
-	return out
+	return append(out, ciBlock(w, b, now, cols)...)
 }
 
-// renderTesting is ONE bar for the shared run.
-//
-// The members are named on their own line without marks of their own: they
-// are all in the same run, so any per-member progress drawn here would be the
-// same number repeated, formatted to look like several.
+// renderTesting is the CI block, because during the run the CI block IS the
+// batch: one chain, one fill, the jobs beneath.
 func renderTesting(w io.Writer, b *liveBatch, now time.Time, cols int) []string {
-	elapsed := now.Sub(b.ciStarted)
-	if b.ciStarted.IsZero() {
-		elapsed = 0
-	}
-	// One line, not batchHead plus a bar: the member count, the bar and the
-	// run number are one fact about one run, and splitting them over two rows
-	// invites reading the second as a per-member thing.
-	bar := b.bar(w, elapsed)
-	// The CI bar is the CHECKS when there are any -- one labelled segment
-	// each, so the line says which platform is still going rather than only
-	// how long the run has taken. The time bar stays beside it: composition
-	// and duration are two questions, and neither answers the other.
-	ciBar := checkBar(w, b.checks)
-	if ciBar == "" {
-		ciBar = bar
-	} else {
-		ciBar += "  " + bar
-	}
-	ci := fmt.Sprintf("  %s  %s  %d members  CI %s  %s",
-		paint(w, bold, "batch"), b.memberBar(w), len(b.members), ciBar, elapsedString(elapsed))
-	// "median" names what the number IS. Without it "/ ~11m" reads as an
-	// estimate of when this run will finish, which is the prediction the bar
-	// deliberately refuses to make.
-	if b.median > 0 {
-		ci += Dim(w, fmt.Sprintf(" / ~%s median", coarse(b.median)))
-	} else {
-		// Same reason as liveRun.notes: a blank bar with nothing beside it
-		// reads as unbuilt rather than as unmeasured.
-		ci += "  " + Dim(w, "no baseline yet")
-	}
-	ci += "  " + Dim(w, fmt.Sprintf("run %d", b.runs))
-
-	var keys []string
-	var ejected []string
-	for _, m := range b.members {
-		if m.state == MemberEjected {
-			ejected = append(ejected, m.key)
-			continue
-		}
-		keys = append(keys, m.key)
-	}
-	// The keys are already named, with their state, in the segmented bar on
-	// the line above. Repeating them as a bare list said the same thing twice
-	// and cost a row doing it, so what stays is the bar.
-	out := []string{clip(ci, cols)}
+	out := []string{clip(batchHeadLine(w, b, fmt.Sprintf("%d members", len(b.members))), cols)}
 	// An ejected branch is out of THIS run but not out of the picture, and it
 	// stays on screen saying so. Dropping it silently was the one thing the
 	// operator could not otherwise account for: a batch of four that names
-	// three members, with nothing anywhere explaining the fourth.
-	//
-	// Its own row rather than a name in the list above, because that list is
-	// "who is in this CI run" and it is not.
-	if len(ejected) > 0 {
-		out = append(out, "")
-	}
-	for _, key := range ejected {
+	// three members, with nothing anywhere explaining the fourth. Its own
+	// row rather than a cell in the chain, because the chain is "who is in
+	// this CI run" and it is not.
+	for _, m := range b.members {
+		if m.state != MemberEjected {
+			continue
+		}
 		g, note := memberGlyph(w, MemberEjected)
-		out = append(out, clip(fmt.Sprintf("    %s %s  %s", g, key, Dim(w, note)), cols))
+		out = append(out, clip(fmt.Sprintf("    %s %s  %s", g, m.key, Dim(w, note)), cols))
 	}
-	return out
+	return append(out, ciBlock(w, b, now, cols)...)
+}
+
+// shortKey is the number a ticket key ends in: OR-223 -> 223.
+//
+// The prefix identifies the PROJECT, which is the same for every member of a
+// batch, so inside a chain cell it is the one part carrying no information.
+func shortKey(key string) string {
+	if i := strings.LastIndex(key, "-"); i >= 0 && i+1 < len(key) {
+		return key[i+1:]
+	}
+	return key
+}
+
+// isolationRuns estimates how many CI runs the bisection will cost, at worst.
+//
+// About 2*log2(n): the search tests BOTH halves at each level rather than only
+// the failing one, because a batch can hold more than one culprit (batch.go).
+// Rounded UP per level -- three members split into two and one, and a floor
+// counted that as one level and printed `run 4 of ~3`, an estimate the count
+// had already passed.
+func isolationRuns(members int) int {
+	n := 1
+	for i := members; i > 1; i = (i + 1) / 2 {
+		n += 2
+	}
+	return n
 }
 
 // renderIsolating draws the SEARCH, because the shape of the search is what
@@ -454,362 +427,62 @@ func renderTesting(w io.Writer, b *liveBatch, now time.Time, cols int) []string 
 // A row per member could say which branch broke; only the tree says why
 // finding it took four runs rather than one, and that number is what the
 // binary search is justified by.
-// batchBarWidth is the CI bar's width.
-//
-// Wider than a ticket's, because it measures the thing the whole batch is
-// waiting on: one run covering every member. A headline measure drawn at the
-// same width as the per-ticket bars beneath it reads as one more row rather
-// than as the row they are all blocked behind.
-const batchBarWidth = 22
-
-// bar is the shared CI run's progress, drawn wide.
-//
-// It draws the TRACK in every phase, not only while testing. A batch that is
-// assembling has no run to measure, and an empty track says exactly that --
-// the line keeps its shape, and the fill arriving is what marks CI starting.
-// The alternative is a batch line that changes width as it moves between
-// phases, which reads as the display redrawing rather than as work
-// progressing.
-func (b *liveBatch) bar(w io.Writer, elapsed time.Duration) string {
-	full, head, empty := barFullGlyph, barHeadGlyph, barEmptyGlyph
-	if !glyphs() {
-		full, head, empty = barFullASCII, barHeadASCII, barEmptyASCII
-	}
-	if b.median <= 0 || elapsed <= 0 {
-		return Dim(w, strings.Repeat(empty, batchBarWidth))
-	}
-	n := int(float64(batchBarWidth) * float64(elapsed) / float64(b.median))
-	if n < 0 {
-		n = 0
-	}
-	if n >= batchBarWidth {
-		return paint(w, green, strings.Repeat(full, batchBarWidth))
-	}
-	return paint(w, green, strings.Repeat(full, n)+head) +
-		Dim(w, strings.Repeat(empty, batchBarWidth-n-1))
-}
-
-// memberBarWidth is the segmented membership bar's width.
-//
-// Divided evenly between members, so the bar IS the batch: how many are in
-// it, and what became of each. Twenty-two so that a batch of up to about
-// eight members still gets a segment wide enough to read a colour from.
-const memberBarWidth = 22
-
-// checkBarWidth is the CI bar's width.
-//
-// Wider than the member bar because its labels are words rather than
-// three-digit numbers: at 22 a three-platform run could not fit "windows"
-// with a cell of colour either side, so every segment fell back to bare fill
-// and the bar said nothing the time bar was not already saying.
-const checkBarWidth = 30
-
-// memberBar draws the batch as a row of segments, one per member.
-//
-// A second bar beside the CI one because they answer different questions and
-// neither can answer the other's. The CI bar says how long this run has taken
-// against the median -- the question during a thirty-minute wait. This says
-// WHO IS IN and what became of them, which is the question when a batch of
-// four lands two, ejects one and convicts another.
-//
-// Colour carries the state, and the words beside the member rows carry it
-// again: a bar whose meaning lives only in colour says nothing in NO_COLOR or
-// read aloud (OR-163). This is the glance; the rows are the record.
-func (b *liveBatch) memberBar(w io.Writer) string {
-	if len(b.members) == 0 {
-		return ""
-	}
-	full, empty := barFullGlyph, barEmptyGlyph
-	if !glyphs() {
-		full, empty = barFullASCII, barEmptyASCII
-	}
-	// Evenly, with the remainder spread over the leftmost segments rather
-	// than left as a ragged gap at one end.
-	seg := memberBarWidth / len(b.members)
-	if seg < 1 {
-		seg = 1
-	}
-	extra := memberBarWidth - seg*len(b.members)
-
-	// ALL the segments get a label or none do. A bar where the first three
-	// members are named and the rest are bare reads as a rendering fault
-	// rather than as a deliberate limit -- and the unlabelled ones are
-	// exactly the members an operator would then assume are missing.
-	label := true
-	for i, m := range b.members {
-		n := seg
-		if i < extra {
-			n++
-		}
-		if n < len(shortKey(m.key))+2 {
-			label = false
-			break
-		}
-	}
-
-	var out strings.Builder
-	for i, m := range b.members {
-		n := seg
-		if i < extra {
-			n++
-		}
-		// GREEN done, YELLOW in flight, GREY not started, RED broke it.
-		//
-		// The ejection is the one that cannot follow that scheme: it is
-		// neither done nor broken, and painting it red would say a sound
-		// branch needs debugging -- the single most expensive misreading
-		// this display can make. It gets the HOLLOW glyph instead, so it is
-		// visibly accounted for without claiming a verdict it has not
-		// earned, and the row beside it says "returns to the queue".
-		glyph, colour := empty, ""
-		switch m.state {
-		case MemberLanded, MemberMerged:
-			glyph, colour = full, green
-		case MemberWorking:
-			glyph, colour = full, yellow
-		case MemberCulprit:
-			glyph, colour = full, red
-		case MemberEjected:
-			glyph, colour = ejectGlyph(), dim
-		}
-		// The ticket's number INSIDE its segment, so the bar says which
-		// branch each block is rather than only how many there are. The
-		// project prefix is dropped: it is the same on every member of a
-		// batch, so it would spend a third of the segment saying nothing.
-		//
-		// Only when it fits with a cell of colour either side, or the label
-		// swallows the segment and the bar stops reading as a bar.
-		if colour == "" {
-			colour = dim
-		}
-		out.WriteString(labelledSegment(w, glyph, shortKey(m.key), n, colour, label))
-	}
-	return out.String()
-}
-
-// checkBar draws the CI run as one segment per check, named.
-//
-// The same shape as memberBar and for the same reason: a single bar filling
-// against a median says how long the run has taken, and says nothing about
-// WHICH of three platforms is still going. During a batch that is the
-// question -- ubuntu green and windows nine minutes in is a different
-// situation from all three still starting, and a time bar renders them
-// identically.
-//
-// Both bars stay. This one is composition; the time bar beside it is
-// duration. Neither can answer the other's question.
-func checkBar(w io.Writer, checks []Check) string {
-	if len(checks) == 0 {
-		return ""
-	}
-	full, empty := barFullGlyph, barEmptyGlyph
-	if !glyphs() {
-		full, empty = barFullASCII, barEmptyASCII
-	}
-	seg := checkBarWidth / len(checks)
-	if seg < 1 {
-		seg = 1
-	}
-	extra := checkBarWidth - seg*len(checks)
-
-	// All labelled or none, exactly as memberBar: a bar naming two of three
-	// checks reads as a fault rather than as a limit.
-	label := true
-	for i, c := range checks {
-		n := seg
-		if i < extra {
-			n++
-		}
-		if n < len(shortCheck(c.Name))+2 {
-			label = false
-			break
-		}
-	}
-
-	var out strings.Builder
-	for i, c := range checks {
-		n := seg
-		if i < extra {
-			n++
-		}
-		// GLYPH as well as colour, so the three states are still distinct
-		// under NO_COLOR: a bar whose meaning lives only in colour says
-		// nothing in a screenshot or read aloud (OR-163). Passed is solid,
-		// running is the half-filled head the time bar already uses for
-		// "in progress", failed is the hollow glyph.
-		glyph, colour := empty, ""
-		switch c.State {
-		case CheckPassed:
-			glyph, colour = full, green
-		case CheckFailed:
-			glyph, colour = ejectGlyph(), red
-		case CheckRunning:
-			glyph, colour = barHeadGlyph, yellow
-			if !glyphs() {
-				glyph = barHeadASCII
-			}
-		}
-		if colour == "" {
-			colour = dim
-		}
-		out.WriteString(labelledSegment(w, glyph, shortCheck(c.Name), n, colour, label))
-	}
-	return out.String()
-}
-
-// shortCheck is the part of a check name that varies.
-//
-// "go (ubuntu-latest)" and "go (macos-latest)" differ only inside the
-// brackets, so the bracketed platform is the whole of what a label has to
-// carry -- and "-latest" is on every one of them, which makes it noise too.
-func shortCheck(name string) string {
-	if i := strings.IndexByte(name, '('); i >= 0 {
-		if j := strings.IndexByte(name[i:], ')'); j > 0 {
-			name = name[i+1 : i+j]
-		}
-	}
-	name = strings.TrimSuffix(name, "-latest")
-	// The platforms are the common case, and these are what a person calls
-	// them. "ubuntu" is the runner's name for it; Linux is the thing.
-	switch name {
-	case "ubuntu", "linux":
-		return "Linx"
-	case "macos":
-		return "Mac"
-	case "windows":
-		return "Win"
-	}
-	if len(name) > 6 {
-		name = name[:6]
-	}
-	return name
-}
-
-// labelledSegment is one bar segment with its name ON it.
-//
-// The label does not replace the fill and does not sit beside it: the cells
-// it occupies keep the segment's colour and the text is reversed out of them,
-// so the bar reads as continuous and the name reads as belonging to that
-// block rather than as a gap in it.
-//
-// Under NO_COLOR there is no reverse video to use, so the label falls back to
-// standing in the fill -- still legible, still in the right segment, which is
-// what the label is for.
-func labelledSegment(w io.Writer, glyph, name string, n int, colour string, label bool) string {
-	if !label {
-		return paint(w, colour, strings.Repeat(glyph, n))
-	}
-	pad := n - len(name)
-	left := pad / 2
-	if !enabled(w) {
-		return strings.Repeat(glyph, left) + name + strings.Repeat(glyph, pad-left)
-	}
-	return paint(w, colour, strings.Repeat(glyph, left)) +
-		colour + reverse + name + reset +
-		paint(w, colour, strings.Repeat(glyph, pad-left))
-}
-
-// ejectGlyph is the segment an ejected member draws: filled enough to be
-// accounted for, hollow enough not to read as a verdict.
-func ejectGlyph() string {
-	if !glyphs() {
-		return "="
-	}
-	return "▒"
-}
-
-// shortKey is the number a ticket key ends in: OR-223 -> 223.
-//
-// The prefix identifies the PROJECT, which is the same for every member of a
-// batch, so inside a segment it is the one part carrying no information.
-func shortKey(key string) string {
-	if i := strings.LastIndex(key, "-"); i >= 0 && i+1 < len(key) {
-		return key[i+1:]
-	}
-	return key
-}
-
-// isolationRuns estimates how many CI runs the bisection will cost.
-//
-// About 2*log2(n): the search tests BOTH halves at each level rather than only
-// the failing one, because a batch can hold more than one culprit (batch.go).
-func isolationRuns(members int) int {
-	n := 1
-	for i := members; i > 1; i /= 2 {
-		n += 2
-	}
-	return n
-}
-
-func renderIsolating(w io.Writer, b *liveBatch, cols int) []string {
-	// "red isolating", and how far through the search this is. A binary
-	// search over n members costs about 2*log2(n) runs (batch.go), so the
-	// estimate is honest arithmetic rather than a guess -- and "run 4 of ~6"
-	// is the difference between a search that is progressing and one an
-	// operator is about to kill.
-	head := fmt.Sprintf("  %s  %s  %s  %s", paint(w, bold, "batch"),
-		b.memberBar(w), paint(w, red, "red"), b.phase)
-	out := []string{
-		head + "   " + Dim(w, fmt.Sprintf("run %d of ~%d", b.runs, isolationRuns(len(b.members)))),
-		"",
-	}
+func renderIsolating(w io.Writer, b *liveBatch, now time.Time, cols int) []string {
+	out := []string{clip(batchHeadLine(w, b, paint(w, red, "red")+"  "+string(b.phase)), cols)}
 	for i, s := range b.splits {
 		mark := paint(w, green, "✓")
 		if !s.green {
 			mark = paint(w, red, "✗")
 		}
 		if !glyphs() {
-			mark = "+"
+			mark = paint(w, green, "+")
 			if !s.green {
-				mark = "x"
+				mark = paint(w, red, "x")
 			}
-			mark = paint(w, map[bool]string{true: green, false: red}[s.green], mark)
 		}
 		branch := ""
 		if s.depth > 0 {
-			stem := "├"
+			stem := "├─"
 			if i == len(b.splits)-1 {
-				stem = "└"
+				stem = "└─"
 			}
 			if !glyphs() {
-				stem = "|"
+				stem = "|-"
 				if i == len(b.splits)-1 {
-					stem = "`"
+					stem = "`-"
 				}
 			}
-			branch = strings.Repeat(" ", s.depth) + Dim(w, stem) + " "
+			branch = strings.Repeat(" ", s.depth-1) + Dim(w, stem) + " "
 		}
-		line := fmt.Sprintf("    %s[%s]  %s", branch, strings.Join(s.keys, " "), mark)
+		// The verdict BEFORE the set, as the mockup has it: the eye reads
+		// down the column of marks first and the sets second.
+		line := fmt.Sprintf("    %s%s [%s]", branch, mark, strings.Join(s.keys, " "))
 		if s.culprit {
 			arrow := "←"
 			if !glyphs() {
 				arrow = "<-"
 			}
-			line += "  " + paint(w, red, arrow+" culprit")
+			line += "   " + paint(w, red, arrow+" culprit")
 		}
 		out = append(out, clip(line, cols))
 	}
-	if n := b.landed(); n > 0 {
-		out = append(out, clip(fmt.Sprintf("    %s", b.costLine(w)), cols))
-	}
-	return out
+	return append(out, ciBlock(w, b, now, cols)...)
 }
 
 // renderBatchDone is the durable summary: the cost first, then one line per
-// member with what became of it.
-func renderBatchDone(w io.Writer, b *liveBatch, cols int) []string {
+// member with what became of it, then the CI block as it finished.
+func renderBatchDone(w io.Writer, b *liveBatch, now time.Time, cols int) []string {
 	// A tick on the headline, so the summary reads as a result rather than as
 	// one more status line.
 	tick := "✓"
 	if !glyphs() {
 		tick = "+"
 	}
-	head := fmt.Sprintf("  %s %s  %s",
-		paint(w, green, tick), paint(w, bold, "batch"), b.memberBar(w))
+	head := fmt.Sprintf("  %s %s", paint(w, green, tick), paint(w, bold, "batch"))
 	// A batch that landed nothing has no cost line -- zero runs for zero
 	// branches is not a saving to report (OR-261). Say what happened instead
-	// of trailing off after the bar, which reads as a line that failed to
-	// render rather than as a batch that achieved nothing.
+	// of trailing off, which reads as a line that failed to render rather
+	// than as a batch that achieved nothing.
 	if cost := b.costLine(w); cost != "" {
 		head += "  " + cost
 	} else {
@@ -819,12 +492,9 @@ func renderBatchDone(w io.Writer, b *liveBatch, cols int) []string {
 	// for three branches is the headline; four runs to find the culprit is
 	// the price of that headline, and hiding it would be advertising.
 	if b.runs > 1 {
-		head += "  " + Dim(w, fmt.Sprintf("%s %d runs total with isolation", liveSep, b.runs))
+		head += "      " + Dim(w, fmt.Sprintf("%d runs total with isolation", b.runs))
 	}
-	// A blank line under the headline, in every phase. The headline is a
-	// statement about the SET and the rows are its members; run together they
-	// read as one list whose first entry happens to be bold.
-	out := []string{head, ""}
+	out := []string{clip(head, cols)}
 
 	for _, m := range b.members {
 		g, note := memberGlyph(w, m.state)
@@ -852,7 +522,7 @@ func renderBatchDone(w io.Writer, b *liveBatch, cols int) []string {
 		}
 		out = append(out, clip(strings.TrimRight(line, " "), cols))
 	}
-	return out
+	return append(out, ciBlock(w, b, now, cols)...)
 }
 
 // renderBatchPlain is the off-TTY form: one line, no cursor control, no bar.
