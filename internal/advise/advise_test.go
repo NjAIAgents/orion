@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/orion-sdlc/orion/internal/decide"
 )
 
 func runner(reply string, err error) (Runner, *[]string) {
@@ -163,6 +165,28 @@ func TestArtifactsAreScopedToTheRole(t *testing.T) {
 	}
 	if strings.Contains(pm, "spec.md") {
 		t.Errorf("the product manager can see spec.md: %q", pm)
+	}
+}
+
+// A confirmed recommendation is a decision and binds whoever reads it next.
+// An unconfirmed one is a proposal, and an advisor handed it would derive
+// from it and cite the file -- which is how something nobody agreed to
+// acquires a citation and stops being questionable (OR-153).
+func TestConfirmedRecommendationsAreInScopeAndPendingOnesAreNot(t *testing.T) {
+	dir := t.TempDir()
+	for _, d := range []string{decide.PendingDir, decide.ConfirmedDir} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, role := range []Role{RoleArchitect, RolePM, RoleDBA} {
+		got := strings.Join(Artifacts(dir, role), " ")
+		if !strings.Contains(got, decide.ConfirmedDir) {
+			t.Errorf("%s cannot see confirmed decisions: %q", role, got)
+		}
+		if strings.Contains(got, decide.PendingDir) {
+			t.Errorf("%s can reason from an UNCONFIRMED recommendation: %q", role, got)
+		}
 	}
 }
 
