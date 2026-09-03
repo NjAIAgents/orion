@@ -37,6 +37,7 @@ func newTracker() *fakeTracker {
 	return &fakeTracker{
 		added: map[string][]string{}, removed: map[string][]string{},
 		transitions: map[string]string{}, comments: map[string][]string{},
+		children: map[string][]tracker.Issue{},
 	}
 }
 
