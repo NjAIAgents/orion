@@ -396,11 +396,37 @@ func TestScrollbackSurvivesTheRegion(t *testing.T) {
 	l.Close()
 	got := b.String()
 
-	// Every line reaches the terminal exactly once: written through, not
-	// captured and replayed.
+	// Every line SURVIVES, which is the property that matters (OR-313).
+	//
+	// Not "appears exactly once": the window redraws, so a line is written
+	// again on every tick and the terminal's erase removes the previous copy.
+	// A byte-count assertion measures the buffer rather than the screen, and
+	// it was what pinned the OR-265 behaviour of writing straight through --
+	// the behaviour this ticket reverses.
+	//
+	// What Close() must guarantee is that nothing on screen is lost when the
+	// region goes: commitWindowLocked prints the window into real scrollback
+	// on the way out.
 	for _, want := range []string{"first", "second", "third"} {
-		if n := strings.Count(got, want); n != 1 {
-			t.Errorf("%q appears %d times, want exactly 1:\n%q", want, n, got)
+		if !strings.Contains(got, want) {
+			t.Errorf("%q never reached the terminal:\n%q", want, got)
+		}
+	}
+	// The window's own frame, so the pane reads as bounded rather than as a
+	// log that stalled.
+	if !strings.Contains(got, "recent") || !strings.Contains(got, "scrolls, then gone") {
+		t.Errorf("the window was drawn without its frame:\n%q", got)
+	}
+	// The last thing written is the committed window, with no frame around
+	// it: the frame belongs to the pinned pane and would be a border around
+	// nothing once the region is gone.
+	tail := got[strings.LastIndex(got, "\x1b[0J")+len("\x1b[0J"):]
+	if strings.Contains(tail, "recent") {
+		t.Errorf("the frame was committed to scrollback:\n%q", tail)
+	}
+	for _, want := range []string{"first", "second", "third"} {
+		if !strings.Contains(tail, want) {
+			t.Errorf("%q was not committed to scrollback on Close:\n%q", want, tail)
 		}
 	}
 	// And each write erased the region before printing, or the line would

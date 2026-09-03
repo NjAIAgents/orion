@@ -80,10 +80,13 @@ func TestResizingReflowsWithoutStrandingRows(t *testing.T) {
 	if _, err := fmt.Fprintf(l, "%s\n", strings.Repeat("x", 100)); err != nil {
 		t.Fatalf("writing: %v", err)
 	}
-	// The written line goes to the scrollback, not the region, so what is
-	// DRAWN is the region alone: empty here, since no run is registered.
-	if l.drawn != 0 {
-		t.Errorf("an empty region drew %d rows", l.drawn)
+	// The written line is CAPTURED into the window and drawn above the
+	// region (OR-313), so a wrapped line plus its frame is what is on screen
+	// even with no runs registered. Before the window was restored this
+	// asserted zero, which measured the OR-265 write-through path rather than
+	// the reflow arithmetic this test exists for.
+	if l.drawn == 0 {
+		t.Error("the window drew nothing for a line that had been written")
 	}
 	// Register a run so the region has something to measure.
 	LiveStart("OR-237")
@@ -285,5 +288,99 @@ func TestTheRegionIsPaddedAtTheBottomWithoutCostingTheRows(t *testing.T) {
 	// And the whole block still fits the terminal it was measured against.
 	if l.drawn > 14 {
 		t.Errorf("the block is %d rows on a 14-row terminal", l.drawn)
+	}
+}
+
+// TestTheWindowIsDrawnAboveTheRegion is OR-313's regression guard.
+//
+// windowLines, windowFrame, windowHeight, the floor, the cap and the capture
+// machinery were all complete, tested, and called by NOTHING: Live.Write went
+// straight to the terminal after OR-265, so the pane the mockup specifies had
+// been absent for two releases without a failing test anywhere.
+//
+// What the window holds is not what a ticket row holds. A row is one ticket's
+// current tool call; these lines are what happened across the run, including
+// actors like `batch` that have no row at all.
+func TestTheWindowIsDrawnAboveTheRegion(t *testing.T) {
+	t.Setenv("LINES", "40")
+	t.Setenv("COLUMNS", "")
+	LiveReset()
+	t.Cleanup(LiveReset)
+	LiveStart("OR-237")
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	fmt.Fprintln(l, "Mahesh   pushed orion/or-242 (3 commits)")
+	fmt.Fprintln(l, "batch    merged OR-242 into orion/batch")
+
+	got := b.String()
+	if !strings.Contains(got, "merged OR-242") {
+		t.Errorf("the window did not carry a line that was written:\n%q", got)
+	}
+	// The frame, which is what says the pane is bounded rather than stalled.
+	if !strings.Contains(got, "recent") || !strings.Contains(got, "scrolls, then gone") {
+		t.Errorf("the window drew no frame:\n%q", got)
+	}
+	// Above the region, not below it: the last redraw must put the window's
+	// lines before the ticket row.
+	last := got[strings.LastIndex(got, "\x1b[0J"):]
+	win := strings.Index(last, "merged OR-242")
+	row := strings.Index(last, "OR-237")
+	if win < 0 || row < 0 {
+		t.Fatalf("expected both the window and the region:\n%q", last)
+	}
+	if win > row {
+		t.Errorf("the window was drawn below the region:\n%q", last)
+	}
+}
+
+// TestFullModeWritesThroughInsteadOfCapturing. ctrl-r drops the cap and asks
+// for the whole log; capturing there would make the keystroke do the opposite
+// of what it promises -- output stopping rather than opening up.
+func TestFullModeWritesThroughInsteadOfCapturing(t *testing.T) {
+	LiveReset()
+	t.Cleanup(LiveReset)
+	LiveStart("OR-237")
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	l.Full()
+	b.Reset()
+	fmt.Fprintln(l, "after-the-keystroke")
+
+	if !strings.Contains(b.String(), "after-the-keystroke") {
+		t.Errorf("full mode swallowed a line instead of writing it through:\n%q", b.String())
+	}
+}
+
+// TestAMultiLineBannerLeavesOneFrame.
+//
+// The hazard the window was removed to avoid, checked rather than assumed.
+// ui.Banner writes three or four separate whole lines, each arriving as its
+// own write with l.pending false between them, so the frame is redrawn after
+// every one. When the region's erase did not count the frame's rows, that
+// left orphaned top borders stacked up the screen -- observed the first time
+// the region ever engaged.
+//
+// It does not reproduce now that the frame's three rows are charged to the
+// same budget the erase reads: one frame, banner intact inside it.
+func TestAMultiLineBannerLeavesOneFrame(t *testing.T) {
+	t.Setenv("LINES", "40")
+	t.Setenv("COLUMNS", "100")
+	LiveReset()
+	t.Cleanup(LiveReset)
+	LiveStart("OR-237")
+
+	var b bytes.Buffer
+	l := &Live{w: &b, cursor: true}
+	Banner(l, "OR-237", "a summary", "implementer", "opus", "orion/or-237")
+
+	out := b.String()
+	last := out[strings.LastIndex(out, "\x1b[0J"):]
+	if n := strings.Count(last, "recent"); n != 1 {
+		t.Errorf("a banner left %d frame tops on screen, want 1:\n%s", n, last)
+	}
+	if !strings.Contains(last, "a summary") {
+		t.Errorf("the banner did not survive the frame:\n%s", last)
 	}
 }
