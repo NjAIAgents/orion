@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+
+	"github.com/orion-sdlc/orion/internal/njagents"
 )
 
 type Limits struct {
@@ -862,10 +864,19 @@ type Config struct {
 	VCS         VCS               `json:"vcs"`
 	Tracker     Tracker           `json:"tracker"`
 	Delegation  Delegation        `json:"delegation"`
+	Toolkit     Toolkit           `json:"toolkit"`
 	Attribution Attribution       `json:"attribution"`
 
 	// Root is the resolved project root. Not read from JSON.
 	Root string `json:"-"`
+	// ToolkitWarning names a delegation key that toolkit.* has superseded,
+	// or "" when none is set. A deprecated key that still loads silently is
+	// one nobody removes.
+	ToolkitWarning string `json:"-"`
+	// toolkitErr holds a toolkit block Orion refuses to act on, reported by
+	// Validate. Held rather than returned from Load because Load has never
+	// returned an error -- a caller that could skip it could skip enforcement.
+	toolkitErr error
 	// Degraded is true when orion.json was missing or unparseable and
 	// defaults are in force. Hooks surface this so a broken config is
 	// visible rather than silently permissive.
@@ -969,6 +980,9 @@ func Defaults() Config {
 			CreatePerIdea:           true,
 			ConfirmTreeBeforeCreate: true,
 		},
+		// The toolkit Orion has always used, spelled out rather than implied,
+		// so a project reading its effective config sees whose skills run.
+		Toolkit: Toolkit{Repo: njagents.RepoURL, Stages: map[string]string{}},
 		Delegation: Delegation{
 			Enabled:                 true,
 			ExtraToolCallsForReview: 200,
@@ -1096,6 +1110,19 @@ func Load(root string) Config {
 		}
 	}
 
+	// The toolkit block is shape-checked before the struct decode, and a bad
+	// one is DROPPED rather than allowed to degrade the whole file: an array
+	// where an object belongs would otherwise fail the decode and put every
+	// other control back on its default, hiding the real complaint behind
+	// "orion.json failed to decode". Validate reports it instead.
+	var toolkit Toolkit
+	var toolkitErr error
+	if tb, ok := raw["toolkit"]; ok {
+		if toolkit, toolkitErr = parseToolkit(tb); toolkitErr != nil {
+			delete(raw, "toolkit")
+		}
+	}
+
 	clean, _ := json.Marshal(raw)
 	if err := json.Unmarshal(clean, &cfg); err != nil {
 		fresh := Defaults()
@@ -1107,6 +1134,12 @@ func Load(root string) Config {
 	cfg.Root = root
 	cfg.slackPrefixSet = prefixSet
 	cfg.vcsRequireUpToDateSet = requireUpToDateSet
+	cfg.toolkitErr = toolkitErr
+	if toolkitErr == nil && raw["toolkit"] != nil {
+		// parseToolkit's copy, not the struct decode's: its stage keys are
+		// canonical, so a consumer never has to know which spelling was used.
+		cfg.Toolkit = toolkit
+	}
 	normalize(&cfg)
 	return cfg
 }
@@ -1189,6 +1222,7 @@ func normalize(c *Config) {
 	if len(c.Delegation.HighRiskPaths) == 0 {
 		c.Delegation.HighRiskPaths = d.Delegation.HighRiskPaths
 	}
+	defaultToolkit(c)
 }
 
 // Validate refuses a configuration Orion must not act on.
@@ -1203,6 +1237,12 @@ func normalize(c *Config) {
 // value, and enforced nowhere; a default is not a constraint. This is the
 // constraint.
 func (c Config) Validate() error {
+	// A toolkit block Orion cannot read is refused here rather than ignored
+	// at load: a stage that was meant to be delegated and silently was not
+	// still produces a plausible run, and nobody looks.
+	if c.toolkitErr != nil {
+		return c.toolkitErr
+	}
 	if c.VCS.WorkBranch == "" || c.VCS.WorkBranch != c.VCS.DefaultBranch {
 		return nil
 	}
