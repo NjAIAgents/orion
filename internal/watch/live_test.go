@@ -71,6 +71,226 @@ func TestOneTicketsChecksAreNotPrefixed(t *testing.T) {
 	}
 }
 
+// A failing check is named, not just counted -- the culprit is the whole
+// reason the row exists (OR-310).
+func TestAFailingCheckIsNamedByTheWatch(t *testing.T) {
+	ui.LiveReset()
+	t.Cleanup(ui.LiveReset)
+
+	s := &spy{
+		maxSleeps: 4, queued: issues("FCIA-7"), hold: make(chan struct{}),
+		pendingTicks: 3,
+		pendingChecks: []collect.Check{
+			{Name: "go (ubuntu)", State: collect.CheckPassed},
+			{Name: "go (windows)", State: collect.CheckFailed},
+		},
+	}
+	releaseAfter(s, 40*time.Millisecond)
+	out := runWatch(t, s, Options{MaxConcurrent: 1})
+
+	if !strings.Contains(out, "go (windows) failed") {
+		t.Errorf("the watch must name the check that failed, not only that one did:\n%s", out)
+	}
+}
+
+// Redrawn from whatever order the collect happened to return results in, the
+// checks still land in key order -- so a cell never swaps position under the
+// reader just because two `gh pr view` calls raced back in a different order.
+func TestChecksStayInKeyOrderWhicheverOrderTheyWereCollected(t *testing.T) {
+	a := checkRows([]collect.Result{
+		{Key: "OR-2", Checks: []collect.Check{{Name: "go (ubuntu)", State: collect.CheckRunning}}},
+		{Key: "OR-1", Checks: []collect.Check{{Name: "go (ubuntu)", State: collect.CheckRunning}}},
+	})
+	b := checkRows([]collect.Result{
+		{Key: "OR-1", Checks: []collect.Check{{Name: "go (ubuntu)", State: collect.CheckRunning}}},
+		{Key: "OR-2", Checks: []collect.Check{{Name: "go (ubuntu)", State: collect.CheckRunning}}},
+	})
+
+	if len(a) != 2 || len(b) != 2 {
+		t.Fatalf("both redraws must carry both tickets: a=%+v b=%+v", a, b)
+	}
+	if a[0].Name != b[0].Name || a[1].Name != b[1].Name {
+		t.Errorf("a cell must not move between redraws just because collect returned results in a different order: a=%+v b=%+v", a, b)
+	}
+	if a[0].Name != "OR-1 go (ubuntu)" || a[1].Name != "OR-2 go (ubuntu)" {
+		t.Errorf("checks must be in key order: %+v", a)
+	}
+}
+
+// When one of two tickets awaiting CI finishes, the display stops naming it
+// and drops the key prefix from the one left -- the prefix exists only to
+// tell two waiting tickets apart, and there is only one left to tell apart
+// from nothing.
+func TestWhenOneTicketFinishesOnlyTheWaitingOnesChecksRemain(t *testing.T) {
+	ui.LiveReset()
+	t.Cleanup(ui.LiveReset)
+
+	var buf bytes.Buffer
+	live := ui.NewLive(&buf)
+	defer live.Close()
+
+	liveChecks(2, []collect.Result{
+		{Key: "OR-1", Checks: []collect.Check{{Name: "go (ubuntu)", State: collect.CheckRunning}}},
+		{Key: "OR-2", Checks: []collect.Check{{Name: "go (ubuntu)", State: collect.CheckRunning}}},
+	})
+	live.Tick()
+	first := buf.String()
+	if !strings.Contains(first, "OR-1 go (ubuntu)") || !strings.Contains(first, "OR-2 go (ubuntu)") {
+		t.Fatalf("both waiting tickets must be named while both are pending: %q", first)
+	}
+
+	// OR-1 lands; only OR-2 is still awaiting CI.
+	liveChecks(1, []collect.Result{
+		{Key: "OR-2", Checks: []collect.Check{{Name: "go (ubuntu)", State: collect.CheckPassed}}},
+	})
+	buf.Reset()
+	live.Tick()
+	second := buf.String()
+	if strings.Contains(second, "OR-1") {
+		t.Errorf("a ticket that finished must not still be named: %q", second)
+	}
+	if strings.Contains(second, "OR-2 go (ubuntu)") {
+		t.Errorf("the one ticket left waiting must lose its prefix, not keep it: %q", second)
+	}
+	if !strings.Contains(second, "go (ubuntu) passed") {
+		t.Errorf("the remaining ticket's check must still be shown: %q", second)
+	}
+}
+
+// Nothing pending and nothing in CI means the run that was holding the
+// checks row is gone -- so the row must clear, not keep showing the last
+// ticket's checks after that ticket finished (OR-310).
+func TestChecksClearWhenNothingIsPendingAndNothingIsInCI(t *testing.T) {
+	ui.LiveReset()
+	t.Cleanup(ui.LiveReset)
+
+	var buf bytes.Buffer
+	live := ui.NewLive(&buf)
+	defer live.Close()
+
+	liveChecks(1, []collect.Result{
+		{Key: "OR-1", Checks: []collect.Check{{Name: "go (ubuntu)", State: collect.CheckRunning}}},
+	})
+	live.Tick()
+	if !strings.Contains(buf.String(), "go (ubuntu) running") {
+		t.Fatalf("the checks must show while the ticket is pending: %q", buf.String())
+	}
+
+	// The ticket landed: no pending results, no tickets left in CI.
+	liveChecks(0, nil)
+	buf.Reset()
+	live.Tick()
+	if strings.Contains(buf.String(), "go (ubuntu)") {
+		t.Errorf("the checks row must clear once nothing is pending and nothing is in CI: %q", buf.String())
+	}
+}
+
+// A batch member awaiting CI carries no per-ticket rollup -- batchrun.go
+// pushes the ONE shared run's checks itself, and its members come back
+// PENDING with an empty Checks field (OR-310's own comment on liveChecks
+// says as much). So checkRows must not invent a per-ticket row out of a
+// batch member just because several of them are pending at once.
+func TestBatchMembersProduceNoPerTicketCheckRows(t *testing.T) {
+	rows := checkRows([]collect.Result{
+		{Key: "OR-1", Verdict: collect.VerdictPending},
+		{Key: "OR-2", Verdict: collect.VerdictPending},
+		{Key: "OR-3", Verdict: collect.VerdictPending},
+	})
+	if len(rows) != 0 {
+		t.Errorf("a batch member carries no per-ticket rollup, so it must contribute no row: %+v", rows)
+	}
+}
+
+// When tickets are awaiting CI but none of them carried a rollup -- the
+// batch shape above -- the display must show NOTHING for the checks line
+// rather than clearing whatever the batch itself already drew there
+// (batchrun.go's own ui.LiveChecks call). liveChecks's guard exists exactly
+// for this: silence when nothing was collected AND something is still in
+// CI, so a batch's own line stands as it drew it.
+func TestNoChecksDataWithNonZeroInCIDisplaysNothing(t *testing.T) {
+	ui.LiveReset()
+	t.Cleanup(ui.LiveReset)
+
+	var buf bytes.Buffer
+	live := ui.NewLive(&buf)
+	defer live.Close()
+
+	// Simulate the batch having already pushed its own checks line.
+	ui.LiveChecks([]ui.Check{{Name: "go (ubuntu)", State: ui.CheckRunning}})
+
+	// The ordinary-run path sees tickets pending but no per-ticket rollup
+	// for any of them -- the batch-member shape.
+	liveChecks(2, []collect.Result{
+		{Key: "OR-1", Verdict: collect.VerdictPending},
+		{Key: "OR-2", Verdict: collect.VerdictPending},
+	})
+
+	live.Tick()
+	if got := buf.String(); !strings.Contains(got, "go (ubuntu) running") {
+		t.Errorf("the batch's own checks line must be left standing: %q", got)
+	}
+}
+
+// Showing the checks costs nothing beyond the read the verdict already came
+// from: every reconcile tick calls Collect exactly once, and the checks line
+// is built from that same call's []collect.Result (liveChecks takes no
+// fetcher of its own). If displaying them ever cost a second `gh pr view`,
+// collects would climb past the number of reconcile ticks; it does not
+// (OR-310).
+func TestChecksCostNoAdditionalAPICallBeyondTheTickThatFetchedThem(t *testing.T) {
+	ui.LiveReset()
+	t.Cleanup(ui.LiveReset)
+
+	s := &spy{
+		maxSleeps: 3, queued: issues("FCIA-7"), hold: make(chan struct{}),
+		pendingTicks: 3,
+		pendingChecks: []collect.Check{
+			{Name: "go (ubuntu)", State: collect.CheckRunning},
+		},
+	}
+	releaseAfter(s, 40*time.Millisecond)
+	out := runWatch(t, s, Options{MaxConcurrent: 1})
+
+	if !strings.Contains(out, "go (ubuntu) running") {
+		t.Fatalf("expected the checks line from the tick's own read: %q", out)
+	}
+	if s.collects != s.sleeps {
+		t.Errorf("collect ran %d times against %d reconcile ticks: showing the checks must not add an extra call",
+			s.collects, s.sleeps)
+	}
+}
+
+// A batch's own checks line -- pushed straight into ui.LiveChecks from
+// batchTester.Test, via the batch path -- must not be overwritten by an
+// ordinary watch tick's per-member pending Results. Batch members come back
+// PENDING with no per-member rollup (collect.Result{Key: m.Key, Verdict:
+// VerdictPending} -- Checks left nil), which is exactly what liveChecks must
+// tolerate silently rather than clearing the line the batch just drew
+// (OR-310).
+func TestBatchModeIsUnchangedByWatchsPerMemberPendingResults(t *testing.T) {
+	ui.LiveReset()
+	t.Cleanup(ui.LiveReset)
+
+	var buf bytes.Buffer
+	live := ui.NewLive(&buf)
+	defer live.Close()
+
+	// The batch path drawing its own checks line, as batchTester.Test does.
+	ui.LiveChecks([]ui.Check{{Name: "go (ubuntu)", State: ui.CheckRunning}})
+
+	// An ordinary watch tick sees two batch members awaiting CI, each with no
+	// per-member rollup -- the shape runBatch's b.Pending branch returns.
+	liveChecks(2, []collect.Result{
+		{Key: "OR-1", Verdict: collect.VerdictPending},
+		{Key: "OR-2", Verdict: collect.VerdictPending},
+	})
+
+	live.Tick()
+	if got := buf.String(); !strings.Contains(got, "go (ubuntu) running") {
+		t.Errorf("the batch's own checks line must survive an ordinary tick's empty per-member results: %q", got)
+	}
+}
+
 // releaseAfter frees the spy's held jobs once the watcher has had time to
 // dispatch and tick. The hold blocks the JOB goroutine, never the loop, so
 // the watcher keeps ticking with a run genuinely in flight -- which is the

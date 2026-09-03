@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/ui"
 )
 
 // The flag is the whole safety story, so it gets the sharpest test.
@@ -105,5 +106,44 @@ func TestTheBatchReportNamesEveryMemberAndItsOutcome(t *testing.T) {
 		if !strings.Contains(lines, word) {
 			t.Errorf("the report must say %q so the outcome is legible:\n%s", word, lines)
 		}
+	}
+}
+
+// UIChecks is the one place this package's forge-shaped states become the
+// display's three (OR-310). Both callers -- the batch path here and
+// internal/watch's ordinary-run path -- go through this switch, so they
+// cannot start disagreeing about what "running" looks like.
+func TestUIChecksConvertsEachInternalStateToItsDisplayState(t *testing.T) {
+	in := []Check{
+		{Name: "go (ubuntu)", State: CheckPassed},
+		{Name: "go (windows)", State: CheckRunning},
+		{Name: "go (macos)", State: CheckFailed},
+	}
+	out := UIChecks(in)
+	if len(out) != 3 {
+		t.Fatalf("expected one display check per internal check, got %+v", out)
+	}
+	want := []ui.Check{
+		{Name: "go (ubuntu)", State: ui.CheckPassed},
+		{Name: "go (windows)", State: ui.CheckRunning},
+		{Name: "go (macos)", State: ui.CheckFailed},
+	}
+	for i, w := range want {
+		if out[i] != w {
+			t.Errorf("out[%d] = %+v, want %+v", i, out[i], w)
+		}
+	}
+}
+
+// A nil or empty rollup must convert to nothing, not panic and not a
+// display artifact like a lone empty cell (OR-310) -- a ticket whose PR read
+// carried no checks yet is common (CI has not started reporting) and must
+// render as if nothing were pending, not as a broken row.
+func TestUIChecksHandlesNilAndEmptyWithoutPanicking(t *testing.T) {
+	if out := UIChecks(nil); len(out) != 0 {
+		t.Errorf("a nil rollup must convert to nothing, got %+v", out)
+	}
+	if out := UIChecks([]Check{}); len(out) != 0 {
+		t.Errorf("an empty rollup must convert to nothing, got %+v", out)
 	}
 }
