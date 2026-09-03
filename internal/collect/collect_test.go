@@ -81,10 +81,7 @@ func bound(t *testing.T) (home, source string) {
 	if err := os.MkdirAll(source, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ws, err := workspace.New(workspace.NewOptions{Idea: "fcia"})
-	if err != nil {
-		t.Fatalf("creating workspace: %v", err)
-	}
+	ws := newWorkspace(t, "fcia")
 	if err := registry.Bind(home, registry.Entry{
 		Key: "FCIA", Source: source, Workspace: ws.ID,
 	}); err != nil {
