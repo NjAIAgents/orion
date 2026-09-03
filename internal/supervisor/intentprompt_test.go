@@ -102,6 +102,77 @@ func TestIntentPromptForbidsAssumptions(t *testing.T) {
 	}
 }
 
+// A success measure written as an ambition ("users will love it") cannot be
+// checked later, so the prompt has to say "checkable", not just "required".
+func TestIntentPromptRequiresCheckableSuccessMeasures(t *testing.T) {
+	p, err := stagePrompt(ws(t, ""), "intent")
+	if err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+	if !strings.Contains(p, "State each one so a person could check it later") {
+		t.Errorf("the intent prompt does not require success measures to be "+
+			"stated as checkable rather than aspirational:\n%s", p)
+	}
+	if !strings.Contains(p, "not as an aspiration") {
+		t.Errorf("the intent prompt does not forbid aspirational success "+
+			"measures:\n%s", p)
+	}
+}
+
+// The prompt has to spell out every accepted way to settle a question in
+// place -- an agent shown only one form will use only that one, and a re-run
+// that used a form the gate does not recognize still blocks the chain.
+func TestIntentPromptShowsAllWaysToMarkAQuestionAnswered(t *testing.T) {
+	p, err := stagePrompt(ws(t, ""), "intent")
+	if err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+	for _, marker := range []string{
+		intentNone,
+		"[x]",
+		"~~strikethrough~~",
+		"Answer: ...",
+	} {
+		if !strings.Contains(p, marker) {
+			t.Errorf("the intent prompt does not show %q as a way to settle "+
+				"a question in place:\n%s", marker, p)
+		}
+	}
+}
+
+// The gate has no way to tell an invented assumption from a real decision --
+// it only ever reads the Open questions section. So the prompt's ban on
+// inventing an answer is the only thing standing between an ambiguity and it
+// silently passing as settled; this proves both halves: an assumption
+// written as a statement slips through unnoticed, and the same ambiguity
+// written the way the prompt asks for it blocks the chain until answered.
+func TestIntentPromptAmbiguityMustBecomeOpenQuestionNotAnInventedAnswer(t *testing.T) {
+	p, err := stagePrompt(ws(t, ""), "intent")
+	if err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+	if !strings.Contains(p, "ANYTHING YOU CANNOT DECIDE IS AN OPEN QUESTION, NEVER AN ASSUMPTION.") {
+		t.Errorf("the intent prompt does not require ambiguity to become an open "+
+			"question rather than an invented answer:\n%s", p)
+	}
+
+	invented := "# Intent\n\nAdjusters probably need access too.\n\n## Open questions\n" + intentNone
+	if a := assessIntent(t, invented); !a.Ready() {
+		t.Errorf("an invented assumption written outside Open questions unexpectedly "+
+			"blocked the gate (Open = %d); the gate cannot see it either way, which is "+
+			"exactly why the prompt has to forbid writing it there in the first place", a.Open)
+	}
+
+	honest := "# Intent\n\n## Open questions\n- Do adjusters need access too?\n"
+	a := assessIntent(t, honest)
+	if a.Open != 1 {
+		t.Errorf("the same ambiguity written as an open question was not counted: Open = %d, want 1", a.Open)
+	}
+	if a.Ready() {
+		t.Error("an ambiguity honestly flagged as an open question must still block the chain")
+	}
+}
+
 // assessIntent writes a capture and reads it back through the real gate.
 func assessIntent(t *testing.T, body string) discovery.Assessment {
 	t.Helper()

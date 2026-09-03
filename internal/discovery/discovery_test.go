@@ -121,6 +121,179 @@ func TestNeedsDiscovery(t *testing.T) {
 	}
 }
 
+// headingRe is deliberately lenient about casing and a trailing "s", but it
+// is not free-form: a heading that says something else -- a typo, a rewording,
+// a different plural -- never enters inSection, so every bullet under it is
+// silently skipped rather than counted. This is the failure mode the whole
+// gate exists to prevent, applied to the gate's own heading: a capture full
+// of unanswered questions reports Open == 0 and Ready() == true.
+func TestHeadingTypoOrRewordingParsesAsZeroQuestions(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		heading string
+	}{
+		{"typo", "## Opne questions"},
+		{"reworded", "## Outstanding items"},
+		{"different noun", "## Unresolved issues"},
+		{"missing word", "## Questions"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := Assess(write(t, "# Intent\n\n"+tc.heading+"\n- Do adjusters need access?\n- What is the retention period?\n"))
+			if a.Open != 0 {
+				t.Errorf("heading %q: Open = %d, want 0 (a misworded heading must not be recognized)", tc.heading, a.Open)
+			}
+			if !a.Ready() {
+				t.Errorf("heading %q: Ready() = false, want true -- a misworded heading must fail silently (pass), not loudly (block)", tc.heading)
+			}
+		})
+	}
+}
+
+// The count under "## Open questions" must match the bullets actually
+// there -- not bullets before the heading, not bullets after a later one.
+func TestOpenCountsOnlyBulletsUnderTheExactHeading(t *testing.T) {
+	a := Assess(write(t, `# Intent
+- Not a question, this is above the heading.
+
+## Open questions
+- First open question.
+- Second open question.
+- Third open question.
+`))
+	if !a.Found {
+		t.Fatal("file should be found")
+	}
+	if a.Open != 3 {
+		t.Errorf("Open = %d, want 3", a.Open)
+	}
+	if len(a.Questions) != 3 {
+		t.Errorf("Questions = %d, want 3", len(a.Questions))
+	}
+}
+
+// Four ways a person settles a question in place, each pulled directly from
+// what the intent prompt tells the agent to write (see intentShape and
+// TestIntentPromptWritesWhatTheDiscoveryGateParses in the supervisor
+// package). Every one of them must clear the gate, or a capture that
+// answered everything still blocks the chain.
+func TestEachSettlementMethodClearsTheQuestion(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		bullet string
+	}{
+		{"checkbox", "- [x] Do adjusters need access?"},
+		{"strikethrough", "- ~~Do adjusters need access?~~"},
+		{"inline answer", "- Do adjusters need access? Answer: yes, via the existing gateway."},
+		{"none placeholder", "- None"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := Assess(write(t, "# Intent\n\n## Open questions\n"+tc.bullet+"\n"))
+			if a.Open != 0 {
+				t.Errorf("%s: Open = %d, want 0 (settled question still counted as open)", tc.name, a.Open)
+			}
+		})
+	}
+}
+
+// Any single unanswered question, mixed in among settled ones, must block --
+// the gate does not average or round down.
+func TestBlocksLaterStagesWhileAnyQuestionRemainsUnanswered(t *testing.T) {
+	a := Assess(write(t, `# Intent
+
+## Open questions
+- [x] Settled with a checkbox.
+- ~~Settled with strikethrough.~~
+- Settled inline. Answer: yes.
+- Still unanswered: which retention period applies?
+`))
+	if a.Open != 1 {
+		t.Errorf("Open = %d, want 1", a.Open)
+	}
+	if a.Ready() {
+		t.Error("one unanswered question among several settled ones must still block")
+	}
+}
+
+// The gate passes once every question is settled by any mix of the accepted
+// methods, and separately when the section just says "- None".
+func TestReadyWhenAllQuestionsSettledOrNone(t *testing.T) {
+	settled := Assess(write(t, `# Intent
+
+## Open questions
+- [x] Settled with a checkbox.
+- ~~Settled with strikethrough.~~
+- Settled inline. Answer: yes.
+`))
+	if !settled.Ready() {
+		t.Errorf("all questions settled but Ready() = false (Open = %d)", settled.Open)
+	}
+
+	none := Assess(write(t, "# Intent\n\n## Open questions\n- None\n"))
+	if !none.Ready() {
+		t.Errorf("section reads \"- None\" but Ready() = false (Open = %d)", none.Open)
+	}
+}
+
+// answeredRe matches "[x]" case-insensitively, but a marker that is
+// malformed in some other way -- a stray space breaking the three
+// characters apart -- is not the same typo as case, and must still leave
+// the question open rather than silently settle it.
+func TestTypoedSettlementMarkerStaysOpen(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		bullet string
+	}{
+		{"space inside brackets", "- [x ] Do adjusters need access?"},
+		{"space before x", "- [ x] Do adjusters need access?"},
+		{"wrong bracket", "- (x) Do adjusters need access?"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := Assess(write(t, "# Intent\n\n## Open questions\n"+tc.bullet+"\n"))
+			if a.Open != 1 {
+				t.Errorf("bullet %q: Open = %d, want 1 (a malformed settlement marker must not clear the question)", tc.bullet, a.Open)
+			}
+		})
+	}
+}
+
+// A bullet with nothing after the dash is not a question anyone forgot to
+// answer -- it is empty. It must not inflate the open count or appear in
+// Questions, or a stray blank list item silently blocks the chain forever.
+func TestEmptyBulletUnderOpenQuestionsIsIgnored(t *testing.T) {
+	a := Assess(write(t, "# Intent\n\n## Open questions\n-\n- Do adjusters need access?\n- \n"))
+	if a.Open != 1 {
+		t.Errorf("Open = %d, want 1 (empty bullets must not be counted)", a.Open)
+	}
+	if len(a.Questions) != 1 {
+		t.Errorf("Questions = %d, want 1", len(a.Questions))
+	}
+}
+
+// Nothing in Assess looks for a "Success measures" heading at all, so
+// whatever shape that section is in -- absent bullets, a bare paragraph, a
+// numbered list bulletRe does not match -- must not panic or otherwise
+// break the parse of the Open questions section that follows it.
+func TestMalformedSuccessMeasuresDoesNotBreakParsing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"no bullets, just prose", "# Intent\n\n## Success measures\nWe will know it worked.\n\n## Open questions\n- Do adjusters need access?\n"},
+		{"numbered list instead of bullets", "# Intent\n\n## Success measures\n1. Median latency drops.\n2. Error rate drops.\n\n## Open questions\n- Do adjusters need access?\n"},
+		{"heading with nothing under it", "# Intent\n\n## Success measures\n\n## Open questions\n- Do adjusters need access?\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := Assess(write(t, tc.body))
+			if !a.Found {
+				t.Fatal("file should be found")
+			}
+			if a.Open != 1 {
+				t.Errorf("Open = %d, want 1 (a malformed success measures section must not affect the Open questions count)", a.Open)
+			}
+		})
+	}
+}
+
 // A block that makes you go and find the questions is a block people learn
 // to route around.
 func TestGateMessageNamesTheQuestionsAndTheWayOut(t *testing.T) {
