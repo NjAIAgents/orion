@@ -52,22 +52,20 @@ func TestTestingDrawsOneBarForTheWholeBatchAndNotOnePerMember(t *testing.T) {
 	liveBatchPhase(BatchTesting, start)
 
 	got := joined(t, start.Add(4*time.Minute))
-	if n := strings.Count(got, barFullGlyph); n == 0 {
-		t.Fatalf("no bar was drawn at all:\n%s", got)
+	if !strings.Contains(got, "━") {
+		t.Fatalf("no fill was drawn at all:\n%s", got)
 	}
-	// One line carrying a bar, not three.
-	bars := 0
+	// One CHAIN carrying the fill, not a bar per member (OR-319).
+	chains := 0
 	for _, line := range batchLines(t, start.Add(4*time.Minute)) {
-		if strings.Contains(line, barFullGlyph) || strings.Contains(line, barEmptyGlyph) {
-			bars++
+		if strings.Contains(line, "┝") {
+			chains++
 		}
 	}
-	if bars != 1 {
-		t.Errorf("%d lines carry a bar; a shared CI run must have exactly one:\n%s", bars, got)
+	if chains != 1 {
+		t.Errorf("%d lines carry a chain; a shared CI run must have exactly one:\n%s", chains, got)
 	}
-	// Named by NUMBER, in the segmented membership bar. The project prefix is
-	// dropped there because it is identical on every member of one batch, so
-	// it would spend a third of each segment saying nothing (OR-264).
+	// Every member named inside its own cell.
 	for _, k := range []string{"223", "224", "242"} {
 		if !strings.Contains(got, k) {
 			t.Errorf("%s is not named in the batch:\n%s", k, got)
@@ -237,7 +235,7 @@ func TestTheBatchIsDrawnBelowTheTicketRows(t *testing.T) {
 	batchAt, rowAt := -1, -1
 	for i, l := range lines {
 		p := plain(l)
-		if batchAt < 0 && strings.Contains(p, "batch") && strings.Contains(p, "CI") {
+		if batchAt < 0 && strings.Contains(p, "orion/batch") {
 			batchAt = i
 		}
 		// The ticket row is the one carrying the stage; the membership bar
@@ -370,11 +368,12 @@ func TestAnEjectedMemberKeepsItsRowWhileTheBatchIsTesting(t *testing.T) {
 	if !strings.Contains(got, "returns to the queue") {
 		t.Errorf("the ejected row must say it is coming back, not read as a failure:\n%s", got)
 	}
-	// It is NOT in the shared-run key list: that line is "who is in this CI
-	// run", and it is not.
-	keyLine := strings.Split(got, "\n")[1]
-	if strings.Contains(keyLine, "OR-229") {
-		t.Errorf("an ejected branch must not be listed as part of the CI run:\n%s", keyLine)
+	// It is NOT in the chain: that line is "who is in this CI run", and it
+	// is not.
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "┝") && strings.Contains(line, "229") {
+			t.Errorf("an ejected branch must not be listed as part of the CI run:\n%s", line)
+		}
 	}
 }
 

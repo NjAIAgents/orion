@@ -1206,11 +1206,14 @@ func renderHeaderAt(w io.Writer, st liveState, now time.Time, collapsed bool) st
 	if st.batch != nil {
 		parts = append(parts, "1 batch")
 	}
-	if st.ci > 0 {
+	// Nothing about CI on the header during a batch: the CI block beneath
+	// owns it, and a count here would separate ticket state from build
+	// state on the one line a reader scans for "what is running".
+	if st.ci > 0 && st.batch == nil {
 		parts = append(parts, fmt.Sprintf("%d in CI", st.ci))
 	}
 	if st.spend > 0 {
-		parts = append(parts, fmt.Sprintf("$%.2f this session", st.spend))
+		parts = append(parts, fmt.Sprintf("$%.2f", st.spend))
 	}
 	// How long this watcher has been up. The mockup's last field, and the one
 	// that answers "is this the run I started before lunch" without reading
@@ -1218,10 +1221,20 @@ func renderHeaderAt(w io.Writer, st liveState, now time.Time, collapsed bool) st
 	if !st.since.IsZero() {
 		parts = append(parts, coarse(now.Sub(st.since)))
 	}
+	// Single spaces around the separator, and the hint pushed to the rule's
+	// right edge: the line has to fit INSIDE the rule above it, and at two
+	// spaces a side it ran to 96 cells and wrapped at 76 -- which the erase
+	// then had to count, and a wrapped status line is the first thing to go
+	// wrong on a narrow terminal.
+	line := strings.Join(parts, " "+liveSep+" ")
 	if h := hintFor(st, collapsed); h != "" {
-		parts = append(parts, h)
+		if gap := liveRuleWidth - displayCells(line) - displayCells(h); gap >= 2 {
+			line += strings.Repeat(" ", gap) + h
+		} else {
+			line += " " + liveSep + " " + h
+		}
 	}
-	return Dim(w, strings.Join(parts, "  "+liveSep+"  "))
+	return Dim(w, line)
 }
 
 // projectsOf names the projects on screen, from the keys themselves.
@@ -1330,8 +1343,13 @@ func statusFooter(w io.Writer, st liveState, now time.Time, cols int, collapsed 
 		out = append(out, "")
 		out = append(out, lines...)
 	}
-	if line := renderChecks(w, st.checks, cols); line != "" {
-		out = append(out, "", line)
+	// Outside a batch only: during one the jobs are drawn in the CI block,
+	// three per row with a tally, and a second copy here would say the same
+	// thing in a worse shape.
+	if st.batch == nil {
+		if line := renderChecks(w, st.checks, cols); line != "" {
+			out = append(out, "", line)
+		}
 	}
 	return out
 }
@@ -1563,7 +1581,10 @@ const windowFrameRows = 2
 // history is being kept, so a line vanishing off the top is explained rather
 // than merely noticed.
 func windowFrame(w io.Writer, n, cols int) (string, string) {
-	tl, tr, bl, br, h := "╭", "╮", "╰", "╯", "─"
+	// Square corners, as the mockup's glyph table has it: the only box on
+	// screen, and the rounded set read as a different element from the
+	// side bars.
+	tl, tr, bl, br, h := "┌", "┐", "└", "┘", "─"
 	if !glyphs() {
 		tl, tr, bl, br, h = "+", "+", "+", "+", "-"
 	}
@@ -1582,8 +1603,33 @@ func windowFrame(w io.Writer, n, cols int) (string, string) {
 		}
 		return Dim(w, left+strings.Repeat(h, fill)+body+right)
 	}
-	return label(tl, tr, fmt.Sprintf("recent %d line(s)", n)),
+	lines := "lines"
+	if n == 1 {
+		lines = "line"
+	}
+	return label(tl, tr, fmt.Sprintf("recent %d %s", n, lines)),
 		label(bl, br, "scrolls, then gone")
+}
+
+// windowRow is one line inside the frame, between its side bars.
+//
+// The right bar only when the line leaves room for it: a line is painted text
+// and cutting it to fit could land inside an escape sequence, so a long one
+// keeps its left bar and runs on rather than being clipped.
+func windowRow(w io.Writer, line string, cols int) string {
+	v := "│"
+	if !glyphs() {
+		v = "|"
+	}
+	width := liveRuleWidth
+	if cols > 0 && cols-1 < width {
+		width = cols - 1
+	}
+	inner := width - 4
+	if n := displayCells(line); n <= inner {
+		return Dim(w, v) + " " + line + strings.Repeat(" ", inner-n) + " " + Dim(w, v)
+	}
+	return Dim(w, v) + " " + line
 }
 
 func max0(n int) int {
@@ -2015,7 +2061,7 @@ func (l *Live) drawLocked() {
 	}
 	cols := columns()
 	region := renderRegionAt(l.w, liveSnapshot(), time.Now(), cols, l.collapsed)
-	drawn := 0
+	var block []string
 	// The buffer is bounded first: Full() commits it when the cap is dropped,
 	// and the off-terminal path writes through.
 	if !l.full && len(l.window) > liveWindowBuffer {
@@ -2053,16 +2099,14 @@ func (l *Live) drawLocked() {
 		const frameRows = 3
 		if rows := windowLines(l.window, len(region)+liveBottomPad+frameRows, terminalRows(), cols); len(rows) > 0 {
 			top, bottom := windowFrame(l.w, len(rows), cols)
-			for _, line := range append(append([]string{top}, rows...), bottom, "") {
-				fmt.Fprintln(l.w, line)
-				drawn += screenRows(line, cols)
+			block = append(block, top)
+			for _, line := range rows {
+				block = append(block, windowRow(l.w, line, cols))
 			}
+			block = append(block, bottom, "")
 		}
 	}
-	for _, line := range region {
-		fmt.Fprintln(l.w, line)
-		drawn += screenRows(line, cols)
-	}
+	block = append(block, region...)
 	// Breathing room under the region, so the status line does not sit hard
 	// against the bottom edge of the terminal with the cursor on top of it.
 	//
@@ -2071,9 +2115,20 @@ func (l *Live) drawLocked() {
 	// down the screen -- the same fault that made the ticket rows disappear.
 	if len(region) > 0 {
 		for i := 0; i < liveBottomPad; i++ {
-			fmt.Fprintln(l.w)
-			drawn++
+			block = append(block, "")
 		}
+	}
+	// NEVER TALLER THAN THE SCREEN. The erase moves up by the rows drawn and
+	// the terminal clamps that at its top row, so a block that overflowed
+	// left its first rows in scrollback for the next redraw to paint again
+	// (OR-319). The window has already yielded by this point; what is left
+	// is trimmed from the top, keeping the status line and the batch nearest
+	// the cursor.
+	block = fitRows(block, terminalRows(), cols)
+	drawn := 0
+	for _, line := range block {
+		fmt.Fprintln(l.w, line)
+		drawn += screenRows(line, cols)
 	}
 	l.drawn = drawn
 }
