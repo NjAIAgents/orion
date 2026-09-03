@@ -153,3 +153,58 @@ type errApprovalUnavailable struct{}
 func (errApprovalUnavailable) Error() string {
 	return "Slack is not available to ask the approvers"
 }
+
+// TestAnApprovedBatchIsNotAskedAboutTwice is OR-318.
+//
+// The approval record used to be cleared the moment a human approved. The
+// batch ref name is constant -- every batch is orion/batch -- so the next
+// pass found no record, decided nobody had been asked, and posted the same
+// request to Slack again. Observed as four asks for two batches, each
+// already carrying a green tick.
+//
+// The risk is not the duplicate message. That record holds the message
+// timestamp the decision is read from, so forgetting it means a later pass
+// can read a reaction from a message other than the one a person answered.
+func TestAnApprovedBatchIsNotAskedAboutTwice(t *testing.T) {
+	dir := t.TempDir()
+	key := batchRequestKey("orion/batch")
+	members := []string{"OR-310", "OR-309"}
+
+	// The ask.
+	if err := saveRequest(dir, Request{
+		Key: key, Channel: "C1", TS: "1.1", Members: members,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The approval, which used to clear the record.
+	if err := saveRequest(dir, Request{
+		Key: key, Channel: "C1", TS: "1.1", Members: members, Decided: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := loadRequests(dir).Requests[key]
+	if !ok {
+		t.Fatal("the approved batch was forgotten, so the next pass will ask again")
+	}
+	if !got.Decided {
+		t.Error("the record does not say the batch was decided")
+	}
+	if !sameKeys(got.Members, members) {
+		t.Errorf("members not recorded: %v", got.Members)
+	}
+}
+
+// TestADifferentBatchOnTheSameRefIsAskedAfresh. The ref is reused, so the
+// record alone cannot say whether this is the same question. Members can.
+func TestADifferentBatchOnTheSameRefIsAskedAfresh(t *testing.T) {
+	if sameKeys([]string{"OR-310"}, []string{"OR-310", "OR-309"}) {
+		t.Error("a batch that gained a member was treated as the same batch")
+	}
+	// Order is not significant: the queue assembles in whatever order it
+	// likes, and a human approving two tickets approved the same pair either
+	// way round.
+	if !sameKeys([]string{"OR-310", "OR-309"}, []string{"OR-309", "OR-310"}) {
+		t.Error("a reshuffle that changed nothing was treated as a new batch")
+	}
+}
