@@ -27,6 +27,10 @@ type fakeTracker struct {
 	searchErr   error
 	labelErr    error
 	commentErr  error
+	// transitionErr is the workflow with no Done transition -- the tracker
+	// that cannot close a ticket however correct the request is. A merge must
+	// survive it (OR-314).
+	transitionErr error
 }
 
 func newTracker() *fakeTracker {
@@ -51,6 +55,9 @@ func (f *fakeTracker) SetLabels(key string, add, remove []string) error {
 	return nil
 }
 func (f *fakeTracker) TransitionTo(key, status string) error {
+	if f.transitionErr != nil {
+		return f.transitionErr
+	}
 	f.transitions[key] = status
 	return nil
 }

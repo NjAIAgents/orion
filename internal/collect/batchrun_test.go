@@ -1,10 +1,13 @@
 package collect
 
 import (
+	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
 )
 
@@ -135,6 +138,60 @@ func TestUIChecksConvertsEachInternalStateToItsDisplayState(t *testing.T) {
 	}
 }
 
+// OR-314. Observed on 2026-09-02: OR-150, OR-153 and OR-296 merged to develop
+// in PR #396 and were all still In Progress carrying orion-ready hours later,
+// closed in the end by hand. The batch knew exactly which members had landed
+// -- it named them on screen and in the log -- and told the tracker nothing.
+//
+// The stale label is the expensive half: a merged ticket that keeps the queue
+// label is picked up by the next collect pass, and the one after, forever.
+func TestALandedBatchMemberIsClosedAndEveryOtherMemberIsLeftAlone(t *testing.T) {
+	// The whole shape of a batch that failed and was bisected: one member
+	// landed, one would not merge, one was the reason CI went red, and one was
+	// sound but sat in the batch that failed.
+	b := Batch{Results: []MemberResult{
+		{Member: Member{Key: "OR-150"}, Outcome: Landed},
+		{Member: Member{Key: "OR-152"}, Outcome: Ejected},
+		{Member: Member{Key: "OR-9"}, Outcome: Culprit},
+		{Member: Member{Key: "OR-8"}, Outcome: Deferred},
+	}}
+	jira := newTracker()
+	var buf bytes.Buffer
+
+	// Derived exactly as runBatch derives it, so a change to either half fails
+	// here rather than in production.
+	closeLanded(b.Members(Landed), "https://forge/pull/396", "orion-ready",
+		Deps{Jira: jira}, &buf)
+
+	if got := jira.transitions["OR-150"]; got != "Done" {
+		t.Errorf("a landed member's status is %q, want %q: a batch that merges "+
+			"has to finish the tickets it merged", got, "Done")
+	}
+	for _, label := range tracker.Managed("orion-ready") {
+		if !hasLabel(jira.removed["OR-150"], label) {
+			t.Errorf("a landed member kept %q; a merged ticket that keeps a "+
+				"managed label re-enters the integration queue forever", label)
+		}
+	}
+	comments := strings.Join(jira.comments["OR-150"], "\n")
+	if !strings.Contains(comments, "https://forge/pull/396") {
+		t.Errorf("a landed member was not told where its work went; comments:\n%s",
+			comments)
+	}
+
+	// AND NOTHING ELSE. An ejected member's branch is still waiting and a
+	// culprit is the reason the batch went red -- closing either would report
+	// work as delivered that is not on the trunk.
+	for _, key := range []string{"OR-152", "OR-9", "OR-8"} {
+		if jira.transitions[key] != "" || len(jira.removed[key]) > 0 ||
+			len(jira.comments[key]) > 0 {
+			t.Errorf("%s did not land and must be untouched, but it was "+
+				"transitioned=%q relabelled=%v commented=%v",
+				key, jira.transitions[key], jira.removed[key], jira.comments[key])
+		}
+	}
+}
+
 // A nil or empty rollup must convert to nothing, not panic and not a
 // display artifact like a lone empty cell (OR-310) -- a ticket whose PR read
 // carried no checks yet is common (CI has not started reporting) and must
@@ -146,4 +203,38 @@ func TestUIChecksHandlesNilAndEmptyWithoutPanicking(t *testing.T) {
 	if out := UIChecks([]Check{}); len(out) != 0 {
 		t.Errorf("an empty rollup must convert to nothing, got %+v", out)
 	}
+}
+
+// A workflow without a Done transition must not turn a successful merge into a
+// failure. The merge has HAPPENED by the time this runs -- the code is on the
+// work branch -- and no amount of tracker trouble makes that untrue.
+func TestATrackerThatCannotTransitionStillLetsTheMergeStand(t *testing.T) {
+	jira := newTracker()
+	jira.transitionErr = errors.New("no transition named Done")
+	var buf bytes.Buffer
+
+	if err := closeTicket("OR-150", "https://forge/pull/396", "orion-ready",
+		Deps{Jira: jira}, &buf); err != nil {
+		t.Fatalf("closeTicket returned %v; a workflow with no Done transition "+
+			"must not turn a successful merge into a failure", err)
+	}
+	if !hasLabel(jira.removed["OR-150"], "orion-ready") {
+		t.Error("the labels must still be cleared: that is the step whose " +
+			"failure means the ticket is collected again")
+	}
+	if len(jira.comments["OR-150"]) == 0 {
+		t.Error("the pull request must still be recorded on the ticket")
+	}
+	if !strings.Contains(buf.String(), "OR-150") {
+		t.Errorf("the failure has to be reported, not swallowed:\n%s", buf.String())
+	}
+}
+
+func hasLabel(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
