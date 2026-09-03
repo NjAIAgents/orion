@@ -25,10 +25,17 @@ func TestWorkspaceCopyMutationDoesNotAffectTheSeedOrOtherCopies(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The FIRST COPY'S value, not a non-empty list. workspace.New provisions
+	// main and develop on every workspace, so a fresh copy carrying them is
+	// what a provisioned workspace looks like -- asserting emptiness here
+	// fired on the ordinary case and could never pass. What must not appear
+	// is the branch the first copy wrote.
 	second := newWorkspace(t, "isolation")
-	if len(second.Task.Branches) != 0 {
-		t.Errorf("a fresh copy from the same seed already has branches %v; "+
-			"the first copy's mutation leaked through the seed", second.Task.Branches)
+	for _, b := range second.Task.Branches {
+		if b == "mutated-by-first" {
+			t.Errorf("a fresh copy from the same seed carries the first "+
+				"copy's branch %q; the mutation leaked through the seed", b)
+		}
 	}
 }
 
