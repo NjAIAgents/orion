@@ -669,8 +669,8 @@ const (
 	// OVERRUN cells (OR-309). Deliberately neither the full glyph nor the
 	// head: a run past its median is not making progress toward anything the
 	// bar knows about, and it is not about to finish either.
-	barOverGlyph = "▒"
-	barOverASCII = "="
+	barOverGlyph  = "▒"
+	barOverASCII  = "="
 	liveRuleGlyph = "─"
 	liveRuleASCII = "-"
 )
