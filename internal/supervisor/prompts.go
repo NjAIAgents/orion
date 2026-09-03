@@ -34,9 +34,36 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 			"shape and proposes the commit; the path is part of its contract, so do not",
 			"relocate the file. /pm-plan later points at this capture as grounding.",
 			"",
+			"You are the product manager here, and that one file is everything you leave",
+			"behind: what is being built, why it matters, and how success will be",
+			"measured. Every later stage treats it as settled, and none of them can ask",
+			"you anything -- they run non-interactively.",
+			"",
 			"Interrogate the idea first, the way an analyst would: who is affected, what is",
-			"out of scope, what constraints apply, what success looks like. Where it is",
-			"ambiguous, record the question rather than inventing an answer.",
+			"out of scope, what constraints apply, what success looks like.",
+			"",
+			"EXTEND THE FILE THAT IS ALREADY THERE if there is one; do not start a second",
+			"artifact beside it. These two headings must be in it when you finish, worded",
+			"exactly like this -- Orion's discovery gate finds the second one BY ITS",
+			"HEADING, so a file that words it differently parses as having nothing open:",
+			"",
+			quote(intentShape),
+			"",
+			"SUCCESS MEASURES ARE PART OF THE DELIVERABLE, not a nice-to-have. \"How will",
+			"we know this worked\" is exactly the thing that never gets written down",
+			"afterwards. State each one so a person could check it later,",
+			"not as an aspiration.",
+			"",
+			"ANYTHING YOU CANNOT DECIDE IS AN OPEN QUESTION, NEVER AN ASSUMPTION.",
+			"An assumption written as a statement is indistinguishable from a decision by",
+			"the time the next stage reads it, and spec, plan, scaffold and the tracker",
+			"tree all inherit it -- nine stage floors plus the rework, against one",
+			"conversation now. The gate blocks every later stage while a bullet there is",
+			"unanswered, and that is the point of writing it there rather than smoothing",
+			"it over. Write `"+intentNone+"` under the heading when there genuinely are",
+			"none, so nobody has to guess whether you thought about it.",
+			"Never delete a question to unblock the chain. Mark it answered in place, with",
+			"`[x]`, with ~~strikethrough~~, or with an inline \"Answer: ...\".",
 			"",
 			"Record only what was actually said. Do not write code or design a solution.",
 		), nil
@@ -184,6 +211,33 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 			"unknown stage %q (want: intent, spec, plan, scaffold, decompose, build, verify, review, pr)", stage)
 	}
 }
+
+// intentShape is the skeleton the intent stage must leave behind, shown to the
+// agent verbatim.
+//
+// A literal block rather than prose describing a shape, because the second
+// heading is a CONTRACT with internal/discovery: the gate finds open questions
+// by matching that heading, and a capture that words it differently parses as
+// having none. That failure is silent and it is the worst one available here --
+// a file full of unanswered questions that every later stage is cleared to
+// design from. TestIntentPromptWritesWhatTheDiscoveryGateParses pins the two
+// sides together by round-tripping this text through discovery.Assess.
+//
+// The first heading has no parser behind it and is here for the other half of
+// the deliverable: "how will we know this worked" is the thing nobody writes
+// down afterwards, so it is asked for in the shape rather than in a sentence
+// the agent can satisfy with a paragraph about ambitions.
+const intentShape = `## Success measures
+- How anyone will know this worked, stated so it can be checked later.
+
+## Open questions
+- One bullet per thing you could not decide.`
+
+// intentNone is how the capture says there is nothing open. Spelled out here
+// rather than inside the prompt string because discovery.isNone decides which
+// words count, and a prompt telling the agent to write something that spelling
+// does not cover would block the chain on a complete intent.
+const intentNone = "- None"
 
 // NoopMarker is the sentence an agent writes when it finds this issue's work
 // already done. It lives here, next to the prompt that asks for it, so the
