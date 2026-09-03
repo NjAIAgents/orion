@@ -155,6 +155,29 @@ func TestAPendingResultCarriesTheChecksItWasDecidedFrom(t *testing.T) {
 	}
 }
 
+// Result.Checks is a field on the struct, not something derived from the
+// verdict -- so a failing read carries the rollup exactly as a pending one
+// does (OR-310). The prior test only proved this for VerdictPending; a
+// watcher naming the check that actually failed needs the same field
+// populated on the verdict that ends the wait.
+func TestResultCarriesChecksWhateverTheVerdict(t *testing.T) {
+	home, _ := bound(t)
+	res, _, _ := run(t, home, newTracker(), PR{
+		Verdict: VerdictFailing, Detail: "1 failed",
+		Checks: []Check{
+			{Name: "go (ubuntu)", State: CheckPassed},
+			{Name: "go (windows)", State: CheckFailed},
+		},
+	}, Options{})
+
+	if len(res[0].Checks) != 2 {
+		t.Fatalf("the Checks field must be populated regardless of verdict, got %+v", res[0].Checks)
+	}
+	if res[0].Checks[1].Name != "go (windows)" || res[0].Checks[1].State != CheckFailed {
+		t.Errorf("the checks must arrive as read: %+v", res[0].Checks)
+	}
+}
+
 // Green but unmerged must NOT merge. Approving is the one step in this
 // pipeline that is deliberately a person's, and a tool that merges its own
 // work has removed the review it exists to produce.

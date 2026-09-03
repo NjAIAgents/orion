@@ -856,6 +856,40 @@ func TestNoChecksDrawsNoRow(t *testing.T) {
 	}
 }
 
+// On a real terminal the checks row spins and colours, the same as every
+// other status in this package (color.go) -- a passed check is green, a
+// failed one is red, and a running one carries the same braille spinner the
+// ticket rows use, so "still going" reads identically wherever it appears
+// (OR-310).
+//
+// isTerminal type-asserts *os.File, so a bytes.Buffer can never exercise this
+// path: /dev/null is a real char device and reads as a terminal without
+// needing an actual tty, the same trick TestAWrappedWriterIsStillTheTerminalItWraps
+// uses.
+func TestInteractiveChecksRowCarriesSpinnerAndColour(t *testing.T) {
+	f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+
+	got := renderChecks(f, []Check{
+		{Name: "go (ubuntu)", State: CheckPassed},
+		{Name: "go (windows)", State: CheckRunning},
+		{Name: "go (macos)", State: CheckFailed},
+	}, 200)
+
+	if !strings.Contains(got, "\x1b[32m") {
+		t.Errorf("a passed check must be painted green: %q", got)
+	}
+	if !strings.Contains(got, "\x1b[31m") {
+		t.Errorf("a failed check must be painted red: %q", got)
+	}
+	if !strings.ContainsAny(got, spinnerGlyphs) && !strings.ContainsAny(got, spinnerASCII) {
+		t.Errorf("a running check must carry the same spinner the rows use: %q", got)
+	}
+}
+
 // A rollup is a complete picture of one moment, so a later reading REPLACES
 // the previous one. Merging would leave a finished check on screen after a
 // re-run dropped it.
@@ -919,6 +953,227 @@ func TestOffATerminalTheChecksArePrintedOnceUntilOneMoves(t *testing.T) {
 	live.Tick()
 	if got := buf.String(); !strings.Contains(got, "go (windows) passed") {
 		t.Errorf("a check that changed state must print: %q", got)
+	}
+}
+
+// Off a terminal the checks line is plain text: no spinner frame, no escape
+// code, the state spelled out in words instead. A log is read afterwards,
+// where a braille frame is a character rather than motion and an escape code
+// is grit in the file (OR-310).
+func TestOffTerminalChecksLineHasNoSpinnerOrColour(t *testing.T) {
+	st := liveState{checks: []Check{
+		{Name: "go (ubuntu)", State: CheckPassed},
+		{Name: "go (windows)", State: CheckRunning},
+		{Name: "go (macos)", State: CheckFailed},
+	}}
+	lines, _, _ := renderPlainTracked(st, time.Date(2026, 1, 1, 9, 41, 0, 0, time.Local))
+
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "go (windows) running") {
+		t.Fatalf("the plain line must spell the state out in words: %q", joined)
+	}
+	if strings.ContainsAny(joined, spinnerGlyphs) || strings.ContainsAny(joined, spinnerASCII) {
+		t.Errorf("the plain line must carry no spinner frame: %q", joined)
+	}
+	if strings.Contains(joined, "\x1b[") {
+		t.Errorf("the plain line must carry no escape code: %q", joined)
+	}
+}
+
+// Every off-terminal line in this package is timestamped, because a log is
+// read after the fact and a line with no clock on it cannot be placed against
+// the rest of the run. The checks line keeps that contract rather than being
+// the one exception (OR-310).
+func TestOffTerminalChecksLineCarriesATimestampPrefix(t *testing.T) {
+	st := liveState{checks: []Check{{Name: "go (ubuntu)", State: CheckPassed}}}
+	now := time.Date(2026, 1, 1, 9, 41, 0, 0, time.Local)
+	lines, _, _ := renderPlainTracked(st, now)
+
+	want := now.Local().Format("15:04") + "  ci  "
+	found := false
+	for _, l := range lines {
+		if strings.HasPrefix(l, want) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the checks line must start with the %q timestamp prefix, got %+v", now.Local().Format("15:04"), lines)
+	}
+}
+
+// The very first tick has nothing recorded yet -- st.plainChecks is empty --
+// so a freshly-read set of checks must print, not be mistaken for a repeat of
+// nothing (OR-310).
+func TestOffTerminalChecksLinePrintsOnceOnFirstRead(t *testing.T) {
+	st := liveState{checks: []Check{{Name: "go (ubuntu)", State: CheckRunning}}}
+	lines, _, checks := renderPlainTracked(st, time.Now())
+
+	count := 0
+	for _, l := range lines {
+		if strings.Contains(l, "go (ubuntu) running") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("a first-read check must print exactly once, printed %d times in %+v", count, lines)
+	}
+	if checks == "" {
+		t.Errorf("the checks body returned for recording must not be empty")
+	}
+}
+
+// OR-310: a single ticket awaiting CI names each check and its state, rather
+// than leaving the reader with only a ticket count. "1 in CI" says nothing
+// about which platform is still going; the checks line is what closes that
+// gap for an ordinary (non-batch) watch.
+func TestPlainChecksBodyNamesTheCheckAndItsStateForASingleTicket(t *testing.T) {
+	got := plainChecksBody([]Check{{Name: "go (windows)", State: CheckRunning}})
+
+	if !strings.Contains(got, "go (windows) running") {
+		t.Errorf("a single ticket's check must be named with its state, not just counted: %q", got)
+	}
+}
+
+// Several checks belonging to the same ticket's CI run share one display
+// line rather than one each -- they are all facts about a single run, and
+// stacking them would push the ticket rows off a short terminal.
+func TestPlainChecksBodyPutsSeveralChecksOnOneLine(t *testing.T) {
+	got := plainChecksBody([]Check{
+		{Name: "go (ubuntu)", State: CheckPassed},
+		{Name: "go (macos)", State: CheckRunning},
+		{Name: "go (windows)", State: CheckRunning},
+	})
+
+	if strings.Contains(got, "\n") {
+		t.Errorf("several checks for one ticket must render as one line, got %q", got)
+	}
+	for _, want := range []string{"go (ubuntu) passed", "go (macos) running", "go (windows) running"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the shared line is missing %q: %q", want, got)
+		}
+	}
+}
+
+// A check moving from running to passed must be reflected the very next
+// tick -- the display is pushed from the same read the verdict came from, so
+// there is nothing stale to wait out.
+func TestACheckMovingFromRunningToPassedUpdatesImmediately(t *testing.T) {
+	LiveReset()
+	defer LiveReset()
+
+	var buf bytes.Buffer
+	live := NewLive(&buf)
+	defer live.Close()
+
+	LiveChecks([]Check{{Name: "go (ubuntu)", State: CheckRunning}})
+	live.Tick()
+	if got := buf.String(); !strings.Contains(got, "go (ubuntu) running") {
+		t.Fatalf("expected the running state on the first tick: %q", got)
+	}
+
+	LiveChecks([]Check{{Name: "go (ubuntu)", State: CheckPassed}})
+	buf.Reset()
+	live.Tick()
+	if got := buf.String(); !strings.Contains(got, "go (ubuntu) passed") {
+		t.Errorf("a check that passed must be reported on the very next tick: %q", got)
+	}
+}
+
+// A check moving from running to failed is exactly as urgent as one moving
+// to passed -- a repeat guard that only recognised success would bury the
+// one outcome an operator most needs to see.
+func TestACheckMovingFromRunningToFailedUpdatesImmediately(t *testing.T) {
+	LiveReset()
+	defer LiveReset()
+
+	var buf bytes.Buffer
+	live := NewLive(&buf)
+	defer live.Close()
+
+	LiveChecks([]Check{{Name: "go (windows)", State: CheckRunning}})
+	live.Tick()
+	if got := buf.String(); !strings.Contains(got, "go (windows) running") {
+		t.Fatalf("expected the running state on the first tick: %q", got)
+	}
+
+	LiveChecks([]Check{{Name: "go (windows)", State: CheckFailed}})
+	buf.Reset()
+	live.Tick()
+	if got := buf.String(); !strings.Contains(got, "go (windows) failed") {
+		t.Errorf("a check that failed must be reported on the very next tick: %q", got)
+	}
+}
+
+// With every check landed, the line says so for all of them -- no check is
+// left showing a stale "running" once the run as a whole is done.
+func TestAllChecksPassingDisplaysAllStatesAsPassed(t *testing.T) {
+	got := plainChecksBody([]Check{
+		{Name: "go (ubuntu)", State: CheckPassed},
+		{Name: "go (macos)", State: CheckPassed},
+		{Name: "go (windows)", State: CheckPassed},
+	})
+
+	for _, want := range []string{"go (ubuntu) passed", "go (macos) passed", "go (windows) passed"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("every landed check must say passed: missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "running") || strings.Contains(got, "failed") {
+		t.Errorf("with everything passed, no check may still read running or failed: %q", got)
+	}
+}
+
+// An unchanged checks line is silent on every redraw after its first print,
+// not merely on the second one -- five ticks with nothing new to say must
+// leave nothing in the log (OR-310).
+func TestUnchangedCheckLineIsNotRepeatedAcrossRedraws(t *testing.T) {
+	LiveReset()
+	defer LiveReset()
+
+	var buf bytes.Buffer
+	live := NewLive(&buf)
+	defer live.Close()
+	LiveChecks([]Check{{Name: "go (ubuntu)", State: CheckRunning}})
+
+	live.Tick()
+	if !strings.Contains(buf.String(), "go (ubuntu) running") {
+		t.Fatalf("expected the check on its first tick: %q", buf.String())
+	}
+
+	buf.Reset()
+	for i := 0; i < 5; i++ {
+		live.Tick()
+	}
+	if got := buf.String(); strings.TrimSpace(got) != "" {
+		t.Errorf("an unchanged checks line repeated across redraws, which buries the lines that matter: %q", got)
+	}
+}
+
+// When two checks are on the line and only ONE of them moves, the line
+// reprints with the new state -- the repeat guard is on the line as a
+// whole, not on each check individually, so a single mover is enough to
+// re-earn a print (OR-310).
+func TestCheckLineReprintsWhenAnIndividualCheckChangesState(t *testing.T) {
+	LiveReset()
+	defer LiveReset()
+
+	var buf bytes.Buffer
+	live := NewLive(&buf)
+	defer live.Close()
+	LiveChecks([]Check{
+		{Name: "go (ubuntu)", State: CheckPassed},
+		{Name: "go (windows)", State: CheckRunning},
+	})
+	live.Tick()
+	buf.Reset()
+
+	LiveChecks([]Check{
+		{Name: "go (ubuntu)", State: CheckPassed},
+		{Name: "go (windows)", State: CheckFailed},
+	})
+	live.Tick()
+	if got := buf.String(); !strings.Contains(got, "go (windows) failed") {
+		t.Errorf("a single check changing state must reprint the line: %q", got)
 	}
 }
 
@@ -1178,5 +1433,50 @@ func TestColumnsShareALeftEdgeWithAndWithoutAMedian(t *testing.T) {
 	if a != c {
 		t.Errorf("the sparkline starts at %d with a median and %d without:\n%s\n%s",
 			a, c, withMedian, without)
+	}
+}
+
+// The terminal region (renderChecks) and the off-terminal log
+// (plainChecksBody) draw from the SAME []Check, and a reader who follows a
+// run from a terminal into its piped log must find the same checks in the
+// same order in both -- OR-310's row is one source of truth rendered twice,
+// not two renderers that can quietly drift apart.
+//
+// The two forms are deliberately NOT identical text: the region uses a
+// glyph and colour, the log spells the state out in words because a log is
+// read afterwards, where a spinner frame is just a character. What must
+// match is which checks appear, and in what order.
+func TestCheckNamesAndStatesAreOrderedConsistentlyAcrossBothPaths(t *testing.T) {
+	checks := []Check{
+		{Name: "go (ubuntu)", State: CheckPassed},
+		{Name: "go (windows)", State: CheckRunning},
+		{Name: "go (macos)", State: CheckFailed},
+	}
+
+	var w bytes.Buffer
+	terminal := plain(renderChecks(&w, checks, 200))
+	flat := plainChecksBody(checks)
+
+	names := []string{"go (ubuntu)", "go (windows)", "go (macos)"}
+	var lastT, lastF int = -1, -1
+	for _, name := range names {
+		it := strings.Index(terminal, name)
+		ip := strings.Index(flat, name)
+		if it < 0 || ip < 0 {
+			t.Fatalf("%q missing from one of the two renderings:\nterminal=%q\nplain=%q", name, terminal, flat)
+		}
+		if it < lastT || ip < lastF {
+			t.Errorf("the two paths disagree on check order:\nterminal=%q\nplain=%q", terminal, flat)
+		}
+		lastT, lastF = it, ip
+	}
+
+	// The state each path spells out for the SAME check must agree: a
+	// passing check must not read "passed" in the log while the region
+	// (via its glyph) means anything but.
+	if !strings.Contains(flat, "go (ubuntu) passed") ||
+		!strings.Contains(flat, "go (windows) running") ||
+		!strings.Contains(flat, "go (macos) failed") {
+		t.Errorf("the plain path must spell out each check's actual state: %q", flat)
 	}
 }
