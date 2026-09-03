@@ -68,6 +68,9 @@ func TestOutputVolumeCannotDisplaceTheRegion(t *testing.T) {
 // relative cursor move, so a wrapped line counted as one row strands a row on
 // screen at every redraw and walks the region down the terminal.
 func TestResizingReflowsWithoutStrandingRows(t *testing.T) {
+	if !liveWindowOn {
+		t.Skip("the frozen window is off (OR-317); this asserts its behaviour")
+	}
 	t.Setenv("LINES", "")
 	t.Setenv("COLUMNS", "40")
 	LiveReset()
@@ -302,6 +305,9 @@ func TestTheRegionIsPaddedAtTheBottomWithoutCostingTheRows(t *testing.T) {
 // current tool call; these lines are what happened across the run, including
 // actors like `batch` that have no row at all.
 func TestTheWindowIsDrawnAboveTheRegion(t *testing.T) {
+	if !liveWindowOn {
+		t.Skip("the frozen window is off (OR-317); this asserts its behaviour")
+	}
 	t.Setenv("LINES", "40")
 	t.Setenv("COLUMNS", "")
 	LiveReset()
@@ -365,6 +371,9 @@ func TestFullModeWritesThroughInsteadOfCapturing(t *testing.T) {
 // It does not reproduce now that the frame's three rows are charged to the
 // same budget the erase reads: one frame, banner intact inside it.
 func TestAMultiLineBannerLeavesOneFrame(t *testing.T) {
+	if !liveWindowOn {
+		t.Skip("the frozen window is off (OR-317); this asserts its behaviour")
+	}
 	t.Setenv("LINES", "40")
 	t.Setenv("COLUMNS", "100")
 	LiveReset()

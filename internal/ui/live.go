@@ -121,6 +121,19 @@ const (
 	liveRuleWidth = 76
 )
 
+// liveWindowOn draws the frozen window above the region.
+//
+// FALSE. OR-313 turned it on; on its first real watch it stranded eleven
+// frame tops in the operator's scrollback (OR-317), and no test reproduces
+// it -- single writer, concurrent writers, banners, and the redraw ticker
+// were all tried. A pane that leaves eleven borders behind is worse than no
+// pane, so it is off until OR-317 has a failing test to fix.
+//
+// A flag rather than deleted code, deliberately. The window was ALREADY dead
+// code once: every part built, tested, and called by nothing, which took two
+// releases to notice (OR-313). A named flag says the state is chosen.
+const liveWindowOn = false
+
 // liveWindowFloor is how many recent lines the frozen window shows.
 //
 // A HEIGHT, not a floor. OR-248 shipped it as a floor that grew into whatever
@@ -1789,13 +1802,24 @@ func (l *Live) Write(p []byte) (int, error) {
 	// every line after it goes straight to scrollback. Capturing here would
 	// mean the keystroke silently did the opposite of what it promises --
 	// output stops rather than opens up.
-	n := len(p)
-	var err error
-	if l.full {
-		n, err = l.w.Write(p)
-	} else {
-		l.capture(string(p))
-	}
+	// WRITTEN THROUGH, not captured (OR-317).
+	//
+	// OR-313 restored the frozen window by capturing here. On its first real
+	// watch -- four tickets, a batch, the redraw ticker -- it left ELEVEN
+	// frame tops stacked in the operator's scrollback, which is the exact
+	// failure OR-265 named when it stopped drawing the window.
+	//
+	// It could not be reproduced under test: single writer, four concurrent
+	// writers, banners from several tickets, and the ticker running were all
+	// tried and all left one frame. Whatever the cause is, it is not in the
+	// paths a test has reached, and eleven borders on screen is worse than
+	// no pane at all.
+	//
+	// So the window is off again, and this time the reason is recorded rather
+	// than the code deleted: l.window still fills, commitWindowLocked still
+	// commits it, and drawLocked's rendering block is intact behind a flag.
+	// Turning it back on is one line -- once OR-317 has a failing test.
+	n, err := l.w.Write(p)
 	// A write that did not finish its line leaves the cursor mid-row, and
 	// drawing the region there would splice the two together. Held until the
 	// line is closed, which every caller in this codebase does with Fprintln.
@@ -1975,7 +1999,11 @@ func (l *Live) drawLocked() {
 	// the first time the region ever engaged. l.pending already marks an
 	// unfinished line; a banner is the same hazard one line further out, so
 	// the frame waits for a redraw that is not mid-block.
-	if !l.full && !l.collapsed {
+	// liveWindowOn gates the frozen window (OR-317). Off until the stranded
+	// frame has a failing test: the rendering below is correct in every case
+	// a test has reached, so deleting it would throw away working code to fix
+	// a bug nobody has yet located.
+	if liveWindowOn && !l.full && !l.collapsed {
 		// The frame's own three rows -- top border, bottom border, and the
 		// blank line under it -- are charged to the region's budget, not
 		// drawn on top of it.

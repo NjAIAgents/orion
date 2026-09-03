@@ -380,6 +380,9 @@ func TestTermDumbGetsNoCursorControl(t *testing.T) {
 // redrawn after it, so a line lands in the scrollback rather than on top of
 // the pinned block.
 func TestScrollbackSurvivesTheRegion(t *testing.T) {
+	if !liveWindowOn {
+		t.Skip("the frozen window is off (OR-317); this asserts its behaviour")
+	}
 	t.Setenv("LINES", "24")
 	t.Setenv("COLUMNS", "")
 	LiveReset()
