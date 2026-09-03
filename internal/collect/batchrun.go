@@ -26,9 +26,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/registry"
+	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -572,6 +574,17 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 			// was tested is the thing that merged, so there is nothing left
 			// to do with it.
 			res.Verdict = VerdictMerged
+			// EXCEPT CLOSING THE TICKET, which nothing did (OR-314).
+			//
+			// The per-branch path clears the labels, transitions to Done,
+			// comments the pull request and closes children. The batch path
+			// merged the code and told only the screen, so a landed ticket
+			// stayed In Progress carrying orion-ready -- and that label is
+			// not cosmetic: the next collect pass re-read it as ready,
+			// assembled it into a new batch, and ejected it for having
+			// nothing left to contribute. Observed on three consecutive
+			// sessions, closed by hand each time.
+			closeLanded(r.Key, ref, b.LandedSHA, cfg, deps, w)
 		case Culprit:
 			res.Verdict = VerdictFailing
 		default:
@@ -706,4 +719,59 @@ func pendingResults(members []Member) []Result {
 		out = append(out, Result{Key: m.Key, Verdict: VerdictPending})
 	}
 	return out
+}
+
+// closeLanded finishes a ticket whose work merged as part of a batch
+// (OR-314).
+//
+// The same four steps the per-branch path takes in merged(), for the same
+// reasons, because a ticket does not care which route its code took to the
+// work branch. Kept beside the batch rather than shared with merged(): that
+// function is entangled with a PR struct, a registry entry and a worktree
+// prune this path has none of, and the honest way to share it is to extract
+// the tracker half first -- which is a refactor, not this fix.
+//
+// LABELS FIRST, and every label Orion owns rather than only the one that
+// brought the ticket here. A merged ticket still carrying orion-ready is
+// re-read as ready by the next collect pass, assembled into a new batch, and
+// ejected for having nothing to contribute -- forever. That loop, not the
+// wrong status, is what made this worth fixing.
+//
+// Everything after the labels is BEST EFFORT. A tracker whose workflow has no
+// Done transition must not turn a successful merge into a reported failure:
+// the code is on the work branch either way, and no amount of retrying
+// changes that.
+func closeLanded(key, ref, sha string, cfg config.Config, deps Deps, w io.Writer) {
+	if deps.Jira == nil {
+		return
+	}
+	// The queue label falls back to the default when config carries none.
+	//
+	// tracker.Managed builds the list to clear FROM this value, so an empty
+	// string clears "" and leaves the real queue label in place -- which is
+	// the exact loop this function exists to break, arrived at by a config
+	// that was never loaded. Caught by a test passing a bare Config, which is
+	// what an unset field actually looks like.
+	queue := cfg.Tracker.QueueLabel
+	if queue == "" {
+		queue = tracker.QueueLabelDefault
+	}
+	if err := deps.Jira.SetLabels(key, nil, tracker.Managed(queue)); err != nil {
+		ui.Warn(w, "%s: landed in the batch, but its labels could not be cleared: %v", key, err)
+		// Not returned on: the status and the comment are still worth
+		// attempting, and a ticket that is Done with a stale label is less
+		// confusing than one that is In Progress with a stale label.
+	}
+	if err := deps.Jira.TransitionTo(key, "Done"); err != nil {
+		ui.Warn(w, "%s: landed in the batch, but could not transition to Done: %v", key, err)
+	}
+	// The ref AND the SHA. The ref name is reused by every batch, so it alone
+	// says nothing about which one this was; the SHA is what a person can
+	// still find the merge by months later.
+	note := "landed in the batch on " + ref
+	if sha != "" {
+		note += " (" + sha + ")"
+	}
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion, note))
+	closeChildren(key, note, queue, deps, w)
 }
