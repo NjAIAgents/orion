@@ -327,14 +327,63 @@ func Run(opts Options, deps Deps) []Result {
 		// per-branch path CAN say something about still gets said.
 	}
 
+	// Tickets waiting for the next batch are skipped here, not failed
+	// (OR-311).
+	//
+	// one() below reconciles a ticket against ITS OWN pull request, and a
+	// ready ticket has none by design: OR-253 stopped tickets opening their
+	// own so a batch could land one tested ref. Handing it to that path makes
+	// noPullRequest label it orion-failed for a pull request nobody was ever
+	// going to open -- taking a healthy ticket out of the queue for doing
+	// exactly what it was told.
+	//
+	// They reach here whenever runBatch declined the pass: batch integration
+	// switched off, or a batch that could not assemble. Both mean "not this
+	// pass", not "this ticket is broken". They keep their label and wait.
+	ready := readySet(pass, deps)
+
 	var out []Result
 	for _, key := range pass {
+		if ready[key] {
+			continue
+		}
 		out = append(out, one(key, pass, opts, deps))
 	}
 	return out
 }
 
-// waiting asks the tracker which tickets carry the ci-wait label.
+// readySet is the subset of pass sitting in the integration queue's inbox
+// rather than awaiting its own CI.
+//
+// ONE search for the whole pass, not one per ticket: this runs on every
+// collect tick, and a per-ticket lookup would put N tracker calls on a path
+// whose common case has nothing to do.
+//
+// An unreadable tracker yields an EMPTY set, so every ticket falls through to
+// one(), which reports what it finds. Skipping on failure is how a ticket
+// vanishes from every report while looking fine; reporting a stale verdict is
+// visible and recoverable.
+func readySet(pass []string, deps Deps) map[string]bool {
+	out := map[string]bool{}
+	if len(pass) == 0 || deps.Jira == nil {
+		return out
+	}
+	jql := tracker.JQLAnd(
+		tracker.JQLIn("key", pass...),
+		tracker.JQLEq("labels", tracker.LabelReady),
+	)
+	issues, err := deps.Jira.Search(jql, len(pass))
+	if err != nil {
+		return out
+	}
+	for _, is := range issues {
+		out[strings.ToUpper(strings.TrimSpace(is.Key))] = true
+	}
+	return out
+}
+
+// waiting asks the tracker which tickets are the integration queue's to
+// handle: those awaiting their own CI, and those ready for the next batch.
 //
 // Scoped to the projects Orion actually knows about. An unscoped JQL would
 // match a label someone applied by hand in an unrelated project, and the
@@ -348,9 +397,29 @@ func waiting(j TrackerAPI, home string) ([]string, error) {
 	if len(projects) == 0 {
 		return nil, nil
 	}
+	// BOTH labels, because this function feeds two jobs and they arrive in
+	// different states (OR-311).
+	//
+	// orion-ci-wait is a ticket whose own CI is running: reconcile it, close
+	// it, prune it. orion-ready is the integration queue's INBOX -- the agent
+	// finished, QA gave its verdict, the branch is pushed, and nothing is
+	// running. runBatch below is what takes those, and it is the only thing
+	// that ever will.
+	//
+	// Searching only ci-wait meant nothing read the inbox. A finished ticket
+	// set orion-ready and sat there forever: no batch, no pull request, and
+	// -- because runBatch is where liveObserver attaches -- no batch display
+	// either. Four tickets stranded for 41 minutes on 2026-09-02, and OR-135
+	// the day before, rescued by hand both times without the cause being
+	// found. Broken since OR-253 added the state and pointed nothing at it.
+	//
+	// They are NOT merged into one state. ci-wait says a machine is working
+	// and the answer is patience; ready says nothing is working and the
+	// ticket waits on the next pass. Reporting one as the other leaves an
+	// operator waiting on a build nobody started.
 	jql := tracker.JQLAnd(
 		tracker.JQLIn("project", projects...),
-		tracker.JQLEq("labels", tracker.LabelCIWait),
+		tracker.JQLIn("labels", tracker.LabelCIWait, tracker.LabelReady),
 	) + " ORDER BY updated ASC"
 	issues, err := j.Search(jql, 50)
 	if err != nil {
