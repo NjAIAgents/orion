@@ -195,6 +195,120 @@ func TestNoMedianStillDrawsNothingWhenLong(t *testing.T) {
 	}
 }
 
+// TestBarProgressIsLinearBeforeMedian is OR-309's other half: the segment
+// below the median is untouched by the overrun rescale and must still climb
+// linearly, in green, with the head glyph leading it until it fills.
+func TestBarProgressIsLinearBeforeMedian(t *testing.T) {
+	median := 10 * time.Minute
+	r := run("OR-1", events.ActorImplementer, "implementing", time.Time{})
+	r.median = median
+
+	var b bytes.Buffer
+	at0 := r.bar(&b, 0)
+	if strings.Contains(at0, barFullGlyph) {
+		t.Errorf("at 0%% elapsed the bar must have no filled cells: %q", at0)
+	}
+	if !strings.Contains(at0, barHeadGlyph) {
+		t.Errorf("at 0%% elapsed the bar must still show the head glyph: %q", at0)
+	}
+	if strings.Contains(at0, barOverGlyph) {
+		t.Errorf("below the median the bar must draw no overrun cells: %q", at0)
+	}
+
+	half := r.bar(&b, median/2)
+	if got := strings.Count(half, barFullGlyph); got != liveBarWidth/2 {
+		t.Errorf("at 50%% elapsed want %d filled cells, got %d: %q", liveBarWidth/2, got, half)
+	}
+	if !strings.Contains(half, barHeadGlyph) {
+		t.Errorf("at 50%% elapsed the head glyph must still lead the fill: %q", half)
+	}
+	if strings.Contains(half, barOverGlyph) {
+		t.Errorf("below the median the bar must draw no overrun cells: %q", half)
+	}
+
+	// Colour, forced on a non-terminal buffer the same way CLICOLOR_FORCE
+	// does for a pager or CI log: progress is green and carries none of the
+	// overrun colour.
+	t.Setenv("CLICOLOR_FORCE", "1")
+	painted := r.bar(&b, median/2)
+	if !strings.Contains(painted, green) {
+		t.Errorf("progress below the median must be green: %q", painted)
+	}
+	if strings.Contains(painted, yellow) {
+		t.Errorf("progress below the median must carry no overrun colour: %q", painted)
+	}
+}
+
+// TestBarAtMedianBoundaryIsFullWithNoHead is OR-309: exactly at the median
+// the bar must read as complete -- full width, no head implying more to come
+// -- and the very next instant past it must already be drawing overrun
+// rather than progress, so the two segments meet with no gap and no overlap.
+func TestBarAtMedianBoundaryIsFullWithNoHead(t *testing.T) {
+	median := 10 * time.Minute
+	r := run("OR-1", events.ActorImplementer, "implementing", time.Time{})
+	r.median = median
+
+	var b bytes.Buffer
+	atMedian := r.bar(&b, median)
+	if got := strings.Count(atMedian, barFullGlyph); got != liveBarWidth {
+		t.Errorf("at exactly the median want %d filled cells, got %d: %q", liveBarWidth, got, atMedian)
+	}
+	if strings.Contains(atMedian, barHeadGlyph) {
+		t.Errorf("at exactly the median there must be no head glyph implying more to come: %q", atMedian)
+	}
+	if strings.Contains(atMedian, barOverGlyph) {
+		t.Errorf("at exactly the median the bar must not yet draw overrun cells: %q", atMedian)
+	}
+
+	pastMedian := r.bar(&b, median+time.Second)
+	if !strings.Contains(pastMedian, barOverGlyph) {
+		t.Errorf("a moment past the median must already draw an overrun cell: %q", pastMedian)
+	}
+	if strings.Contains(pastMedian, barHeadGlyph) {
+		t.Errorf("past the median there is still no head glyph: %q", pastMedian)
+	}
+	if got := strings.Count(pastMedian, barFullGlyph) + strings.Count(pastMedian, barOverGlyph); got != liveBarWidth {
+		t.Errorf("crossing the median must not change the bar's width, got %d cells: %q", got, pastMedian)
+	}
+}
+
+// TestOverrunScaleIsMonotonicAcrossMultipleLongRuns extends OR-309's pair
+// check (5m vs 28m30s against a 4m median) to a wider spread of long runs:
+// the log scale must keep every step ordered as elapsed grows, and it must
+// saturate at the bar's full width rather than overflow it.
+func TestOverrunScaleIsMonotonicAcrossMultipleLongRuns(t *testing.T) {
+	median := 4 * time.Minute
+	r := run("OR-1", events.ActorImplementer, "qa", time.Time{})
+	r.median = median
+
+	var b bytes.Buffer
+	over := func(elapsed time.Duration) int {
+		return strings.Count(r.bar(&b, elapsed), barOverGlyph)
+	}
+
+	elapsed := []time.Duration{
+		median + time.Second, // just over
+		2 * median,
+		7 * median,   // roughly the observed 28m30s/4m case
+		16 * median,  // the saturation span itself
+		100 * median, // far past it
+	}
+	prev := 0
+	for _, e := range elapsed {
+		n := over(e)
+		if n < prev {
+			t.Errorf("overrun cells must never shrink as a run gets longer: %v gave %d after %d", e, n, prev)
+		}
+		if n > liveBarWidth {
+			t.Errorf("overrun cells must never exceed the bar width, got %d for %v", n, e)
+		}
+		prev = n
+	}
+	if prev != liveBarWidth {
+		t.Errorf("far past the saturation span the bar must be fully overrun, got %d", prev)
+	}
+}
+
 // The sparkline is the element a progress bar cannot replace. A run whose
 // tool calls have stopped must flatline AND say "quiet", because a stalled
 // run and a busy one looking alike is the whole failure this prevents.
@@ -645,6 +759,155 @@ func TestRegistryTracksARunEndToEnd(t *testing.T) {
 	}
 	if got[0].stage != "done" {
 		t.Errorf("stage = %q, want the outcome", got[0].stage)
+	}
+}
+
+// A run 1.25x over its median (5m elapsed, 4m median) has crossed into
+// overrun and must show it: the row that started this ticket, OR-309, was
+// already indistinguishable from a stuck one well before 7x.
+func TestOverrunAt125xMedianShowsOverrunCells(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-5*time.Minute))
+	r.median = 4 * time.Minute
+	r.last = now
+
+	var b bytes.Buffer
+	row := renderRow(&b, *r, now, 0)
+	if !strings.Contains(row, barOverGlyph) {
+		t.Errorf("a run 1.25x over its median must draw overrun cells: %q", row)
+	}
+}
+
+// 7x over median (28m30s against a 4m median -- the observed OR-309 case)
+// must draw more overrun cells than 1.25x, or the bar still can't tell a
+// slightly-late run from a badly-late one.
+func TestOverrunAt7xMedianShowsMoreThan125x(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	var b bytes.Buffer
+	cells := func(elapsed time.Duration) int {
+		r := run("OR-152", events.ActorQA, "qa", now.Add(-elapsed))
+		r.median = 4 * time.Minute
+		r.last = now
+		return strings.Count(renderRow(&b, *r, now, 0), barOverGlyph)
+	}
+
+	short := cells(5 * time.Minute)
+	long := cells(28*time.Minute + 30*time.Second)
+	if long <= short {
+		t.Errorf("7x drew %d overrun cells, 1.25x drew %d: 7x must read as more overrun", long, short)
+	}
+}
+
+// At exactly overrunSpan (16x median) the log scale has covered its whole
+// range, so the bar must be saturated: every cell overrun.
+func TestOverrunAt16xMedianSaturates(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-time.Duration(overrunSpan*float64(4*time.Minute))))
+	r.median = 4 * time.Minute
+	r.last = now
+
+	var b bytes.Buffer
+	if got := strings.Count(renderRow(&b, *r, now, 0), barOverGlyph); got != liveBarWidth {
+		t.Errorf("16x over median drew %d overrun cells, want the full %d", got, liveBarWidth)
+	}
+}
+
+// Past overrunSpan the log scale would mathematically keep climbing; the bar
+// must clamp rather than try to draw more cells than the column has.
+func TestOverrunPastCapNeverExceedsBarWidth(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-100*time.Hour))
+	r.median = 4 * time.Minute
+	r.last = now
+
+	var b bytes.Buffer
+	if got := strings.Count(renderRow(&b, *r, now, 0), barOverGlyph); got != liveBarWidth {
+		t.Errorf("a run 100x+ over its median rendered %d overrun cells, want exactly %d", got, liveBarWidth)
+	}
+}
+
+// Overrun cells use the dedicated overrun glyph in glyph mode and its ASCII
+// counterpart under NO_COLOR -- never the full/progress glyph, which would
+// read as still-normal progress rather than as overrun.
+func TestOverrunCellUsesOverGlyphOrASCII(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-28*time.Minute))
+	r.median = 4 * time.Minute
+	r.last = now
+
+	var b bytes.Buffer
+	row := renderRow(&b, *r, now, 0)
+	if !strings.Contains(row, barOverGlyph) {
+		t.Errorf("glyph mode must draw the overrun glyph %q: %q", barOverGlyph, row)
+	}
+
+	t.Setenv("NO_COLOR", "1")
+	rowASCII := renderRow(&b, *r, now, 0)
+	if !strings.Contains(rowASCII, barOverASCII) {
+		t.Errorf("NO_COLOR must degrade overrun cells to %q: %q", barOverASCII, rowASCII)
+	}
+	if strings.Contains(rowASCII, barOverGlyph) {
+		t.Errorf("NO_COLOR must not still carry the unicode overrun glyph: %q", rowASCII)
+	}
+}
+
+// No head glyph once a run is past its median: the head means "more to come
+// at this rate", which is exactly what overrun is not saying.
+func TestOverrunShowsNoHeadGlyph(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-6*time.Minute))
+	r.median = 4 * time.Minute
+	r.last = now
+
+	var b bytes.Buffer
+	row := renderRow(&b, *r, now, 0)
+	if strings.Contains(row, barHeadGlyph) {
+		t.Errorf("a run past its median must not still show a head glyph: %q", row)
+	}
+}
+
+// The bar must never shrink as elapsed grows -- overrun cells accumulate
+// monotonically with elapsed/median, they do not fall back once drawn.
+func TestOverrunBarNeverShrinksAsElapsedGrows(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	var b bytes.Buffer
+	overAt := func(elapsed time.Duration) int {
+		r := run("OR-152", events.ActorQA, "qa", now.Add(-elapsed))
+		r.median = 4 * time.Minute
+		r.last = now
+		return strings.Count(renderRow(&b, *r, now, 0), barOverGlyph)
+	}
+
+	prev := 0
+	for _, elapsed := range []time.Duration{
+		5 * time.Minute, 8 * time.Minute, 16 * time.Minute,
+		28*time.Minute + 30*time.Second, time.Hour, 10 * time.Hour,
+	} {
+		got := overAt(elapsed)
+		if got < prev {
+			t.Errorf("overrun cells dropped from %d to %d at elapsed=%v: the bar shrank", prev, got, elapsed)
+		}
+		prev = got
+	}
+}
+
+// The bar is always the full liveBarWidth once past the median -- full cells
+// to the left, overrun cells to the right, no gap at either end.
+func TestOverrunBarAlwaysFullWidthNoGaps(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	var b bytes.Buffer
+	for _, elapsed := range []time.Duration{
+		5 * time.Minute, 28*time.Minute + 30*time.Second, time.Hour, 100 * time.Hour,
+	} {
+		r := run("OR-152", events.ActorQA, "qa", now.Add(-elapsed))
+		r.median = 4 * time.Minute
+		r.last = now
+		row := renderRow(&b, *r, now, 0)
+		got := strings.Count(row, barFullGlyph) + strings.Count(row, barOverGlyph)
+		if got != liveBarWidth {
+			t.Errorf("elapsed=%v: bar drew %d of %d cells, want the full width every time: %q",
+				elapsed, got, liveBarWidth, row)
+		}
 	}
 }
 
@@ -1533,5 +1796,503 @@ func TestCheckNamesAndStatesAreOrderedConsistentlyAcrossBothPaths(t *testing.T) 
 		!strings.Contains(flat, "go (windows) running") ||
 		!strings.Contains(flat, "go (macos) failed") {
 		t.Errorf("the plain path must spell out each check's actual state: %q", flat)
+	}
+}
+
+// A run with no baseline draws no bar and says so in words, whatever else is
+// going on around it (OR-250, unchanged by OR-309's overrun rescale).
+func TestNoBaselineRowSaysSo(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-2*time.Minute))
+	r.last = now
+
+	var b bytes.Buffer
+	row := renderRow(&b, *r, now, 0)
+	if !strings.Contains(row, "no baseline yet") {
+		t.Errorf("a run with no median must say \"no baseline yet\": %q", row)
+	}
+}
+
+// The "no baseline yet" rule holds no matter how long the run has been
+// going -- a 40-minute run with nothing to measure against is still exactly
+// that, not a run that has somehow earned a bar by persisting.
+func TestNoBaselineStillSaysSoOnAVeryLongRun(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-45*time.Minute))
+	r.last = now
+
+	var b bytes.Buffer
+	row := renderRow(&b, *r, now, 0)
+	if !strings.Contains(row, "no baseline yet") {
+		t.Errorf("a 45-minute run with no median must still say \"no baseline yet\": %q", row)
+	}
+	for _, g := range []string{barFullGlyph, barOverGlyph, barHeadGlyph} {
+		if strings.Contains(row, g) {
+			t.Errorf("a 45-minute run with no median must draw no bar glyph %q: %q", g, row)
+		}
+	}
+}
+
+// Just past the median (1.01x) the bar must already show at least one
+// overrun cell -- the whole point of OR-309 is that crossing the line is
+// visible immediately, not only once a run is badly late.
+func TestJustPastMedianShowsAtLeastOneOverrunCell(t *testing.T) {
+	median := 10 * time.Minute
+	r := run("OR-1", events.ActorImplementer, "implementing", time.Time{})
+	r.median = median
+
+	var b bytes.Buffer
+	bar := r.bar(&b, time.Duration(float64(median)*1.01))
+	if got := strings.Count(bar, barOverGlyph); got < 1 {
+		t.Errorf("a run 1.01x past its median must draw at least one overrun cell, got %d: %q", got, bar)
+	}
+	if strings.Contains(bar, barHeadGlyph) {
+		t.Errorf("past the median there must be no head glyph: %q", bar)
+	}
+}
+
+// Just before the median (0.99x) the bar must still read as ordinary
+// progress: nearly full, the head glyph leading it, and no overrun cell --
+// the overrun rescale must not fire early.
+func TestJustBeforeMedianIsNearlyFullWithHeadAndNoOverrun(t *testing.T) {
+	median := 10 * time.Minute
+	r := run("OR-1", events.ActorImplementer, "implementing", time.Time{})
+	r.median = median
+
+	var b bytes.Buffer
+	bar := r.bar(&b, time.Duration(float64(median)*0.99))
+	if !strings.Contains(bar, barHeadGlyph) {
+		t.Errorf("a run just before its median must still show the head glyph: %q", bar)
+	}
+	if strings.Contains(bar, barOverGlyph) {
+		t.Errorf("a run just before its median must draw no overrun cells: %q", bar)
+	}
+	if got := strings.Count(bar, barFullGlyph); got < liveBarWidth-2 {
+		t.Errorf("a run at 0.99x its median should read as nearly full, got %d of %d filled cells: %q",
+			got, liveBarWidth, bar)
+	}
+}
+
+// A run that has barely started against a long median shows the head glyph
+// near the left edge, not stranded in the middle or missing entirely.
+func TestVeryShortRunAgainstLongMedianShowsHeadNearLeftEdge(t *testing.T) {
+	median := time.Hour
+	r := run("OR-1", events.ActorImplementer, "implementing", time.Time{})
+	r.median = median
+
+	var b bytes.Buffer
+	bar := r.bar(&b, time.Second)
+	if !strings.Contains(bar, barHeadGlyph) {
+		t.Errorf("a 1-second run against a 1-hour median must still show the head glyph: %q", bar)
+	}
+	if strings.Contains(bar, barFullGlyph) {
+		t.Errorf("a 1-second run against a 1-hour median must have no filled cells yet: %q", bar)
+	}
+	cells := []rune(strings.TrimFunc(bar, func(r rune) bool { return r < ' ' }))
+	head := -1
+	for i, c := range cells {
+		if c == []rune(barHeadGlyph)[0] {
+			head = i
+			break
+		}
+	}
+	if head < 0 {
+		t.Fatalf("could not locate the head glyph in %q", bar)
+	}
+	if head > 1 {
+		t.Errorf("the head glyph should sit at or near the left edge for a run this short, found it at rune %d: %q", head, bar)
+	}
+}
+
+// A zero median must not crash the bar and must not draw a filled or overrun
+// cell -- OR-250's "no median means no bar" rule extends to a median that
+// exists but is degenerate.
+func TestZeroMedianDurationIsHandledSafely(t *testing.T) {
+	r := run("OR-1", events.ActorImplementer, "implementing", time.Time{})
+	r.median = 0
+
+	var b bytes.Buffer
+	bar := r.bar(&b, 5*time.Minute) // must not panic, e.g. on division by zero
+	if strings.Contains(bar, barFullGlyph) || strings.Contains(bar, barOverGlyph) || strings.Contains(bar, barHeadGlyph) {
+		t.Errorf("a zero median must draw no bar glyphs at all, got: %q", bar)
+	}
+}
+
+// The regression OR-309 exists to prevent: a 5-minute run against a 4-minute
+// median must look visibly different from a 28-minute run against the same
+// median, both in overrun-cell count and in the rendered row as a whole.
+func TestFiveMinuteRunLooksDifferentFromTwentyEightMinuteRun(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	var b bytes.Buffer
+	row := func(elapsed time.Duration) string {
+		r := run("OR-152", events.ActorQA, "qa", now.Add(-elapsed))
+		r.median = 4 * time.Minute
+		r.last = now
+		return renderRow(&b, *r, now, 0)
+	}
+
+	short := row(5 * time.Minute)
+	long := row(28 * time.Minute)
+	if short == long {
+		t.Fatalf("a 5-minute run and a 28-minute run against the same median rendered identically: %q", short)
+	}
+	shortOver := strings.Count(short, barOverGlyph)
+	longOver := strings.Count(long, barOverGlyph)
+	if longOver <= shortOver {
+		t.Errorf("28 minutes must draw more overrun cells than 5 minutes against the same median: got %d and %d\n%q\n%q",
+			longOver, shortOver, long, short)
+	}
+}
+
+// Progress cells -- up to the median -- are GREEN, matching the ok/failed
+// palette the rest of the display uses. CLICOLOR_FORCE turns colour on
+// against the non-terminal bytes.Buffer the tests write to, so the escape
+// codes are actually present to assert on.
+func TestProgressCellsAreGreen(t *testing.T) {
+	t.Setenv("CLICOLOR_FORCE", "1")
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-2*time.Minute))
+	r.median = 10 * time.Minute
+	r.last = now
+
+	var b bytes.Buffer
+	got := r.bar(&b, 2*time.Minute)
+	if !strings.Contains(got, green) {
+		t.Errorf("progress cells (before the median) must be green: %q", got)
+	}
+	if strings.Contains(got, yellow) || strings.Contains(got, red) {
+		t.Errorf("progress cells must not carry the overrun or culprit colours: %q", got)
+	}
+}
+
+// Past the median, overrun cells are YELLOW by default -- a run running long
+// with no culprit colour assigned is a warning, not a failure.
+func TestOverrunCellsAreYellowByDefault(t *testing.T) {
+	t.Setenv("CLICOLOR_FORCE", "1")
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-28*time.Minute))
+	r.median = 4 * time.Minute
+	r.last = now
+
+	var b bytes.Buffer
+	got := r.bar(&b, 28*time.Minute)
+	if !strings.Contains(got, yellow) {
+		t.Errorf("overrun cells must default to yellow: %q", got)
+	}
+	if strings.Contains(got, red) {
+		t.Errorf("a run with no barColor must not draw overrun in red: %q", got)
+	}
+}
+
+// A culprit's row (barColor set, e.g. red) keeps its own colour for the
+// overrun cells rather than falling back to yellow -- the one branch that
+// broke the batch must stay that colour end to end, not turn a generic
+// warning yellow once it runs long.
+func TestOverrunUsesBarColorWhenSetInsteadOfYellow(t *testing.T) {
+	t.Setenv("CLICOLOR_FORCE", "1")
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-28*time.Minute))
+	r.median = 4 * time.Minute
+	r.last = now
+	r.barColor = red
+
+	var b bytes.Buffer
+	got := r.bar(&b, 28*time.Minute)
+	if !strings.Contains(got, red) {
+		t.Errorf("a culprit's overrun cells must use its own barColor: %q", got)
+	}
+	if strings.Contains(got, yellow) {
+		t.Errorf("a culprit's bar must not fall back to yellow once past the median: %q", got)
+	}
+}
+
+// The bar's colour must never change mid-bar for reasons the model does not
+// state. A culprit's bar (barColor set) stays ONE colour across both the
+// full-cell segment left of the overrun point and the overrun segment
+// itself -- crossing the median must not introduce a second, unrelated
+// colour into a row that is already explaining a single failure.
+func TestBarColorNeverChangesMidBarForACulprit(t *testing.T) {
+	t.Setenv("CLICOLOR_FORCE", "1")
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-28*time.Minute))
+	r.median = 4 * time.Minute
+	r.last = now
+	r.barColor = red
+
+	var b bytes.Buffer
+	got := r.bar(&b, 28*time.Minute)
+	if !strings.Contains(got, red) {
+		t.Errorf("expected the culprit colour somewhere in the bar: %q", got)
+	}
+	if strings.Contains(got, green) || strings.Contains(got, yellow) {
+		t.Errorf("a culprit's bar must be one colour throughout, not mixed with green or yellow: %q", got)
+	}
+
+	// And before the median, still the same single colour -- not green
+	// switching to red only once overrun starts.
+	before := r.bar(&b, 2*time.Minute)
+	if !strings.Contains(before, red) {
+		t.Errorf("a culprit's bar must already be red before the median, not green: %q", before)
+	}
+	if strings.Contains(before, green) {
+		t.Errorf("a culprit's progress cells must not be green: %q", before)
+	}
+}
+
+// A run 16x or more past its median has saturated the overrun scale -- the
+// bar has stopped climbing -- but the row must still say "running long" with
+// the elapsed and the median beside it. The bar going quiet at the cap is not
+// license for the words to go quiet too.
+func TestSaturatedOverrunBarStillReadsAsVeryLong(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	median := 4 * time.Minute
+
+	for _, elapsed := range []time.Duration{
+		time.Duration(overrunSpan) * median, // exactly the saturation point
+		30 * median,                         // well past it
+	} {
+		r := run("OR-152", events.ActorQA, "qa", now.Add(-elapsed))
+		r.median = median
+		r.last = now
+
+		var b bytes.Buffer
+		row := renderRow(&b, *r, now, 0)
+		if got := strings.Count(row, barOverGlyph); got != liveBarWidth {
+			t.Errorf("elapsed=%v: saturated bar drew %d overrun cells, want the full %d: %q",
+				elapsed, got, liveBarWidth, row)
+		}
+		if !strings.Contains(row, "running long") {
+			t.Errorf("elapsed=%v: a saturated bar must still say \"running long\": %q", elapsed, row)
+		}
+		if !strings.Contains(row, "median 4m") {
+			t.Errorf("elapsed=%v: a saturated bar must still name the median it overran: %q", elapsed, row)
+		}
+	}
+}
+
+// A saturated overrun bar must not read as a progress bar that has jammed at
+// 100%: it carries the overrun glyph and the "running long" words that a
+// finished row never does, so the two can never be mistaken for each other
+// however long the run runs.
+func TestSaturatedBarDoesNotLookLikeAStuckOrFinishedBar(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+
+	stuck := run("OR-152", events.ActorQA, "qa", now.Add(-100*time.Hour))
+	stuck.median = 4 * time.Minute
+	stuck.last = now
+
+	finished := run("OR-153", events.ActorQA, "qa", now.Add(-4*time.Minute))
+	finished.median = 4 * time.Minute
+	finished.last = now
+	finished.done = true
+
+	var b bytes.Buffer
+	stuckRow := renderRow(&b, *stuck, now, 0)
+	finishedRow := renderRow(&b, *finished, now, 0)
+
+	if !strings.Contains(stuckRow, barOverGlyph) {
+		t.Errorf("a saturated run must carry the overrun glyph: %q", stuckRow)
+	}
+	if strings.Contains(finishedRow, barOverGlyph) {
+		t.Errorf("a finished run must carry no overrun glyph: %q", finishedRow)
+	}
+	if !strings.Contains(stuckRow, "running long") {
+		t.Errorf("a saturated run must say \"running long\", which is what tells it apart from finished: %q", stuckRow)
+	}
+	if strings.Contains(finishedRow, "running long") {
+		t.Errorf("a finished run must not say \"running long\": %q", finishedRow)
+	}
+	// The spinner itself differs too: a saturated but still-running row spins,
+	// a finished one carries the outcome mark.
+	if strings.ContainsAny(finishedRow, spinnerGlyphs) {
+		t.Errorf("a finished row must not still show a spinner: %q", finishedRow)
+	}
+}
+
+// Everything the saturated-overrun assertions check must hold identically
+// under NO_COLOR: the words and the cell counts, only the glyphs swapped for
+// their ASCII forms.
+func TestSaturatedOverrunBarInASCIIMode(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-30*4*time.Minute))
+	r.median = 4 * time.Minute
+	r.last = now
+
+	t.Setenv("NO_COLOR", "1")
+	var b bytes.Buffer
+	row := renderRow(&b, *r, now, 0)
+
+	if got := strings.Count(row, barOverASCII); got != liveBarWidth {
+		t.Errorf("ASCII mode: saturated bar drew %d overrun cells, want the full %d: %q", got, liveBarWidth, row)
+	}
+	if strings.ContainsAny(row, barOverGlyph+barFullGlyph+barHeadGlyph) {
+		t.Errorf("ASCII mode must carry no unicode bar glyphs: %q", row)
+	}
+	if !strings.Contains(row, "running long") {
+		t.Errorf("ASCII mode: a saturated bar must still say \"running long\": %q", row)
+	}
+	if !strings.Contains(row, "median 4m") {
+		t.Errorf("ASCII mode: a saturated bar must still name the median: %q", row)
+	}
+}
+
+// A run that never leaves progress (below its median) must render identically
+// in shape under glyph mode and ASCII mode too -- the overrun rescale is not
+// the only path through this renderer, and a mode-only failure anywhere in
+// the bar's life must not slip past a suite that only checks the saturated
+// case.
+func TestBarBelowMedianMatchesAcrossGlyphAndASCIIModes(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-2*time.Minute))
+	r.median = 4 * time.Minute
+	r.last = now
+
+	var b bytes.Buffer
+	glyphRow := renderRow(&b, *r, now, 0)
+	if !strings.Contains(glyphRow, barHeadGlyph) {
+		t.Errorf("glyph mode below the median must show the head glyph: %q", glyphRow)
+	}
+
+	t.Setenv("NO_COLOR", "1")
+	asciiRow := renderRow(&b, *r, now, 0)
+	if !strings.Contains(asciiRow, barHeadASCII) {
+		t.Errorf("ASCII mode below the median must show the ASCII head: %q", asciiRow)
+	}
+	if strings.ContainsAny(asciiRow, barFullGlyph+barHeadGlyph+barEmptyGlyph) {
+		t.Errorf("ASCII mode must carry no unicode bar glyphs: %q", asciiRow)
+	}
+}
+
+// A row past its median, with a title and a note both set, must still render
+// every element whole in a wide terminal -- nothing about the overrun cells
+// competes with the title/note truncation logic and clips something that had
+// room to fit.
+func TestOverrunRowRendersCompleteWithoutTruncation(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-28*time.Minute))
+	r.median = 4 * time.Minute
+	r.last = now
+	r.title = "Fix the flaky upload test"
+	r.note = "Running go test ./..."
+
+	var b bytes.Buffer
+	row := renderRow(&b, *r, now, 300) // wide enough that nothing needs to yield
+
+	for _, want := range []string{
+		"OR-152", "qa", "28m",
+		r.title, r.note, "running long", "median 4m",
+	} {
+		if !strings.Contains(row, want) {
+			t.Errorf("a wide, untruncated row must contain %q: %q", want, row)
+		}
+	}
+	if strings.Contains(row, "…") {
+		t.Errorf("nothing on this row should need clipping at 300 columns: %q", row)
+	}
+	if got := strings.Count(row, barFullGlyph) + strings.Count(row, barOverGlyph); got != liveBarWidth {
+		t.Errorf("the bar itself must still be the full %d cells, got %d: %q", liveBarWidth, got, row)
+	}
+}
+
+// Several rows at different points on the elapsed/median curve -- comfortably
+// under, just over, and saturated -- must each render their own correct bar
+// side by side in one region, with no row's state bleeding into another's.
+func TestMultipleConcurrentRowsWithDifferentOverrunRatiosRenderTogether(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	median := 4 * time.Minute
+
+	under := run("OR-100", events.ActorImplementer, "implementing", now.Add(-2*time.Minute))
+	under.median = median
+	under.last = now
+
+	over := run("OR-101", events.ActorQA, "qa", now.Add(-5*time.Minute))
+	over.median = median
+	over.last = now
+
+	saturated := run("OR-102", events.ActorArchitect, "reviewing", now.Add(-30*median))
+	saturated.median = median
+	saturated.last = now
+
+	got := regionOf(t, stateOf(now, under, over, saturated), now, 0)
+	lines := strings.Split(got, "\n")
+	find := func(want string) string {
+		t.Helper()
+		for _, l := range lines {
+			if strings.Contains(l, want) {
+				return l
+			}
+		}
+		t.Fatalf("no line contains %q:\n%s", want, got)
+		return ""
+	}
+
+	underRow := find("OR-100")
+	if strings.Contains(underRow, barOverGlyph) {
+		t.Errorf("a run under its median must draw no overrun cells: %q", underRow)
+	}
+	if !strings.Contains(underRow, barHeadGlyph) {
+		t.Errorf("a run under its median must still show the head glyph: %q", underRow)
+	}
+
+	overRow := find("OR-101")
+	overCells := strings.Count(overRow, barOverGlyph)
+	if overCells == 0 || overCells == liveBarWidth {
+		t.Errorf("a run 1.25x over its median must draw SOME but not ALL overrun cells, got %d: %q",
+			overCells, overRow)
+	}
+
+	saturatedRow := find("OR-102")
+	if got := strings.Count(saturatedRow, barOverGlyph); got != liveBarWidth {
+		t.Errorf("a run 30x over its median must be fully saturated, got %d of %d: %q",
+			got, liveBarWidth, saturatedRow)
+	}
+
+	// Three distinct rows, three distinct bars -- none of them identical to
+	// another despite sharing the same median.
+	if underRow == overRow || overRow == saturatedRow || underRow == saturatedRow {
+		t.Errorf("three runs at different elapsed/median ratios rendered identical rows:\n%q\n%q\n%q",
+			underRow, overRow, saturatedRow)
+	}
+}
+
+// The row's column order is fixed: key, actor, stage/type, bar, elapsed,
+// median, then the note -- and OR-309's overrun cells must not have disturbed
+// that order for a row that happens to be past its median.
+func TestRowFormatMatchesExistingKeyActorTypeBarElapsedMedianNotePattern(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-28*time.Minute))
+	r.median = 4 * time.Minute
+	r.last = now
+	r.note = "Running go vet ./..."
+
+	who := actors.Get(events.ActorQA).Name
+
+	var b bytes.Buffer
+	row := renderRow(&b, *r, now, 200)
+
+	idx := func(want string) int {
+		t.Helper()
+		i := strings.Index(row, want)
+		if i < 0 {
+			t.Fatalf("row does not contain %q: %q", want, row)
+		}
+		return i
+	}
+
+	key := idx("OR-152")
+	actor := idx(who)
+	stage := idx("qa")
+	bar := idx(barOverGlyph)
+	elapsed := idx("28m")
+	// The median column is the "/ ~4m" suffix riding on elapsed, not the
+	// "median 4m" text repeated later in the running-long note -- searching
+	// for that phrase finds the note's own copy instead of the column.
+	median := idx("/ ~4m")
+	note := idx(r.note)
+
+	if !(key < actor && actor < stage && stage < bar && bar < elapsed && elapsed < median && median < note) {
+		t.Errorf("row does not follow key/actor/type/bar/elapsed/median/note order: %q\n"+
+			"positions: key=%d actor=%d stage=%d bar=%d elapsed=%d median=%d note=%d",
+			row, key, actor, stage, bar, elapsed, median, note)
 	}
 }
