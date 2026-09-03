@@ -60,10 +60,7 @@ func approvalRepo(t *testing.T, approvers string) (home string, wsDir string) {
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ws, err := workspace.New(workspace.NewOptions{Idea: "fcia"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := newWorkspace(t, "fcia")
 	cfg := `{"slack":{"enabled":true,"require_approval":true,"merge_approvers":[` + approvers + `]},
 	         "vcs":{"work_branch":"develop","branch_prefix":"orion/"}}`
 	if err := os.WriteFile(filepath.Join(src, "orion.json"), []byte(cfg), 0o644); err != nil {
@@ -300,10 +297,7 @@ func TestApprovalDisabledFallsBackToWaiting(t *testing.T) {
 	t.Setenv("ORION_HOME", home)
 	src := filepath.Join(t.TempDir(), "fcia")
 	_ = os.MkdirAll(src, 0o755)
-	ws, err := workspace.New(workspace.NewOptions{Idea: "fcia"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := newWorkspace(t, "fcia")
 	if err := bindTo(home, ws.ID, src); err != nil {
 		t.Fatal(err)
 	}

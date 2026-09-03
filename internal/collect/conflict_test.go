@@ -217,10 +217,7 @@ func vcs(work string, protected ...string) config.Config {
 func wsListing(t *testing.T, branches ...string) *workspace.Workspace {
 	t.Helper()
 	t.Setenv("ORION_HOME", t.TempDir())
-	ws, err := workspace.New(workspace.NewOptions{Idea: "or112"})
-	if err != nil {
-		t.Fatalf("creating workspace: %v", err)
-	}
+	ws := newWorkspace(t, "or112")
 	ws.Task.Branches = branches
 	if err := ws.SaveTask(); err != nil {
 		t.Fatalf("saving task: %v", err)
