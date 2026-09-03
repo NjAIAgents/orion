@@ -932,7 +932,12 @@ func TestTheRowCarriesTheTitleAndYieldsItBeforeTheNote(t *testing.T) {
 	if strings.Contains(narrow, "Add a schema review") {
 		t.Errorf("the title must yield when the note cannot fit beside it:\n%s", narrow)
 	}
-	if !strings.Contains(narrow, "Edit internal/advise") {
+	// "Edit internal/advis" rather than "...advise": OR-308 reserved eight
+	// fixed cells for the median suffix so every row's later columns share a
+	// left edge, and those cells come out of what the note has left. The
+	// PROPERTY under test is unchanged and still checked -- the title yields
+	// entirely and the note stays legible -- one character narrower.
+	if !strings.Contains(narrow, "Edit internal/advis") {
 		t.Errorf("the note must survive the squeeze:\n%s", narrow)
 	}
 }
@@ -1003,5 +1008,98 @@ func TestTheActivityNoteIsVisibleOffATerminal(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "authoring x5") {
 		t.Errorf("the activity note is missing from the plain output:\n%s", buf.String())
+	}
+}
+
+// TestAFinishedRowDrawsAFullBar is OR-307.
+//
+// bar() returned blank whenever there was no median, and a finished ticket
+// with no history therefore drew fourteen empty cells -- indistinguishable
+// from a row that had not started. Completion is a FACT rather than an
+// estimate, so it needs no baseline and does not touch OR-250's rule against
+// inventing one.
+func TestAFinishedRowDrawsAFullBar(t *testing.T) {
+	LiveReset()
+	LiveStart("OR-1")
+	LiveDone("OR-1", "ready")
+
+	var b bytes.Buffer
+	row := renderRow(&b, liveSnapshot().rows[0], time.Now(), 200)
+
+	if !strings.Contains(row, strings.Repeat(barFullGlyph, 4)) {
+		t.Errorf("a finished row drew no bar:\n%s", row)
+	}
+}
+
+// TestARunningRowWithNoBaselineStillDrawsNothing. OR-250 forbids inventing a
+// baseline, and the blank bar plus "no baseline yet" is how that rule is
+// expressed. OR-307 must not become a way around it.
+func TestARunningRowWithNoBaselineStillDrawsNothing(t *testing.T) {
+	LiveReset()
+	LiveStart("OR-1")
+
+	var b bytes.Buffer
+	row := renderRow(&b, liveSnapshot().rows[0], time.Now(), 200)
+
+	if strings.Contains(row, barFullGlyph) {
+		t.Errorf("a running row with no median drew a bar:\n%s", row)
+	}
+	if !strings.Contains(row, "no baseline yet") {
+		t.Errorf("the row stopped explaining its empty bar:\n%s", row)
+	}
+}
+
+// TestColumnsShareALeftEdgeWithAndWithoutAMedian is OR-308.
+//
+// The median suffix was emitted only when a median existed, and sized to
+// whatever it printed as -- so a row with a baseline pushed the sparkline,
+// count and notes right while a row without one did not. Four rows in one
+// region formed a ragged edge rather than columns.
+func TestColumnsShareALeftEdgeWithAndWithoutAMedian(t *testing.T) {
+	LiveReset()
+	LiveStart("OR-1")
+	LiveStart("OR-2")
+	// Same actor, so the only difference between the rows is the median.
+	LiveMedians(func(string) time.Duration { return 4 * time.Minute })
+	liveActivity("OR-1", "qa", time.Now())
+	LiveReset()
+
+	// Row one HAS a median; row two does not. Built separately so nothing
+	// else about them differs.
+	var b bytes.Buffer
+	now := time.Now()
+
+	LiveStart("OR-1")
+	LiveMedians(func(string) time.Duration { return 4 * time.Minute })
+	liveActivity("OR-1", "qa", now)
+	withMedian := plain(renderRow(&b, liveSnapshot().rows[0], now, 200))
+
+	LiveReset()
+	LiveStart("OR-2")
+	LiveMedians(func(string) time.Duration { return 0 })
+	liveActivity("OR-2", "qa", now)
+	without := plain(renderRow(&b, liveSnapshot().rows[0], now, 200))
+
+	// The sparkline is the first thing after the median suffix, so where it
+	// starts is what proves the columns line up.
+	// Counted in RUNES, not bytes. The bar is multi-byte glyphs, so a byte
+	// index says two aligned rows are 28 apart and the test fails on its own
+	// arithmetic rather than on the thing it is checking.
+	runeIndex := func(s string, r rune) int {
+		for i, c := range []rune(s) {
+			if c == r {
+				return i
+			}
+		}
+		return -1
+	}
+	a := runeIndex(withMedian, '▁')
+	c := runeIndex(without, '▁')
+	if a < 0 || c < 0 {
+		t.Fatalf("no sparkline to measure against:\n%s\n%s", withMedian, without)
+	}
+	if a != c {
+		t.Errorf("the sparkline starts at %d with a median and %d without:\n%s\n%s",
+			a, c, withMedian, without)
 	}
 }
