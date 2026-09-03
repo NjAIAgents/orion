@@ -88,6 +88,20 @@ const (
 	liveStageWidth   = 12
 	liveBarWidth     = 14
 	liveElapsedWidth = 6
+	// liveMedianWidth reserves the "/ ~12m" suffix a FIXED number of cells,
+	// filled with spaces when a row has no median (OR-308).
+	//
+	// It used to be emitted only when a median existed, and sized to whatever
+	// that median printed as -- so a row with a baseline pushed the sparkline,
+	// the tool count and the notes right by six cells while a row without one
+	// did not, and two rows with different medians disagreed by a character.
+	// Four rows in one region formed a ragged edge rather than columns.
+	//
+	// Eight: " / ~" is four, and coarse() prints at most four more ("120m").
+	// Sized from what coarse CAN produce rather than from what today's runs
+	// happen to show, because a width chosen from a sample breaks the first
+	// time a run outlives the sample.
+	liveMedianWidth = 8
 	// liveTitleWidth is the ticket summary's column.
 	//
 	// Enough for a title to be recognised, not enough for it to take the row:
@@ -423,6 +437,20 @@ func LiveAgents(key string) {
 	}
 }
 
+// LiveAgentCount reports how many subagents a row has been told about.
+//
+// Exported for tests. The count is otherwise only observable by rendering a
+// row and reading the text back, which makes a test assert on formatting when
+// what it means to check is a number.
+func LiveAgentCount(key string) int {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if r := live.runs[key]; r != nil {
+		return r.agents
+	}
+	return 0
+}
+
 // LiveActivity records one tool call.
 //
 // The actor rides along because supervisor.Activity is per-run and the run
@@ -681,6 +709,26 @@ func (r liveRun) sparkline() string {
 // and a run past its median FILLS AND STOPS rather than creeping toward a
 // completion nothing can predict.
 func (r liveRun) bar(w io.Writer, elapsed time.Duration) string {
+	// A FINISHED row is full, median or not (OR-307).
+	//
+	// Completion is a FACT rather than an estimate, so drawing it needs no
+	// baseline and does not touch OR-250's rule against inventing one. Before
+	// this, a finished ticket with no history drew fourteen blank cells --
+	// indistinguishable from a row that had not started.
+	//
+	// barColor first, so a finished culprit stays red: the one branch that
+	// broke a batch must not turn green by finishing.
+	if r.done {
+		c := r.barColor
+		if c == "" {
+			c = green
+		}
+		full := barFullGlyph
+		if !glyphs() {
+			full = barFullASCII
+		}
+		return paint(w, c, strings.Repeat(full, liveBarWidth))
+	}
 	if r.median <= 0 {
 		return strings.Repeat(" ", liveBarWidth)
 	}
@@ -848,8 +896,22 @@ func renderRow(w io.Writer, r liveRun, now time.Time, cols int) string {
 	// seen in a NO_COLOR terminal (OR-163).
 	el := elapsedString(elapsed)
 	if r.median > 0 && keep(cols, liveMedian) {
-		add(pad(el, liveElapsedWidth)+" "+Dim(w, "/ ~"+coarse(r.median))+"  ",
-			liveElapsedWidth+1+3+len(coarse(r.median))+2)
+		suffix := " / ~" + coarse(r.median)
+		add(pad(el, liveElapsedWidth)+Dim(w, pad(suffix, liveMedianWidth))+"  ",
+			liveElapsedWidth+liveMedianWidth+2)
+	} else if keep(cols, liveMedian) {
+		// The same cells, unpainted (OR-308).
+		//
+		// Reserved only when the median column SURVIVES the squeeze. Spending
+		// them unconditionally put eight cells on every row of a 40-column
+		// terminal that the width budget had not been asked for, which
+		// overflowed the row and crowded out the note -- so a fix for ragged
+		// columns broke the narrow terminal instead.
+		//
+		// On a terminal too narrow for the median, no row draws it, so they
+		// stay aligned by having nothing rather than by reserving space.
+		add(pad(el, liveElapsedWidth)+strings.Repeat(" ", liveMedianWidth)+"  ",
+			liveElapsedWidth+liveMedianWidth+2)
 	} else {
 		add(pad(el, liveElapsedWidth)+"  ", liveElapsedWidth+2)
 	}
