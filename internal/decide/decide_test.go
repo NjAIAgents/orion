@@ -345,9 +345,11 @@ func TestASlackPostFailureStillWritesTheRecordUnconfirmedButReturnsTheError(t *t
 // failingSlack always fails to post, as if the connection were down.
 type failingSlack struct{}
 
-func (failingSlack) PostTS(string, string) (string, error) { return "", errors.New("connection refused") }
-func (failingSlack) React(string, string, string)          {}
-func (failingSlack) BotID() string                         { return "UBOT" }
+func (failingSlack) PostTS(string, string) (string, error) {
+	return "", errors.New("connection refused")
+}
+func (failingSlack) React(string, string, string) {}
+func (failingSlack) BotID() string                { return "UBOT" }
 func (failingSlack) Reactions(string, string) ([]slack.Reaction, error) {
 	return nil, nil
 }
