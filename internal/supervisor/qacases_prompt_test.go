@@ -50,7 +50,7 @@ func TestQAPromptCarriesTheDerivedCasesInsteadOfTheCriteria(t *testing.T) {
 	const criteria = "AC: totals are rounded to 2 decimal places"
 	const cases = "- a total of 1.005 rounds to 1.01\n- a negative total rounds the same way"
 
-	p := QAPrompt("OR-1", "round the total", criteria, cases, QATools{})
+	p := QAPrompt("OR-1", "round the total", criteria, cases, QATools{}, "")
 
 	if !strings.Contains(p, "1.005 rounds to 1.01") {
 		t.Errorf("the derived cases never reached the QA run:\n%s", p)
@@ -71,7 +71,7 @@ func TestQAPromptCarriesTheDerivedCasesInsteadOfTheCriteria(t *testing.T) {
 func TestQAPromptFallsBackToTheCriteriaWhenNoCasesWereDerived(t *testing.T) {
 	const criteria = "AC: totals are rounded to 2 decimal places"
 
-	p := QAPrompt("OR-1", "round the total", criteria, "   ", QATools{})
+	p := QAPrompt("OR-1", "round the total", criteria, "   ", QATools{}, "")
 
 	if !strings.Contains(p, criteria) {
 		t.Errorf("without derived cases the QA run must still get the criteria:\n%s", p)

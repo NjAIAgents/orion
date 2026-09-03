@@ -107,7 +107,18 @@ func QACasesPrompt(key, summary, description, diff string) string {
 // the criteria and derives the cases itself, inside its own run. A derive
 // step that silently produced nothing must never be the reason a ticket has
 // no tests (OR-182).
-func QAPrompt(key, summary, description, cases string, tools QATools) string {
+// QAPrompt builds the QA session's prompt.
+//
+// evidence is what Orion already knows and the session cannot: the result of
+// the repository's own suite, run as a process over the whole tree (OR-312).
+// Empty for a pass, a suite that could not run, or a repository whose suite
+// Orion cannot detect -- only a definite failure changes what QA should
+// conclude.
+//
+// It goes BEFORE the reporting contract rather than after it. The last thing
+// this prompt says is how to write the verdict; evidence appended past that
+// point arrives after the instructions that act on it.
+func QAPrompt(key, summary, description, cases string, tools QATools, evidence string) string {
 	var b strings.Builder
 	b.WriteString(join(
 		"You are the QA engineer on this change. The implementation is already",
@@ -157,6 +168,10 @@ func QAPrompt(key, summary, description, cases string, tools QATools) string {
 	))
 	b.WriteString(join(qaToolLines(tools)...))
 	b.WriteString("\n")
+	b.WriteString(join(
+		"",
+	))
+	b.WriteString(evidence)
 	b.WriteString(join(
 		"",
 		"WHAT TO REPORT",
