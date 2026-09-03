@@ -204,8 +204,16 @@ func project(t *testing.T, cfgJSON string) string {
 	seed := filepath.Join(root, "seed")
 	copyTree(t, buildSeed(t, cfgJSON), root)
 
+	// Remote and Force are given rather than discovered. Left to itself Bind
+	// runs `git remote get-url` and then Preflight's rev-parse, status,
+	// branch and log -- five subprocesses to establish two things this
+	// fixture already knows: where the origin is, and that a repository built
+	// three lines ago has nothing uncommitted. project() is called 114 times
+	// in this package, and on the Windows CI runner a subprocess costs about
+	// twenty times what it does on Linux (OR-292).
 	ws, err := workspace.Bind(workspace.BindOptions{
-		SourcePath: seed, DefaultBranch: "main", WorkBranch: "develop",
+		SourcePath: seed, Remote: filepath.Join(root, "origin.git"),
+		DefaultBranch: "main", WorkBranch: "develop", Force: true,
 	})
 	if err != nil {
 		t.Fatal(err)

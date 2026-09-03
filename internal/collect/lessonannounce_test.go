@@ -24,10 +24,7 @@ func ciApprovalRepo(t *testing.T, approvers string) (home, wsDir string) {
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ws, err := workspace.New(workspace.NewOptions{Idea: "fcia"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := newWorkspace(t, "fcia")
 	cfg := `{"ci":{"auto_fix":true,"max_fix_attempts":3},
 	         "slack":{"enabled":true,"require_approval":true,"merge_approvers":[` + approvers + `]},
 	         "vcs":{"work_branch":"develop","branch_prefix":"orion/"}}`

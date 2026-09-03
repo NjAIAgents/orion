@@ -49,10 +49,7 @@ func ciRepoWithCI(t *testing.T, ciBlock string) (home, wsDir string) {
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ws, err := workspace.New(workspace.NewOptions{Idea: "fcia"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := newWorkspace(t, "fcia")
 	cfg := `{"ci":{` + ciBlock + `},
 	         "vcs":{"work_branch":"develop","branch_prefix":"orion/"}}`
 	if err := os.WriteFile(filepath.Join(src, "orion.json"), []byte(cfg), 0o644); err != nil {
