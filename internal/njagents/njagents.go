@@ -83,7 +83,41 @@ func (i *Install) OK() bool { return i != nil && i.Root != "" && len(i.Missing) 
 // a tool that scatters clones through someone's home directory is rude,
 // and one it owns is one it may safely update.
 func VendorDir(orionHome string) string {
-	return filepath.Join(orionHome, "vendor", "nj-agents")
+	return VendorDirFor(orionHome, RepoURL)
+}
+
+// VendorDirFor is the same directory for a toolkit other than nj-agents,
+// named after the repository rather than fixed.
+//
+// A fixed leaf was safe while there was exactly one toolkit. Once a project
+// can declare its own (orion.json toolkit.repo), a fixed name means the
+// second clone lands on top of the first: same path, different repository,
+// no error -- Orion would then run one project's skills for another's stages
+// and report success. The repo name is what distinguishes them, so the path
+// carries it.
+//
+// The default repo still resolves to vendor/nj-agents, so no existing clone
+// moves.
+func VendorDirFor(orionHome, repoURL string) string {
+	return filepath.Join(orionHome, "vendor", repoLeaf(repoURL))
+}
+
+// repoLeaf is the repository name out of a clone URL: the last path element,
+// minus any .git suffix. Handles the https and scp-like (git@host:owner/name)
+// forms alike, since both are just text up to the last separator.
+//
+// A URL it cannot read yields "toolkit" rather than an empty leaf, which
+// would put the clone at <ORION_HOME>/vendor itself and make the vendor
+// directory a git repository.
+func repoLeaf(repoURL string) string {
+	s := strings.TrimSuffix(strings.TrimRight(strings.TrimSpace(repoURL), "/"), ".git")
+	if i := strings.LastIndexAny(s, "/:"); i >= 0 {
+		s = s[i+1:]
+	}
+	if s = strings.TrimSpace(s); s == "" || s == "." || s == ".." {
+		return "toolkit"
+	}
+	return s
 }
 
 // Discover finds the toolkit, in order of how much the user meant it.

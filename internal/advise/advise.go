@@ -35,6 +35,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/orion-sdlc/orion/internal/decide"
 )
 
 // Role is who is being asked.
@@ -171,7 +173,21 @@ var dbaArtifacts = []string{
 	"models", "entities", "app/models", "internal/models",
 	// The decisions that already settled a data question.
 	"docs/decisions",
+	confirmed,
 }
+
+// confirmed is where a recommendation lands once a person has confirmed it
+// (internal/decide). Every role gets it, on the same argument that gives
+// every role docs/decisions: a settled decision binds whoever reads it next,
+// whatever question they were asked.
+//
+// The PENDING directory is deliberately absent, from this list and from
+// every other, and that absence is the mechanism rather than a tidiness.
+// A recommendation nobody has confirmed is a proposal; an advisor handed one
+// would derive from it and cite the file, and the citation would make the
+// guess read as agreed -- the same laundering this package's narrowness
+// exists to prevent, arriving through a document rather than through a role.
+const confirmed = decide.ConfirmedDir
 
 // Artifacts lists the design documents a role is allowed to reason from.
 //
@@ -182,9 +198,9 @@ func Artifacts(dir string, role Role) []string {
 	var want []string
 	switch role {
 	case RoleArchitect:
-		want = []string{"spec.md", "plan.md", "docs/decisions"}
+		want = []string{"spec.md", "plan.md", "docs/decisions", confirmed}
 	case RolePM:
-		want = []string{"intent.md", "docs/decisions"}
+		want = []string{"intent.md", "docs/decisions", confirmed}
 	case RoleDBA:
 		want = dbaArtifacts
 	}
