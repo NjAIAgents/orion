@@ -28,10 +28,12 @@ package ui
 //
 //   - The bar measures against the MEDIAN. It is never a prediction of
 //     completion, because nothing here knows how many turns remain.
-//   - Past the median it does NOT creep toward 100%. It fills, stops, and the
-//     row says "running long" with the elapsed and the median. p90 for the
-//     implementer is 21 minutes against an 11-minute median, so this is the
-//     common case and not an edge case.
+//   - Past the median it does NOT creep toward 100%. It fills, and the cells
+//     then convert to OVERRUN from the right on a log scale of elapsed over
+//     that same median, so 5m and 28m against a 4m median do not look alike
+//     (OR-309). The row still says "running long" with the elapsed and the
+//     median. p90 for the implementer is 21 minutes against an 11-minute
+//     median, so this is the common case and not an edge case.
 //   - A flat sparkline is reported as "quiet Xm", because a stalled run and a
 //     busy one must never look the same.
 //   - No median for an actor means NO BAR. A bar with nothing to measure
@@ -69,6 +71,7 @@ package ui
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -663,6 +666,11 @@ const (
 	barFullASCII  = "#"
 	barHeadASCII  = ">"
 	barEmptyASCII = "-"
+	// OVERRUN cells (OR-309). Deliberately neither the full glyph nor the
+	// head: a run past its median is not making progress toward anything the
+	// bar knows about, and it is not about to finish either.
+	barOverGlyph = "▒"
+	barOverASCII = "="
 	liveRuleGlyph = "─"
 	liveRuleASCII = "-"
 )
@@ -746,10 +754,6 @@ func (r liveRun) bar(w io.Writer, elapsed time.Duration) string {
 	if !glyphs() {
 		full, head, empty = barFullASCII, barHeadASCII, barEmptyASCII
 	}
-	n := int(float64(liveBarWidth) * float64(elapsed) / float64(r.median))
-	if n < 0 {
-		n = 0
-	}
 	// Green for progress, matching the mockup and the ok/failed palette the
 	// rest of the display already uses. barColor lets a culprit's row draw
 	// its bar red, so the one branch that broke the batch is red in the
@@ -758,11 +762,72 @@ func (r liveRun) bar(w io.Writer, elapsed time.Duration) string {
 	if c == "" {
 		c = green
 	}
+	// PAST THE MEDIAN the bar stops measuring progress and starts measuring
+	// OVERRUN (OR-309).
+	//
+	// It used to fill and stop, which was honest but went blind: a QA stage
+	// with a 4m median that ran 28m30s looked identical at 5m and at 28m, so
+	// the element carried nothing for 24 of those 28 minutes -- and a
+	// saturated bar is indistinguishable from a stuck one.
+	//
+	// The other candidate was to segment the median by whether the stage
+	// fanned, which is more accurate but needs a second population of
+	// baselines that does not exist yet. This needs no new measurement at
+	// all: it re-scales the SAME median the words already name, so the number
+	// the bar uses and the number the note prints stay one number.
+	//
+	// Log scale, because overrun spans orders of magnitude where progress
+	// does not -- 1.25x and 7x are both ordinary, and a linear overrun bar
+	// saturates again within one multiple. Cells are green up to the median
+	// and overrun beyond it, so the bar never shrinks as a run gets longer.
+	if elapsed > r.median {
+		return r.overrun(w, elapsed, c)
+	}
+	n := int(float64(liveBarWidth) * float64(elapsed) / float64(r.median))
+	if n < 0 {
+		n = 0
+	}
 	if n >= liveBarWidth {
 		return paint(w, c, strings.Repeat(full, liveBarWidth))
 	}
 	return paint(w, c, strings.Repeat(full, n)+head) +
 		Dim(w, strings.Repeat(empty, liveBarWidth-n-1))
+}
+
+// overrunSpan is how far past the median the overrun cells take to fill the
+// bar: 16x. Chosen so the observed case -- 28m30s against a 4m median, 7x --
+// lands mid-bar rather than at either end, and so the bar still says
+// something at 1.2x. Past 16x it saturates, and at that point the elapsed and
+// the "running long" note are the only honest signals left.
+const overrunSpan = 16.0
+
+// overrun draws a bar for a run that is past its median: full to the left,
+// overrun cells growing from the right on a log scale of elapsed/median.
+//
+// Always the FULL width, so crossing the median never shrinks the bar. The
+// median passed in is the same one the note prints -- nothing here derives a
+// second baseline, which OR-250 forbids.
+func (r liveRun) overrun(w io.Writer, elapsed time.Duration, c string) string {
+	over := int(float64(liveBarWidth) *
+		math.Log2(float64(elapsed)/float64(r.median)) / math.Log2(overrunSpan))
+	if over < 1 {
+		over = 1 // any overrun at all is worth one cell
+	}
+	if over > liveBarWidth {
+		over = liveBarWidth
+	}
+	full, cell := barFullGlyph, barOverGlyph
+	if !glyphs() {
+		full, cell = barFullASCII, barOverASCII
+	}
+	// Yellow for the overrun, unless the row already has a colour to keep: a
+	// culprit's bar stays red end to end.
+	oc := yellow
+	if r.barColor != "" {
+		oc = r.barColor
+	}
+	return paint(w, c, strings.Repeat(full, liveBarWidth-over)) +
+		paint(w, oc, strings.Repeat(cell, over))
 }
 
 // notes are the sentences a bar can never carry.

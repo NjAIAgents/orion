@@ -124,10 +124,13 @@ func TestPastMedianFillsAndSaysRunningLong(t *testing.T) {
 	if !strings.Contains(row, "median 11m") {
 		t.Errorf("a run past its median must name the median: %q", row)
 	}
-	// Filled and stopped: every cell heavy, and no head glyph implying more
-	// to come.
-	if !strings.Contains(row, strings.Repeat(barFullGlyph, liveBarWidth)) {
-		t.Errorf("the bar should be full: %q", row)
+	// Full width, no head glyph implying more to come, and the cells past the
+	// median drawn as overrun rather than as progress (OR-309).
+	if got := strings.Count(row, barFullGlyph) + strings.Count(row, barOverGlyph); got != liveBarWidth {
+		t.Errorf("the bar should be full width, got %d cells: %q", got, row)
+	}
+	if !strings.Contains(row, barOverGlyph) {
+		t.Errorf("a run past its median must draw overrun cells: %q", row)
 	}
 	if strings.Contains(row, barHeadGlyph) {
 		t.Errorf("a full bar must not still show a head, which reads as progress: %q", row)
@@ -135,8 +138,60 @@ func TestPastMedianFillsAndSaysRunningLong(t *testing.T) {
 	// And it can never render wider than the column, whatever the overrun.
 	r2 := *r
 	r2.started = now.Add(-10 * time.Hour)
-	if got := strings.Count(renderRow(&b, r2, now, 0), barFullGlyph); got != liveBarWidth {
-		t.Errorf("a bar 55x over its median rendered %d cells, want %d", got, liveBarWidth)
+	if got := strings.Count(renderRow(&b, r2, now, 0), barOverGlyph); got != liveBarWidth {
+		t.Errorf("a bar 55x over its median rendered %d overrun cells, want %d", got, liveBarWidth)
+	}
+}
+
+// The bug OR-309 was filed for: the observed row was full at 28m30s against a
+// 4m median and had looked exactly the same since roughly the four-minute
+// mark. A saturated bar is indistinguishable from a stuck one, so 5m and 28m
+// must not render alike -- while the median the bar measures against stays
+// the same number the note prints.
+func TestOverrunDistinguishesFiveMinutesFromTwentyEight(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	var b bytes.Buffer
+
+	cells := func(elapsed time.Duration) (int, string) {
+		r := run("OR-152", events.ActorQA, "qa", now.Add(-elapsed))
+		r.median = 4 * time.Minute
+		r.last = now
+		row := renderRow(&b, *r, now, 0)
+		return strings.Count(row, barOverGlyph), row
+	}
+
+	short, shortRow := cells(5 * time.Minute)
+	long, longRow := cells(28*time.Minute + 30*time.Second)
+	if short == 0 {
+		t.Errorf("a run 1.25x over its median drew no overrun: %q", shortRow)
+	}
+	if long <= short {
+		t.Errorf("28m30s drew %d overrun cells and 5m drew %d: a longer run must read as longer\n%q\n%q",
+			long, short, longRow, shortRow)
+	}
+	// The words and the bar must still name ONE median.
+	if !strings.Contains(longRow, "median 4m") {
+		t.Errorf("the note must still print the median the bar used: %q", longRow)
+	}
+}
+
+// OR-250 is untouched by the overrun scale: with no baseline there is nothing
+// to be past, so the bar draws nothing and the row says so.
+func TestNoMedianStillDrawsNothingWhenLong(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	r := run("OR-152", events.ActorQA, "qa", now.Add(-40*time.Minute))
+	r.last = now
+
+	var b bytes.Buffer
+	row := renderRow(&b, *r, now, 0)
+
+	for _, g := range []string{barFullGlyph, barOverGlyph, barHeadGlyph, barEmptyGlyph} {
+		if strings.Contains(row, g) {
+			t.Errorf("a run with no median drew a bar glyph %q: %q", g, row)
+		}
+	}
+	if !strings.Contains(row, "no baseline yet") {
+		t.Errorf("a run with no median must say so: %q", row)
 	}
 }
 
