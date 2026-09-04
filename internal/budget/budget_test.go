@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -224,6 +225,14 @@ func TestLedgerFileIsOwnerOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Windows has no POSIX mode bits: every file reports 0666 there, and a
+	// permission assertion tests the operating system rather than the code
+	// (OR-334). The guarantee this asserts is real and holds on POSIX; it is
+	// simply not expressible on Windows.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits do not exist on Windows")
+	}
+
 	if mode := fi.Mode().Perm(); mode&0o077 != 0 {
 		t.Errorf("mode = %o", mode)
 	}
