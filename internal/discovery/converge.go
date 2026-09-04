@@ -120,7 +120,14 @@ func Converge(path string, rounds int, ask Ask, onRound func(Round)) Convergence
 			return c
 		}
 	}
-	c.Escalated = c.Open > 0
+	// ESCALATION MEANS "TRIED AND FAILED", so a ceiling of zero never
+	// escalates: the loop above ran no round, and there is nothing a person
+	// can be told about an attempt that was never made. Without the rounds
+	// test, a caller asking for no discovery at all got Escalated=true off
+	// whatever the file already had open -- and EscalationMessage then said
+	// "discovery did not converge in 0 round(s)" about a run that asked
+	// nobody anything.
+	c.Escalated = rounds > 0 && c.Open > 0
 	return c
 }
 

@@ -64,8 +64,15 @@ func TestConvergeStopsAtTheCeilingAndEscalates(t *testing.T) {
 
 // The ceiling is the ceiling for every value of it, not just the default. Any
 // N: exactly N rounds, never N+1.
+//
+// ZERO IS NOT IN THIS LIST, and that is deliberate. It shares the round and
+// call counts, but not the escalation: a ceiling of zero ran no round, so
+// there is no attempt for Escalated to describe. Two tests in
+// converge_ceiling_test.go argue that case on its own terms; this loop swept
+// it in as one more N and asserted the opposite, which is how one branch came
+// to hold two tests that could not both pass.
 func TestConvergeTerminatesForEveryCeiling(t *testing.T) {
-	for _, ceiling := range []int{0, 1, 2, 3, 7} {
+	for _, ceiling := range []int{1, 2, 3, 7} {
 		path := write(t, intentWithOneOpen)
 		calls := 0
 		c := Converge(path, ceiling, forever(t, ceiling, 3, &calls), nil)
