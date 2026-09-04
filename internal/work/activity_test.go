@@ -1,9 +1,11 @@
 package work
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/supervisor"
@@ -41,24 +43,27 @@ func TestActivityLoggerEmitsRunStartOnSessionOpen(t *testing.T) {
 	}
 }
 
-// OR-217. The console is for attention and the log file is for evidence: a
-// tool call is printed only under --verbose, and the event log is complete
-// at BOTH levels -- OR-168's triage and OR-199's history read it, so a
-// verbosity setting that reached the record would be a forensic gap rather
-// than a quieter screen.
+// OR-217, as amended by OR-338. The console is for attention and the log file
+// is for evidence: the per-call TRANSCRIPT is printed only under --verbose --
+// three tool calls, three lines -- while a quiet console gets the bounded
+// heartbeat instead, one line however many calls fall inside one interval.
+// The event log is complete at BOTH levels: OR-168's triage and OR-199's
+// history read it, so a verbosity setting that reached the record would be a
+// forensic gap rather than a quieter screen.
 func TestToolCallsArePrintedOnlyWhenVerboseAndLoggedAlways(t *testing.T) {
 	t.Cleanup(func() { ui.SetVerbose(false) })
 
 	for _, tc := range []struct {
 		name    string
 		verbose bool
-		console bool
+		lines   int
 	}{
-		{"quiet", false, false},
-		{"verbose", true, true},
+		{"quiet", false, 1},
+		{"verbose", true, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ui.SetVerbose(tc.verbose)
+			ui.ConsoleReset()
 			logPath := filepath.Join(t.TempDir(), "events.jsonl")
 			log, err := events.Open(logPath, events.Event{})
 			if err != nil {
@@ -67,22 +72,25 @@ func TestToolCallsArePrintedOnlyWhenVerboseAndLoggedAlways(t *testing.T) {
 
 			var console strings.Builder
 			activity := ActivityLogger(log, &console, "OR-217", events.ActorImplementer)
-			activity(supervisor.Activity{Kind: "tool", Tool: "Bash",
-				Detail: "git status", Model: "sonnet"})
+			for _, detail := range []string{"git status", "git diff", "git log"} {
+				activity(supervisor.Activity{Kind: "tool", Tool: "Bash",
+					Detail: detail, Model: "sonnet"})
+			}
 			ui.Flush(&console)
 			log.Close()
 
-			if got := strings.Contains(console.String(), "git status"); got != tc.console {
-				t.Errorf("console carried the tool call = %v, want %v:\n%s",
-					got, tc.console, console.String())
+			out := strings.TrimSpace(console.String())
+			if got := strings.Count(out, "\n") + 1; got != tc.lines {
+				t.Errorf("%s console printed %d lines for three tool calls, want %d:\n%s",
+					tc.name, got, tc.lines, out)
 			}
 
 			logged, err := events.Read(logPath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(logged) != 1 || logged[0].Kind != events.KindTool {
-				t.Fatalf("events = %+v, want exactly one KindTool whatever the level", logged)
+			if len(logged) != 3 || logged[0].Kind != events.KindTool {
+				t.Fatalf("events = %+v, want three KindTool whatever the level", logged)
 			}
 			if !strings.Contains(logged[0].Msg, "git status") {
 				t.Errorf("the event log lost the tool detail at the %s level: %+v", tc.name, logged[0])
@@ -181,6 +189,147 @@ func TestRunStartWithNoToolsetReportedDoesNotClaimNoMCPServers(t *testing.T) {
 	}
 	if !strings.Contains(logged[0].Msg, "not reported") {
 		t.Errorf("msg = %q, want it to say the toolset was not reported", logged[0].Msg)
+	}
+}
+
+// OR-338. #419 removed the live region, whose row was the only console
+// output a working run had at default verbosity -- ui.LiveActivityNote is now
+// a no-op and ui.Trace is still gated behind --verbose, so between "started"
+// and the terminal verdict a working agent printed NOTHING and a run of any
+// length looked identical to a hung one.
+//
+// The four cases below are the ticket's done-when conditions, one each: a
+// progress line exists at default verbosity, it is bounded per ticket, it
+// does not double the transcript under --verbose, and a run that does nothing
+// still prints nothing.
+func TestQuietRunPrintsAThrottledHeartbeatNamingElapsedAndTheLastToolCall(t *testing.T) {
+	t.Cleanup(func() { ui.SetVerbose(false) })
+	ui.SetVerbose(false)
+	ui.ConsoleReset()
+
+	logPath := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := events.Open(logPath, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	// A clock that advances a full interval between calls, so every tool call
+	// is due a beat.
+	clock := time.Date(2026, 9, 4, 16, 25, 0, 0, time.UTC)
+	now := func() time.Time { clock = clock.Add(heartbeatEvery); return clock }
+
+	var console strings.Builder
+	activity := activityLoggerAt(log, &console, "OR-338", events.ActorImplementer, now)
+	activity(supervisor.Activity{Kind: "tool", Tool: "Bash",
+		Detail: "go test ./internal/work", Model: "opus"})
+	ui.Flush(&console)
+
+	out := console.String()
+	if !strings.Contains(out, "OR-338") || !strings.Contains(out, "go test ./internal/work") {
+		t.Fatalf("quiet console = %q, want a progress line naming the ticket and what it last did", out)
+	}
+	if !strings.Contains(out, "30s") {
+		t.Errorf("quiet console = %q, want the elapsed time on the progress line", out)
+	}
+}
+
+func TestHeartbeatIsBoundedToOneLinePerTicketPerInterval(t *testing.T) {
+	t.Cleanup(func() { ui.SetVerbose(false) })
+	ui.SetVerbose(false)
+	ui.ConsoleReset()
+
+	logPath := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := events.Open(logPath, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	// One second per tool call: twenty calls do not fill one interval, so
+	// exactly one line -- the first -- may be printed. This is the OR-217
+	// constraint restated: at concurrency 4 the transcript is unreadable, and
+	// a heartbeat that fired per tool call would be that transcript again.
+	clock := time.Date(2026, 9, 4, 16, 25, 0, 0, time.UTC)
+	now := func() time.Time { clock = clock.Add(time.Second); return clock }
+
+	var console strings.Builder
+	activity := activityLoggerAt(log, &console, "OR-338", events.ActorImplementer, now)
+	for i := 0; i < 20; i++ {
+		activity(supervisor.Activity{Kind: "tool", Tool: "Read",
+			Detail: fmt.Sprintf("file-%d.go", i), Model: "opus"})
+	}
+	ui.Flush(&console)
+
+	if got := strings.Count(strings.TrimSpace(console.String()), "\n") + 1; got != 1 {
+		t.Errorf("20 tool calls inside one interval printed %d lines, want 1:\n%s",
+			got, console.String())
+	}
+	// The record is not throttled: the console filter decides what is
+	// PRINTED, never what happened.
+	logged, err := events.Read(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logged) != 20 {
+		t.Errorf("event log has %d entries, want all 20 -- the log was never the defect", len(logged))
+	}
+}
+
+func TestVerboseKeepsTheTranscriptAndAddsNoHeartbeat(t *testing.T) {
+	t.Cleanup(func() { ui.SetVerbose(false) })
+	ui.SetVerbose(true)
+	ui.ConsoleReset()
+
+	logPath := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := events.Open(logPath, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	clock := time.Date(2026, 9, 4, 16, 25, 0, 0, time.UTC)
+	now := func() time.Time { clock = clock.Add(heartbeatEvery); return clock }
+
+	var console strings.Builder
+	activity := activityLoggerAt(log, &console, "OR-338", events.ActorImplementer, now)
+	activity(supervisor.Activity{Kind: "tool", Tool: "Bash",
+		Detail: "go test ./internal/work", Model: "opus"})
+	ui.Flush(&console)
+
+	out := strings.TrimSpace(console.String())
+	if !strings.Contains(out, "ran go test ./internal/work") {
+		t.Fatalf("verbose console = %q, want the per-tool transcript line unchanged", out)
+	}
+	if got := strings.Count(out, "\n") + 1; got != 1 {
+		t.Errorf("verbose console printed %d lines for one tool call, want 1 -- "+
+			"--verbose already shows every call, so a summary of it is noise:\n%s", got, out)
+	}
+}
+
+func TestARunThatDoesNothingPrintsNothing(t *testing.T) {
+	t.Cleanup(func() { ui.SetVerbose(false) })
+	ui.SetVerbose(false)
+	ui.ConsoleReset()
+
+	logPath := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := events.Open(logPath, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	// Hours pass. Nothing calls a tool. Silence has to keep meaning silence,
+	// or the heartbeat would report a hung run as a working one.
+	clock := time.Date(2026, 9, 4, 16, 25, 0, 0, time.UTC)
+	now := func() time.Time { clock = clock.Add(time.Hour); return clock }
+
+	var console strings.Builder
+	activityLoggerAt(log, &console, "OR-338", events.ActorImplementer, now)
+	ui.Flush(&console)
+
+	if out := console.String(); out != "" {
+		t.Errorf("console = %q, want nothing: no activity is not progress", out)
 	}
 }
 
