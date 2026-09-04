@@ -220,13 +220,9 @@ func claudeWriting(t *testing.T, repo, script string) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not available")
 	}
-	dir := t.TempDir()
 	result := `{"type":"result","is_error":false,"terminal_reason":"success","num_turns":1}`
 	body := "#!/bin/sh\ncd " + repo + "\n" + script + "\necho '" + result + "'\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeBin(t, "claude", body)
 }
 
 // gitWorkspace is ws() with the repo made a real repository, so the committed

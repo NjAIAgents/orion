@@ -219,6 +219,7 @@ func TestDiscoverUsesConfiguredRepoForVendorDirNamingWithoutOverwritingDefault(t
 }
 
 func TestFromRunnerSymlinkProbesOnlyConfiguredSkillNames(t *testing.T) {
+	requireSymlinks(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 

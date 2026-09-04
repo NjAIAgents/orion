@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -34,8 +35,14 @@ func TestARepositoryScriptWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("detect: %v", err)
 	}
-	if len(argv) != 1 || !strings.HasSuffix(argv[0], "test.sh") {
+	// On Windows a .sh file is not an executable, so shellScript prepends
+	// bash (OR-334) and argv is [bash, <path>]. The property under test is
+	// which SCRIPT was detected, not how the OS is made to run it.
+	if !strings.HasSuffix(argv[len(argv)-1], "test.sh") {
 		t.Errorf("expected the repository's own script, got %v", argv)
+	}
+	if runtime.GOOS != "windows" && len(argv) != 1 {
+		t.Errorf("the script needs no interpreter here, got %v", argv)
 	}
 }
 
