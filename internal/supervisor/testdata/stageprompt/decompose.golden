@@ -9,6 +9,37 @@ by other people and cannot be cleanly withdrawn.
 
 Search the tracker first and reconcile, so a re-run never double-creates.
 
+Write EVERY item's description in this shape, in this order:
+
+  <One sentence: what changes.>
+  
+  WHY: <Two lines maximum. Not three.>
+  
+  ---
+  
+  ## Open questions
+  - <One bullet per thing you could not decide, or "None".>
+  
+  ## Scope
+  <What is in, what is explicitly out.>
+  
+  ## Grounding
+  <File paths, existing behaviour, ADR ids. Cite; do not quote at length.>
+  
+  ## Tests
+  <What would fail if this regressed.>
+
+A human reads down to the rule and stops; an agent reads past it. That is
+the whole point of the rule being there, and it is why one description can
+serve both without a second, shorter ticket nobody keeps current.
+
+Below the rule, CITE rather than restate. Name the file and let the agent
+read it: a quoted excerpt goes stale in place while the code moves on.
+Reference a decision by its ADR id (docs/decisions/NNNN-*.md) rather than
+re-arguing the alternatives you rejected -- that reasoning belongs in one
+file, not copied into every ticket that touches it. If the decision has no
+ADR yet, that is an ADR to write, not a paragraph to paste.
+
 Run `orion routes` before you write the tree, and set the marker it names on
 every item you create -- as the issue type, a component, or a label. A ticket
 with no marker goes to the backend developer, which is correct for backend work
