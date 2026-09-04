@@ -16,9 +16,6 @@ import (
 	"github.com/orion-sdlc/orion/internal/events"
 )
 
-const fanResultJSON = `{"type":"result","session_id":"s","result":"done",` +
-	`"total_cost_usd":0.01,"is_error":false}`
-
 // TestFanReturnsResultsInInputOrder proves N children run concurrently
 // (OR-181) and that results[i] always corresponds to jobs[i], regardless of
 // which goroutine happens to finish first.

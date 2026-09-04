@@ -1,3 +1,5 @@
+//go:build !windows
+
 package supervisor
 
 import (
@@ -5,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
 // Four more OR-335 requirements not covered by fan_readable_test.go,
@@ -57,13 +61,25 @@ func TestFanConcurrentFansFromDifferentTicketsAreDistinguishable(t *testing.T) {
 		return jobs
 	}
 
+	// The workspaces are built BEFORE the goroutines start. ws() calls
+	// t.Setenv, which mutates process-wide state and is documented as unsafe
+	// to call concurrently -- the race detector flags it as a write/write on
+	// testing.T's own parallel bookkeeping, and CI failed on exactly that.
+	// What this test is about is two concurrent FANS sharing one writer, not
+	// concurrent setup.
+	keys := []string{"OR-100", "OR-200"}
+	spaces := make([]*workspace.Workspace, len(keys))
+	for i := range keys {
+		spaces[i] = ws(t, "")
+	}
+
 	var wg sync.WaitGroup
-	for _, key := range []string{"OR-100", "OR-200"} {
+	for i, key := range keys {
 		wg.Add(1)
-		go func(key string) {
+		go func(w *workspace.Workspace, key string) {
 			defer wg.Done()
-			Fan(ws(t, ""), jobsFor(key))
-		}(key)
+			Fan(w, jobsFor(key))
+		}(spaces[i], key)
 	}
 	wg.Wait()
 
