@@ -116,6 +116,13 @@ func TestFixActivityAttributesConsoleLinesAndLogsToolEvents(t *testing.T) {
 // transcript is withheld from the console, never from the record. This is
 // TestFixActivityAttributesConsoleLinesAndLogsToolEvents's companion at the
 // level nobody explicitly asked for verbosity.
+//
+// Amended by OR-338. Withholding the transcript is not the same as printing
+// nothing: with the live region gone, quiet meant a fix loop was silent
+// between "started" and its verdict, which reads exactly like a hung one.
+// What the quiet console owes the reader is the RATE the region had -- one
+// bounded line saying it is working and what it last did -- so that is what
+// is asserted here, alongside the record being complete regardless.
 func TestFixActivityLogsToolEventsEvenWhenTheConsoleIsQuiet(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "events.jsonl")
 	log, err := events.Open(logPath, events.Event{})
@@ -128,31 +135,48 @@ func TestFixActivityLogsToolEventsEvenWhenTheConsoleIsQuiet(t *testing.T) {
 	activity := fixActivity(log, &console, "OR-173")
 
 	ui.SetVerbose(false)
+	ui.ConsoleReset()
 	t.Cleanup(func() { ui.SetVerbose(false) })
 
-	activity(supervisor.Activity{Kind: "tool", Tool: "Bash", Detail: "go test ./...", Model: "sonnet"})
+	// Three calls inside one heartbeat interval. The quiet console gets the
+	// bounded heartbeat -- one line, naming what the run last did (OR-338) --
+	// and NOT the per-call transcript, which is still what --verbose means.
+	for _, detail := range []string{"go test ./...", "go vet ./...", "go build ./..."} {
+		activity(supervisor.Activity{Kind: "tool", Tool: "Bash", Detail: detail, Model: "sonnet"})
+	}
+	ui.Flush(&console)
 	log.Close()
 
-	if strings.Contains(console.String(), "go test ./...") {
-		t.Errorf("the quiet console printed the tool-call transcript: %q", console.String())
+	out := strings.TrimSpace(console.String())
+	if got := strings.Count(out, "\n") + 1; got != 1 {
+		t.Errorf("the quiet console printed %d lines for three tool calls, want the one "+
+			"bounded heartbeat rather than the transcript:\n%s", got, out)
+	}
+	if !strings.Contains(out, "go test ./...") {
+		t.Errorf("the quiet console said nothing about what the run was doing: %q -- "+
+			"a working fix loop that prints nothing is indistinguishable from a hung one (OR-338)", out)
 	}
 
 	logged, err := events.Read(logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sawTool bool
+	var tools []string
 	for _, e := range logged {
-		if e.Kind != events.KindTool {
-			continue
-		}
-		sawTool = true
-		if !strings.Contains(e.Msg, "Bash") || !strings.Contains(e.Msg, "go test ./...") {
-			t.Errorf("tool event msg = %q, want it to name the tool and its detail", e.Msg)
+		if e.Kind == events.KindTool {
+			tools = append(tools, e.Msg)
 		}
 	}
-	if !sawTool {
-		t.Error("no KindTool event was logged at the quiet console level -- the record must not depend on verbosity")
+	// Every call, not just the one the console summarised: the heartbeat is a
+	// console rate limit, never a filter on the record.
+	if len(tools) != 3 {
+		t.Fatalf("KindTool events = %q, want all three -- the record must not depend on "+
+			"verbosity or on the console's heartbeat interval", tools)
+	}
+	for i, want := range []string{"go test ./...", "go vet ./...", "go build ./..."} {
+		if !strings.Contains(tools[i], "Bash") || !strings.Contains(tools[i], want) {
+			t.Errorf("tool event msg = %q, want it to name the tool and its detail %q", tools[i], want)
+		}
 	}
 }
 
