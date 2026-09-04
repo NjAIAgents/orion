@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/orion-sdlc/orion/internal/config"
 )
 
 // updateGolden rewrites the snapshots instead of asserting against them.
@@ -35,7 +37,7 @@ var goldenStages = []string{
 func TestStagePromptGolden(t *testing.T) {
 	w := ws(t, "")
 	for _, stage := range goldenStages {
-		got, err := stagePrompt(w, stage)
+		got, err := stagePrompt(w, stage, config.Toolkit{})
 		if err != nil {
 			t.Errorf("%s: %v", stage, err)
 			continue

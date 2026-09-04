@@ -198,7 +198,11 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	prompt := opts.Prompt
 	if prompt == "" {
 		var err error
-		prompt, err = stagePrompt(ws, opts.Stage)
+		// The toolkit block decides which command this stage delegates to.
+		// Read from the project's own config and passed in, never reached
+		// for inside stagePrompt: the prompt builder stays a pure function
+		// of what it is handed, which is what makes it testable per stage.
+		prompt, err = stagePrompt(ws, opts.Stage, config.Load(ws.RepoDir()).Toolkit)
 		if err != nil {
 			return nil, err
 		}

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/changelog"
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -36,15 +37,31 @@ FOREGROUND and wait for them there, however long they take. If you find
 yourself checking whether something has finished yet, you are already stuck --
 the breaker will stop you, and the work will be lost.`
 
-func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
-	p, err := stageBody(ws, stage)
+func stagePrompt(ws *workspace.Workspace, stage string, tk config.Toolkit) (string, error) {
+	p, err := stageBody(ws, stage, tk)
 	if err != nil || p == "" {
 		return p, err
 	}
 	return p + "\n\n" + headlessNote, nil
 }
 
-func stageBody(ws *workspace.Workspace, stage string) (string, error) {
+// command resolves what a stage delegates to: the project's configured
+// command, or the nj-agents skill Orion has always named.
+//
+// The built-in is passed in rather than held in a table beside the config,
+// because the fallback belongs next to the prompt that states it -- a second
+// copy of "the intent stage runs /capture-intent" is a copy that drifts.
+// An unset stage is a NORMAL answer, not a failure, and a partial map is a
+// supported configuration (decisions/0019): every stage resolves
+// independently, so configuring one stage never disturbs the others.
+func command(tk config.Toolkit, stage, builtin string) string {
+	if c := strings.TrimSpace(tk.Stage(stage)); c != "" {
+		return c
+	}
+	return builtin
+}
+
+func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string, error) {
 	idea := ws.Task.Idea
 
 	switch strings.ToLower(stage) {
