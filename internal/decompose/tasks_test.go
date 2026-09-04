@@ -213,6 +213,30 @@ func TestParseSetsTheRoutingMarkerFromThePublishedVocabulary(t *testing.T) {
 	}
 }
 
+// A manifest inside a directory is ONE file. Scanning for bare manifests
+// across the whole line as well would report package.json beside
+// web/package.json as a second file the task never named -- and the paths
+// are read as the exact files to change.
+func TestParseDoesNotSplitAQualifiedManifestInTwo(t *testing.T) {
+	tree, err := Parse("# Tasks: Web\n\n## Phase 1: Setup\n\n"+
+		"- [ ] T001 Add the build script to web/package.json and pin the toolchain in go.mod\n",
+		"specs/001-web/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := find(t, tree, "T001").Paths
+	want := []string{"web/package.json", "go.mod"}
+	if len(got) != len(want) {
+		t.Fatalf("paths = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("paths = %v, want %v", got, want)
+			break
+		}
+	}
+}
+
 func TestParseEdgeCases(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
