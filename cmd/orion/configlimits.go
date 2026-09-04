@@ -325,6 +325,19 @@ var qualifiedLimits = map[string]qualifiedLimit{
 				"nothing on the ones that do not -- and everything on the ones that do.",
 		},
 	},
+	"discovery.max_rounds": {
+		block: "discovery", field: "max_rounds",
+		value: func(c config.Config) int { return c.Discovery.Rounds() },
+		hazards: []string{
+			"a discovery round buys MORE QUESTIONS, not another attempt at one " +
+				"answer: every agent in the round may add, so the gate can be further " +
+				"away at the end of a round than at the start of it.",
+			"each round is the whole fan, not one agent -- this is the most expensive " +
+				"round in the system to raise.",
+			"past the ceiling Orion escalates what is still open to a person, so a " +
+				"higher number buys elaboration, never a decision.",
+		},
+	},
 	"ci.max_fix_attempts": {
 		block: "ci", field: "max_fix_attempts",
 		value: func(c config.Config) int { return c.CI.Attempts() },
