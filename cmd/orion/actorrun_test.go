@@ -160,12 +160,16 @@ func TestFixActivityLogsToolEventsEvenWhenTheConsoleIsQuiet(t *testing.T) {
 // assert on exactly what the describer invoked the CLI with.
 func fakeClaude(t *testing.T) (argsFile string) {
 	t.Helper()
-	argsFile = filepath.Join(t.TempDir(), "args.txt")
+	// The args file lives in the SAME directory as the fake, because callers
+	// derive further paths from filepath.Dir(argsFile) and extend the fake
+	// in place -- see the changelog test below.
+	dir := t.TempDir()
+	argsFile = filepath.Join(dir, "args.txt")
 	script := "#!/bin/sh\n" +
 		`echo "$@" > ` + argsFile + "\n" +
 		`echo '{"result":"{\"title\":\"T\",\"body\":\"B\"}","is_error":false}'` + "\n" +
 		"exit 0\n"
-	writeFakeBin(t, "claude", script)
+	writeFakeBinIn(t, dir, "claude", script)
 	// The describer builds its own curated config directory under ORION_HOME
 	// (OR-213), and reads the operator's home to discover nj-agents. Both are
 	// redirected so a unit test writes nothing into the real one and asserts
@@ -256,15 +260,15 @@ func TestTheChangelogRunnerGetsNoMCPServersAndACuratedConfigDir(t *testing.T) {
 	envFile := filepath.Join(filepath.Dir(argsFile), "env.txt")
 	// fakeClaude's script only records argv; extend it here to also capture
 	// the child's environment, which is where CLAUDE_CONFIG_DIR shows up.
-	bin := filepath.Join(filepath.Dir(argsFile), "claude")
 	script := "#!/bin/sh\n" +
 		`echo "$@" > ` + argsFile + "\n" +
 		"env > " + envFile + "\n" +
 		`echo '{"result":"did the changelog","is_error":false}'` + "\n" +
 		"exit 0\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// Through the helper, not os.WriteFile: on Windows the .bat shim beside
+	// the script is what PATH actually resolves, so replacing only the script
+	// would leave the shim pointing at the old body.
+	writeFakeBinIn(t, filepath.Dir(argsFile), "claude", script)
 
 	if _, err := changelogRunner(t.TempDir(), ""); err != nil {
 		t.Fatal(err)

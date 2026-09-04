@@ -21,7 +21,14 @@ import (
 // PATH, and unrunnable.
 func writeFakeBin(t *testing.T, name, script string) string {
 	t.Helper()
-	dir := t.TempDir()
+	return writeFakeBinIn(t, t.TempDir(), name, script)
+}
+
+// writeFakeBinIn is writeFakeBin into a directory the caller already holds --
+// for a test that derives other paths from it, or that replaces the fake's
+// body partway through and needs the .bat shim regenerated alongside.
+func writeFakeBinIn(t *testing.T, dir, name, script string) string {
+	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
