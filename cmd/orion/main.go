@@ -2197,14 +2197,14 @@ func runNJAgents(args []string) {
 	}
 	home := workspace.Home()
 	cfg := config.Load(rootOrCwd())
-	inst := njagents.Discover(cfg.Delegation.NJAgentsDir, home)
+	inst := njagents.Discover(home, cfg.Toolkit.Spec())
 
 	switch sub {
 	case "status":
 		if inst == nil {
 			fmt.Println("nj-agents  NOT FOUND")
 			fmt.Println("fetch it:  orion doctor --fix")
-			fmt.Println("or:        " + njagents.CloneCommand(home))
+			fmt.Println("or:        " + njagents.CloneCommand(home, cfg.Toolkit.Spec()))
 			os.Exit(1)
 		}
 		fmt.Printf("root       %s\nfound via  %s\ncommit     %s\n", inst.Root, inst.Via, inst.Commit)
@@ -2226,7 +2226,7 @@ func runNJAgents(args []string) {
 		}
 
 	case "update":
-		res, err := njagents.Update(inst, cfg.Delegation.NJAgentsRef)
+		res, err := njagents.Update(inst, cfg.Toolkit.Ref)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "orion: %v\n", err)
 			os.Exit(1)
