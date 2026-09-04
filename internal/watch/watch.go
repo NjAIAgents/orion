@@ -617,6 +617,10 @@ func reportHeld(w io.Writer, held []HeldTicket) {
 // finished run's row. A batch reports its own checks from batchrun.go and its
 // members come back PENDING with no per-ticket rollup, so inCI is non-zero
 // there and this leaves the batch's line exactly as it found it.
+// toberetired: OR-334 removed the live region. liveChecks and checkRows sort
+// and format check rows for ui.LiveChecks, which is now a no-op -- the work
+// is done and discarded. The facts still reach the operator: collect prints
+// each verdict as it reads it.
 func liveChecks(inCI int, pending []collect.Result) {
 	rows := checkRows(pending)
 	if len(rows) == 0 && inCI > 0 {
@@ -883,6 +887,8 @@ func claimedElsewhere(claimed, mine []string) []string {
 // An unreadable history is not an error here. It means no median, the row
 // draws no bar, and the region says nothing it cannot support: the display is
 // an accessory to the run and must never be able to fail it.
+// toberetired: OR-334 removed the live region. This fed ui.LiveMedians, which
+// is now a no-op, so the cost history is read for a bar nobody draws.
 func medianFor(home string, projects []string) func(string) time.Duration {
 	return func(actor string) time.Duration {
 		rows, err := cost.ReadHistory(home)
@@ -903,6 +909,9 @@ func medianFor(home string, projects []string) func(string) time.Duration {
 // Package-level for the same reason `running` is: Listen installs the handler
 // before Run builds anything, and the handler's first message -- how to force
 // a quit -- is the one line that must not be erased by the next redraw.
+// toberetired (partly): with the region gone the writer this publishes is a
+// plain pass-through, so the indirection buys nothing. The signal handler
+// could take the watch's own writer directly.
 var liveOut atomic.Pointer[io.Writer]
 
 // out is where a message from outside the loop should go: the live writer if

@@ -100,6 +100,8 @@ func (l *Live) Close() {}
 // only path, and it prints as work happens rather than on a timer.
 func (l *Live) Tick() {}
 
+// toberetired: OR-334 removed the live region; no caller remains.
+//
 // Full and ToggleCollapsed were the ctrl-r and ctrl-o keys. There is no
 // region to expand or collapse.
 func (l *Live) Full()            {}
@@ -145,14 +147,26 @@ func ConsoleEngaged() bool {
 // The live API, kept as no-ops so no caller had to change (OR-334). Each one
 // described something the region drew; the same facts reach the operator as
 // log lines from the packages that call these.
-func LiveReset()                                          {}
-func LiveWindowCap(int)                                   {}
-func LiveMedians(func(string) time.Duration)              {}
-func LiveStart(string)                                    {}
-func LiveEnd(string)                                      {}
-func LiveDone(string, string)                             {}
-func LiveStage(string, string, string)                    {}
-func LiveTitle(string, string)                            {}
+func LiveReset()                             {}
+func LiveWindowCap(int)                      {}
+func LiveMedians(func(string) time.Duration) {}
+func LiveStart(string)                       {}
+
+// toberetired: OR-334 removed the live region, and nothing calls this any
+// more. Kept only so the removal did not have to touch its callers' files in
+// the same change; delete once nobody wants a live view back.
+func LiveEnd(string)          {}
+func LiveDone(string, string) {}
+
+// toberetired: OR-334 removed the live region, and nothing calls this any
+// more. Kept only so the removal did not have to touch its callers' files in
+// the same change; delete once nobody wants a live view back.
+func LiveStage(string, string, string) {}
+func LiveTitle(string, string)         {}
+
+// toberetired: OR-334 removed the live region, and nothing calls this any
+// more. Kept only so the removal did not have to touch its callers' files in
+// the same change; delete once nobody wants a live view back.
 func LiveActivity(string, string)                         {}
 func LiveActivityNote(string, string, string)             {}
 func LiveAgents(string)                                   {}
@@ -170,6 +184,9 @@ func LiveBatchMedian(time.Duration)                       {}
 func LiveBatchResume(string, string, []string, time.Time) {}
 func LiveBatchEnd()                                       {}
 
+// toberetired: OR-334 removed the live region, and nothing calls this any
+// more.
+//
 // LiveAgentCount answered "how many subagents does this ticket have running".
 // Nothing counts them now; the callers use it only to decide whether to
 // mention a number.
