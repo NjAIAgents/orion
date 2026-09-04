@@ -170,6 +170,22 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"",
 			"Search the tracker first and reconcile, so a re-run never double-creates.",
 			"",
+			// One description, two readers (OR-164). See ticketShape.
+			"Write EVERY item's description in this shape, in this order:",
+			"",
+			quote(ticketShape),
+			"",
+			"A human reads down to the rule and stops; an agent reads past it. That is",
+			"the whole point of the rule being there, and it is why one description can",
+			"serve both without a second, shorter ticket nobody keeps current.",
+			"",
+			"Below the rule, CITE rather than restate. Name the file and let the agent",
+			"read it: a quoted excerpt goes stale in place while the code moves on.",
+			"Reference a decision by its ADR id (docs/decisions/NNNN-*.md) rather than",
+			"re-arguing the alternatives you rejected -- that reasoning belongs in one",
+			"file, not copied into every ticket that touches it. If the decision has no",
+			"ADR yet, that is an ADR to write, not a paragraph to paste.",
+			"",
 			// Routing reads a marker off the created ticket. Nothing that
 			// created a ticket knew the vocabulary existed, so the metadata
 			// was set by luck and in practice never -- every ticket defaulted
@@ -272,6 +288,43 @@ const intentShape = `## Success measures
 
 ## Open questions
 - One bullet per thing you could not decide.`
+
+// ticketShape is the shape every tracker item's description must have, shown
+// to the planner verbatim.
+//
+// Tickets written for agents grew long, because an agent that is not given
+// the grounding -- the file paths, the existing behaviour, why the obvious
+// approach is wrong -- reinvents it badly. That was the right instinct paid
+// for by the wrong reader: a backlog a person cannot scan is a backlog they
+// cannot prioritise (OR-164).
+//
+// The horizontal rule is the fix, and it is a rule rather than a convention
+// because it has to be visible at a glance in whatever the tracker renders.
+// Above it is what a human needs to triage; below it is what an agent needs
+// to build. Neither reader loses anything, and there is still only one
+// description to keep current.
+//
+// Open questions sit FIRST below the rule rather than at the end, because
+// "visible without reading the body" is the requirement -- an open question
+// buried under scope and prior art is one nobody sees until it has already
+// been decided by accident.
+const ticketShape = `<One sentence: what changes.>
+
+WHY: <Two lines maximum. Not three.>
+
+---
+
+## Open questions
+- <One bullet per thing you could not decide, or "None".>
+
+## Scope
+<What is in, what is explicitly out.>
+
+## Grounding
+<File paths, existing behaviour, ADR ids. Cite; do not quote at length.>
+
+## Tests
+<What would fail if this regressed.>`
 
 // intentNone is how the capture says there is nothing open. Spelled out here
 // rather than inside the prompt string because discovery.isNone decides which
