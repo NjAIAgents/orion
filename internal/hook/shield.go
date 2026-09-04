@@ -101,6 +101,13 @@ func isArtifact(rel string, cfg config.Config) bool {
 	return rel == "CLAUDE.md"
 }
 
+// planExists reports whether the configured plans directory holds a plan.
+//
+// Any plan, not a named one: the shield sees a file path, never a task, so
+// the question it can answer is whether this project has produced a plan at
+// all. The directory and the suffix both come from config -- the same helper
+// the plan stage's prompt names the file with -- so the gate cannot end up
+// looking for something the prompt never asked for.
 func planExists(cfg config.Config) bool {
 	dir := filepath.Join(cfg.Root, cfg.Paths.Plans)
 	entries, err := os.ReadDir(dir)
@@ -108,7 +115,7 @@ func planExists(cfg config.Config) bool {
 		return false
 	}
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".plan.md") {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), config.PlanExt) {
 			return true
 		}
 	}
