@@ -749,6 +749,12 @@ func resumeTesting(st batchState, members []Member, cfg config.Config, opts Opti
 	t := batchTester{git: g, status: deps.Status, openPR: deps.OpenPR,
 		dir: ws.CloneDir(), base: st.Base, out: w, log: log}
 
+	// ON SCREEN, though this process did not assemble it (OR-323). A watch
+	// restarted with a batch in CI showed nothing but the log line: the
+	// region draws the batch it was told about, and nobody had told it.
+	ui.LiveBatchResume(st.Ref, st.Base, st.Members, st.TestingSince)
+	ui.LiveBatchMedian(batchBaseline(events.Path(ws.Dir)).Median)
+
 	ok, err := t.Test(st.Ref)
 	switch {
 	case errors.Is(err, ErrCheckPending):

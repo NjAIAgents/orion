@@ -538,3 +538,34 @@ func TestAnUnfinishedBatchLeavesNoSummary(t *testing.T) {
 		t.Errorf("a batch mid-CI left a summary behind:\n%s", plain(b.String()))
 	}
 }
+
+// A batch resumed from its record after a restart is on screen, testing
+// since the record says, and a second resume of the same batch changes
+// nothing (OR-323).
+func TestAResumedBatchIsOnScreenAndResumingAgainIsIdempotent(t *testing.T) {
+	LiveReset()
+	defer LiveReset()
+	since := time.Date(2026, 9, 3, 20, 25, 0, 0, time.UTC)
+	now := since.Add(3 * time.Minute)
+
+	LiveBatchResume("orion/batch", "develop", []string{"OR-295", "OR-297", "OR-300"}, since)
+	LiveBatchResume("orion/batch", "develop", []string{"OR-295", "OR-297", "OR-300"}, now)
+
+	st := liveSnapshot()
+	if st.batch == nil {
+		t.Fatal("a resumed batch is not on screen")
+	}
+	if st.batch.runs != 1 || !st.batch.ciStarted.Equal(since) {
+		t.Errorf("runs=%d ciStarted=%s: resuming again must not restart the run or the clock",
+			st.batch.runs, st.batch.ciStarted)
+	}
+	got := joined(t, now)
+	for _, k := range []string{"OR-295", "OR-297", "OR-300"} {
+		if !strings.Contains(got, k) {
+			t.Errorf("%s is not in the chain:\n%s", k, got)
+		}
+	}
+	if !strings.Contains(got, "3m00s") {
+		t.Errorf("the elapsed must count from the record's testing_since:\n%s", got)
+	}
+}
