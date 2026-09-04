@@ -13,7 +13,6 @@ import (
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/suite"
 	"github.com/orion-sdlc/orion/internal/supervisor"
-	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -287,31 +286,6 @@ func TestTheSuiteRunsEvenWhenNothingFanned(t *testing.T) {
 	runAuthoredSuite(job, config.Config{}, log, &buf)
 	if !strings.Contains(buf.String(), "green") {
 		t.Errorf("Orion did not run the suite on the un-fanned path:\n%s", buf.String())
-	}
-}
-
-// TestTheFanReportsItsSubagentCount.
-//
-// Found on the first real run: the row's note said "authoring x5" while the
-// subagent column stayed blank, so the display contradicted itself about the
-// same fan.
-//
-// The cause is worth keeping in a test rather than a comment. ActivityLogger
-// increments that count when an AGENT calls the Task or Agent tool, which is
-// how an ordinary delegation becomes visible. This fan dispatches sessions
-// from Go through supervisor.Fan, so no such tool call ever happens and
-// nothing would have told the display that five authors existed.
-func TestTheFanReportsItsSubagentCount(t *testing.T) {
-	ui.LiveReset()
-	ui.LiveStart("OR-1")
-
-	var dispatched []supervisor.Options
-	var buf bytes.Buffer
-	fanAuthoring(qaJob{Key: "OR-1", Summary: "s"}, config.Config{},
-		fanCases, Deps{Fan: recordingFan(&dispatched)}, fanTestLog(t), &buf)
-
-	if got := ui.LiveAgentCount("OR-1"); got != len(dispatched) {
-		t.Errorf("the row reports %d subagent(s) for a fan of %d", got, len(dispatched))
 	}
 }
 

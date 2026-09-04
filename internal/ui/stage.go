@@ -113,11 +113,6 @@ func Stage(w io.Writer, log *events.Log, h Handoff) {
 	// printed before it rather than after, and the first line of the new
 	// stage states its actor in full (OR-217).
 	Reset(w)
-	// The live region learns the stage HERE rather than from its own source,
-	// so it can never show a stage this line did not also print. Two records
-	// of one crossing is how they drift (OR-176); one call that does both is
-	// how they cannot.
-	liveStage(h.Key, h.To, h.Next)
 	fmt.Fprintln(w, RenderStage(w, h))
 	log.Emit(events.Event{
 		Kind: events.KindStage, Key: h.Key,
