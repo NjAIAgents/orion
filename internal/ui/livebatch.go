@@ -378,7 +378,11 @@ func renderAssembling(w io.Writer, b *liveBatch, now time.Time, cols int) []stri
 // renderTesting is the CI block, because during the run the CI block IS the
 // batch: one chain, one fill, the jobs beneath.
 func renderTesting(w io.Writer, b *liveBatch, now time.Time, cols int) []string {
-	out := []string{clip(batchHeadLine(w, b, fmt.Sprintf("%d members", len(b.members))), cols)}
+	members := "members"
+	if len(b.members) == 1 {
+		members = "member"
+	}
+	out := []string{clip(batchHeadLine(w, b, fmt.Sprintf("%d %s", len(b.members), members)), cols)}
 	// An ejected branch is out of THIS run but not out of the picture, and it
 	// stays on screen saying so. Dropping it silently was the one thing the
 	// operator could not otherwise account for: a batch of four that names

@@ -2060,6 +2060,16 @@ func (l *Live) drawLocked() {
 		return
 	}
 	cols := columns()
+	// NEVER DRAWN AT AN UNKNOWN WIDTH (OR-317). Off a terminal an unknown
+	// width keeps every column, which is right for a log; here it rendered
+	// each row unclipped and counted it as one screen row, and the terminal
+	// wrapped what the count did not, so the erase moved up short and left
+	// the top of the block behind on every redraw. The rule's width is the
+	// widest line the design assumes, so a block drawn at it fits any
+	// terminal the region is meant for, and counts the same as it draws.
+	if cols <= 0 {
+		cols = liveRuleWidth
+	}
 	region := renderRegionAt(l.w, liveSnapshot(), time.Now(), cols, l.collapsed)
 	var block []string
 	// The buffer is bounded first: Full() commits it when the cap is dropped,
