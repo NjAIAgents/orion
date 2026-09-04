@@ -79,6 +79,12 @@ const batchTesting = "testing"
 // has nothing worth reusing, and the honest thing is to assemble again.
 const batchValidated = "validated"
 
+// batchRed is a batch whose one run came back red (OR-324). The next pass
+// over the same members on the same base ISOLATES rather than assembles: the
+// verdict is known, and re-cutting the ref would only spend another run to
+// learn it again.
+const batchRed = "red"
+
 func batchStatePath(wsDir string) string {
 	return filepath.Join(wsDir, "batch-state.json")
 }

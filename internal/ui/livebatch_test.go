@@ -356,7 +356,7 @@ func TestAnEjectedMemberKeepsItsRowWhileTheBatchIsTesting(t *testing.T) {
 	b := &liveBatch{
 		ref: "orion/batch", base: "develop", phase: BatchTesting, runs: 1,
 		members: []batchMember{
-			{key: "OR-223"}, {key: "OR-229", state: MemberEjected}, {key: "OR-242"},
+			{key: "OR-223"}, {key: "OR-229", state: MemberEjected, detail: "internal/toolkit/toolkit.go"}, {key: "OR-242"},
 		},
 		median: 11 * time.Minute, ciStarted: now.Add(-4 * time.Minute),
 	}
@@ -367,6 +367,10 @@ func TestAnEjectedMemberKeepsItsRowWhileTheBatchIsTesting(t *testing.T) {
 	}
 	if !strings.Contains(got, "returns to the queue") {
 		t.Errorf("the ejected row must say it is coming back, not read as a failure:\n%s", got)
+	}
+	// AND WHY (OR-321): the conflicting file is what a person acts on.
+	if !strings.Contains(got, "internal/toolkit/toolkit.go") {
+		t.Errorf("the ejected row must name the conflict:\n%s", got)
 	}
 	// It is NOT in the chain: that line is "who is in this CI run", and it
 	// is not.
@@ -532,5 +536,36 @@ func TestAnUnfinishedBatchLeavesNoSummary(t *testing.T) {
 	l.Close()
 	if strings.Contains(plain(b.String()), "OR-223") {
 		t.Errorf("a batch mid-CI left a summary behind:\n%s", plain(b.String()))
+	}
+}
+
+// A batch resumed from its record after a restart is on screen, testing
+// since the record says, and a second resume of the same batch changes
+// nothing (OR-323).
+func TestAResumedBatchIsOnScreenAndResumingAgainIsIdempotent(t *testing.T) {
+	LiveReset()
+	defer LiveReset()
+	since := time.Date(2026, 9, 3, 20, 25, 0, 0, time.UTC)
+	now := since.Add(3 * time.Minute)
+
+	LiveBatchResume("orion/batch", "develop", []string{"OR-295", "OR-297", "OR-300"}, since)
+	LiveBatchResume("orion/batch", "develop", []string{"OR-295", "OR-297", "OR-300"}, now)
+
+	st := liveSnapshot()
+	if st.batch == nil {
+		t.Fatal("a resumed batch is not on screen")
+	}
+	if st.batch.runs != 1 || !st.batch.ciStarted.Equal(since) {
+		t.Errorf("runs=%d ciStarted=%s: resuming again must not restart the run or the clock",
+			st.batch.runs, st.batch.ciStarted)
+	}
+	got := joined(t, now)
+	for _, k := range []string{"OR-295", "OR-297", "OR-300"} {
+		if !strings.Contains(got, k) {
+			t.Errorf("%s is not in the chain:\n%s", k, got)
+		}
+	}
+	if !strings.Contains(got, "3m00s") {
+		t.Errorf("the elapsed must count from the record's testing_since:\n%s", got)
 	}
 }

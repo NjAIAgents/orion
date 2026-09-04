@@ -132,6 +132,26 @@ func LiveBatchStart(ref, base string, keys []string) {
 // together rather than by two calls a caller could get out of step.
 func LiveBatchPhase(p BatchPhase) { liveBatchPhase(p, time.Now()) }
 
+// LiveBatchResume puts a batch that was assembled by an EARLIER process back
+// on screen (OR-323): every member riding, testing since the record says.
+//
+// A batch is resumed on every pass while its checks run, so this is
+// idempotent -- the same ref already testing is left alone, or the run
+// counter and the clock would restart each minute.
+func LiveBatchResume(ref, base string, keys []string, since time.Time) {
+	live.mu.Lock()
+	if b := live.batch; b != nil && b.ref == ref && b.phase == BatchTesting {
+		live.mu.Unlock()
+		return
+	}
+	live.mu.Unlock()
+	LiveBatchStart(ref, base, keys)
+	for _, k := range keys {
+		LiveBatchMember(k, MemberMerged)
+	}
+	liveBatchPhase(BatchTesting, since)
+}
+
 func liveBatchPhase(p BatchPhase, at time.Time) {
 	live.mu.Lock()
 	defer live.mu.Unlock()
@@ -394,7 +414,15 @@ func renderTesting(w io.Writer, b *liveBatch, now time.Time, cols int) []string 
 			continue
 		}
 		g, note := memberGlyph(w, MemberEjected)
-		out = append(out, clip(fmt.Sprintf("    %s %s  %s", g, m.key, Dim(w, note)), cols))
+		line := fmt.Sprintf("    %s %s  %s", g, m.key, Dim(w, note))
+		// WITH ITS REASON. "returns to the queue" alone cannot tell a real
+		// conflict from a dependency-order problem -- a rename ejected by
+		// the two stories built on top of it looks identical to a genuine
+		// clash -- and the file is what a person acts on.
+		if m.detail != "" {
+			line += " " + Dim(w, liveSep+" "+m.detail)
+		}
+		out = append(out, clip(line, cols))
 	}
 	return append(out, ciBlock(w, b, now, cols)...)
 }

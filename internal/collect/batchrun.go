@@ -115,6 +115,7 @@ func (t batchTester) Test(ref string) (bool, error) {
 		// actually failed, which is the difference between "CI failed" and a
 		// line an operator can act on without opening the forge.
 		rememberFailingCheck(pr.Checks)
+		rememberBatchDetail(pr.Detail)
 		return false, nil
 	case pr.Verdict == VerdictPassing && !noChecksYet(pr):
 		return true, nil
@@ -201,8 +202,23 @@ func failingCheck() string {
 // member's ticket is commented with, which must survive a restart rather than
 // silently become "the batch" with no address (OR-314).
 var lastBatchPR struct {
-	mu  sync.Mutex
-	url string
+	mu     sync.Mutex
+	url    string
+	detail string // the failure's why, as the last status read put it (OR-322)
+}
+
+// rememberBatchDetail keeps the last status read's Detail, which is what the
+// culprit's ticket is commented with and what the fix agent is handed.
+func rememberBatchDetail(detail string) {
+	lastBatchPR.mu.Lock()
+	lastBatchPR.detail = detail
+	lastBatchPR.mu.Unlock()
+}
+
+func batchDetail() string {
+	lastBatchPR.mu.Lock()
+	defer lastBatchPR.mu.Unlock()
+	return lastBatchPR.detail
 }
 
 func rememberBatchPR(url string) {
@@ -320,6 +336,14 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 		st.Base == base && st.BaseSHA != "" && st.BaseSHA == baseSHA &&
 		sameMembers(st.Members, members) {
 		return resumeTesting(st, members, cfg, opts, deps, g, ws, log, w), true
+	}
+
+	// A RED record over the same set on the same base is left for runBatch,
+	// which assembles the set and isolates at once (OR-324).
+	if err == nil && st.Status == batchRed &&
+		st.Base == base && st.BaseSHA != "" && st.BaseSHA == baseSHA &&
+		sameMembers(st.Members, members) {
+		return nil, false
 	}
 
 	if err != nil || !st.resumable(base, baseSHA, members) {
@@ -483,14 +507,26 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		return res
 	}
 
-	ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
-		"assembling %d branch(es) into %s", len(members), ref)
+	known := knownRed(ws.Dir, cfg.VCS.WorkBranch, g, members)
+	if known {
+		ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
+			"%s is red; assembling %d branch(es) again to isolate the cause", ref, len(members))
+	} else {
+		ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
+			"assembling %d branch(es) into %s", len(members), ref)
+	}
 
 	t := batchTester{git: g, status: deps.Status, openPR: deps.OpenPR,
 		dir: ws.CloneDir(), base: cfg.VCS.WorkBranch,
 		wait: 30 * time.Minute, out: w, log: log}
-	b, err := Land(g, t, ref, cfg.VCS.WorkBranch, members, liveObserver{},
-		WithApproval(batchApprover(cfg, opts, deps, ws, log, w)))
+	landOpts := []LandOption{
+		WithApproval(batchApprover(cfg, opts, deps, ws, log, w)),
+		WithIsolationWait(t.wait),
+	}
+	if known {
+		landOpts = append(landOpts, WithKnownRed())
+	}
+	b, err := Land(g, t, ref, cfg.VCS.WorkBranch, members, liveObserver{}, landOpts...)
 
 	// Local ref and its worktree, then the published branch. Both, and only
 	// here: Test used to drop the remote ref as it returned, which cannot
@@ -629,7 +665,15 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 			// to do with it.
 			res.Verdict = VerdictMerged
 		case Culprit:
-			res.Verdict = VerdictFailing
+			// INTO THE FIX LOOP, as a per-branch failure would be (OR-322).
+			//
+			// runBatch's results are returned directly; the per-ticket path
+			// that relabels, comments, notifies and dispatches the fix agent
+			// is never reached for a batch member. So a convicted culprit was
+			// left orion-ready, collected into the next batch, and convicted
+			// again -- with the row saying "fix round 1 of 3" about a loop
+			// that did not exist.
+			res = failCulprit(res, r.Member, cfg, opts, deps, ws, log, w)
 		default:
 			// Ejected and deferred are not failures: the branch is sound and
 			// will be offered to the next batch. Saying "stale" reuses the
@@ -724,6 +768,12 @@ func resumeTesting(st batchState, members []Member, cfg config.Config, opts Opti
 	t := batchTester{git: g, status: deps.Status, openPR: deps.OpenPR,
 		dir: ws.CloneDir(), base: st.Base, out: w, log: log}
 
+	// ON SCREEN, though this process did not assemble it (OR-323). A watch
+	// restarted with a batch in CI showed nothing but the log line: the
+	// region draws the batch it was told about, and nobody had told it.
+	ui.LiveBatchResume(st.Ref, st.Base, st.Members, st.TestingSince)
+	ui.LiveBatchMedian(batchBaseline(events.Path(ws.Dir)).Median)
+
 	ok, err := t.Test(st.Ref)
 	switch {
 	case errors.Is(err, ErrCheckPending):
@@ -746,9 +796,18 @@ func resumeTesting(st batchState, members []Member, cfg config.Config, opts Opti
 		return []Result{{Err: err}}
 
 	case !ok:
-		// Red. Cleared so the next pass reassembles and bisects, which needs
-		// the full Land path rather than this one.
-		clearBatchState(ws.Dir)
+		// Red. The record is KEPT, marked red, so the next pass reassembles
+		// the same set and bisects at once -- the full Land path rather
+		// than this one, but with the first verdict already in hand
+		// (OR-324). Clearing it made that pass test the whole set again:
+		// new merge commits, a new CI run, six more minutes to learn the
+		// same verdict, on every pass, so the batch was rebuilt forever and
+		// never once isolated.
+		st.Status = batchRed
+		if err := saveBatchState(ws.Dir, st); err != nil {
+			ui.Warn(w, "the batch is red but its record could not be updated (%v); "+
+				"the next pass will test it again", err)
+		}
 		ui.Warn(w, "%s went red; the next pass will isolate the cause", st.Ref)
 		return pendingResults(members)
 	}
@@ -792,4 +851,43 @@ func pendingResults(members []Member) []Result {
 		out = append(out, Result{Key: m.Key, Verdict: VerdictPending})
 	}
 	return out
+}
+
+// failCulprit hands a convicted member to the same failure path a per-branch
+// red build takes: orion-failed, a comment naming where and why, a
+// notification, and -- with auto_fix -- the fix agent on the member's own
+// branch. The pull request it cites is the BATCH's, because that is where
+// the failure is; the branch it fixes is the member's, because that is where
+// the fault is.
+func failCulprit(res Result, m Member, cfg config.Config, opts Options, deps Deps,
+	ws *workspace.Workspace, log *events.Log, w io.Writer) Result {
+
+	res.Verdict = VerdictFailing
+	if deps.Jira == nil {
+		return res
+	}
+	detail := batchDetail()
+	if detail == "" {
+		detail = "the batch went red"
+		if c := failingCheck(); c != "" {
+			detail += " on " + c
+		}
+	}
+	pr := PR{URL: batchPR(), Verdict: VerdictFailing, Head: m.Head,
+		Detail: "convicted by the batch's isolation: " + detail}
+	return failing(res, m.Key, pr, cfg, m.Branch, opts, deps, ws, log, w)
+}
+
+// knownRed reports whether the record says this exact set on this exact base
+// already ran red, so the pass can isolate rather than test (OR-324).
+func knownRed(wsDir, base string, g repoGit, members []Member) bool {
+	st, ok := loadBatchState(wsDir)
+	if !ok || st.Status != batchRed || st.Base != base || st.BaseSHA == "" {
+		return false
+	}
+	baseSHA, err := g.SHAOf(base)
+	if err != nil || baseSHA != st.BaseSHA {
+		return false
+	}
+	return sameMembers(st.Members, members)
 }
