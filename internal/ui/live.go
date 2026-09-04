@@ -257,6 +257,10 @@ type liveRun struct {
 	// done marks a run that has finished. Its row stays on screen, carrying
 	// the outcome, until the watcher stops.
 	done bool
+	// queued marks a row fed from the tracker rather than from an agent in
+	// this process (OR-325): it does not spin, draws no bar, and only its
+	// stage word changes as the ticket moves through the queue.
+	queued bool
 	// title is the ticket's summary, so the row says what the work IS as well
 	// as what it is doing. Without it a row is an identifier and a verb, and
 	// answering "what is OR-135 again" means going to the tracker (OR-265).
@@ -406,6 +410,39 @@ func liveStart(key string, at time.Time) {
 		// call, both of which call setActorLocked.
 		key: key, actor: actorOrion, stage: "starting", started: at,
 		newest: at.UnixNano() / int64(sparkBucket),
+	}
+}
+
+// QueueRow is one ticket the tracker says Orion is responsible for.
+type QueueRow struct {
+	Key, Stage, Title string
+}
+
+// LiveQueue reconciles the rows with what the tracker holds (OR-325).
+//
+// Every ticket in the queue keeps a row from the moment it is queued until
+// it leaves; only its stage word changes. A row an agent in THIS process
+// owns is never touched -- it carries the actor, the tool call and the
+// sparkline, and a tracker read knows none of that. A queued row whose key
+// the tracker no longer lists is gone on the next tick.
+func LiveQueue(rows []QueueRow) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if live.runs == nil {
+		live.runs = map[string]*liveRun{}
+	}
+	seen := make(map[string]bool, len(rows))
+	for _, q := range rows {
+		seen[q.Key] = true
+		if r := live.runs[q.Key]; r != nil && !r.queued {
+			continue
+		}
+		live.runs[q.Key] = &liveRun{key: q.Key, stage: q.Stage, title: q.Title, queued: true}
+	}
+	for k, r := range live.runs {
+		if r.queued && !seen[k] {
+			delete(live.runs, k)
+		}
 	}
 }
 
@@ -953,6 +990,14 @@ func renderRow(w io.Writer, r liveRun, now time.Time, cols int) string {
 		}
 		mark = paint(w, green, g)
 	}
+	// A queued row is nobody's work yet: no spinner, which would claim
+	// something is happening, and no tick, which would claim it finished.
+	if r.queued {
+		mark = Dim(w, "·")
+		if !glyphs() {
+			mark = Dim(w, ".")
+		}
+	}
 	add(" "+mark+"  ", 4)
 	// The key is NOT clipped: it is the row's identifier, and an over-long one
 	// pushes the row wide rather than becoming unidentifiable.
@@ -963,13 +1008,20 @@ func renderRow(w io.Writer, r liveRun, now time.Time, cols int) string {
 	}
 	add(pad(r.stage, liveStageWidth)+"  ", fieldCells(r.stage, liveStageWidth)+2)
 	if keep(cols, liveBar) {
-		add(r.bar(w, elapsed)+"  ", liveBarWidth+2)
+		if r.queued {
+			add(strings.Repeat(" ", liveBarWidth)+"  ", liveBarWidth+2)
+		} else {
+			add(r.bar(w, elapsed)+"  ", liveBarWidth+2)
+		}
 	}
 	// Elapsed AND the median it is measured against, as the mockup has it:
 	// "18m / ~24m". The bar shows the ratio and the numbers say what the
 	// ratio is of -- a bar alone cannot be read aloud, quoted in a ticket, or
 	// seen in a NO_COLOR terminal (OR-163).
 	el := elapsedString(elapsed)
+	if r.queued {
+		el = "" // nothing has been measured
+	}
 	if r.median > 0 && keep(cols, liveMedian) {
 		suffix := " / ~" + coarse(r.median)
 		add(pad(el, liveElapsedWidth)+Dim(w, pad(suffix, liveMedianWidth))+"  ",
@@ -1060,7 +1112,7 @@ func renderRow(w io.Writer, r liveRun, now time.Time, cols int) string {
 			add("  "+Dim(w, r.note), 2+utf8.RuneCountInString(r.note))
 		}
 	}
-	if notes := r.notes(now); len(notes) > 0 {
+	if notes := r.notes(now); len(notes) > 0 && !r.queued {
 		s := strings.Join(notes, " "+liveSep+" ")
 		if cols > 0 {
 			s = clip(s, cols-used-2)
@@ -1190,17 +1242,23 @@ func renderHeaderAt(w io.Writer, st liveState, now time.Time, collapsed bool) st
 		// RUNNING, not "rows": a finished ticket keeps its row so the operator
 		// can see what became of it, and counting those as running would make
 		// the header claim work that has stopped.
-		running := 0
+		running, queued := 0, 0
 		for _, r := range st.rows {
-			if !r.done {
+			switch {
+			case r.queued:
+				queued++
+			case !r.done:
 				running++
 			}
 		}
 		if running > 0 {
 			parts = append(parts, fmt.Sprintf("%d running", running))
 		}
-		if n := len(st.rows) - running; n > 0 {
+		if n := len(st.rows) - running - queued; n > 0 {
 			parts = append(parts, fmt.Sprintf("%d done", n))
+		}
+		if queued > 0 {
+			parts = append(parts, fmt.Sprintf("%d queued", queued))
 		}
 	}
 	if st.batch != nil {
@@ -1324,6 +1382,15 @@ func renderRegionAt(w io.Writer, st liveState, now time.Time, cols int, collapse
 		if st.batch != nil && st.batch.phase == BatchIsolating {
 			row.verdict, row.barColor = isolationVerdict(st.batch, row.key)
 		}
+		// A member's row says what the batch made of it (OR-325). The
+		// tracker still says "ready" while the batch tests, lands or
+		// convicts; the batch knows better, and a row that is not an
+		// agent's has nothing truer to say.
+		if st.batch != nil && (row.queued || row.done) {
+			if stage := memberStage(st.batch, row.key); stage != "" {
+				row.stage = stage
+			}
+		}
 		out = append(out, renderRow(w, row, now, cols))
 	}
 	return append(out, statusFooter(w, st, now, cols, collapsed, r)...)
@@ -1352,6 +1419,26 @@ func statusFooter(w io.Writer, st liveState, now time.Time, cols int, collapsed 
 		}
 	}
 	return out
+}
+
+// memberStage is the stage word a batch gives one of its members, or "" for
+// a key that is not a member.
+func memberStage(b *liveBatch, key string) string {
+	for _, m := range b.members {
+		if m.key != key {
+			continue
+		}
+		switch m.state {
+		case MemberLanded:
+			return "landed"
+		case MemberCulprit:
+			return "culprit"
+		case MemberEjected:
+			return "ejected"
+		}
+		return "in batch"
+	}
+	return ""
 }
 
 // isolationVerdict is what the search has decided about one key so far, and
@@ -1449,6 +1536,12 @@ func renderPlainTracked(st liveState, now time.Time) ([]string, []plainPrinted, 
 		// removes.
 		body := fmt.Sprintf("%s  %s  %s  %d calls", pad(r.key, liveKeyWidth),
 			pad(r.stage, liveStageWidth), elapsedString(now.Sub(r.started)), r.calls)
+		// A queued row has no run behind it: no elapsed, no calls, no notes
+		// (OR-325). Printing an elapsed from a zero start read as
+		// "2562047h47m", which is the age of the epoch, not of the ticket.
+		if r.queued {
+			body = fmt.Sprintf("%s  %s", pad(r.key, liveKeyWidth), pad(r.stage, liveStageWidth))
+		}
 		// The activity note, which the terminal path already draws and this
 		// one did not. A stage that says what it is doing on a terminal and
 		// stays silent in a piped log is telling two different stories about
@@ -1459,7 +1552,7 @@ func renderPlainTracked(st liveState, now time.Time) ([]string, []plainPrinted, 
 		if r.note != "" {
 			body += "  " + r.note
 		}
-		if notes := r.notes(now); len(notes) > 0 {
+		if notes := r.notes(now); len(notes) > 0 && !r.queued {
 			body += "  " + strings.Join(notes, " "+liveSep+" ")
 		}
 		if r.lastPlain == body {

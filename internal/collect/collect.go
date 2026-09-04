@@ -397,6 +397,18 @@ func readySet(pass []string, deps Deps) map[string]bool {
 // Scoped to the projects Orion actually knows about. An unscoped JQL would
 // match a label someone applied by hand in an unrelated project, and the
 // first thing this does with a match is transition its status.
+// waitingJQL is the pass: tickets in CI or ready for the batch, and NOT DONE
+// (OR-326). A closed ticket whose orion-ready label was never cleared -- two
+// of them, closed by hand -- was being offered to the batch, and its old
+// branch merged into the ref: work that had already landed, merged again.
+func waitingJQL(projects []string) string {
+	return tracker.JQLAnd(
+		tracker.JQLIn("project", projects...),
+		tracker.JQLIn("labels", tracker.LabelCIWait, tracker.LabelReady),
+		tracker.JQLNotDone(),
+	) + " ORDER BY updated ASC"
+}
+
 func waiting(j TrackerAPI, home string) ([]string, error) {
 	f, err := registry.Load(home)
 	if err != nil {
@@ -426,11 +438,7 @@ func waiting(j TrackerAPI, home string) ([]string, error) {
 	// and the answer is patience; ready says nothing is working and the
 	// ticket waits on the next pass. Reporting one as the other leaves an
 	// operator waiting on a build nobody started.
-	jql := tracker.JQLAnd(
-		tracker.JQLIn("project", projects...),
-		tracker.JQLIn("labels", tracker.LabelCIWait, tracker.LabelReady),
-	) + " ORDER BY updated ASC"
-	issues, err := j.Search(jql, 50)
+	issues, err := j.Search(waitingJQL(projects), 50)
 	if err != nil {
 		return nil, fmt.Errorf("searching for tickets awaiting CI: %w", err)
 	}

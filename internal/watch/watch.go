@@ -500,6 +500,15 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 		s.free -= len(s.elsewhere)
 	}
 
+	// The queue is read on EVERY tick, not only when a slot is free: the
+	// rows are the queue, and a ticket waiting on the batch while four
+	// others run still has a row to keep current (OR-325).
+	q, err := deps.Queued(opts.Home, opts.Projects, opts.QueueLabel)
+	if err != nil {
+		return unfinished, err
+	}
+	ui.LiveQueue(queueRows(q.All))
+
 	if s.free <= 0 && !opts.DryRun {
 		// Worth a line only when a claim held elsewhere is WHY. A rate-limit
 		// pause and the job limit both announce themselves already, and a tick
@@ -514,10 +523,6 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 	}
 
 	// 3. Start the next tickets.
-	q, err := deps.Queued(opts.Home, opts.Projects, opts.QueueLabel)
-	if err != nil {
-		return unfinished, err
-	}
 	// Before the empty check, because "nothing is queued" and "everything
 	// queued is unschedulable" are the two states this most has to tell
 	// apart, and the second one prints nothing at all without this.
@@ -1061,6 +1066,9 @@ func (s *syncWriter) Write(b []byte) (int, error) {
 type Queue struct {
 	Ready []tracker.Issue
 	Held  []HeldTicket
+	// All is every ticket in scope carrying the queue label or any state
+	// label, in queue order: what the watch keeps a row for (OR-325).
+	All []tracker.Issue
 }
 
 // HeldTicket is one labelled ticket the queue will not claim, and the reason
@@ -1089,6 +1097,10 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 		return Queue{}, err
 	}
 	issues, err := j.Search(queuedJQL(keys, label, sched), 25)
+	if err != nil {
+		return Queue{}, err
+	}
+	all, err := j.Search(allJQL(keys, label), 50)
 	if err != nil {
 		return Queue{}, err
 	}
@@ -1121,7 +1133,7 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 		Scheduled: func(i tracker.Issue) string { return sched.HoldReason(i, label) },
 	})
 
-	q := Queue{}
+	q := Queue{All: all}
 	byKey := make(map[string]tracker.Issue, len(candidates))
 	for _, i := range candidates {
 		byKey[i.Key] = i
@@ -1193,6 +1205,41 @@ func queuedJQL(keys []string, label string, sched tracker.Schedules) string {
 // that would have been claimed but for their release. Empty when no project
 // in scope enforces the gate, which is how a project that does not use
 // versions avoids a second query it can have no answers to.
+// allJQL is every ticket Orion is responsible for in scope: the queue label
+// or any state label, not Done, in queue order (OR-325).
+func allJQL(keys []string, label string) string {
+	if label == "" {
+		label = tracker.QueueLabelDefault
+	}
+	return tracker.JQLAnd(
+		tracker.JQLIn("project", keys...),
+		tracker.JQLIn("labels", tracker.Managed(label)...),
+		tracker.JQLNotDone(),
+	) + " ORDER BY priority DESC, Rank ASC"
+}
+
+// queueRows maps tracker state to the stage word a row shows (OR-325).
+func queueRows(issues []tracker.Issue) []ui.QueueRow {
+	out := make([]ui.QueueRow, 0, len(issues))
+	for _, i := range issues {
+		stage := "queued"
+		for _, l := range i.Labels {
+			switch l {
+			case tracker.LabelWorking:
+				stage = "working"
+			case tracker.LabelCIWait:
+				stage = "ci-wait"
+			case tracker.LabelReady:
+				stage = "ready"
+			case tracker.LabelFailed:
+				stage = "failed"
+			}
+		}
+		out = append(out, ui.QueueRow{Key: i.Key, Stage: stage, Title: i.Summary})
+	}
+	return out
+}
+
 func heldJQL(keys []string, label string, sched tracker.Schedules) string {
 	if label == "" {
 		label = tracker.QueueLabelDefault

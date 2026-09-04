@@ -73,3 +73,15 @@ func TestNoTrackerIsNotAnEmptyPass(t *testing.T) {
 		t.Errorf("an empty pass produced %v", got)
 	}
 }
+
+// A Done ticket with a stale orion-ready label must not enter the pass
+// (OR-326): the dry run offered two closed tickets to the batch.
+func TestThePassExcludesDoneTickets(t *testing.T) {
+	jql := waitingJQL([]string{"OR"})
+	if !strings.Contains(jql, "statusCategory !=") {
+		t.Errorf("the pass query must exclude Done: %s", jql)
+	}
+	if !strings.Contains(jql, tracker.LabelReady) || !strings.Contains(jql, tracker.LabelCIWait) {
+		t.Errorf("the pass query must still find ready and ci-wait tickets: %s", jql)
+	}
+}
