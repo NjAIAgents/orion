@@ -102,6 +102,52 @@ func TestEveryStageNamesTheSamePlanFile(t *testing.T) {
 	}
 }
 
+// The build and verify prompts must not merely NAME the same path the plan
+// stage names -- they must name a file that actually exists once the plan
+// stage has written it. Comparing two rendered strings (as
+// TestEveryStageNamesTheSamePlanFile does) would still pass if both sides
+// happened to agree on a path nothing ever wrote to; this checks the
+// filesystem instead.
+func TestVerifyAndBuildPointAtAFileThePlanStageWrote(t *testing.T) {
+	w := ws(t, `{"paths":{"plans":"docs/plans"}}`)
+	cfg := config.Load(w.RepoDir())
+
+	planPrompt, err := stagePrompt(w, "plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := planFromPrompt(t, planPrompt, "plan")
+
+	at := filepath.Join(w.RepoDir(), filepath.FromSlash(named))
+	if err := os.MkdirAll(filepath.Dir(at), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(at, []byte("# plan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, stage := range []string{"build", "verify"} {
+		p, err := stagePrompt(w, stage)
+		if err != nil {
+			t.Fatalf("%s: %v", stage, err)
+		}
+		got := planFromPrompt(t, p, stage)
+		if got != named {
+			t.Errorf("%s names %q, but the plan stage wrote %q", stage, got, named)
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(w.RepoDir(), filepath.FromSlash(got))); err != nil {
+			t.Errorf("%s names %q, which the plan stage never wrote: %v", stage, got, err)
+		}
+	}
+
+	// cfg is loaded again here only to confirm the test's own setup landed
+	// the plan under the configured directory, not the default.
+	if !strings.HasPrefix(named, cfg.Paths.Plans+"/") {
+		t.Fatalf("plan written outside the configured directory: %q vs %q", named, cfg.Paths.Plans)
+	}
+}
+
 // Default config keeps today's behaviour: plans/, unchanged.
 func TestPlanPathDefaultsToPlans(t *testing.T) {
 	w := ws(t, "")
