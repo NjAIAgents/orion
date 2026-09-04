@@ -404,8 +404,18 @@ func landResumed(st batchState, members []Member, cfg config.Config, deps Deps,
 	_ = g.DropRef(st.Ref)
 	_ = g.DeleteRemoteRef(st.Ref)
 
+	// WHAT WAS SKIPPED, and what was not (OR-336).
+	//
+	// "with no further CI run" read as a claim about CI in general, and a
+	// merge to the work branch starts that branch's own checks a second
+	// later -- so the line appeared to be contradicted by the next thing on
+	// screen. What is actually skipped is a RE-TEST OF THE BATCH REF: it was
+	// already green, and the tree that merges is the tree that was tested,
+	// which is the whole saving batching exists for.
 	ui.Say(w, "", events.ActorOrion, ui.VerbOK,
-		"landed %d approved branch(es) as one, with no further CI run", len(members))
+		"landed %d approved branch(es) into %s as one commit; %s was already green, "+
+			"so it was not tested again (%s runs its own checks now)",
+		len(members), st.Base, st.Ref, st.Base)
 
 	// Every member of a resumed batch landed: the proof covers the recorded
 	// set, and LandRef merged that set whole. The URL comes from the record
@@ -675,7 +685,7 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 			// left orion-ready, collected into the next batch, and convicted
 			// again -- with the row saying "fix round 1 of 3" about a loop
 			// that did not exist.
-			res = failCulprit(res, r.Member, cfg, opts, deps, ws, log, w)
+			res = failCulprit(res, r.Member, ref, cfg, opts, deps, ws, log, w)
 		default:
 			// Ejected and deferred are not failures: the branch is sound and
 			// will be offered to the next batch. Saying "stale" reuses the
@@ -891,7 +901,7 @@ func pendingResults(members []Member) []Result {
 // branch. The pull request it cites is the BATCH's, because that is where
 // the failure is; the branch it fixes is the member's, because that is where
 // the fault is.
-func failCulprit(res Result, m Member, cfg config.Config, opts Options, deps Deps,
+func failCulprit(res Result, m Member, ref string, cfg config.Config, opts Options, deps Deps,
 	ws *workspace.Workspace, log *events.Log, w io.Writer) Result {
 
 	res.Verdict = VerdictFailing
@@ -905,8 +915,12 @@ func failCulprit(res Result, m Member, cfg config.Config, opts Options, deps Dep
 			detail += " on " + c
 		}
 	}
+	// FailedOn names the batch ref, so the fix run reads the log from where
+	// the failure actually happened rather than from the member's own branch,
+	// whose last run is stale or green (OR-336).
 	pr := PR{URL: batchPR(), Verdict: VerdictFailing, Head: m.Head,
-		Detail: "convicted by the batch's isolation: " + detail}
+		FailedOn: ref,
+		Detail:   "convicted by the batch's isolation: " + detail}
 	return failing(res, m.Key, pr, cfg, m.Branch, opts, deps, ws, log, w)
 }
 

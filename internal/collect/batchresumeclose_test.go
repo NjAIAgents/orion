@@ -216,3 +216,31 @@ func TestALandedBatchPrunesItsMembersBranches(t *testing.T) {
 		}
 	}
 }
+
+// The landing line says WHAT was skipped (OR-336).
+//
+// It read "landed 1 approved branch(es) as one, with no further CI run",
+// which sounds like a claim about CI in general -- and merging to the work
+// branch starts that branch's own checks a second later, so the next thing
+// on screen appeared to contradict it. The saving is real but narrower: the
+// BATCH REF was not tested again, because it was already green and the tree
+// that merges is the tree that was tested.
+func TestTheLandingLineNamesWhatWasNotTestedAgain(t *testing.T) {
+	ms := members("OR-150")
+	st, g, ws, cfg := landResumedFixture(t, ms)
+
+	var buf bytes.Buffer
+	landResumed(st, ms, cfg, Deps{Jira: newTracker()}, g, ws, &buf)
+
+	got := buf.String()
+	// The ref that was not re-tested, and the branch that now runs its own.
+	for _, want := range []string{"orion/batch", "develop", "already green"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the landing line does not mention %q:\n%s", want, got)
+		}
+	}
+	// The old wording claimed more than it meant.
+	if strings.Contains(got, "no further CI run") {
+		t.Errorf("the line still reads as a claim about CI in general:\n%s", got)
+	}
+}

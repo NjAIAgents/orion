@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/changelog"
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -36,16 +37,40 @@ FOREGROUND and wait for them there, however long they take. If you find
 yourself checking whether something has finished yet, you are already stuck --
 the breaker will stop you, and the work will be lost.`
 
-func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
-	p, err := stageBody(ws, stage)
+func stagePrompt(ws *workspace.Workspace, stage string, tk config.Toolkit) (string, error) {
+	p, err := stageBody(ws, stage, tk)
 	if err != nil || p == "" {
 		return p, err
 	}
 	return p + "\n\n" + headlessNote, nil
 }
 
-func stageBody(ws *workspace.Workspace, stage string) (string, error) {
+// command resolves what a stage delegates to: the project's configured
+// command, or the nj-agents skill Orion has always named.
+//
+// The built-in is passed in rather than held in a table beside the config,
+// because the fallback belongs next to the prompt that states it -- a second
+// copy of "the intent stage runs /capture-intent" is a copy that drifts.
+// An unset stage is a NORMAL answer, not a failure, and a partial map is a
+// supported configuration (decisions/0019): every stage resolves
+// independently, so configuring one stage never disturbs the others.
+func command(tk config.Toolkit, stage, builtin string) string {
+	if c := strings.TrimSpace(tk.Stage(stage)); c != "" {
+		return c
+	}
+	return builtin
+}
+
+func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string, error) {
 	idea := ws.Task.Idea
+
+	// Four stages name the plan file: the one that writes it, and the three
+	// that read it. The path comes from config rather than a literal so a
+	// project with a non-default paths.plans gets prompts that agree with
+	// the shield's plan gate, which reads the same setting through the same
+	// helper. A build prompt pointing at a file the plan stage never wrote
+	// is the same silent break as a gate looking in the wrong directory.
+	plan := config.Load(ws.RepoDir()).PlanPath(ws.Task.Slug)
 
 	switch strings.ToLower(stage) {
 	case "intent":
@@ -53,9 +78,9 @@ func stageBody(ws *workspace.Workspace, stage string) (string, error) {
 			"Capture the intent behind this idea, in the originator's words:",
 			quote(idea),
 			"",
-			"Use the /capture-intent skill. It writes docs/intent/<slug>.md with a fixed",
+			"Use the "+command(tk, "intent", "/capture-intent")+" skill. It writes docs/intent/<slug>.md with a fixed",
 			"shape and proposes the commit; the path is part of its contract, so do not",
-			"relocate the file. /pm-plan later points at this capture as grounding.",
+			"relocate the file. "+command(tk, "decompose", "/pm-plan")+" later points at this capture as grounding.",
 			"",
 			"You are the product manager here, and that one file is everything you leave",
 			"behind: what is being built, why it matters, and how success will be",
@@ -115,7 +140,7 @@ func stageBody(ws *workspace.Workspace, stage string) (string, error) {
 			"The bar: an engineer who has never seen this conversation could implement the change",
 			"from the plan alone.",
 			"",
-			"Write plans/"+ws.Task.Slug+".plan.md and commit it. Do not implement yet.",
+			"Write "+plan+" and commit it. Do not implement yet.",
 		), nil
 
 	case "ticket":
@@ -129,7 +154,7 @@ func stageBody(ws *workspace.Workspace, stage string) (string, error) {
 		return join(
 			"Lay out the repository skeleton for this project.",
 			"",
-			"Use the /scaffold-project skill. It grounds the security and governance",
+			"Use the "+command(tk, "scaffold", "/scaffold-project")+" skill. It grounds the security and governance",
 			"layer in the OpenSSF OSPS Baseline and delegates the stack layout to the",
 			"ecosystem's own generator rather than inventing one.",
 			"",
@@ -142,9 +167,9 @@ func stageBody(ws *workspace.Workspace, stage string) (string, error) {
 
 	case "decompose":
 		return join(
-			"Decompose plans/"+ws.Task.Slug+".plan.md into tracker work items.",
+			"Decompose "+plan+" into tracker work items.",
 			"",
-			"Use /pm-plan. Preview the ENTIRE Epic, Story and Task tree and wait for",
+			"Use "+command(tk, "decompose", "/pm-plan")+". Preview the ENTIRE Epic, Story and Task tree and wait for",
 			"explicit approval before creating anything.",
 			"",
 			"This approval is not optional and is not waived by auto-merge being on.",
@@ -152,6 +177,22 @@ func stageBody(ws *workspace.Workspace, stage string) (string, error) {
 			"by other people and cannot be cleanly withdrawn.",
 			"",
 			"Search the tracker first and reconcile, so a re-run never double-creates.",
+			"",
+			// One description, two readers (OR-164). See ticketShape.
+			"Write EVERY item's description in this shape, in this order:",
+			"",
+			quote(ticketShape),
+			"",
+			"A human reads down to the rule and stops; an agent reads past it. That is",
+			"the whole point of the rule being there, and it is why one description can",
+			"serve both without a second, shorter ticket nobody keeps current.",
+			"",
+			"Below the rule, CITE rather than restate. Name the file and let the agent",
+			"read it: a quoted excerpt goes stale in place while the code moves on.",
+			"Reference a decision by its ADR id (docs/decisions/NNNN-*.md) rather than",
+			"re-arguing the alternatives you rejected -- that reasoning belongs in one",
+			"file, not copied into every ticket that touches it. If the decision has no",
+			"ADR yet, that is an ADR to write, not a paragraph to paste.",
 			"",
 			// Routing reads a marker off the created ticket. Nothing that
 			// created a ticket knew the vocabulary existed, so the metadata
@@ -173,7 +214,7 @@ func stageBody(ws *workspace.Workspace, stage string) (string, error) {
 
 	case "build", "implement":
 		return join(
-			"Implement plans/"+ws.Task.Slug+".plan.md.",
+			"Implement "+plan+".",
 			"",
 			"First cut a branch from develop for this task. Every task gets its own",
 			"branch; it merges into develop, and develop reaches main later through",
@@ -195,7 +236,7 @@ func stageBody(ws *workspace.Workspace, stage string) (string, error) {
 			"",
 			"Run the build, the tests and the linter. Exercise the changed behaviour and the two",
 			"nearest neighbouring flows. Report what you ran, what you saw, and anything that does",
-			"not match plans/"+ws.Task.Slug+".plan.md.",
+			"not match "+plan+".",
 			"",
 			"Report only. Do not fix anything you find; a fix here would be an unreviewed change",
 			"riding along with a verification pass.",
@@ -255,6 +296,43 @@ const intentShape = `## Success measures
 
 ## Open questions
 - One bullet per thing you could not decide.`
+
+// ticketShape is the shape every tracker item's description must have, shown
+// to the planner verbatim.
+//
+// Tickets written for agents grew long, because an agent that is not given
+// the grounding -- the file paths, the existing behaviour, why the obvious
+// approach is wrong -- reinvents it badly. That was the right instinct paid
+// for by the wrong reader: a backlog a person cannot scan is a backlog they
+// cannot prioritise (OR-164).
+//
+// The horizontal rule is the fix, and it is a rule rather than a convention
+// because it has to be visible at a glance in whatever the tracker renders.
+// Above it is what a human needs to triage; below it is what an agent needs
+// to build. Neither reader loses anything, and there is still only one
+// description to keep current.
+//
+// Open questions sit FIRST below the rule rather than at the end, because
+// "visible without reading the body" is the requirement -- an open question
+// buried under scope and prior art is one nobody sees until it has already
+// been decided by accident.
+const ticketShape = `<One sentence: what changes.>
+
+WHY: <Two lines maximum. Not three.>
+
+---
+
+## Open questions
+- <One bullet per thing you could not decide, or "None".>
+
+## Scope
+<What is in, what is explicitly out.>
+
+## Grounding
+<File paths, existing behaviour, ADR ids. Cite; do not quote at length.>
+
+## Tests
+<What would fail if this regressed.>`
 
 // intentNone is how the capture says there is nothing open. Spelled out here
 // rather than inside the prompt string because discovery.isNone decides which

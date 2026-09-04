@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -83,7 +84,7 @@ func EnsureVenv(dir string) (VenvResult, error) {
 
 	venv := filepath.Join(dir, ".venv")
 	res.Path = venv
-	venvPy := filepath.Join(venv, "bin", "python")
+	venvPy := venvPython(venv)
 
 	switch _, err := os.Stat(venvPy); {
 	case err == nil:
@@ -132,6 +133,20 @@ func EnsureVenv(dir string) (VenvResult, error) {
 
 // installDeps runs the same installs scripts/test.sh would, so the sandbox
 // environment is the one the script expects rather than a second opinion.
+// venvPython is the interpreter inside a virtualenv (OR-334).
+//
+// POSIX puts it at .venv/bin/python; Windows puts it at
+// .venv/Scripts/python.exe. Hardcoding the POSIX form meant every EnsureVenv
+// test failed on Windows with `exec: ".venv\\bin\\python"` -- and those
+// failures were invisible, because the Windows CI leg was reporting success
+// over them.
+func venvPython(venv string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(venv, "Scripts", "python.exe")
+	}
+	return filepath.Join(venv, "bin", "python")
+}
+
 func installDeps(venvPy, dir string, present []string, res *VenvResult) error {
 	pip := func(args ...string) ([]byte, error) {
 		cmd := exec.Command(venvPy, append([]string{"-m", "pip", "install", "--quiet"}, args...)...)

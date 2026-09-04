@@ -3,6 +3,8 @@ package supervisor
 import (
 	"strings"
 	"testing"
+
+	"github.com/orion-sdlc/orion/internal/config"
 )
 
 // OR-157: a patch derived from a symptom often just addresses the symptom --
@@ -113,7 +115,7 @@ func TestFixPromptStillNamesTheFailureAndTheGuardrails(t *testing.T) {
 // Orion owns the tracker contract and the skill applies it (CLAUDE.md's
 // precedence rule).
 func TestDecomposePromptSendsThePlannerToThePublishedTable(t *testing.T) {
-	p, err := stagePrompt(ws(t, ""), "decompose")
+	p, err := stagePrompt(ws(t, ""), "decompose", config.Toolkit{})
 	if err != nil {
 		t.Fatalf("decompose: %v", err)
 	}

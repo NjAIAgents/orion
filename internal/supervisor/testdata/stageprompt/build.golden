@@ -1,0 +1,21 @@
+Implement plans/thing.plan.md.
+
+First cut a branch from develop for this task. Every task gets its own
+branch; it merges into develop, and develop reaches main later through
+its own reviewed pull request.
+
+Rules:
+- Follow the plan. If implementation must depart from it, update the plan in the
+  same commit rather than letting the two drift apart.
+- Write the tests the plan names. Run them. Do not report done until they pass.
+- Do not widen scope. Anything you notice but were not asked to fix goes in a note,
+  not in this diff.
+
+Commit the diff and its tests.
+
+THIS RUN IS HEADLESS. Nothing will ever be announced back to you: a command
+run with run_in_background is never reported as finished, ScheduleWakeup does
+nothing, and no notification of any kind arrives. Run long commands in the
+FOREGROUND and wait for them there, however long they take. If you find
+yourself checking whether something has finished yet, you are already stuck --
+the breaker will stop you, and the work will be lost.
