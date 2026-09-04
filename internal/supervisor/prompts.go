@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/changelog"
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -46,6 +47,14 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 
 func stageBody(ws *workspace.Workspace, stage string) (string, error) {
 	idea := ws.Task.Idea
+
+	// Four stages name the plan file: the one that writes it, and the three
+	// that read it. The path comes from config rather than a literal so a
+	// project with a non-default paths.plans gets prompts that agree with
+	// the shield's plan gate, which reads the same setting through the same
+	// helper. A build prompt pointing at a file the plan stage never wrote
+	// is the same silent break as a gate looking in the wrong directory.
+	plan := config.Load(ws.RepoDir()).PlanPath(ws.Task.Slug)
 
 	switch strings.ToLower(stage) {
 	case "intent":
@@ -115,7 +124,7 @@ func stageBody(ws *workspace.Workspace, stage string) (string, error) {
 			"The bar: an engineer who has never seen this conversation could implement the change",
 			"from the plan alone.",
 			"",
-			"Write plans/"+ws.Task.Slug+".plan.md and commit it. Do not implement yet.",
+			"Write "+plan+" and commit it. Do not implement yet.",
 		), nil
 
 	case "ticket":
@@ -142,7 +151,7 @@ func stageBody(ws *workspace.Workspace, stage string) (string, error) {
 
 	case "decompose":
 		return join(
-			"Decompose plans/"+ws.Task.Slug+".plan.md into tracker work items.",
+			"Decompose "+plan+" into tracker work items.",
 			"",
 			"Use /pm-plan. Preview the ENTIRE Epic, Story and Task tree and wait for",
 			"explicit approval before creating anything.",
@@ -173,7 +182,7 @@ func stageBody(ws *workspace.Workspace, stage string) (string, error) {
 
 	case "build", "implement":
 		return join(
-			"Implement plans/"+ws.Task.Slug+".plan.md.",
+			"Implement "+plan+".",
 			"",
 			"First cut a branch from develop for this task. Every task gets its own",
 			"branch; it merges into develop, and develop reaches main later through",
@@ -195,7 +204,7 @@ func stageBody(ws *workspace.Workspace, stage string) (string, error) {
 			"",
 			"Run the build, the tests and the linter. Exercise the changed behaviour and the two",
 			"nearest neighbouring flows. Report what you ran, what you saw, and anything that does",
-			"not match plans/"+ws.Task.Slug+".plan.md.",
+			"not match "+plan+".",
 			"",
 			"Report only. Do not fix anything you find; a fix here would be an unreviewed change",
 			"riding along with a verification pass.",
