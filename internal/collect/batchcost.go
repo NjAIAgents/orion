@@ -69,7 +69,13 @@ func batchBaseline(path string) baseline {
 	var spans []time.Duration
 	for _, e := range all {
 		n, ok := events.ParseBatchNote(e.Msg)
-		if !ok || n.Elapsed <= 0 {
+		// A batch that RAN CI, or it is not a sample of a CI run (OR-320). A
+		// pass that assembled nothing still writes its note -- "0 run(s) in
+		// 1s" -- and eight of those outvoted every real run, so the median
+		// read 1s and the rule said "running long" from the first second.
+		// Its elapsed measures assembly, not the run, and is the wrong
+		// quantity whatever its value.
+		if !ok || n.Elapsed <= 0 || n.Runs == 0 {
 			continue
 		}
 		spans = append(spans, n.Elapsed)
