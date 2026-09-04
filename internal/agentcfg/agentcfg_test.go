@@ -51,7 +51,7 @@ func toolkit(t *testing.T) string {
 
 func cfgWith(root string, inherit ...string) config.Config {
 	cfg := config.Defaults()
-	cfg.Delegation.NJAgentsDir = root
+	cfg.Toolkit.Dir = root
 	cfg.Delegation.InheritOperatorConfig = inherit
 	return cfg
 }
@@ -246,7 +246,7 @@ func TestAMissingToolkitWarnsAndStaysCurated(t *testing.T) {
 	empty := t.TempDir()
 
 	cfg := config.Defaults()
-	cfg.Delegation.NJAgentsDir = filepath.Join(empty, "nowhere")
+	cfg.Toolkit.Dir = filepath.Join(empty, "nowhere")
 
 	r, err := For(home, cfg, "build", "implementer")
 	if err != nil {

@@ -1,9 +1,16 @@
-// Package njagents locates, validates and provisions the nj-agents toolkit.
+// Package njagents locates, validates and provisions the delegated toolkit.
 //
 // Orion delegates review, secret scanning, test/build verification, PR
-// authoring and PM decomposition to nj-agents. That is a hard dependency,
+// authoring and PM decomposition to a toolkit. That is a hard dependency,
 // not a nicety: those stages have no fallback, and faking them with a
 // thinner substitute would be worse than not running them.
+//
+// nj-agents is the default, not the only one. WHAT a toolkit must ship comes
+// from the stages the project configures (orion.json toolkit.stages), so a
+// project delegating to its own skill repository is validated against the
+// skills it actually invokes rather than against nj-agents' catalogue.
+// Everything specific to nj-agents -- CONVENTIONS.md, install.sh -- is
+// required only of nj-agents.
 //
 // Two things about the real installation shape drove this design.
 //
@@ -23,21 +30,116 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
 // RepoURL is where the toolkit is cloned from when it is absent.
 const RepoURL = "https://github.com/navjyotnishant/nj-agents.git"
 
-// RequiredSkills are the ones Orion actually invokes. Deliberately not the
-// full catalogue: a missing skill Orion never calls is not Orion's problem.
-var RequiredSkills = []string{
+// Toolkit is the project's declared toolkit, in the terms this package
+// resolves against.
+//
+// A copy of config's block rather than the block itself, because config
+// imports THIS package for RepoURL and the dependency cannot run both ways.
+// config.Toolkit.Spec() makes the copy, so the two stay in one place.
+type Toolkit struct {
+	Repo   string            // clone URL; empty means the nj-agents default
+	Dir    string            // an existing clone to prefer over discovery
+	Stages map[string]string // stage name -> the command that stage delegates to
+}
+
+// IsDefault reports whether this is the built-in nj-agents toolkit, which is
+// the only one Orion may assume anything about. Everything a foreign toolkit
+// is NOT required to ship -- CONVENTIONS.md, install.sh -- hangs off this.
+func (t Toolkit) IsDefault() bool {
+	r := strings.TrimSpace(t.Repo)
+	return r == "" || r == RepoURL
+}
+
+// Requirement is one skill a toolkit must ship, and the stage that named it.
+//
+// The stage is carried so a failure points at the config line that caused it.
+// "Missing skills/their-review" sends someone hunting through a toolkit; "the
+// review stage names it" sends them to the one line they can change.
+type Requirement struct {
+	Skill string
+	Stage string // "" for Orion's built-in default set, which no stage named
+}
+
+// defaultSkills are the ones Orion invokes when a project configures no
+// stages of its own. Deliberately not the full catalogue: a missing skill
+// Orion never calls is not Orion's problem.
+var defaultSkills = []string{
 	"pre-push-review",
 	"review-secrets",
 	"review-tests-build",
 	"pr-describe",
 	"pm-plan",
 	"scaffold-project",
+}
+
+// RequiredSkills is what THIS project's toolkit must actually ship.
+//
+// Derived from the stages a project configures rather than fixed, because a
+// fixed list validates a foreign toolkit against nj-agents' catalogue: a
+// perfectly healthy toolkit fails doctor for six skills the project never
+// invokes. What a project names is what it needs.
+//
+// An empty stages map is "unset", not "run nothing", so it yields the
+// built-in set and doctor behaves exactly as it did before toolkits were
+// configurable.
+func RequiredSkills(tk Toolkit) []Requirement {
+	if len(tk.Stages) == 0 {
+		out := make([]Requirement, 0, len(defaultSkills))
+		for _, s := range defaultSkills {
+			out = append(out, Requirement{Skill: s})
+		}
+		return out
+	}
+	// Sorted so a skill two stages both name reports the same stage on every
+	// machine; map order would make the message flap between runs.
+	stages := make([]string, 0, len(tk.Stages))
+	for k := range tk.Stages {
+		stages = append(stages, k)
+	}
+	sort.Strings(stages)
+
+	seen := map[string]bool{}
+	var out []Requirement
+	for _, stage := range stages {
+		name := skillName(tk.Stages[stage])
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, Requirement{Skill: name, Stage: stage})
+	}
+	return out
+}
+
+// skillName turns a stage's command into the skills/<name>/SKILL.md lookup
+// HasSkill already performs: the leading slash goes, and anything after the
+// command itself is an argument, not part of the directory name.
+func skillName(command string) string {
+	f := strings.Fields(command)
+	if len(f) == 0 {
+		return ""
+	}
+	return strings.TrimPrefix(f[0], "/")
+}
+
+// RequiredDocs are the shared contracts the skills read at runtime. Their
+// absence is what a naive skills-directory check misses.
+//
+// Only for the default toolkit. CONVENTIONS.md is nj-agents' own contract,
+// not a thing every skill repository has, and requiring it of a foreign
+// toolkit fails a healthy one over a file it was never going to ship.
+func RequiredDocs(tk Toolkit) []string {
+	if !tk.IsDefault() {
+		return nil
+	}
+	return []string{"CONVENTIONS.md"}
 }
 
 // TestingSkills are the ones the QA stage points its agent at when they are
@@ -57,12 +159,6 @@ func HasSkill(inst *Install, name string) bool {
 	}
 	_, err := os.Stat(filepath.Join(inst.Root, "skills", name, "SKILL.md"))
 	return err == nil
-}
-
-// RequiredDocs are the shared contracts the skills read at runtime. Their
-// absence is what a naive skills-directory check misses.
-var RequiredDocs = []string{
-	"CONVENTIONS.md",
 }
 
 // Install describes a located toolkit.
@@ -126,27 +222,27 @@ func repoLeaf(repoURL string) string {
 // wins over Orion's managed clone. Orion must never quietly prefer its own
 // copy over the one the user maintains: two clones that drift apart, with
 // Orion silently using the stale one, is a genuinely nasty failure.
-func Discover(configured, orionHome string) *Install {
+func Discover(orionHome string, tk Toolkit) *Install {
 	type candidate struct{ path, via string }
 	var candidates []candidate
 
-	if configured != "" {
-		candidates = append(candidates, candidate{expand(configured), "configured"})
+	if tk.Dir != "" {
+		candidates = append(candidates, candidate{expand(tk.Dir), "configured"})
 	}
 	if env := strings.TrimSpace(os.Getenv("ORION_NJ_AGENTS_DIR")); env != "" {
 		candidates = append(candidates, candidate{expand(env), "ORION_NJ_AGENTS_DIR"})
 	}
-	if root := fromRunnerSymlink(); root != "" {
+	if root := fromRunnerSymlink(tk); root != "" {
 		candidates = append(candidates, candidate{root, "resolved from ~/.claude/skills symlink"})
 	}
-	candidates = append(candidates, candidate{VendorDir(orionHome), "Orion-managed clone"})
+	candidates = append(candidates, candidate{VendorDirFor(orionHome, tk.Repo), "Orion-managed clone"})
 
 	var firstIncomplete *Install
 	for _, c := range candidates {
 		if c.path == "" {
 			continue
 		}
-		inst := Validate(c.path)
+		inst := Validate(c.path, tk)
 		if inst == nil {
 			continue
 		}
@@ -170,21 +266,24 @@ func Discover(configured, orionHome string) *Install {
 // levels up from the RESOLVED path. Resolving matters: a relative walk from
 // the link itself lands in the runner's config directory, where none of the
 // shared contracts exist.
-func fromRunnerSymlink() string {
+// The skills it probes are the CONFIGURED ones: a project delegating to its
+// own toolkit has no nj-agents skill installed to resolve from, so probing
+// the built-in names would never find the clone that is actually there.
+func fromRunnerSymlink(tk Toolkit) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
 	for _, runner := range []string{".claude", ".agents", ".codex", ".gemini", ".cursor"} {
-		for _, skill := range RequiredSkills {
-			link := filepath.Join(home, runner, "skills", skill)
+		for _, req := range RequiredSkills(tk) {
+			link := filepath.Join(home, runner, "skills", req.Skill)
 			resolved, err := filepath.EvalSymlinks(link)
 			if err != nil {
 				continue
 			}
 			// <root>/skills/<name> -> up two
 			root := filepath.Dir(filepath.Dir(resolved))
-			if isToolkitRoot(root) {
+			if isToolkitRoot(root, tk) {
 				return root
 			}
 		}
@@ -192,18 +291,28 @@ func fromRunnerSymlink() string {
 	return ""
 }
 
-func isToolkitRoot(dir string) bool {
-	for _, d := range RequiredDocs {
+// isToolkitRoot is the same "is this a toolkit at all" question Validate
+// asks, and must stay the same answer: a skills directory, plus whatever
+// docs are required of this toolkit. For a foreign toolkit no doc is
+// required, so the skills directory is the whole test -- demanding
+// CONVENTIONS.md there would reject the clone the symlink points at.
+func isToolkitRoot(dir string, tk Toolkit) bool {
+	for _, d := range RequiredDocs(tk) {
 		if _, err := os.Stat(filepath.Join(dir, d)); err != nil {
 			return false
 		}
 	}
-	return true
+	return hasSkillsDir(dir)
+}
+
+func hasSkillsDir(root string) bool {
+	st, err := os.Stat(filepath.Join(root, "skills"))
+	return err == nil && st.IsDir()
 }
 
 // Validate checks a candidate root and reports precisely what is missing.
 // Returns nil only when the path is not a plausible toolkit at all.
-func Validate(root string) *Install {
+func Validate(root string, tk Toolkit) *Install {
 	if root == "" {
 		return nil
 	}
@@ -211,36 +320,54 @@ func Validate(root string) *Install {
 	if err != nil || !st.IsDir() {
 		return nil
 	}
-	inst := &Install{Root: root}
 
-	for _, d := range RequiredDocs {
+	// Nothing recognisable at all: not a toolkit, just a directory.
+	//
+	// Tested EXPLICITLY, on the one thing every skill repository has. This
+	// used to be arithmetic -- everything required is missing, so nothing is
+	// here -- which held only while the required lists were fixed at seven.
+	// They now shrink with the config, and a one-skill zero-doc project would
+	// make an empty directory pass that comparison and be reported healthy.
+	// A false negative here costs a confusing "not installed"; a false
+	// positive tells someone a directory with no skills in it is fine.
+	if !hasSkillsDir(root) {
+		return nil
+	}
+
+	inst := &Install{Root: root}
+	for _, d := range RequiredDocs(tk) {
 		if _, err := os.Stat(filepath.Join(root, d)); err != nil {
 			inst.Missing = append(inst.Missing, d)
 		}
 	}
 	skillsDir := filepath.Join(root, "skills")
-	if _, err := os.Stat(skillsDir); err != nil {
-		inst.Missing = append(inst.Missing, "skills/")
-	} else {
-		for _, s := range RequiredSkills {
-			if _, err := os.Stat(filepath.Join(skillsDir, s, "SKILL.md")); err != nil {
-				inst.Missing = append(inst.Missing, "skills/"+s)
-			}
+	for _, req := range RequiredSkills(tk) {
+		if _, err := os.Stat(filepath.Join(skillsDir, req.Skill, "SKILL.md")); err != nil {
+			inst.Missing = append(inst.Missing, req.describe())
 		}
 	}
-	if _, err := os.Stat(filepath.Join(root, "install.sh")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "install.sh")); err != nil && tk.IsDefault() {
 		// Not fatal for reading skills, but it is how Orion wires a
 		// workspace, so its absence is worth saying out loud.
+		//
+		// Only for the default toolkit, which does ship one. install.sh is
+		// nj-agents' convention, not a rule every skill repository follows,
+		// and warning about a file a foreign toolkit was never going to have
+		// trains people to ignore the warnings that mean something.
 		inst.Warnings = append(inst.Warnings, "install.sh not found; per-workspace install unavailable")
-	}
-
-	// Nothing recognisable at all: not a toolkit, just a directory.
-	if len(inst.Missing) >= len(RequiredDocs)+len(RequiredSkills) {
-		return nil
 	}
 
 	inst.Commit, inst.Dirty = gitState(root)
 	return inst
+}
+
+// describe names the missing skill AND the config line that asked for it,
+// so a failure points at something the reader can change.
+func (r Requirement) describe() string {
+	if r.Stage == "" {
+		return "skills/" + r.Skill
+	}
+	return "skills/" + r.Skill + " (required by the " + r.Stage + " stage)"
 }
 
 func gitState(dir string) (string, bool) {
@@ -259,35 +386,51 @@ func gitState(dir string) (string, bool) {
 // third-party code and edits the user's runner configuration. Those are
 // different consent levels, and collapsing them into one health-check flag
 // would be wrong. InstallInto is the separate, explicit step.
-func Clone(orionHome, ref string) (*Install, error) {
-	dst := VendorDir(orionHome)
+// The URL comes from the project's toolkit block, and a non-default one is
+// CONFIRMED before anything is fetched. Cloning the vendor default is a
+// decision Orion already made on the user's behalf; cloning whatever URL a
+// checked-in config names is code from an arbitrary third party landing in
+// ORION_HOME, which is a different consent level and belongs to the operator.
+// ask returning false leaves the machine exactly as it was.
+func Clone(orionHome string, tk Toolkit, ref string, ask Confirm) (*Install, error) {
+	repo := strings.TrimSpace(tk.Repo)
+	if repo == "" {
+		repo = RepoURL
+	}
+	dst := VendorDirFor(orionHome, repo)
 
-	if inst := Validate(dst); inst != nil && len(inst.Missing) == 0 {
+	if inst := Validate(dst, tk); inst != nil && len(inst.Missing) == 0 {
 		inst.Via = "Orion-managed clone (already present)"
 		inst.Managed = true
 		return inst, nil
+	}
+	if !tk.IsDefault() {
+		if ask == nil || !ask(repo) {
+			return nil, fmt.Errorf("declined: %s is not the toolkit Orion ships, and nothing was fetched.\n"+
+				"  Clone it yourself if you meant to:\n    %s", repo, CloneCommand(orionHome, tk))
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return nil, err
 	}
 	if _, err := os.Stat(dst); err == nil {
-		return nil, fmt.Errorf("%s exists but is not a complete nj-agents checkout.\n"+
-			"  Remove it and re-run, or point Orion at a good copy with ORION_NJ_AGENTS_DIR.", dst)
+		return nil, fmt.Errorf("%s exists but is not a complete checkout of %s.\n"+
+			"  Remove it and re-run, or point Orion at a good copy with ORION_NJ_AGENTS_DIR.", dst, repo)
 	}
 	if _, err := exec.LookPath("git"); err != nil {
-		return nil, fmt.Errorf("git is required to fetch nj-agents")
+		return nil, fmt.Errorf("git is required to fetch the toolkit")
 	}
 
 	args := []string{"clone", "--depth", "1"}
 	if ref != "" {
 		args = append(args, "--branch", ref)
 	}
-	args = append(args, RepoURL, dst)
+	args = append(args, repo, dst)
 	if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("cloning nj-agents: %s", strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("cloning %s: %s", repo, strings.TrimSpace(string(out)))
 	}
 
-	inst := Validate(dst)
+	inst := Validate(dst, tk)
 	if inst == nil || len(inst.Missing) > 0 {
 		return inst, fmt.Errorf("cloned %s but the checkout is incomplete", dst)
 	}
@@ -319,7 +462,13 @@ func InstallInto(inst *Install, projectDir string) (string, error) {
 	}
 	script := filepath.Join(inst.Root, "install.sh")
 	if _, err := os.Stat(script); err != nil {
-		return "", fmt.Errorf("%s not found; cannot wire nj-agents into %s", script, projectDir)
+		// Say WHY rather than surfacing a stat error. install.sh is optional
+		// now, so its absence is a fact about the toolkit, not a fault: this
+		// one wires itself some other way, and there is nothing to run.
+		return "", fmt.Errorf("the toolkit at %s ships no install.sh, so Orion has no installer to run for %s.\n"+
+			"  It is still usable: skills are read from the clone directly. Wire it into\n"+
+			"  the directory however that toolkit documents, or run its skills globally.",
+			inst.Root, projectDir)
 	}
 	out, err := run(inst.Root, "bash", script, "--project", projectDir)
 	if err != nil {
@@ -341,9 +490,34 @@ func InstallCommand(inst *Install, projectDir string) string {
 	return fmt.Sprintf("cd %s && ./install.sh --project %s", root, projectDir)
 }
 
-// CloneCommand is the manual equivalent of Clone.
-func CloneCommand(orionHome string) string {
-	return fmt.Sprintf("git clone %s %s", RepoURL, VendorDir(orionHome))
+// CloneCommand is the manual equivalent of Clone. Printed when consent has
+// not been given, so it must name the SAME repository Clone would have used.
+func CloneCommand(orionHome string, tk Toolkit) string {
+	repo := strings.TrimSpace(tk.Repo)
+	if repo == "" {
+		repo = RepoURL
+	}
+	return fmt.Sprintf("git clone %s %s", repo, VendorDirFor(orionHome, repo))
+}
+
+// Confirm asks the operator whether a toolkit URL may be fetched. Injected
+// rather than prompted inline so the decision is testable and so a caller
+// with nowhere to ask can pass nil, which reads as no.
+type Confirm func(repoURL string) bool
+
+// ConfirmOnStdin is the interactive answer. A non-interactive shell answers
+// no: fetching third-party code because nobody was there to object is the
+// wrong default, and `orion doctor --fix` runs in CI.
+func ConfirmOnStdin(repoURL string) bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	fmt.Printf("Fetch the toolkit from %s into Orion's vendor directory? [y/N] ", repoURL)
+	var ans string
+	_, _ = fmt.Scanln(&ans)
+	ans = strings.ToLower(strings.TrimSpace(ans))
+	return ans == "y" || ans == "yes"
 }
 
 func run(dir, name string, args ...string) (string, error) {

@@ -381,6 +381,35 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	if last.ExitCode != 0 {
 		return last, fmt.Errorf("stage %s failed: %s", opts.Stage, last.Reason)
 	}
+
+	// The stage exited 0. That is the agent's opinion of itself, and it is
+	// worth exactly as much as the artifact it left behind: a skill name that
+	// resolves to nothing produces a run that reads the prompt, reports it
+	// cannot find the skill, and exits 0. Checked HERE, after the agent has
+	// exited and before the run is handed on, so a wrong orion.json line is
+	// named at the stage that carries it.
+	//
+	// Only when the STAGE PROMPT ran. A caller that supplied its own prompt --
+	// fix, triage, done, aiops, dba -- asked for something else entirely, and
+	// the artifact contract belongs to the prompt that states it (stagePrompt,
+	// "write X and commit it"), not to the stage name it was filed under.
+	// A dry run is excluded for the obvious reason: nothing was asked to write
+	// anything.
+	if !opts.DryRun && opts.Prompt == "" {
+		if err := checkStageArtifact(ws.RepoDir(), cfg, opts.Stage, ws.Task.Slug); err != nil {
+			last.Reason = "the stage left no artifact"
+			ws.Task.Status = "failed"
+			if saveErr := ws.SaveTask(); saveErr != nil {
+				fmt.Fprintf(os.Stderr, "orion: could not update task.json: %v\n", saveErr)
+			}
+			notify.Send(notify.Event{
+				Level: notify.Blocked, Workspace: ws.ID, Channel: channelFor(ws),
+				Title: fmt.Sprintf("orion: %s left no artifact in %s", opts.Stage, ws.ID),
+				Body:  err.Error() + "\nlog: " + last.LogPath,
+			})
+			return last, err
+		}
+	}
 	// Notify on failure, not only on the quota and timeout paths that
 	// already did. A supervisor that stays silent when a stage fails is one
 	// you have to poll, and a supervisor you have to poll is one you stop
