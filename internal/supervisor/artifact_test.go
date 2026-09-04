@@ -298,3 +298,183 @@ func TestACustomPromptIsNotHeldToTheStageArtifact(t *testing.T) {
 		t.Fatalf("a custom prompt must not be gated on the stage artifact: %v", err)
 	}
 }
+
+// The plan stage's artifact path follows the slug, not a fixed name --
+// default paths, an arbitrary slug.
+func TestPlanStageArtifactPathForDefaultPaths(t *testing.T) {
+	cfg := defaults(t)
+	want := filepath.Join("plans", "foo.plan.md")
+	if got := stageArtifact(cfg, "plan", "foo"); got != want {
+		t.Errorf("stageArtifact(plan, foo) = %q, want %q", got, want)
+	}
+}
+
+// A directory sitting at the artifact's path is not the file the stage owes,
+// and must be reported as exactly that rather than folded into "absent" or
+// "cannot be read".
+func TestArtifactPathThatIsADirectoryFails(t *testing.T) {
+	cfg := defaults(t)
+	repo := gitRepo(t)
+	rel := filepath.Join("specs", "thing.spec.md")
+	if err := os.MkdirAll(filepath.Join(repo, rel), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := checkStageArtifact(repo, cfg, "spec", "thing")
+	if err == nil {
+		t.Fatal("a directory at the artifact's path must fail")
+	}
+	if !strings.Contains(err.Error(), "that path is a directory") {
+		t.Errorf("message must say that path is a directory, got: %v", err)
+	}
+}
+
+// A file that exists but cannot be read (e.g. a permission error) must
+// surface os.ReadFile's own error rather than being reported as absent or
+// empty.
+func TestArtifactThatCannotBeReadFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions, so the unreadable case can't be produced")
+	}
+	cfg := defaults(t)
+	repo := gitRepo(t)
+	rel := writeSpec(t, repo, "# Spec\n\nreal content\n")
+	full := filepath.Join(repo, rel)
+	if err := os.Chmod(full, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(full, 0o644) })
+
+	_, statErr := os.ReadFile(full)
+	if statErr == nil {
+		t.Skip("this environment does not enforce file permissions")
+	}
+
+	err := checkStageArtifact(repo, cfg, "spec", "thing")
+	if err == nil {
+		t.Fatal("an unreadable artifact must fail")
+	}
+	if !strings.Contains(err.Error(), "cannot be read") {
+		t.Errorf("message must say the file cannot be read, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), statErr.Error()) {
+		t.Errorf("message must include os.ReadFile's own error, got: %v", err)
+	}
+}
+
+// The "design" alias must fail against the canonical "spec" key -- the
+// message points at toolkit.stages.spec, the key a reader will actually find
+// in orion.json, not a toolkit.stages.design that does not exist.
+func TestFailureNamesCanonicalStageForDesignAlias(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "orion.json"),
+		[]byte(`{"toolkit": {"stages": {"spec": "/some-skill"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := checkStageArtifact(gitRepo(t), config.Load(dir), "design", "thing")
+	if err == nil {
+		t.Fatal("a design stage that wrote nothing must fail")
+	}
+	if !strings.Contains(err.Error(), "toolkit.stages.spec") {
+		t.Errorf("message must name the canonical toolkit.stages.spec, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "toolkit.stages.design") {
+		t.Errorf("message must not name a toolkit.stages.design key, got: %v", err)
+	}
+}
+
+// Whitespace-only content -- spaces, tabs and newlines with nothing else --
+// is exactly as empty as a zero-byte file, since strings.TrimSpace strips all
+// of it to nothing.
+func TestWhitespaceOnlyArtifactFails(t *testing.T) {
+	cfg := defaults(t)
+	repo := gitRepo(t)
+	writeSpec(t, repo, "   \t\t\n\n   \n\t \n")
+	err := checkStageArtifact(repo, cfg, "spec", "thing")
+	if err == nil {
+		t.Fatal("a whitespace-only artifact must fail")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("message must say the file is empty, got: %v", err)
+	}
+}
+
+// A file written to the worktree but never `git add`-ed is exactly what `git
+// ls-files --error-unmatch` is there to catch, independent of the "committed"
+// case already covered: this one never even reaches the index.
+func TestGitLsFilesCatchesAnUnstagedFile(t *testing.T) {
+	cfg := defaults(t)
+	repo := gitRepo(t)
+	writeSpec(t, repo, "# Spec\n\nreal content\n")
+
+	out, err := exec.Command("git", "-C", repo, "ls-files", "--error-unmatch", "--",
+		filepath.Join("specs", "thing.spec.md")).CombinedOutput()
+	if err == nil {
+		t.Fatalf("git ls-files must report the unstaged file as unmatched, got: %s", out)
+	}
+
+	checkErr := checkStageArtifact(repo, cfg, "spec", "thing")
+	if checkErr == nil {
+		t.Fatal("an unstaged artifact must fail")
+	}
+	if !strings.Contains(checkErr.Error(), "never committed") {
+		t.Errorf("message must say it was never committed, got: %v", checkErr)
+	}
+}
+
+// An artifact that WAS committed, then removed with `git rm`, leaves no file
+// at the path -- the same "absent" branch as a stage that never wrote
+// anything, not a fourth state of its own.
+func TestArtifactCommittedThenGitRmedFails(t *testing.T) {
+	cfg := defaults(t)
+	repo := gitRepo(t)
+	rel := writeSpec(t, repo, "# Spec\n\nreal content\n")
+	for _, args := range [][]string{
+		{"add", rel}, {"commit", "-qm", "spec"}, {"rm", "-q", rel}, {"commit", "-qm", "remove spec"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(repo, rel)); !os.IsNotExist(err) {
+		t.Fatalf("the file must no longer exist on disk, stat err = %v", err)
+	}
+
+	err := checkStageArtifact(repo, cfg, "spec", "thing")
+	if err == nil {
+		t.Fatal("a committed-then-removed artifact must fail")
+	}
+	if !strings.Contains(err.Error(), "wrote no file") {
+		t.Errorf("message must say the command wrote no file, got: %v", err)
+	}
+}
+
+// Case does not matter in a toolkit.stages key or a CLI flag, so it must not
+// matter here either: upper case, mixed case and surrounding whitespace all
+// resolve to the same artifact as the canonical lower-case stage name.
+func TestStageArtifactIsCaseAndWhitespaceInsensitive(t *testing.T) {
+	cfg := defaults(t)
+	for _, tc := range []struct{ stage, want string }{
+		{"SPEC", filepath.Join("specs", "thing.spec.md")},
+		{"Plan ", filepath.Join("plans", "thing.plan.md")},
+		{" INTENT ", filepath.Join("docs/intent", "thing.md")},
+	} {
+		if got := stageArtifact(cfg, tc.stage, "thing"); got != tc.want {
+			t.Errorf("stageArtifact(%q) = %q, want %q", tc.stage, got, tc.want)
+		}
+	}
+}
+
+// An empty stage name owes no artifact and the check must skip it rather than
+// fail -- same contract as any other stage with no single committed file.
+func TestEmptyStageNameOwesNoArtifact(t *testing.T) {
+	cfg := defaults(t)
+	if got := stageArtifact(cfg, "", "thing"); got != "" {
+		t.Errorf("stageArtifact(\"\") = %q, want \"\"", got)
+	}
+	if err := checkStageArtifact(t.TempDir(), cfg, "", "thing"); err != nil {
+		t.Errorf("an empty stage name must be skipped, got: %v", err)
+	}
+}
