@@ -42,6 +42,19 @@ func TestExploreOptionsRunAsItsOwnActorOnItsOwnModel(t *testing.T) {
 	}
 }
 
+// A fan of five explores dispatches five children whose Actor and Stage are
+// all "explore" -- the question is the only thing that tells them apart on
+// the roster line (OR-335), so exploreOptions must carry it as About rather
+// than dropping it on the floor.
+func TestExploreOptionsCarriesTheQuestionAsAbout(t *testing.T) {
+	o := exploreOptions("OR-1", "where is the rate limiter defined?")
+
+	if o.About != "where is the rate limiter defined?" {
+		t.Errorf("About = %q, want the question itself so a fan of explores reads as "+
+			"different questions rather than five copies of the word explore", o.About)
+	}
+}
+
 func TestParseExploreAnswerSplitsAnswerFromCitations(t *testing.T) {
 	got := parseExploreAnswer("Defined in internal/supervisor/ratelimit.go.\n" +
 		"PATHS: internal/supervisor/ratelimit.go, internal/config/config.go\n")
