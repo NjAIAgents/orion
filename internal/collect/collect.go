@@ -100,6 +100,19 @@ type PR struct {
 	// tickets share one run -- so the operator needs to see WHICH of the
 	// three platforms is still going, not a count (OR-264).
 	Checks []Check
+	// FailedOn is the ref whose CI run actually went red, when that is not
+	// the ticket's own branch (OR-336).
+	//
+	// A batch culprit failed on orion/batch, tested alongside its siblings;
+	// its own branch's last run is stale, green, or absent. The fix agent
+	// looks the log up by ref, so without this it searched the member's
+	// branch, found nothing, and was handed the conviction sentence instead
+	// of the failure -- two attempts were spent reporting "cannot see the
+	// actual CI log", which was exactly true.
+	//
+	// Empty on the per-branch path, where the branch and the failure are the
+	// same thing.
+	FailedOn string
 }
 
 // Check is one CI check and where it got to.
@@ -152,7 +165,9 @@ type Deps struct {
 	//
 	// Takes the event log so the fix run's activity is attributed and recorded
 	// the same way every other supervised run's is (OR-176).
-	Fix func(ws *workspace.Workspace, key, branch, failure string, log *events.Log) (pushed bool, summary string, denied *PolicyDenial, err error)
+	// failedOn is the ref whose run to read the log from, or "" to read the
+	// branch's own (OR-336).
+	Fix func(ws *workspace.Workspace, key, branch, failedOn, failure string, log *events.Log) (pushed bool, summary string, denied *PolicyDenial, err error)
 	// Judge puts ONE question to a model about a finished, green run: does
 	// this diff do what the ticket asked for (OR-244)? It returns the reply
 	// verbatim; internal/done parses it.
