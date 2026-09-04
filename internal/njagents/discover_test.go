@@ -245,9 +245,10 @@ func TestFromRunnerSymlinkProbesOnlyConfiguredSkillNames(t *testing.T) {
 
 	tk := Toolkit{Repo: "https://example.com/kit.git", Stages: map[string]string{"review": "/custom-skill"}}
 	got := fromRunnerSymlink(tk)
-	if got != configuredRoot {
+	want := evalSymlinksOrFatal(t, configuredRoot)
+	if got != want {
 		t.Errorf("fromRunnerSymlink = %q, want the configured skill's root %q (not the unconfigured %q)",
-			got, configuredRoot, unconfiguredRoot)
+			got, want, unconfiguredRoot)
 	}
 }
 
