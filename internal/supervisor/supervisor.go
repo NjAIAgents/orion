@@ -101,6 +101,17 @@ type Options struct {
 	// it belongs to no ticket, so there is nothing to attribute it to.
 	Actor string
 	Key   string
+	// About is one short phrase naming what THIS run was given -- the package
+	// it owns, the question it was asked, how many cases it is writing. Used
+	// only by the fan's narration, and only there because the fan is the one
+	// place where N runs share a stage, an actor and a model and differ solely
+	// in their share of the work (OR-335). Without it a fan of five prints
+	// five lines identical but for an index, and no reader can tell which
+	// child is which or why one took three times as long as another.
+	//
+	// Optional and free-form: the fan flattens and clips it. Empty simply
+	// leaves the label as position and name, which is what it was before.
+	About string
 }
 
 type Result struct {
