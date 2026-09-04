@@ -12,6 +12,22 @@ import (
 // Clone/Confirm consent path. writeToolkit and writeToolkitAt are shared
 // helpers defined in required_test.go and discover_test.go respectively.
 
+// evalSymlinksOrFatal canonicalizes an expected root the same way
+// fromRunnerSymlink canonicalizes its result (filepath.EvalSymlinks on the
+// resolved skill link). Without this, a t.TempDir() root compared directly
+// against fromRunnerSymlink's return value only matches by coincidence: on
+// macOS /tmp is itself a symlink to /private/tmp, so a TMPDIR under /tmp
+// resolves to a /private/tmp path that a raw string comparison would wrongly
+// reject as "not the same root".
+func evalSymlinksOrFatal(t *testing.T, root string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
 // -- fromRunnerSymlink: searching for configured skill names -------------
 
 func TestFromRunnerSymlinkReturnsToolkitRootWhenSymlinkResolvesToIt(t *testing.T) {
@@ -32,8 +48,9 @@ func TestFromRunnerSymlinkReturnsToolkitRootWhenSymlinkResolvesToIt(t *testing.T
 
 	tk := Toolkit{Repo: "https://example.com/kit.git", Stages: map[string]string{"review": "/custom-skill"}}
 	got := fromRunnerSymlink(tk)
-	if got != toolkitRoot {
-		t.Errorf("fromRunnerSymlink = %q, want the resolved toolkit root %q", got, toolkitRoot)
+	want := evalSymlinksOrFatal(t, toolkitRoot)
+	if got != want {
+		t.Errorf("fromRunnerSymlink = %q, want the resolved toolkit root %q", got, want)
 	}
 }
 
@@ -67,8 +84,9 @@ func TestFromRunnerSymlinkWorksAcrossAllRunnerDirectories(t *testing.T) {
 
 			tk := Toolkit{Repo: "https://example.com/kit.git", Stages: map[string]string{"review": "/custom-skill"}}
 			got := fromRunnerSymlink(tk)
-			if got != toolkitRoot {
-				t.Errorf("fromRunnerSymlink under %s = %q, want %q", runner, got, toolkitRoot)
+			want := evalSymlinksOrFatal(t, toolkitRoot)
+			if got != want {
+				t.Errorf("fromRunnerSymlink under %s = %q, want %q", runner, got, want)
 			}
 		})
 	}
