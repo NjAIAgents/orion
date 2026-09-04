@@ -16,6 +16,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/orion-sdlc/orion/internal/testproc"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -103,7 +104,7 @@ func orionBinary(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "orion")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	cmd := testproc.Command(t, "go", "build", "-o", bin, ".")
 	cmd.Dir = "."
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -117,7 +118,7 @@ func orionBinary(t *testing.T) string {
 func runClose(t *testing.T, bin, jiraURL, workdir string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
 	full := append([]string{"release", "close"}, args...)
-	cmd := exec.Command(bin, full...)
+	cmd := testproc.Command(t, bin, full...)
 	cmd.Dir = workdir
 	cmd.Env = append(os.Environ(),
 		"ORION_HOME="+t.TempDir(),
@@ -451,7 +452,7 @@ func TestCLIProjectFlagScopesTheLookup(t *testing.T) {
 // close rather than proceeding with a broken client.
 func TestCLIFailsWhenJiraIsNotConfigured(t *testing.T) {
 	bin := orionBinary(t)
-	cmd := exec.Command(bin, "release", "close", "v1.0.0", "--project", "OR")
+	cmd := testproc.Command(t, bin, "release", "close", "v1.0.0", "--project", "OR")
 	cmd.Dir = t.TempDir()
 	cmd.Env = append(os.Environ(), "ORION_HOME="+t.TempDir())
 	// Deliberately no ORION_JIRA_* vars: strip any that leaked from the

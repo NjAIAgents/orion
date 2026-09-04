@@ -10,6 +10,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/orion-sdlc/orion/internal/testproc"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -127,7 +128,7 @@ func queueProject(t *testing.T) string {
 // fake Jira server, isolated from any real Orion home or registry.
 func runQueueCmd(t *testing.T, bin, jiraURL, workdir string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
-	cmd := exec.Command(bin, append([]string{"queue"}, args...)...)
+	cmd := testproc.Command(t, bin, append([]string{"queue"}, args...)...)
 	cmd.Dir = workdir
 	cmd.Env = append(os.Environ(),
 		"ORION_HOME="+t.TempDir(),
