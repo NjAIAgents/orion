@@ -1536,6 +1536,12 @@ func renderPlainTracked(st liveState, now time.Time) ([]string, []plainPrinted, 
 		// removes.
 		body := fmt.Sprintf("%s  %s  %s  %d calls", pad(r.key, liveKeyWidth),
 			pad(r.stage, liveStageWidth), elapsedString(now.Sub(r.started)), r.calls)
+		// A queued row has no run behind it: no elapsed, no calls, no notes
+		// (OR-325). Printing an elapsed from a zero start read as
+		// "2562047h47m", which is the age of the epoch, not of the ticket.
+		if r.queued {
+			body = fmt.Sprintf("%s  %s", pad(r.key, liveKeyWidth), pad(r.stage, liveStageWidth))
+		}
 		// The activity note, which the terminal path already draws and this
 		// one did not. A stage that says what it is doing on a terminal and
 		// stays silent in a piped log is telling two different stories about
@@ -1546,7 +1552,7 @@ func renderPlainTracked(st liveState, now time.Time) ([]string, []plainPrinted, 
 		if r.note != "" {
 			body += "  " + r.note
 		}
-		if notes := r.notes(now); len(notes) > 0 {
+		if notes := r.notes(now); len(notes) > 0 && !r.queued {
 			body += "  " + strings.Join(notes, " "+liveSep+" ")
 		}
 		if r.lastPlain == body {

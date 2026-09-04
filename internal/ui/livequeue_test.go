@@ -88,3 +88,18 @@ func TestABatchMembersRowTakesItsStageFromTheBatch(t *testing.T) {
 		}
 	}
 }
+
+// Off a terminal a queued row is its key and its stage, nothing measured.
+func TestOffTerminalAQueuedRowPrintsNoElapsedOrNotes(t *testing.T) {
+	LiveReset()
+	t.Cleanup(LiveReset)
+	LiveQueue([]QueueRow{{Key: "OR-295", Stage: "ready"}})
+	lines := renderPlain(liveSnapshot(), time.Now())
+	got := strings.Join(lines, "\n")
+	if !strings.Contains(got, "OR-295") || !strings.Contains(got, "ready") {
+		t.Fatalf("the queued row is missing:\n%s", got)
+	}
+	if strings.Contains(got, "h") && strings.Contains(got, "calls") || strings.Contains(got, "baseline") {
+		t.Errorf("a queued row must print no elapsed, calls or notes:\n%s", got)
+	}
+}
