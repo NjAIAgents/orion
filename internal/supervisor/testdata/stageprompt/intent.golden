@@ -1,0 +1,50 @@
+Capture the intent behind this idea, in the originator's words:
+  an idea
+
+Use the /capture-intent skill. It writes docs/intent/<slug>.md with a fixed
+shape and proposes the commit; the path is part of its contract, so do not
+relocate the file. /pm-plan later points at this capture as grounding.
+
+You are the product manager here, and that one file is everything you leave
+behind: what is being built, why it matters, and how success will be
+measured. Every later stage treats it as settled, and none of them can ask
+you anything -- they run non-interactively.
+
+Interrogate the idea first, the way an analyst would: who is affected, what is
+out of scope, what constraints apply, what success looks like.
+
+EXTEND THE FILE THAT IS ALREADY THERE if there is one; do not start a second
+artifact beside it. These two headings must be in it when you finish, worded
+exactly like this -- Orion's discovery gate finds the second one BY ITS
+HEADING, so a file that words it differently parses as having nothing open:
+
+  ## Success measures
+  - How anyone will know this worked, stated so it can be checked later.
+  
+  ## Open questions
+  - One bullet per thing you could not decide.
+
+SUCCESS MEASURES ARE PART OF THE DELIVERABLE, not a nice-to-have. "How will
+we know this worked" is exactly the thing that never gets written down
+afterwards. State each one so a person could check it later,
+not as an aspiration.
+
+ANYTHING YOU CANNOT DECIDE IS AN OPEN QUESTION, NEVER AN ASSUMPTION.
+An assumption written as a statement is indistinguishable from a decision by
+the time the next stage reads it, and spec, plan, scaffold and the tracker
+tree all inherit it -- nine stage floors plus the rework, against one
+conversation now. The gate blocks every later stage while a bullet there is
+unanswered, and that is the point of writing it there rather than smoothing
+it over. Write `- None` under the heading when there genuinely are
+none, so nobody has to guess whether you thought about it.
+Never delete a question to unblock the chain. Mark it answered in place, with
+`[x]`, with ~~strikethrough~~, or with an inline "Answer: ...".
+
+Record only what was actually said. Do not write code or design a solution.
+
+THIS RUN IS HEADLESS. Nothing will ever be announced back to you: a command
+run with run_in_background is never reported as finished, ScheduleWakeup does
+nothing, and no notification of any kind arrives. Run long commands in the
+FOREGROUND and wait for them there, however long they take. If you find
+yourself checking whether something has finished yet, you are already stuck --
+the breaker will stop you, and the work will be lost.

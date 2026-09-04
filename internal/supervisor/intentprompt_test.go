@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/discovery"
 )
 
@@ -21,7 +22,7 @@ import (
 // finding "## Open questions" in the prompt proves the prompt says it, not
 // that the gate finds it.
 func TestIntentPromptWritesWhatTheDiscoveryGateParses(t *testing.T) {
-	p, err := stagePrompt(ws(t, ""), "intent")
+	p, err := stagePrompt(ws(t, ""), "intent", config.Toolkit{})
 	if err != nil {
 		t.Fatalf("intent: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestIntentPromptWritesWhatTheDiscoveryGateParses(t *testing.T) {
 // missing. Asked for as a heading in the shape, not as a sentence the agent can
 // satisfy with a paragraph about ambitions.
 func TestIntentPromptRequiresSuccessMeasures(t *testing.T) {
-	p, err := stagePrompt(ws(t, ""), "intent")
+	p, err := stagePrompt(ws(t, ""), "intent", config.Toolkit{})
 	if err != nil {
 		t.Fatalf("intent: %v", err)
 	}
@@ -83,7 +84,7 @@ func TestIntentPromptRequiresSuccessMeasures(t *testing.T) {
 // assumption: an assumption written as a statement is indistinguishable from a
 // decision by the time the next stage reads it.
 func TestIntentPromptForbidsAssumptions(t *testing.T) {
-	p, err := stagePrompt(ws(t, ""), "intent")
+	p, err := stagePrompt(ws(t, ""), "intent", config.Toolkit{})
 	if err != nil {
 		t.Fatalf("intent: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestIntentPromptForbidsAssumptions(t *testing.T) {
 // A success measure written as an ambition ("users will love it") cannot be
 // checked later, so the prompt has to say "checkable", not just "required".
 func TestIntentPromptRequiresCheckableSuccessMeasures(t *testing.T) {
-	p, err := stagePrompt(ws(t, ""), "intent")
+	p, err := stagePrompt(ws(t, ""), "intent", config.Toolkit{})
 	if err != nil {
 		t.Fatalf("intent: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestIntentPromptRequiresCheckableSuccessMeasures(t *testing.T) {
 // place -- an agent shown only one form will use only that one, and a re-run
 // that used a form the gate does not recognize still blocks the chain.
 func TestIntentPromptShowsAllWaysToMarkAQuestionAnswered(t *testing.T) {
-	p, err := stagePrompt(ws(t, ""), "intent")
+	p, err := stagePrompt(ws(t, ""), "intent", config.Toolkit{})
 	if err != nil {
 		t.Fatalf("intent: %v", err)
 	}
@@ -147,7 +148,7 @@ func TestIntentPromptShowsAllWaysToMarkAQuestionAnswered(t *testing.T) {
 // written as a statement slips through unnoticed, and the same ambiguity
 // written the way the prompt asks for it blocks the chain until answered.
 func TestIntentPromptAmbiguityMustBecomeOpenQuestionNotAnInventedAnswer(t *testing.T) {
-	p, err := stagePrompt(ws(t, ""), "intent")
+	p, err := stagePrompt(ws(t, ""), "intent", config.Toolkit{})
 	if err != nil {
 		t.Fatalf("intent: %v", err)
 	}

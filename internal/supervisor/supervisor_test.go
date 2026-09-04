@@ -11,6 +11,7 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/agentcfg"
 	"github.com/orion-sdlc/orion/internal/budget"
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -340,7 +341,7 @@ func TestChildEnvDropsSecretsAndInheritedAuthorship(t *testing.T) {
 func TestStagePromptCoversEveryKnownStage(t *testing.T) {
 	w := ws(t, "")
 	for _, stage := range []string{"intent", "spec", "design", "plan", "scaffold"} {
-		got, err := stagePrompt(w, stage)
+		got, err := stagePrompt(w, stage, config.Toolkit{})
 		if err != nil {
 			t.Errorf("%s: %v", stage, err)
 			continue
@@ -349,7 +350,7 @@ func TestStagePromptCoversEveryKnownStage(t *testing.T) {
 			t.Errorf("%s produced an empty prompt", stage)
 		}
 	}
-	if _, err := stagePrompt(w, "no-such-stage"); err == nil {
+	if _, err := stagePrompt(w, "no-such-stage", config.Toolkit{}); err == nil {
 		t.Error("an unknown stage must be an error, not an empty prompt")
 	}
 }
