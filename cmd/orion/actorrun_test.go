@@ -190,7 +190,7 @@ func fakeClaude(t *testing.T) (argsFile string) {
 	dir := t.TempDir()
 	argsFile = filepath.Join(dir, "args.txt")
 	script := "#!/bin/sh\n" +
-		`echo "$@" > ` + argsFile + "\n" +
+		`echo "$@" > ` + shPath(argsFile) + "\n" +
 		`echo '{"result":"{\"title\":\"T\",\"body\":\"B\"}","is_error":false}'` + "\n" +
 		"exit 0\n"
 	writeFakeBinIn(t, dir, "claude", script)
@@ -285,8 +285,8 @@ func TestTheChangelogRunnerGetsNoMCPServersAndACuratedConfigDir(t *testing.T) {
 	// fakeClaude's script only records argv; extend it here to also capture
 	// the child's environment, which is where CLAUDE_CONFIG_DIR shows up.
 	script := "#!/bin/sh\n" +
-		`echo "$@" > ` + argsFile + "\n" +
-		"env > " + envFile + "\n" +
+		`echo "$@" > ` + shPath(argsFile) + "\n" +
+		"env > " + shPath(envFile) + "\n" +
 		`echo '{"result":"did the changelog","is_error":false}'` + "\n" +
 		"exit 0\n"
 	// Through the helper, not os.WriteFile: on Windows the .bat shim beside

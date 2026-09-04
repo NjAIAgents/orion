@@ -27,3 +27,15 @@ func requireSymlinks(t *testing.T) {
 		t.Skipf("this platform will not create symlinks for this process: %v", err)
 	}
 }
+
+// setHome points os.UserHomeDir at dir on every platform.
+//
+// t.Setenv("HOME") alone is not enough: os.UserHomeDir reads USERPROFILE on
+// Windows and ignores HOME entirely, so a test that set only HOME left
+// fromRunnerSymlink searching the RUNNER's real home -- where the fixture
+// does not exist -- and it returned "" (OR-341).
+func setHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+}

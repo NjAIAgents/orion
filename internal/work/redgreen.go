@@ -30,6 +30,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/orion-sdlc/orion/internal/suite"
 )
 
 // redGreenTimeout bounds one run of the repository's suite against the
@@ -196,7 +198,11 @@ func overlayFile(repoDir, dst, path string) error {
 func runSuite(dir string) (ok bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), redGreenTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, filepath.Join(dir, "scripts", "test.sh"))
+	// Through suite.ScriptCommand rather than exec'ing the script directly:
+	// Windows needs the interpreter named, and this is the same argv the
+	// suite package builds for the same file (OR-341).
+	argv := suite.ScriptCommand(filepath.Join(dir, "scripts", "test.sh"))
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
 	if runErr := cmd.Run(); runErr != nil {
 		if _, isExit := runErr.(*exec.ExitError); isExit {

@@ -334,7 +334,7 @@ func checkHooks(dir string) check {
 		for _, e := range entries {
 			for _, h := range e.Hooks {
 				cmd := strings.Fields(h.Command)
-				if len(cmd) == 0 || !strings.HasSuffix(cmd[0], "orion") {
+				if len(cmd) == 0 || !isOrionBinary(cmd[0]) {
 					continue // someone else's hook; not ours to judge
 				}
 				total++
@@ -525,4 +525,18 @@ func checkDisk() check {
 		}
 	}
 	return check{"disk", ok, dir + " writable, owner-only", ""}
+}
+
+// isOrionBinary reports whether a hook's command is Orion's own.
+//
+// The suffix is not always "orion": Windows names the binary orion.exe, so
+// matching the bare name meant Orion's own hooks were never recognised there
+// and doctor reported "no Orion hooks wired" on a correctly configured
+// machine -- advising a repair that would change nothing (OR-341).
+//
+// Compared against the base name rather than the whole path, so a hook at
+// C:\tools\orion.exe and one at /usr/local/bin/orion answer the same way.
+func isOrionBinary(command string) bool {
+	base := filepath.Base(command)
+	return base == "orion" || base == "orion.exe"
 }

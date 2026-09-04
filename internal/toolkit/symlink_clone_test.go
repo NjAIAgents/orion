@@ -33,7 +33,7 @@ func evalSymlinksOrFatal(t *testing.T, root string) string {
 func TestFromRunnerSymlinkReturnsToolkitRootWhenSymlinkResolvesToIt(t *testing.T) {
 	requireSymlinks(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 
 	toolkitRoot := t.TempDir()
 	writeToolkitAt(t, toolkitRoot, "custom-skill")
@@ -57,7 +57,7 @@ func TestFromRunnerSymlinkReturnsToolkitRootWhenSymlinkResolvesToIt(t *testing.T
 
 func TestFromRunnerSymlinkReturnsEmptyStringWhenNoConfiguredSymlinksExist(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 
 	tk := Toolkit{Repo: "https://example.com/kit.git", Stages: map[string]string{"review": "/custom-skill"}}
 	if got := fromRunnerSymlink(tk); got != "" {
@@ -70,7 +70,7 @@ func TestFromRunnerSymlinkWorksAcrossAllRunnerDirectories(t *testing.T) {
 	for _, runner := range []string{".claude", ".agents", ".codex", ".gemini", ".cursor"} {
 		t.Run(runner, func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			setHome(t, home)
 
 			toolkitRoot := t.TempDir()
 			writeToolkitAt(t, toolkitRoot, "custom-skill")
@@ -101,7 +101,7 @@ func TestFromRunnerSymlinkWorksAcrossAllRunnerDirectories(t *testing.T) {
 func TestFromRunnerSymlinkRejectsRootFailingIsToolkitRootEvenWithSkillFound(t *testing.T) {
 	requireSymlinks(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 
 	root := t.TempDir()
 	writeToolkitAt(t, root, "pre-push-review") // no CONVENTIONS.md
