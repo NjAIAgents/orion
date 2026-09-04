@@ -21,7 +21,30 @@ import (
 // These are starting prompts. The skills shipped with the plugin carry
 // the detail; keeping the prompt short here means the skill stays the
 // single source of truth rather than drifting against a duplicate.
+// headlessNote is on EVERY stage prompt (OR-331).
+//
+// A QA session backgrounded the repository's suite and then polled for its
+// completion for twenty minutes. Nothing was coming: run_in_background
+// re-invokes an agent when the command exits in an INTERACTIVE session, and
+// Orion runs its agents with `claude -p`, where no such re-invocation exists
+// and ScheduleWakeup does nothing. The run never produced the verdict that
+// would have handed its ticket back to the implementer.
+const headlessNote = `THIS RUN IS HEADLESS. Nothing will ever be announced back to you: a command
+run with run_in_background is never reported as finished, ScheduleWakeup does
+nothing, and no notification of any kind arrives. Run long commands in the
+FOREGROUND and wait for them there, however long they take. If you find
+yourself checking whether something has finished yet, you are already stuck --
+the breaker will stop you, and the work will be lost.`
+
 func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
+	p, err := stageBody(ws, stage)
+	if err != nil || p == "" {
+		return p, err
+	}
+	return p + "\n\n" + headlessNote, nil
+}
+
+func stageBody(ws *workspace.Workspace, stage string) (string, error) {
 	idea := ws.Task.Idea
 
 	switch strings.ToLower(stage) {

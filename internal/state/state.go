@@ -68,6 +68,9 @@ type Session struct {
 	// actor then per call signature. A read that returns something DIFFERENT
 	// from last time observed progress, whatever its input was.
 	LastPoll map[string]map[string]string `json:"last_poll,omitempty"`
+	// ConsecPolls counts polls since the last call that did anything else
+	// (OR-331): waiting is allowed, waiting forever is not.
+	ConsecPolls int `json:"consec_polls,omitempty"`
 }
 
 func newSession(id string) *Session {
