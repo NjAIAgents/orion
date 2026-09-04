@@ -115,6 +115,7 @@ func (t batchTester) Test(ref string) (bool, error) {
 		// actually failed, which is the difference between "CI failed" and a
 		// line an operator can act on without opening the forge.
 		rememberFailingCheck(pr.Checks)
+		rememberBatchDetail(pr.Detail)
 		return false, nil
 	case pr.Verdict == VerdictPassing && !noChecksYet(pr):
 		return true, nil
@@ -201,8 +202,23 @@ func failingCheck() string {
 // member's ticket is commented with, which must survive a restart rather than
 // silently become "the batch" with no address (OR-314).
 var lastBatchPR struct {
-	mu  sync.Mutex
-	url string
+	mu     sync.Mutex
+	url    string
+	detail string // the failure's why, as the last status read put it (OR-322)
+}
+
+// rememberBatchDetail keeps the last status read's Detail, which is what the
+// culprit's ticket is commented with and what the fix agent is handed.
+func rememberBatchDetail(detail string) {
+	lastBatchPR.mu.Lock()
+	lastBatchPR.detail = detail
+	lastBatchPR.mu.Unlock()
+}
+
+func batchDetail() string {
+	lastBatchPR.mu.Lock()
+	defer lastBatchPR.mu.Unlock()
+	return lastBatchPR.detail
 }
 
 func rememberBatchPR(url string) {
@@ -630,7 +646,15 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 			// to do with it.
 			res.Verdict = VerdictMerged
 		case Culprit:
-			res.Verdict = VerdictFailing
+			// INTO THE FIX LOOP, as a per-branch failure would be (OR-322).
+			//
+			// runBatch's results are returned directly; the per-ticket path
+			// that relabels, comments, notifies and dispatches the fix agent
+			// is never reached for a batch member. So a convicted culprit was
+			// left orion-ready, collected into the next batch, and convicted
+			// again -- with the row saying "fix round 1 of 3" about a loop
+			// that did not exist.
+			res = failCulprit(res, r.Member, cfg, opts, deps, ws, log, w)
 		default:
 			// Ejected and deferred are not failures: the branch is sound and
 			// will be offered to the next batch. Saying "stale" reuses the
@@ -793,4 +817,29 @@ func pendingResults(members []Member) []Result {
 		out = append(out, Result{Key: m.Key, Verdict: VerdictPending})
 	}
 	return out
+}
+
+// failCulprit hands a convicted member to the same failure path a per-branch
+// red build takes: orion-failed, a comment naming where and why, a
+// notification, and -- with auto_fix -- the fix agent on the member's own
+// branch. The pull request it cites is the BATCH's, because that is where
+// the failure is; the branch it fixes is the member's, because that is where
+// the fault is.
+func failCulprit(res Result, m Member, cfg config.Config, opts Options, deps Deps,
+	ws *workspace.Workspace, log *events.Log, w io.Writer) Result {
+
+	res.Verdict = VerdictFailing
+	if deps.Jira == nil {
+		return res
+	}
+	detail := batchDetail()
+	if detail == "" {
+		detail = "the batch went red"
+		if c := failingCheck(); c != "" {
+			detail += " on " + c
+		}
+	}
+	pr := PR{URL: batchPR(), Verdict: VerdictFailing, Head: m.Head,
+		Detail: "convicted by the batch's isolation: " + detail}
+	return failing(res, m.Key, pr, cfg, m.Branch, opts, deps, ws, log, w)
 }
