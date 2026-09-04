@@ -3,7 +3,7 @@ package config
 import (
 	"testing"
 
-	"github.com/orion-sdlc/orion/internal/njagents"
+	"github.com/orion-sdlc/orion/internal/toolkit"
 )
 
 // A toolkit block with only repo set must fill ref/dir/stages exactly as an
@@ -29,8 +29,8 @@ func TestToolkitWithOnlyRepoFillsTheRestFromDefaults(t *testing.T) {
 // default and leave ref/dir empty, the same as an absent block.
 func TestToolkitWithOnlyStagesFillsTheRestFromDefaults(t *testing.T) {
 	cfg := loadJSON(t, `{"toolkit":{"stages":{"review":"/analyze"}}}`)
-	if cfg.Toolkit.Repo != njagents.RepoURL {
-		t.Errorf("repo = %q, want the nj-agents default %q", cfg.Toolkit.Repo, njagents.RepoURL)
+	if cfg.Toolkit.Repo != toolkit.RepoURL {
+		t.Errorf("repo = %q, want the nj-agents default %q", cfg.Toolkit.Repo, toolkit.RepoURL)
 	}
 	if cfg.Toolkit.Ref != "" {
 		t.Errorf("ref = %q, want default empty", cfg.Toolkit.Ref)
@@ -86,8 +86,8 @@ func TestPreExistingConfigFixturesStillLoadTheirOldEffectiveValues(t *testing.T)
 	if cfg.VCS.DefaultBranch != "main" || cfg.VCS.WorkBranch != "develop" {
 		t.Errorf("vcs = %+v", cfg.VCS)
 	}
-	if cfg.Toolkit.Repo != njagents.RepoURL {
-		t.Errorf("toolkit.repo = %q, want the untouched nj-agents default %q", cfg.Toolkit.Repo, njagents.RepoURL)
+	if cfg.Toolkit.Repo != toolkit.RepoURL {
+		t.Errorf("toolkit.repo = %q, want the untouched nj-agents default %q", cfg.Toolkit.Repo, toolkit.RepoURL)
 	}
 	if cfg.Toolkit.Dir != "" || cfg.Toolkit.Ref != "" || len(cfg.Toolkit.Stages) != 0 {
 		t.Errorf("toolkit = %+v, want the untouched zero value", cfg.Toolkit)

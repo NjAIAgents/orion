@@ -12,9 +12,9 @@ import (
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
-	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
+	"github.com/orion-sdlc/orion/internal/toolkit"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -140,11 +140,11 @@ func fakeToolkit(t *testing.T, withTesting bool) string {
 		t.Fatal(err)
 	}
 	var skills []string
-	for _, r := range njagents.RequiredSkills(njagents.Toolkit{}) {
+	for _, r := range toolkit.RequiredSkills(toolkit.Toolkit{}) {
 		skills = append(skills, r.Skill)
 	}
 	if withTesting {
-		skills = append(skills, njagents.TestingSkills...)
+		skills = append(skills, toolkit.TestingSkills...)
 	}
 	for _, s := range skills {
 		dir := filepath.Join(root, "skills", s)
@@ -889,7 +889,7 @@ func TestQAUsesTheTestingSkillsWhenTheToolkitHasThem(t *testing.T) {
 	// One missing testing skill is enough to fall back: half the chain is
 	// not the chain, and a prompt naming a skill that is not there sends the
 	// agent looking for it.
-	if err := os.RemoveAll(filepath.Join(root, "skills", njagents.TestingSkills[0])); err != nil {
+	if err := os.RemoveAll(filepath.Join(root, "skills", toolkit.TestingSkills[0])); err != nil {
 		t.Fatal(err)
 	}
 	if qaTools(cfg, t.TempDir()).Skills {

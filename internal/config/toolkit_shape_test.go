@@ -33,7 +33,7 @@ func TestBadToolkitBlockIsDroppedFromRawBeforeStructDecode(t *testing.T) {
 	// Toolkit would carry partial garbage. Neither happened: the block was
 	// dropped, so Toolkit is the untouched default and the rest of the file
 	// decoded normally.
-	if cfg.Toolkit.Repo != njagentsDefaultRepoForTest(t) {
+	if cfg.Toolkit.Repo != defaultToolkitRepoForTest(t) {
 		t.Errorf("toolkit.repo = %q, want the untouched default after a dropped block", cfg.Toolkit.Repo)
 	}
 	if cfg.Limits.MaxToolCalls != 42 {
@@ -76,11 +76,11 @@ func TestExplicitToolkitDirOverridesDerivedPath(t *testing.T) {
 	}
 }
 
-// njagentsDefaultRepoForTest avoids importing njagents just to name its
+// defaultToolkitRepoForTest avoids importing the toolkit package just to name its
 // constant a second time in this file; toolkit_test.go already imports it,
 // but this file's assertion is about the drop behaviour, not the constant's
 // value, so we read it back off a config that never declared a toolkit.
-func njagentsDefaultRepoForTest(t *testing.T) string {
+func defaultToolkitRepoForTest(t *testing.T) string {
 	t.Helper()
 	return Defaults().Toolkit.Repo
 }

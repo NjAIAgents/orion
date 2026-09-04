@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/orion-sdlc/orion/internal/njagents"
+	"github.com/orion-sdlc/orion/internal/toolkit"
 )
 
 // Toolkit declares WHICH skill repository a project delegates to, and what
@@ -23,7 +23,7 @@ import (
 // almost identical in JSON, so the shape is validated rather than merely
 // documented -- see parseToolkit.
 type Toolkit struct {
-	// Repo is the clone URL. Empty takes njagents.RepoURL, so a project that
+	// Repo is the clone URL. Empty takes toolkit.RepoURL, so a project that
 	// declares nothing keeps the toolkit Orion has always used.
 	Repo string `json:"repo,omitempty"`
 	// Ref pins the clone to a tag or branch. Empty falls back to the
@@ -78,12 +78,12 @@ func (t Toolkit) Stage(name string) string {
 	return t.Stages[canonicalStages[strings.ToLower(strings.TrimSpace(name))]]
 }
 
-// Spec hands the block to njagents, which resolves what a toolkit must ship
-// from it. A copy rather than a shared type because njagents cannot import
-// config -- config imports njagents for RepoURL -- and one conversion in one
-// place is cheaper than teaching every caller to build the struct.
-func (t Toolkit) Spec() njagents.Toolkit {
-	return njagents.Toolkit{Repo: t.Repo, Dir: t.Dir, Stages: t.Stages}
+// Spec hands the block to the toolkit package, which resolves what a toolkit
+// must ship from it. A copy rather than a shared type because that package
+// cannot import config -- config imports it for RepoURL -- and one conversion
+// in one place is cheaper than teaching every caller to build the struct.
+func (t Toolkit) Spec() toolkit.Toolkit {
+	return toolkit.Toolkit{Repo: t.Repo, Dir: t.Dir, Stages: t.Stages}
 }
 
 // parseToolkit reads the raw toolkit block, validating its SHAPE before the
@@ -200,7 +200,7 @@ func stageNames() []string {
 // normalize so the fallback chain reads in one place.
 func defaultToolkit(c *Config) {
 	if c.Toolkit.Repo == "" {
-		c.Toolkit.Repo = njagents.RepoURL
+		c.Toolkit.Repo = toolkit.RepoURL
 	}
 	// toolkit.dir/ref WIN over the delegation aliases they replace: the newer
 	// spelling is the one a project chose deliberately.

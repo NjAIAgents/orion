@@ -12,8 +12,8 @@ import (
 	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/creds"
-	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/slack"
+	"github.com/orion-sdlc/orion/internal/toolkit"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -115,13 +115,13 @@ func checkNJAgents(tk config.Toolkit, autoFix bool) check {
 	home := workspace.Home()
 	spec := tk.Spec()
 	name := toolkitName(spec)
-	inst := njagents.Discover(home, spec)
+	inst := toolkit.Discover(home, spec)
 
 	if inst == nil && autoFix {
-		cloned, err := njagents.Clone(home, spec, tk.Ref, njagents.ConfirmOnStdin)
+		cloned, err := toolkit.Clone(home, spec, tk.Ref, toolkit.ConfirmOnStdin)
 		if err != nil {
 			return check{name, fail, "not installed, and the clone failed",
-				err.Error() + "\nManually: " + njagents.CloneCommand(home, spec)}
+				err.Error() + "\nManually: " + toolkit.CloneCommand(home, spec)}
 		}
 		inst = cloned
 	}
@@ -131,7 +131,7 @@ func checkNJAgents(tk config.Toolkit, autoFix bool) check {
 			"Orion delegates review, security, testing, PR authoring and PM\n" +
 				"decomposition to " + name + ". Those stages have no fallback.\n" +
 				"Fetch it automatically:  orion doctor --fix\n" +
-				"Or do it yourself:       " + njagents.CloneCommand(home, spec)}
+				"Or do it yourself:       " + toolkit.CloneCommand(home, spec)}
 	}
 
 	if len(inst.Missing) > 0 {
@@ -162,11 +162,11 @@ func checkNJAgents(tk config.Toolkit, autoFix bool) check {
 // its old label so nothing about an unconfigured machine's output moves; a
 // configured one is named after its own repository, because "nj-agents
 // incomplete" is a baffling line to read about a toolkit that is not it.
-func toolkitName(spec njagents.Toolkit) string {
+func toolkitName(spec toolkit.Toolkit) string {
 	if spec.IsDefault() {
 		return "nj-agents"
 	}
-	return "toolkit " + filepath.Base(njagents.VendorDirFor("", spec.Repo))
+	return "toolkit " + filepath.Base(toolkit.VendorDirFor("", spec.Repo))
 }
 
 // checkJira probes reachability, authentication and the project-creation

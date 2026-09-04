@@ -1,14 +1,17 @@
-// Package njagents locates, validates and provisions the delegated toolkit.
+// Package toolkit locates, validates and provisions the toolkit a project
+// delegates to.
 //
 // Orion delegates review, secret scanning, test/build verification, PR
-// authoring and PM decomposition to a toolkit. That is a hard dependency,
-// not a nicety: those stages have no fallback, and faking them with a
-// thinner substitute would be worse than not running them.
+// authoring and PM decomposition to whichever toolkit the project configures.
+// Having one is a hard dependency, not a nicety: those stages have no
+// fallback, and faking them with a thinner substitute would be worse than not
+// running them. Which one it is, is the project's choice.
 //
-// nj-agents is the default, not the only one. WHAT a toolkit must ship comes
-// from the stages the project configures (orion.json toolkit.stages), so a
-// project delegating to its own skill repository is validated against the
-// skills it actually invokes rather than against nj-agents' catalogue.
+// nj-agents is the shipped default, not the only one. WHAT a toolkit must
+// ship comes from the stages the project configures (orion.json
+// toolkit.stages), so a project delegating to its own skill repository is
+// validated against the skills it actually invokes rather than against
+// nj-agents' catalogue.
 // Everything specific to nj-agents -- CONVENTIONS.md, install.sh -- is
 // required only of nj-agents.
 //
@@ -23,7 +26,7 @@
 // its siblings) lives at that clone ROOT, two levels above the skill. A
 // check that only looks in the skills directory passes happily while the
 // file the skills depend on is missing.
-package njagents
+package toolkit
 
 import (
 	"fmt"

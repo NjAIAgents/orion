@@ -13,7 +13,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/orion-sdlc/orion/internal/njagents"
+	"github.com/orion-sdlc/orion/internal/toolkit"
 )
 
 type Limits struct {
@@ -982,7 +982,7 @@ func Defaults() Config {
 		},
 		// The toolkit Orion has always used, spelled out rather than implied,
 		// so a project reading its effective config sees whose skills run.
-		Toolkit: Toolkit{Repo: njagents.RepoURL, Stages: map[string]string{}},
+		Toolkit: Toolkit{Repo: toolkit.RepoURL, Stages: map[string]string{}},
 		Delegation: Delegation{
 			Enabled:                 true,
 			ExtraToolCallsForReview: 200,

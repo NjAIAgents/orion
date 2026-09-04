@@ -32,7 +32,6 @@ import (
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/hook"
 	"github.com/orion-sdlc/orion/internal/lessons"
-	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/provision"
 	"github.com/orion-sdlc/orion/internal/registry"
@@ -40,6 +39,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/slack"
 	"github.com/orion-sdlc/orion/internal/state"
 	"github.com/orion-sdlc/orion/internal/supervisor"
+	"github.com/orion-sdlc/orion/internal/toolkit"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/update"
@@ -2197,14 +2197,14 @@ func runNJAgents(args []string) {
 	}
 	home := workspace.Home()
 	cfg := config.Load(rootOrCwd())
-	inst := njagents.Discover(home, cfg.Toolkit.Spec())
+	inst := toolkit.Discover(home, cfg.Toolkit.Spec())
 
 	switch sub {
 	case "status":
 		if inst == nil {
 			fmt.Println("nj-agents  NOT FOUND")
 			fmt.Println("fetch it:  orion doctor --fix")
-			fmt.Println("or:        " + njagents.CloneCommand(home, cfg.Toolkit.Spec()))
+			fmt.Println("or:        " + toolkit.CloneCommand(home, cfg.Toolkit.Spec()))
 			os.Exit(1)
 		}
 		fmt.Printf("root       %s\nfound via  %s\ncommit     %s\n", inst.Root, inst.Via, inst.Commit)
@@ -2212,7 +2212,7 @@ func runNJAgents(args []string) {
 			fmt.Println("tree       MODIFIED (local changes present)")
 		}
 		fmt.Printf("owner      %s\n", ownerLabel(inst))
-		if behind, known := njagents.Refreshed(inst); known && behind > 0 {
+		if behind, known := toolkit.Refreshed(inst); known && behind > 0 {
 			fmt.Printf("stale      %d commit(s) behind origin as of the last fetch\n", behind)
 			fmt.Println("           run: orion njagents update")
 		} else if known {
@@ -2226,7 +2226,7 @@ func runNJAgents(args []string) {
 		}
 
 	case "update":
-		res, err := njagents.Update(inst, cfg.Toolkit.Ref)
+		res, err := toolkit.Update(inst, cfg.Toolkit.Ref)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "orion: %v\n", err)
 			os.Exit(1)
@@ -2259,8 +2259,8 @@ func runNJAgents(args []string) {
 		// Running a third-party installer is a different consent level from
 		// reading files, so it is never a side effect of another command.
 		fmt.Println("This runs the toolkit's own installer:")
-		fmt.Println("  " + njagents.InstallCommand(inst, dir))
-		out, err := njagents.InstallInto(inst, dir)
+		fmt.Println("  " + toolkit.InstallCommand(inst, dir))
+		out, err := toolkit.InstallInto(inst, dir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "orion: %v\n", err)
 			os.Exit(1)
@@ -2285,7 +2285,7 @@ func human(n int) string {
 	return fmt.Sprint(n)
 }
 
-func ownerLabel(i *njagents.Install) string {
+func ownerLabel(i *toolkit.Install) string {
 	if i.Managed {
 		return "Orion's own clone (orion njagents update maintains it)"
 	}
