@@ -426,6 +426,7 @@ func landResumed(st batchState, members []Member, cfg config.Config, deps Deps,
 		prURL = batchPR()
 	}
 	closeLanded(keysOf(members), prURL, cfg.Tracker.QueueLabel, deps, w)
+	pruneLanded(keysOf(members), cfg, false, deps, g, ws, w)
 
 	var out []Result
 	for _, m := range members {
@@ -660,6 +661,7 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	// Progress carrying orion-ready until somebody closed them by hand, and
 	// the label brought them back into the queue in the meantime.
 	closeLanded(landed, batchPR(), cfg.Tracker.QueueLabel, deps, w)
+	pruneLanded(landed, cfg, opts.NoPrune, deps, g, ws, w)
 
 	var out []Result
 	for _, r := range b.Results {
@@ -722,6 +724,36 @@ func closeLanded(landed []string, prURL, queueLabel string, deps Deps, w io.Writ
 			ui.Warn(w, "%s: landed in the batch, but its labels could not be "+
 				"cleared: %v. It will be collected again until they are.", key, err)
 		}
+	}
+}
+
+// pruneLanded removes each landed member's branch and worktree (OR-337).
+//
+// The per-branch path has always pruned once a branch merged; the batch path
+// closed the ticket and left the branch. Twenty-five accumulated on the
+// remote, and a list that long stops answering "what is actually in flight".
+//
+// Driven by what the batch LANDED, never by ancestry: a batched branch merges
+// through a merge commit on the batch ref, so its own tip is not an ancestor
+// of the work branch and `git log branch ^develop` reports several unmerged
+// commits minutes after landing. Deleting on that signal would destroy work.
+//
+// Best effort and per member: a branch that will not delete is untidy, and
+// must not stop the ones after it or turn a landed batch into a failure.
+func pruneLanded(landed []string, cfg config.Config, noPrune bool, deps Deps,
+	g repoGit, ws *workspace.Workspace, w io.Writer) {
+
+	if noPrune {
+		return
+	}
+	for _, key := range landed {
+		branch := branchFor(cfg.VCS.BranchPrefix, key)
+		if deps.Prune != nil {
+			if err := deps.Prune(ws, branch); err != nil {
+				ui.Warn(w, "%s: landed, but its worktree could not be pruned: %v", key, err)
+			}
+		}
+		_ = g.DeleteRemoteRef(branch)
 	}
 }
 
