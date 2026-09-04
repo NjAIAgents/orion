@@ -59,7 +59,11 @@ func TestPlanPromptWritesWhatThePlanGateOpensOn(t *testing.T) {
 		t.Fatal("with the plan gate on and no plan written, the edit must be refused")
 	}
 
-	prompt, err := stagePrompt(w, "plan")
+	// The empty Toolkit is today's default configuration: OR-298 gave
+	// stagePrompt a toolkit block so a project can name its own commands,
+	// and an unset one keeps the built-in prompt. This test is about the
+	// PLAN PATH, so it takes the default.
+	prompt, err := stagePrompt(w, "plan", config.Toolkit{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +94,7 @@ func TestEveryStageNamesTheSamePlanFile(t *testing.T) {
 	want := config.Load(w.RepoDir()).PlanPath(w.Task.Slug)
 
 	for _, stage := range []string{"plan", "decompose", "build", "verify"} {
-		p, err := stagePrompt(w, stage)
+		p, err := stagePrompt(w, stage, config.Toolkit{})
 		if err != nil {
 			t.Fatalf("%s: %v", stage, err)
 		}
@@ -112,7 +116,7 @@ func TestVerifyAndBuildPointAtAFileThePlanStageWrote(t *testing.T) {
 	w := ws(t, `{"paths":{"plans":"docs/plans"}}`)
 	cfg := config.Load(w.RepoDir())
 
-	planPrompt, err := stagePrompt(w, "plan")
+	planPrompt, err := stagePrompt(w, "plan", config.Toolkit{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +131,7 @@ func TestVerifyAndBuildPointAtAFileThePlanStageWrote(t *testing.T) {
 	}
 
 	for _, stage := range []string{"build", "verify"} {
-		p, err := stagePrompt(w, stage)
+		p, err := stagePrompt(w, stage, config.Toolkit{})
 		if err != nil {
 			t.Fatalf("%s: %v", stage, err)
 		}
@@ -151,7 +155,7 @@ func TestVerifyAndBuildPointAtAFileThePlanStageWrote(t *testing.T) {
 // Default config keeps today's behaviour: plans/, unchanged.
 func TestPlanPathDefaultsToPlans(t *testing.T) {
 	w := ws(t, "")
-	p, err := stagePrompt(w, "plan")
+	p, err := stagePrompt(w, "plan", config.Toolkit{})
 	if err != nil {
 		t.Fatal(err)
 	}
