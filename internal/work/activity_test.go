@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/supervisor"
@@ -206,4 +207,92 @@ func TestActivityLoggerEmitsSayOnText(t *testing.T) {
 	if logged[0].Actor != events.ActorQA || logged[0].Msg != "root cause is a hand-rolled logger" {
 		t.Errorf("say event = %+v, want the actor and the agent's own text carried through unedited", logged[0])
 	}
+}
+
+// OR-338. Removing the live region (#419) left ui.LiveActivityNote a no-op
+// and ui.Trace gated behind --verbose, so at default verbosity a working run
+// printed nothing at all between "started" and its verdict -- a run of any
+// length looked exactly like a hung one.
+//
+// The heartbeat is what replaces the region: throttled, so it is progress
+// rather than the transcript OR-217 measured at 60% of a screen.
+func TestAQuietRunStillReportsProgressPeriodically(t *testing.T) {
+	t.Cleanup(func() { ui.SetVerbose(false) })
+	ui.SetVerbose(false)
+
+	logPath := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := events.Open(logPath, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	var console strings.Builder
+	activity := ActivityLogger(log, &console, "OR-338", events.ActorImplementer)
+
+	// The first call must stay silent: "started" was printed a moment ago
+	// and a heartbeat on its heels says nothing new.
+	activity(supervisor.Activity{Kind: "tool", Tool: "Read", Detail: "a.go"})
+	ui.Flush(&console)
+	if strings.Contains(console.String(), "a.go") {
+		t.Fatalf("the first tool call printed; it must not:\n%s", console.String())
+	}
+
+	// A call inside the interval is still silent -- this is the throttle,
+	// and without it the screen is the transcript again.
+	activity(supervisor.Activity{Kind: "tool", Tool: "Read", Detail: "b.go"})
+	ui.Flush(&console)
+	if strings.Contains(console.String(), "b.go") {
+		t.Fatalf("a tool call inside the interval printed; the throttle is not holding:\n%s",
+			console.String())
+	}
+
+	// Past the interval, it speaks. Reaching into the heartbeat rather than
+	// sleeping a minute: what is under test is the rule, not the clock.
+	advance(t, heartbeatEvery)
+	activity(supervisor.Activity{Kind: "tool", Tool: "Bash", Detail: "go test ./..."})
+	ui.Flush(&console)
+	out := console.String()
+	if !strings.Contains(out, "go test ./...") {
+		t.Errorf("no progress line after the interval elapsed; a working run is "+
+			"still indistinguishable from a hung one:\n%s", out)
+	}
+	if !strings.Contains(out, "OR-338") {
+		t.Errorf("the progress line does not name its ticket:\n%s", out)
+	}
+}
+
+// Under --verbose the Trace line already carries every tool call, so a
+// heartbeat beside it would be the same fact twice.
+func TestVerboseDoesNotAlsoPrintTheHeartbeat(t *testing.T) {
+	t.Cleanup(func() { ui.SetVerbose(false) })
+	ui.SetVerbose(true)
+
+	logPath := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := events.Open(logPath, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	var console strings.Builder
+	activity := ActivityLogger(log, &console, "OR-338", events.ActorImplementer)
+	activity(supervisor.Activity{Kind: "tool", Tool: "Read", Detail: "a.go"})
+	advance(t, heartbeatEvery)
+	activity(supervisor.Activity{Kind: "tool", Tool: "Bash", Detail: "go test ./..."})
+	ui.Flush(&console)
+
+	if n := strings.Count(console.String(), "go test ./..."); n != 1 {
+		t.Errorf("the tool call appeared %d times under --verbose, want 1 "+
+			"(the Trace line only):\n%s", n, console.String())
+	}
+}
+
+// advance moves the heartbeat's clock forward for the rest of the test, so a
+// one-minute rule is exercised without a one-minute test.
+func advance(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := heartbeatNow
+	t.Cleanup(func() { heartbeatNow = prev })
+	heartbeatNow = func() time.Time { return prev().Add(d) }
 }

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/supervisor"
@@ -40,7 +42,53 @@ func activityNote(a supervisor.Activity) string {
 	return strings.TrimSpace(n)
 }
 
+// heartbeatEvery bounds how often a run says it is still working.
+//
+// Chosen against the two failures either side of it. Print every tool call
+// and you get OR-217: 60% of a screen at concurrency 4, with the stage and
+// verdict lines that matter lost inside it. Print nothing -- which is what
+// removing the live region left, since ui.Trace is gated behind --verbose
+// and ui.LiveActivityNote became a no-op -- and a working run is
+// indistinguishable from a hung one without opening a worktree by hand.
+//
+// One line per ticket per interval is four lines a minute at concurrency 4:
+// enough to see progress, little enough to read.
+const heartbeatEvery = 60 * time.Second
+
+// heartbeatNow is the clock the throttle reads. A variable so a test can
+// move time rather than sleep a minute to observe a one-minute rule.
+var heartbeatNow = time.Now
+
+// heartbeat rate-limits a single run's progress line.
+//
+// Per logger rather than process-wide: each ticket gets its own line on its
+// own schedule, so a fast run is not silenced by a slow one that happened to
+// print first.
+type heartbeat struct {
+	mu    sync.Mutex
+	start time.Time
+	last  time.Time
+}
+
+// due reports whether enough time has passed to print again, and records
+// that it did. The first call is never due: "started" has just been printed
+// above it, and a heartbeat one second later says nothing new.
+func (h *heartbeat) due(now time.Time) (time.Duration, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.start.IsZero() {
+		h.start, h.last = now, now
+		return 0, false
+	}
+	if now.Sub(h.last) < heartbeatEvery {
+		return 0, false
+	}
+	h.last = now
+	return now.Sub(h.start), true
+}
+
 func ActivityLogger(log *events.Log, w io.Writer, key, actor string) func(supervisor.Activity) {
+	hb := &heartbeat{}
 	return func(a supervisor.Activity) {
 		switch a.Kind {
 		case "start":
@@ -72,6 +120,21 @@ func ActivityLogger(log *events.Log, w io.Writer, key, actor string) func(superv
 			}
 			log.Emit(events.Event{Kind: events.KindTool, Actor: actor,
 				Model: a.Model, Msg: msg})
+			// The default-verbosity progress signal (OR-338). Throttled, so
+			// what reaches the screen is "this run is alive and here is the
+			// last thing it did" rather than the transcript -- which stays
+			// behind --verbose, unchanged, on the Trace below.
+			//
+			// Driven BY tool calls rather than by a timer: a run that has
+			// genuinely stopped doing anything emits nothing, so silence
+			// still means silence. A ticker would report a hung run as
+			// healthy once a minute, which is the failure this replaces.
+			// Not under --verbose: the Trace below already prints this same
+			// tool call, and a heartbeat beside it is the same fact twice.
+			if elapsed, ok := hb.due(heartbeatNow()); ok && !ui.Verbose() {
+				ui.Say(w, key, actor, ui.VerbWorking, "%s · %s %s",
+					elapsed.Round(time.Second), verbFor(a.Tool), a.Detail)
+			}
 			// The agent's own line, carrying its ticket, its name and the
 			// model that produced it -- and its prose unedited. The
 			// metadata columns are Orion's to style; the text is not.
