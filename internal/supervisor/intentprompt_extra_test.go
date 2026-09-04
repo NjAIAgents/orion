@@ -3,6 +3,8 @@ package supervisor
 import (
 	"strings"
 	"testing"
+
+	"github.com/orion-sdlc/orion/internal/config"
 )
 
 // A re-run of the intent stage must extend the capture already on disk
@@ -12,7 +14,7 @@ import (
 // say this, since stagePrompt builds the same text whether or not a capture
 // already exists on disk; the instruction has to hold unconditionally.
 func TestIntentPromptExtendsExistingCaptureRatherThanOverwriting(t *testing.T) {
-	p, err := stagePrompt(ws(t, ""), "intent")
+	p, err := stagePrompt(ws(t, ""), "intent", config.Toolkit{})
 	if err != nil {
 		t.Fatalf("intent: %v", err)
 	}
@@ -29,7 +31,7 @@ func TestIntentPromptExtendsExistingCaptureRatherThanOverwriting(t *testing.T) {
 // rather than let it invent a location -- discovery.Assess and the PM role
 // in advise.Artifacts both read from exactly there.
 func TestIntentPromptNamesTheCapturePathAndLocation(t *testing.T) {
-	p, err := stagePrompt(ws(t, ""), "intent")
+	p, err := stagePrompt(ws(t, ""), "intent", config.Toolkit{})
 	if err != nil {
 		t.Fatalf("intent: %v", err)
 	}
