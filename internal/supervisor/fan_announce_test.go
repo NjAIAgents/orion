@@ -39,8 +39,8 @@ func TestFanAnnouncesTheCostShapeAndRosterBeforeDispatch(t *testing.T) {
 	Fan(w, jobs)
 
 	got := out.String()
-	if !strings.Contains(got, "3") || !strings.Contains(got, "cap 2") {
-		t.Errorf("the cost shape never named the fleet size and its cap (§C): %q", got)
+	if !strings.Contains(got, "3 children, 2 at a time") {
+		t.Errorf("the cost shape never named the fleet size and how many run at once (§C): %q", got)
 	}
 	if !strings.Contains(got, "haiku") {
 		t.Errorf("the cost shape never named the models the children run on (§C): %q", got)
@@ -79,7 +79,7 @@ exit 0
 		t.Errorf("landings are not counted against the total, so nothing ever says what is "+
 			"still outstanding (§R): %q", got)
 	}
-	if !strings.Contains(got, "FAILED") {
+	if !strings.Contains(got, "failed") {
 		t.Errorf("the failing child landed without a failure verdict; a roster that reports "+
 			"every child the same way reports nothing: %q", got)
 	}
