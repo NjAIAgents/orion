@@ -35,9 +35,9 @@ import (
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
-	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/supervisor"
+	"github.com/orion-sdlc/orion/internal/toolkit"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -884,10 +884,10 @@ func qaTools(cfg config.Config, home string) supervisor.QATools {
 	if !cfg.Delegation.Enabled {
 		return t
 	}
-	inst := njagents.Discover(home, cfg.Toolkit.Spec())
+	inst := toolkit.Discover(home, cfg.Toolkit.Spec())
 	t.Skills = true
-	for _, s := range njagents.TestingSkills {
-		if !njagents.HasSkill(inst, s) {
+	for _, s := range toolkit.TestingSkills {
+		if !toolkit.HasSkill(inst, s) {
 			t.Skills = false
 			break
 		}

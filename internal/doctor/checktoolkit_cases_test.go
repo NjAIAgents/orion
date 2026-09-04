@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/orion-sdlc/orion/internal/config"
-	"github.com/orion-sdlc/orion/internal/njagents"
+	"github.com/orion-sdlc/orion/internal/toolkit"
 )
 
 // OR-297: dedicated checkNJAgents coverage for the assigned case list.
@@ -17,7 +17,7 @@ import (
 // checkNJAgents scenarios, and that is deliberate rather than an omission:
 //
 //   - "--fix asks before cloning foreign repo": checkNJAgents hardcodes
-//     njagents.ConfirmOnStdin, which decides whether to ask by checking
+//     toolkit.ConfirmOnStdin, which decides whether to ask by checking
 //     whether os.Stdin is a real character device. A go test process has no
 //     tty on stdin, so ConfirmOnStdin always answers "no" without prompting
 //     -- there is no way, short of attaching a real pty, to observe it
@@ -25,7 +25,7 @@ import (
 //     this level is that a foreign repo reaches the confirm gate and is
 //     declined non-interactively; TestFixDoesNotCloneForeignRepoWithoutTTY
 //     below covers exactly that. The "asks" half of the contract is covered
-//     at the njagents.Clone level instead (see clonecommand_cases_test.go /
+//     at the toolkit.Clone level instead (see clonecommand_cases_test.go /
 //     required_test.go), where the Confirm callback is injectable and the
 //     "asked" flag is directly observable.
 //   - "Incomplete clone is reported as failed with location" is covered
@@ -113,7 +113,7 @@ func TestCheckNJAgentsCheckNameIncludesForeignRepoLeafForNonDefault(t *testing.T
 }
 
 // A non-interactive process (this test binary) has no tty on stdin, so the
-// hardcoded njagents.ConfirmOnStdin declines without prompting -- exactly
+// hardcoded toolkit.ConfirmOnStdin declines without prompting -- exactly
 // the behavior a real `orion doctor --fix` run in CI must have.
 func TestCheckNJAgentsFixDoesNotCloneForeignRepoWithoutTTY(t *testing.T) {
 	isolate(t)
@@ -145,7 +145,7 @@ func TestCheckNJAgentsFixDoesNotCloneForeignRepoWithoutTTY(t *testing.T) {
 func TestCheckNJAgentsFixProceedsWithoutAskingForDefaultRepo(t *testing.T) {
 	isolate(t)
 	home := os.Getenv("ORION_HOME")
-	if err := os.MkdirAll(njagents.VendorDir(home), 0o755); err != nil {
+	if err := os.MkdirAll(toolkit.VendorDir(home), 0o755); err != nil {
 		t.Fatal(err)
 	}
 

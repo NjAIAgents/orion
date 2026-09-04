@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/orion-sdlc/orion/internal/njagents"
+	"github.com/orion-sdlc/orion/internal/toolkit"
 )
 
 func loadJSON(t *testing.T, body string) Config {
@@ -50,8 +50,8 @@ func TestToolkitBlockRoundTripsThroughLoad(t *testing.T) {
 // delegation spellings still read.
 func TestAbsentToolkitBlockKeepsTodaysBehaviour(t *testing.T) {
 	cfg := loadJSON(t, `{"delegation":{"nj_agents_dir":"/home/me/nj-agents","nj_agents_ref":"v1.4.0"}}`)
-	if cfg.Toolkit.Repo != njagents.RepoURL {
-		t.Errorf("repo = %q, want the nj-agents default %q", cfg.Toolkit.Repo, njagents.RepoURL)
+	if cfg.Toolkit.Repo != toolkit.RepoURL {
+		t.Errorf("repo = %q, want the nj-agents default %q", cfg.Toolkit.Repo, toolkit.RepoURL)
 	}
 	if cfg.Toolkit.Dir != "/home/me/nj-agents" || cfg.Toolkit.Ref != "v1.4.0" {
 		t.Errorf("delegation aliases must supply dir/ref: dir=%q ref=%q", cfg.Toolkit.Dir, cfg.Toolkit.Ref)

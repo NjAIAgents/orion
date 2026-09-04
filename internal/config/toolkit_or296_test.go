@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/orion-sdlc/orion/internal/njagents"
+	"github.com/orion-sdlc/orion/internal/toolkit"
 )
 
 // toolkitErr is the field Validate reports from; a bad block must land there,
@@ -173,7 +173,7 @@ func TestBothAliasSpellingsOfEveryStageWithSameCommandsWork(t *testing.T) {
 // default fills in, not a blank repo URL.
 func TestEmptyRepoStringGetsNJAgentsDefault(t *testing.T) {
 	cfg := loadJSON(t, `{"toolkit":{"repo":""}}`)
-	if cfg.Toolkit.Repo != njagents.RepoURL {
-		t.Errorf("repo = %q, want the nj-agents default %q", cfg.Toolkit.Repo, njagents.RepoURL)
+	if cfg.Toolkit.Repo != toolkit.RepoURL {
+		t.Errorf("repo = %q, want the nj-agents default %q", cfg.Toolkit.Repo, toolkit.RepoURL)
 	}
 }

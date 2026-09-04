@@ -55,7 +55,7 @@ var expectedDecisions = []string{
 	// OR-301. Load-bearing: without it, "just hardcode a second toolkit's repo
 	// URL and skill names alongside nj-agents' own" reads as a small addition
 	// and reintroduces exactly the coupling this record explains was never a
-	// deliberate design -- a maintainer who only reads njagents.go and
+	// deliberate design -- a maintainer who only reads toolkit.go and
 	// prompts.go has no way to know a config seam already exists in front of
 	// them.
 	"0019-toolkit-agnostic-nj-agents-is-the-default.md",

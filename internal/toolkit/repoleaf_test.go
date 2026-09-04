@@ -1,4 +1,4 @@
-package njagents
+package toolkit
 
 import (
 	"path/filepath"
