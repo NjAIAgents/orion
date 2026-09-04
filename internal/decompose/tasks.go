@@ -140,9 +140,21 @@ var (
 	phaseStory = regexp.MustCompile(`(?i)user story\s*(\d+)\s*[-:–]?\s*(.*)$`)
 	priorityIn = regexp.MustCompile(`\s*\((?i:priority)[^)]*\)\s*`)
 	// pathish is a file path as a task line writes one: at least one
-	// separator and an extension, or a bare well-known manifest.
-	pathish  = regexp.MustCompile("`?\\b([\\w.@-]+/[\\w./@-]*[\\w-]+\\.[A-Za-z]\\w*)`?")
-	goalLine = regexp.MustCompile(`^\s*\*{0,2}Goal\*{0,2}\s*:\s*(.*)$`)
+	// separator and an extension.
+	pathish = regexp.MustCompile("`?\\b([\\w.@-]+/[\\w./@-]*[\\w-]+\\.[A-Za-z]\\w*)`?")
+	// bareManifest is the other half: a file a task line names with no
+	// directory at all, because it only ever sits at the repository root.
+	// "Initialise the module with dependencies in go.mod" is a real
+	// /speckit.tasks Setup line, and pathish cannot see it -- it has no
+	// separator.
+	//
+	// AN EXPLICIT LIST, not a general word.extension pattern. A general one
+	// would extract "e.g" from prose and "sight" from "in sight.", and a
+	// wrong path in a description is worse than a missing one: the paths are
+	// what a later reader treats as the exact files to change. Longest
+	// alternatives first, so package-lock.json is not read as package.json.
+	bareManifest = regexp.MustCompile(`\b(go\.mod|go\.sum|package-lock\.json|package\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.toml|Cargo\.lock|pyproject\.toml|requirements\.txt|setup\.py|Gemfile\.lock|Gemfile|composer\.json|build\.gradle|pom\.xml|tsconfig\.json|Dockerfile|Makefile)\b`)
+	goalLine     = regexp.MustCompile(`^\s*\*{0,2}Goal\*{0,2}\s*:\s*(.*)$`)
 )
 
 // Parse reads a /speckit.tasks tasks.md into the neutral tree.
@@ -314,13 +326,24 @@ func cleanTitle(s string) string {
 func pathsIn(desc string) []string {
 	var out []string
 	seen := map[string]bool{}
-	for _, m := range pathish.FindAllStringSubmatch(desc, -1) {
-		p := strings.Trim(m[1], "`,.")
+	add := func(p string) {
+		p = strings.Trim(p, "`,.")
 		if p == "" || seen[p] {
-			continue
+			return
 		}
 		seen[p] = true
 		out = append(out, p)
+	}
+
+	for _, m := range pathish.FindAllStringSubmatch(desc, -1) {
+		add(m[1])
+	}
+	// Bare manifests are looked for in what is LEFT once the qualified paths
+	// are taken out. web/package.json is one path, and scanning the whole
+	// line again would report package.json beside it as a second file that
+	// the task never mentioned.
+	for _, m := range bareManifest.FindAllString(pathish.ReplaceAllString(desc, " "), -1) {
+		add(m)
 	}
 	return out
 }
