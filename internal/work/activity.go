@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/supervisor"
@@ -40,7 +41,25 @@ func activityNote(a supervisor.Activity) string {
 	return strings.TrimSpace(n)
 }
 
+// heartbeatEvery is how often a working run says so on a quiet console.
+//
+// Short enough that a person waiting on a ticket does not start wondering,
+// long enough that four tickets in flight cost eight lines a minute rather
+// than the transcript OR-217 measured at 60% of a screen.
+const heartbeatEvery = 30 * time.Second
+
 func ActivityLogger(log *events.Log, w io.Writer, key, actor string) func(supervisor.Activity) {
+	return activityLoggerAt(log, w, key, actor, time.Now)
+}
+
+// activityLoggerAt is ActivityLogger with an injectable clock, so the
+// heartbeat's throttle can be tested without a test that sleeps.
+func activityLoggerAt(log *events.Log, w io.Writer, key, actor string, now func() time.Time) func(supervisor.Activity) {
+	started := now()
+	// Zero means "nothing printed yet", so the FIRST tool call speaks
+	// immediately: a run that waits a full interval before its first sign of
+	// life is the defect this fixes, one interval smaller.
+	var lastBeat time.Time
 	return func(a supervisor.Activity) {
 		switch a.Kind {
 		case "start":
@@ -82,6 +101,27 @@ func ActivityLogger(log *events.Log, w io.Writer, key, actor string) func(superv
 			// a screen at concurrency 4, and it is already complete in the
 			// event log for anyone reading the run back.
 			ui.Trace(w, key, actor, a.Model, ui.VerbWorking, "%s %s", verbFor(a.Tool), a.Detail)
+			// ...and, at default verbosity, a throttled heartbeat, because
+			// Trace is the ONLY console output a working run had and #419
+			// removed the other one. The live region carried the ticket's row
+			// continuously (OR-265); with the region gone, ungating Trace
+			// would put OR-217's transcript back, so what replaces the row is
+			// the row's information at the row's rate: one line per ticket per
+			// interval, saying how long it has been working and what it last
+			// did.
+			//
+			// Driven BY activity rather than by a timer, which is what makes
+			// silence still mean silence: a run doing nothing calls nothing,
+			// so nothing is printed. It also means no goroutine to stop at ten
+			// call sites.
+			//
+			// Suppressed under --verbose: every tool call is already on screen
+			// there, and a summary of lines the reader can see is noise.
+			if t := now(); !ui.Verbose() && (lastBeat.IsZero() || t.Sub(lastBeat) >= heartbeatEvery) {
+				lastBeat = t
+				ui.SayModel(w, key, actor, a.Model, ui.VerbWorking, "%s · %s %s",
+					t.Sub(started).Round(time.Second), verbFor(a.Tool), a.Detail)
+			}
 		case "text":
 			log.Emit(events.Event{Kind: events.KindSay, Actor: actor,
 				Model: a.Model, Msg: a.Detail})
