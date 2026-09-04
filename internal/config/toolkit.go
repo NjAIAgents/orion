@@ -78,6 +78,14 @@ func (t Toolkit) Stage(name string) string {
 	return t.Stages[canonicalStages[strings.ToLower(strings.TrimSpace(name))]]
 }
 
+// Spec hands the block to njagents, which resolves what a toolkit must ship
+// from it. A copy rather than a shared type because njagents cannot import
+// config -- config imports njagents for RepoURL -- and one conversion in one
+// place is cheaper than teaching every caller to build the struct.
+func (t Toolkit) Spec() njagents.Toolkit {
+	return njagents.Toolkit{Repo: t.Repo, Dir: t.Dir, Stages: t.Stages}
+}
+
 // parseToolkit reads the raw toolkit block, validating its SHAPE before the
 // rest of the config decodes it. Raw rather than post-unmarshal because the
 // two rejections that matter most -- an array of stages, an order key -- are

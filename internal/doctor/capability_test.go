@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/creds"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -508,7 +509,7 @@ func TestAMissingNJAgentsIsStillAFailure(t *testing.T) {
 	t.Setenv("ORION_HOME", t.TempDir()) // and no managed clone
 	t.Setenv("ORION_NJ_AGENTS_DIR", "")
 
-	c := checkNJAgents(filepath.Join(t.TempDir(), "nowhere"), false)
+	c := checkNJAgents(config.Toolkit{Dir: filepath.Join(t.TempDir(), "nowhere")}, false)
 
 	if c.grade != fail {
 		t.Errorf("missing nj-agents graded %v, want fail: %+v", c.grade, c)
