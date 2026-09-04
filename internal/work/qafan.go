@@ -94,6 +94,10 @@ func fanAuthoring(job qaJob, cfg config.Config, cases string,
 		jobs = append(jobs, supervisor.Options{
 			Stage:  "qa",
 			Prompt: supervisor.QAAuthorPrompt(key, job.Summary, g),
+			// What this author was given, so the fan's roster and its
+			// landings distinguish the five children from each other rather
+			// than repeating one line five times (OR-335).
+			About:  strconv.Itoa(countCases(g)) + " case(s)",
 			Model:  actors.Model(events.ActorQA),
 			Effort: actors.Effort(events.ActorQA),
 			// The same allowance the single QA run gets. A child writing a
