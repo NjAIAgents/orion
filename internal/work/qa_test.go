@@ -139,7 +139,10 @@ func fakeToolkit(t *testing.T, withTesting bool) string {
 	if err := os.WriteFile(filepath.Join(root, "CONVENTIONS.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	skills := append([]string{}, njagents.RequiredSkills...)
+	var skills []string
+	for _, r := range njagents.RequiredSkills(njagents.Toolkit{}) {
+		skills = append(skills, r.Skill)
+	}
 	if withTesting {
 		skills = append(skills, njagents.TestingSkills...)
 	}
@@ -874,7 +877,7 @@ func TestQADegradesToTheRepositorysOwnToolingAndSaysSo(t *testing.T) {
 func TestQAUsesTheTestingSkillsWhenTheToolkitHasThem(t *testing.T) {
 	root := fakeToolkit(t, true)
 	cfg := config.Defaults()
-	cfg.Delegation.NJAgentsDir = root
+	cfg.Toolkit.Dir = root
 	got := qaTools(cfg, t.TempDir())
 	if !got.Skills {
 		t.Fatalf("the testing skills were present and were not detected: %+v", got)
