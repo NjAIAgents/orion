@@ -151,7 +151,7 @@ func For(orionHome string, cfg config.Config, stage, actor string) (*Run, error)
 		}
 	}
 
-	inst := njagents.Discover(cfg.Delegation.NJAgentsDir, orionHome)
+	inst := njagents.Discover(orionHome, cfg.Toolkit.Spec())
 	if inst == nil || inst.Root == "" {
 		// Not fatal here: `orion doctor` is what grades a missing toolkit,
 		// and it grades it FAIL. Saying it twice at different severities

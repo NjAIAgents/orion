@@ -884,7 +884,7 @@ func qaTools(cfg config.Config, home string) supervisor.QATools {
 	if !cfg.Delegation.Enabled {
 		return t
 	}
-	inst := njagents.Discover(cfg.Delegation.NJAgentsDir, home)
+	inst := njagents.Discover(home, cfg.Toolkit.Spec())
 	t.Skills = true
 	for _, s := range njagents.TestingSkills {
 		if !njagents.HasSkill(inst, s) {
