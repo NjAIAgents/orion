@@ -404,8 +404,18 @@ func landResumed(st batchState, members []Member, cfg config.Config, deps Deps,
 	_ = g.DropRef(st.Ref)
 	_ = g.DeleteRemoteRef(st.Ref)
 
+	// WHAT WAS SKIPPED, and what was not (OR-336).
+	//
+	// "with no further CI run" read as a claim about CI in general, and a
+	// merge to the work branch starts that branch's own checks a second
+	// later -- so the line appeared to be contradicted by the next thing on
+	// screen. What is actually skipped is a RE-TEST OF THE BATCH REF: it was
+	// already green, and the tree that merges is the tree that was tested,
+	// which is the whole saving batching exists for.
 	ui.Say(w, "", events.ActorOrion, ui.VerbOK,
-		"landed %d approved branch(es) as one, with no further CI run", len(members))
+		"landed %d approved branch(es) into %s as one commit; %s was already green, "+
+			"so it was not tested again (%s runs its own checks now)",
+		len(members), st.Base, st.Ref, st.Base)
 
 	// Every member of a resumed batch landed: the proof covers the recorded
 	// set, and LandRef merged that set whole. The URL comes from the record
