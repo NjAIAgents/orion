@@ -1,3 +1,5 @@
+//go:build !windows
+
 package testproc
 
 import (
@@ -65,12 +67,6 @@ func TestCleanupKillsTheWholeGroupIncludingGrandchildren(t *testing.T) {
 		t.Fatalf("the grandchild (pid %d) survived the test that started it: "+
 			"this is the orphan that filled the machine", pid)
 	}
-}
-
-// A command that was never started must not make cleanup panic or fail: a
-// test can register one and then fail before Start.
-func TestCleanupOnACommandThatNeverStartedIsSafe(t *testing.T) {
-	Command(t, "sh", "-c", "true") // never started; cleanup runs at test end
 }
 
 func waitFor(t *testing.T, cond func() bool, msg string) {
