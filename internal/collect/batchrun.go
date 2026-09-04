@@ -338,6 +338,14 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 		return resumeTesting(st, members, cfg, opts, deps, g, ws, log, w), true
 	}
 
+	// A RED record over the same set on the same base is left for runBatch,
+	// which assembles the set and isolates at once (OR-324).
+	if err == nil && st.Status == batchRed &&
+		st.Base == base && st.BaseSHA != "" && st.BaseSHA == baseSHA &&
+		sameMembers(st.Members, members) {
+		return nil, false
+	}
+
 	if err != nil || !st.resumable(base, baseSHA, members) {
 		if st.BaseSHA != "" && baseSHA != "" && st.BaseSHA != baseSHA {
 			ui.Warn(w, "%s moved since the batch was proved green; "+
@@ -499,15 +507,26 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		return res
 	}
 
-	ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
-		"assembling %d branch(es) into %s", len(members), ref)
+	known := knownRed(ws.Dir, cfg.VCS.WorkBranch, g, members)
+	if known {
+		ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
+			"%s is red; assembling %d branch(es) again to isolate the cause", ref, len(members))
+	} else {
+		ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
+			"assembling %d branch(es) into %s", len(members), ref)
+	}
 
 	t := batchTester{git: g, status: deps.Status, openPR: deps.OpenPR,
 		dir: ws.CloneDir(), base: cfg.VCS.WorkBranch,
 		wait: 30 * time.Minute, out: w, log: log}
-	b, err := Land(g, t, ref, cfg.VCS.WorkBranch, members, liveObserver{},
+	landOpts := []LandOption{
 		WithApproval(batchApprover(cfg, opts, deps, ws, log, w)),
-		WithIsolationWait(t.wait))
+		WithIsolationWait(t.wait),
+	}
+	if known {
+		landOpts = append(landOpts, WithKnownRed())
+	}
+	b, err := Land(g, t, ref, cfg.VCS.WorkBranch, members, liveObserver{}, landOpts...)
 
 	// Local ref and its worktree, then the published branch. Both, and only
 	// here: Test used to drop the remote ref as it returned, which cannot
@@ -777,9 +796,18 @@ func resumeTesting(st batchState, members []Member, cfg config.Config, opts Opti
 		return []Result{{Err: err}}
 
 	case !ok:
-		// Red. Cleared so the next pass reassembles and bisects, which needs
-		// the full Land path rather than this one.
-		clearBatchState(ws.Dir)
+		// Red. The record is KEPT, marked red, so the next pass reassembles
+		// the same set and bisects at once -- the full Land path rather
+		// than this one, but with the first verdict already in hand
+		// (OR-324). Clearing it made that pass test the whole set again:
+		// new merge commits, a new CI run, six more minutes to learn the
+		// same verdict, on every pass, so the batch was rebuilt forever and
+		// never once isolated.
+		st.Status = batchRed
+		if err := saveBatchState(ws.Dir, st); err != nil {
+			ui.Warn(w, "the batch is red but its record could not be updated (%v); "+
+				"the next pass will test it again", err)
+		}
 		ui.Warn(w, "%s went red; the next pass will isolate the cause", st.Ref)
 		return pendingResults(members)
 	}
@@ -848,4 +876,18 @@ func failCulprit(res Result, m Member, cfg config.Config, opts Options, deps Dep
 	pr := PR{URL: batchPR(), Verdict: VerdictFailing, Head: m.Head,
 		Detail: "convicted by the batch's isolation: " + detail}
 	return failing(res, m.Key, pr, cfg, m.Branch, opts, deps, ws, log, w)
+}
+
+// knownRed reports whether the record says this exact set on this exact base
+// already ran red, so the pass can isolate rather than test (OR-324).
+func knownRed(wsDir, base string, g repoGit, members []Member) bool {
+	st, ok := loadBatchState(wsDir)
+	if !ok || st.Status != batchRed || st.Base != base || st.BaseSHA == "" {
+		return false
+	}
+	baseSHA, err := g.SHAOf(base)
+	if err != nil || baseSHA != st.BaseSHA {
+		return false
+	}
+	return sameMembers(st.Members, members)
 }

@@ -403,6 +403,9 @@ type landOpts struct {
 	isoWait time.Duration
 	// sleep is what the wait sleeps with; injectable so the test does not.
 	sleep func(time.Duration)
+	// knownRed says the whole set's run has already come back red, so the
+	// first test is skipped and the search begins at once (OR-324).
+	knownRed bool
 }
 
 // now reads the clock, defaulting to the real one. A method rather than a
@@ -433,6 +436,14 @@ func WithClock(f func() time.Time) LandOption {
 // bounded by d, and only then gives up.
 func WithIsolationWait(d time.Duration) LandOption {
 	return func(o *landOpts) { o.isoWait = d }
+}
+
+// WithKnownRed starts at isolation: the previous pass already ran the whole
+// set and it was red (OR-324). Without it the next pass re-cut the ref, pushed
+// fresh merge commits, and waited six minutes to learn what it already knew --
+// and, since the record was cleared, did so on every pass, never isolating.
+func WithKnownRed() LandOption {
+	return func(o *landOpts) { o.knownRed = true }
 }
 
 // WithSleeper replaces the wait's sleep. For tests.
@@ -524,7 +535,14 @@ func Land(g Git, t Tester, ref, base string, members []Member, o Observer,
 	b.BaseSHA = baseSHA
 
 	ob.Testing(1)
-	ok, err := t.Test(ref)
+	var ok bool
+	if lo.knownRed {
+		// The run was spent by the previous pass; it counts, and its
+		// verdict is the one being acted on.
+		ok, err = false, nil
+	} else {
+		ok, err = t.Test(ref)
+	}
 	if errors.Is(err, ErrCheckPending) {
 		// NOT A FAILURE, AND NOT A RUN SPENT. CI is still going; the caller
 		// records the batch and comes back on a later tick (OR-251). Counting
