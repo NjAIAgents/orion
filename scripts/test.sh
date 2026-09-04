@@ -85,7 +85,26 @@ step "tests"
 # on luck rather than margin -- coverage instrumentation happens to change the
 # timing -- and "it passed locally" has to mean the same thing here as it does
 # on the release gate.
-go test ./... -timeout 20m -coverprofile=coverage.raw.out -covermode=atomic
+# -p bounds how many PACKAGES run at once (OR-332).
+#
+# Go defaults it to GOMAXPROCS, and this suite is not CPU-bound: sixteen
+# packages spawn real subprocesses -- git, gh, claude, the agent's own shell
+# -- so the default puts several process-heavy packages on the runner at the
+# same time and they starve each other. The tests that lose are the ones with
+# a clock in them: a wall-clock kill that waits for a grandchild to report its
+# pid, a watch loop expected to complete two passes at a millisecond interval.
+#
+# That is why macOS failed about two runs in five while Linux passed: GitHub's
+# macOS runner has three cores to Linux's four and is slower per core, so the
+# same default oversubscribes it further. Each failure named a DIFFERENT test,
+# which is the signature of contention rather than of a broken assertion.
+#
+# Two, not one: the suite still overlaps the many packages that are pure
+# computation, and a serial run costs several minutes on every leg. Raising
+# this is a decision about the slowest runner, not about this laptop.
+: "${TEST_PARALLEL_PACKAGES:=2}"
+go test ./... -p "$TEST_PARALLEL_PACKAGES" -timeout 20m \
+  -coverprofile=coverage.raw.out -covermode=atomic
 
 step "coverage"
 # Drop the packages the floor deliberately excludes. The profile keeps its
