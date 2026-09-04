@@ -62,6 +62,37 @@ func TestTicketShapeOrdersTheHumanPartAboveTheRule(t *testing.T) {
 	}
 }
 
+// A shape missing a section is worse than no shape at all: the planner fills
+// the gap with whatever it would have written anyway, and the ticket looks
+// compliant while carrying none of the section the reader relies on being
+// there. This pins every section, not just the three the order test walks.
+func TestTicketShapeHasEveryRequiredSection(t *testing.T) {
+	for _, want := range []string{
+		"<One sentence: what changes.>",
+		"WHY:",
+		"---",
+		"## Open questions",
+		"## Scope",
+		"## Grounding",
+		"## Tests",
+	} {
+		if !strings.Contains(ticketShape, want) {
+			t.Errorf("the ticket shape is missing %q:\n%s", want, ticketShape)
+		}
+	}
+}
+
+// The shape is worthless if it only ever describes the parent Epic or Story.
+// This is the line that binds it to every item the planner writes, not a
+// sample of them.
+func TestDecomposePromptInstructsEveryItem(t *testing.T) {
+	p := decomposePrompt(t)
+	if !strings.Contains(p, "Write EVERY item's description in this shape") {
+		t.Errorf("the decompose prompt never tells the planner the shape applies "+
+			"to every tracker item, not just some of them:\n%s", p)
+	}
+}
+
 // The body grows back the moment a ticket is allowed to paste the code or
 // re-argue a rejected alternative, which is what made these unreadable in the
 // first place. OR-161 records those decisions as ADRs precisely so a ticket
