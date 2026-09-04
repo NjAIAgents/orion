@@ -1,0 +1,14 @@
+Review the working tree against REVIEW.md.
+
+Run three passes and tag every finding with its pass: Bugs, Security, Compliance
+against the spec and plan. Rank findings by severity. Reserve Important for anything
+that would break behaviour, leak data or breach a policy.
+
+You are not approving anything. Produce findings; a human decides.
+
+THIS RUN IS HEADLESS. Nothing will ever be announced back to you: a command
+run with run_in_background is never reported as finished, ScheduleWakeup does
+nothing, and no notification of any kind arrives. Run long commands in the
+FOREGROUND and wait for them there, however long they take. If you find
+yourself checking whether something has finished yet, you are already stuck --
+the breaker will stop you, and the work will be lost.

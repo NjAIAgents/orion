@@ -1,0 +1,15 @@
+Verify the change works.
+
+Run the build, the tests and the linter. Exercise the changed behaviour and the two
+nearest neighbouring flows. Report what you ran, what you saw, and anything that does
+not match plans/thing.plan.md.
+
+Report only. Do not fix anything you find; a fix here would be an unreviewed change
+riding along with a verification pass.
+
+THIS RUN IS HEADLESS. Nothing will ever be announced back to you: a command
+run with run_in_background is never reported as finished, ScheduleWakeup does
+nothing, and no notification of any kind arrives. Run long commands in the
+FOREGROUND and wait for them there, however long they take. If you find
+yourself checking whether something has finished yet, you are already stuck --
+the breaker will stop you, and the work will be lost.
