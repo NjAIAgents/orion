@@ -121,6 +121,52 @@ func TestTheWidthIsHonoured(t *testing.T) {
 	}
 }
 
+// TestFanAuthoringCarriesEachAuthorsCaseCountAsAbout. Every author runs as
+// the same actor and stage, so the roster's only way to say which author got
+// what is the About the fan prints alongside the label (OR-335) -- and that
+// has to be THIS author's share, not the whole ticket's.
+func TestFanAuthoringCarriesEachAuthorsCaseCountAsAbout(t *testing.T) {
+	var dispatched []supervisor.Options
+	var buf bytes.Buffer
+	cfg := config.Config{QA: config.QA{AuthorAgents: 2}}
+
+	fanAuthoring(qaJob{Key: "OR-1", Summary: "s"}, cfg, fanCases,
+		Deps{Fan: recordingFan(&dispatched)}, fanTestLog(t), &buf)
+
+	for i, j := range dispatched {
+		if !strings.Contains(j.About, "case(s)") {
+			t.Errorf("author %d: About = %q, want it to name its own case count", i, j.About)
+		}
+	}
+}
+
+// TestFanAuthoringAboutValuesDistinguishTheAuthors. An uneven split -- one
+// author with two cases, two with one each -- must not print the same About
+// on every roster line, or nothing says why one author took longer than the
+// others.
+func TestFanAuthoringAboutValuesDistinguishTheAuthors(t *testing.T) {
+	var dispatched []supervisor.Options
+	var buf bytes.Buffer
+	cfg := config.Config{QA: config.QA{AuthorAgents: 3}}
+
+	fanAuthoring(qaJob{Key: "OR-1", Summary: "s"}, cfg, fanCases,
+		Deps{Fan: recordingFan(&dispatched)}, fanTestLog(t), &buf)
+
+	if len(dispatched) < 2 {
+		t.Fatalf("expected an uneven fan of the four cases, got %d job(s)", len(dispatched))
+	}
+	allSame := true
+	for _, j := range dispatched[1:] {
+		if j.About != dispatched[0].About {
+			allSame = false
+		}
+	}
+	if allSame {
+		t.Errorf("every author's About was %q; an uneven split must not print an "+
+			"identical roster line for every child", dispatched[0].About)
+	}
+}
+
 // TestNoAuthorIsToldToRunTheTests. The other writers are still working, so a
 // child that compiles sees failures that are not its own -- ADR 0016's first
 // hazard, which this stage escapes only by nobody building until every writer
