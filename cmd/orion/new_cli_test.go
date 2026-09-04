@@ -1,7 +1,7 @@
 package main
 
 import (
-	"os/exec"
+	"github.com/orion-sdlc/orion/internal/testproc"
 	"strings"
 	"testing"
 )
@@ -21,7 +21,7 @@ import (
 // manual-creation fallback rather than just failing silently.
 func TestCLIRefusesWhenStdinIsNotATerminal(t *testing.T) {
 	bin := orionBinary(t)
-	cmd := exec.Command(bin, "new", "customers should see claim status in the portal")
+	cmd := testproc.Command(t, bin, "new", "customers should see claim status in the portal")
 	cmd.Env = append(cmd.Env, "ORION_HOME=/nonexistent-home-for-test")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -42,7 +42,7 @@ func TestCLIRefusesEachDeprecatedFlagBeforeQuestions(t *testing.T) {
 	bin := orionBinary(t)
 	for _, flag := range []string{"--from", "--template", "--container", "--skip-discovery"} {
 		t.Run(flag, func(t *testing.T) {
-			cmd := exec.Command(bin, "new", "some idea", flag, "x")
+			cmd := testproc.Command(t, bin, "new", "some idea", flag, "x")
 			out, err := cmd.CombinedOutput()
 			if err == nil {
 				t.Fatalf("%s: expected a non-zero exit, got success:\n%s", flag, out)
@@ -66,7 +66,7 @@ func TestCLIRefusesEachDeprecatedFlagBeforeQuestions(t *testing.T) {
 // `name=value` form.
 func TestCLIRefusesDeprecatedFlagGivenAsEqualsForm(t *testing.T) {
 	bin := orionBinary(t)
-	cmd := exec.Command(bin, "new", "some idea", "--from=git@example.com:org/repo.git")
+	cmd := testproc.Command(t, bin, "new", "some idea", "--from=git@example.com:org/repo.git")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("expected a non-zero exit, got success:\n%s", out)

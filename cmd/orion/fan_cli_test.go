@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/orion-sdlc/orion/internal/testproc"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,7 +65,7 @@ func TestCLIFanRequiresAWorkspace(t *testing.T) {
 		assignment("./internal/a", "x"), assignment("./internal/b", "y"),
 	}})
 
-	cmd := exec.Command(bin, "fan", planPath)
+	cmd := testproc.Command(t, bin, "fan", planPath)
 	cmd.Env = append(os.Environ(), "ORION_WORKSPACE=", "ORION_HOME="+t.TempDir())
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -88,7 +89,7 @@ func TestCLIFanRefusesAPlanThatIsNotJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command(bin, "fan", planPath)
+	cmd := testproc.Command(t, bin, "fan", planPath)
 	cmd.Env = append(os.Environ(), "ORION_HOME="+home, "ORION_WORKSPACE="+id)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -115,7 +116,7 @@ func TestCLIFanRefusesCoupledPackagesAndSaysWorkSerially(t *testing.T) {
 		assignment("./cmd/orion", "x"), assignment("./internal/supervisor", "y"),
 	}})
 
-	cmd := exec.Command(bin, "fan", "--repo", repoRoot, planPath)
+	cmd := testproc.Command(t, bin, "fan", "--repo", repoRoot, planPath)
 	cmd.Env = append(os.Environ(), "ORION_HOME="+home, "ORION_WORKSPACE="+id)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -152,7 +153,7 @@ func TestCLIFanRefusesAnUnresolvablePackageWithoutCrashing(t *testing.T) {
 		assignment("./internal/this-package-does-not-exist", "y"),
 	}})
 
-	cmd := exec.Command(bin, "fan", "--repo", repoRoot, planPath)
+	cmd := testproc.Command(t, bin, "fan", "--repo", repoRoot, planPath)
 	cmd.Env = append(os.Environ(), "ORION_HOME="+home, "ORION_WORKSPACE="+id)
 	out, err := cmd.CombinedOutput()
 	if err == nil {

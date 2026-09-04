@@ -2,6 +2,7 @@ package collect
 
 import (
 	"bytes"
+	"github.com/orion-sdlc/orion/internal/testproc"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -512,7 +513,7 @@ func goTestPasses(t *testing.T, origin, count string) bool {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "at-count-1")
 	gitRun(t, t.TempDir(), "clone", "--quiet", "--branch", "orion/x-2", origin, dir)
-	cmd := exec.Command("go", "test", count, "./internal/x")
+	cmd := testproc.Command(t, "go", "test", count, "./internal/x")
 	cmd.Dir = dir
 	return cmd.Run() == nil
 }
