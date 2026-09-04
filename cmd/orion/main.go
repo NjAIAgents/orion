@@ -83,6 +83,12 @@ RUNNING
   orion plan <KEY>            design a provisioned tracker project: workspace
                               first, then the roster and cost shape
                               (--dry-run prints it all and spends nothing)
+  orion decompose <KEY> [f]   create the Epic, Story and Task tree from a
+                              /speckit.tasks tasks.md: the whole tree is
+                              previewed and one answer creates it. Links what a
+                              previous run made rather than duplicating it.
+                              Jira only for now; the decompose STAGE still uses
+                              the configured skill on every tracker
   orion run <id> [--stage S]  supervise a sandboxed claude run in a workspace
   orion status                show this repo: branch, hooks, Jira, Slack, spend
   orion status <id>           show stage, breaker state and last run
@@ -273,6 +279,9 @@ func main() {
 		} else {
 			runQueue(os.Args[2:])
 		}
+	case "decompose":
+		mustArg(os.Args, 2, "orion decompose <KEY> [path/to/tasks.md]")
+		runDecompose(os.Args[2:])
 	case "routes":
 		runRoutes()
 	case "repos":

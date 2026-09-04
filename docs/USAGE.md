@@ -451,6 +451,38 @@ sequencing across stages is Orion's, not a toolkit's
 A block that expresses order is rejected with an error citing that decision,
 so the rule holds by shape rather than by prose.
 
+### Creating the tracker tree from a spec-kit task list
+
+If your `plan` stage runs spec-kit's `/speckit.tasks`, the artifact it leaves
+behind — `specs/<nnn-feature>/tasks.md` — is a phased task list with `[P]`
+parallel markers, `[USn]` story groups and exact file paths. `orion decompose`
+turns that into the tracker tree itself, without a skill in the middle:
+
+```bash
+orion decompose CAT                       # finds specs/*/tasks.md
+orion decompose CAT specs/003-cat/tasks.md
+```
+
+One Epic, one Story per `[USn]` group, and each task as a child of its story —
+a task in no story group (Setup, Foundational, Polish) hangs off the Epic
+directly, since that is where it belongs and no story was described for it. The
+`[P]` marker, the phase, the dependency section and the file paths all survive
+into the descriptions, and the routing marker `orion routes` publishes is set
+on each item **by Orion** rather than requested in a prompt.
+
+The whole tree is printed first, with `+` for what would be created and `=` for
+what a previous run already made, and **one answer covers all of it**. A run
+with nobody present to answer creates nothing and says so. A re-run searches by
+the tree's identity label (`orion-spec-<feature>`), links what is there and
+creates only the rest — so a run that failed halfway is resumed by running the
+same command again, and it reports the item it stopped at.
+
+**This is opt-in and Jira-only for now.** The `decompose` STAGE still runs
+whatever your toolkit block names (`/pm-plan` by default), on any tracker, and
+that path is unchanged — a project with no spec-kit output decomposes exactly as
+it did before. The tracker-neutral seam that would let this reach Linear, Notion
+and GitHub Issues is tracked as OR-303.
+
 ---
 
 ## 6. Weekly budget checkpoints
