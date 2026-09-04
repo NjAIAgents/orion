@@ -21,9 +21,16 @@ type Limits struct {
 	MaxRepeatIdentical     int `json:"max_repeat_identical"`
 	MaxConsecutiveFailures int `json:"max_consecutive_failures"`
 	MaxSameCommandFailures int `json:"max_same_command_failures"`
-	MaxSessionMinutes      int `json:"max_session_minutes"`
-	MaxEditsWithoutVerify  int `json:"max_edits_without_verify"`
-	MaxFilesTouched        int `json:"max_files_touched"`
+	// MaxConsecutivePolls bounds waiting (OR-331). A poll is exempt from the
+	// repeat counter so a long command CAN be waited for (OR-207), but
+	// nothing bounded how long: a QA session polled a backgrounded suite for
+	// twenty minutes in a headless run, where a background command is never
+	// announced, and never produced the verdict that would have sent its
+	// ticket back to the implementer.
+	MaxConsecutivePolls   int `json:"max_consecutive_polls"`
+	MaxSessionMinutes     int `json:"max_session_minutes"`
+	MaxEditsWithoutVerify int `json:"max_edits_without_verify"`
+	MaxFilesTouched       int `json:"max_files_touched"`
 	// MaxConcurrentChildren caps how many subagents supervisor.Fan runs at
 	// once. Low by default: unbounded fan-out against a rate-limited API
 	// converts a queue into a stampede (OR-162 is what misreading this limit
@@ -916,6 +923,7 @@ func Defaults() Config {
 			MaxRepeatIdentical:     4,
 			MaxConsecutiveFailures: 3,
 			MaxSameCommandFailures: 3,
+			MaxConsecutivePolls:    12,
 			MaxSessionMinutes:      90,
 			MaxEditsWithoutVerify:  25,
 			MaxFilesTouched:        60,
