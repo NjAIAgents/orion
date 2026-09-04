@@ -58,6 +58,7 @@ func fanChildOptions(key, actor string, a fanout.Assignment) supervisor.Options 
 	return supervisor.Options{
 		Stage:        "fan",
 		Prompt:       supervisor.FanChildPrompt(a.Package, a.Task),
+		About:        a.Package,
 		MaxMinutes:   fanChildMaxMinutes,
 		MaxTurns:     fanChildMaxTurns,
 		AllowedTools: supervisor.WriteOnlyTools,
