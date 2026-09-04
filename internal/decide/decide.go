@@ -231,7 +231,7 @@ func Confirm(deps Deps, dir, key string) (collect.Decision, bool, error) {
 		_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion, fmt.Sprintf(
 			"%s confirmed this with %s in Slack (%s), so it is now a decision: %s.\n\n"+
 				"Later stages read it from here on.",
-			d.By, d.How, slackRef(r), filepath.Join(ConfirmedDir, key+".md"))))
+			d.By, d.How, slackRef(r), recordPath(key))))
 	}
 	// A decision in the log's sense: the alternative was to leave it
 	// unconfirmed, and the reason it was not taken is a named person's
@@ -242,7 +242,7 @@ func Confirm(deps Deps, dir, key string) (collect.Decision, bool, error) {
 		Detail: map[string]any{
 			"approver": d.By, "how": d.How,
 			"slack_channel": r.Channel, "slack_ts": r.TS,
-			"record": filepath.Join(ConfirmedDir, key+".md"),
+			"record": recordPath(key),
 		},
 	})
 	return d, true, nil
@@ -345,4 +345,18 @@ func write(path, body string) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(body), 0o644)
+}
+
+// recordPath names the confirmation record as a REPOSITORY path.
+//
+// Slash-separated on every platform, deliberately, because this string is
+// read by people and by a tracker rather than by a filesystem: it goes into
+// a Jira comment and into the event log. filepath.Join would render it
+// docs\recommendations\confirmed\OR-1.md on Windows, which is wrong in a
+// comment however right it is on disk (OR-341).
+//
+// The on-disk write above keeps filepath.Join, which is the correct call for
+// an actual path.
+func recordPath(key string) string {
+	return ConfirmedDir + "/" + key + ".md"
 }

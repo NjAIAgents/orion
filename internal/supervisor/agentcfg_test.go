@@ -16,18 +16,14 @@ import (
 func fakeClaudeRecordingArgsAndEnv(t *testing.T) (argsFile, envFile string) {
 	t.Helper()
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "claude")
 	argsFile = filepath.Join(dir, "args.txt")
 	envFile = filepath.Join(dir, "env.txt")
 	script := "#!/bin/sh\n" +
-		`echo "$@" > ` + argsFile + "\n" +
-		"env > " + envFile + "\n" +
+		`echo "$@" > ` + shPath(argsFile) + "\n" +
+		"env > " + shPath(envFile) + "\n" +
 		`echo '{"type":"result","session_id":"abc","result":"done","total_cost_usd":0.1,"is_error":false}'` + "\n" +
 		"exit 0\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeBinIn(t, dir, "claude", script)
 	return argsFile, envFile
 }
 

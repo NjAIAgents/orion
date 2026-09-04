@@ -85,7 +85,20 @@ func statOK(path string) bool {
 // failures. POSIX can exec it directly (the shebang does the work), and
 // Windows runners carry Git Bash, so naming bash explicitly is the one form
 // that works on both.
-func shellScript(path string) []string {
+func shellScript(path string) []string { return ScriptCommand(path) }
+
+// ScriptCommand is the argv that runs a shell script on this platform.
+//
+// Exported because internal/work's red-before-green check runs the same
+// scripts/test.sh and had its own direct exec of it, which meant OR-334's
+// Windows fix reached one caller and not the other: the second one failed
+// with "%1 is not a valid Win32 application" for as long as the Windows leg
+// went unread (OR-341). One spelling, one place.
+//
+// Windows will not exec a file because it starts with `#!` -- it dispatches
+// on the extension -- so the interpreter has to be named. Git Bash is what
+// the CI job's own steps use.
+func ScriptCommand(path string) []string {
 	if runtime.GOOS == "windows" {
 		return []string{"bash", path}
 	}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -514,6 +515,14 @@ func TestCommitAllCommitsALargeBatchInOneCommit(t *testing.T) {
 // worktree because a linked worktree's ".git" is a file pointing elsewhere,
 // not the directory that actually holds the lockfile.
 func TestCommitAllReturnsAnErrorRatherThanPanicking(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The failure is provoked by chmod-ing .git read-only, and chmod
+		// cannot take write access away from a directory on Windows --
+		// it maps to the read-only attribute, which does not apply to
+		// directories. git writes its lockfile happily and CommitAll
+		// succeeds, so there is no error to assert on (OR-341).
+		t.Skip("a directory cannot be made unwritable with chmod on Windows")
+	}
 	repo := t.TempDir()
 	gitT(t, repo, "init", "-q", "-b", "main")
 	if err := os.WriteFile(filepath.Join(repo, "seed.txt"), []byte("x\n"), 0o644); err != nil {

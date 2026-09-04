@@ -417,6 +417,14 @@ func TestCheckDiskRepairsAnOpenHome(t *testing.T) {
 // A home that cannot be written to at all is a hard failure: every log,
 // ledger and workspace lives there.
 func TestCheckDiskFailsWhenHomeIsUnwritable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// os.Chmod cannot take write access away on Windows -- it maps to
+		// the read-only ATTRIBUTE, which does not apply to directories --
+		// so the condition under test cannot be created here. Skipped
+		// rather than softened: the assertion is exactly right elsewhere
+		// (OR-341).
+		t.Skip("a directory cannot be made unwritable with chmod on Windows")
+	}
 	if os.Getuid() == 0 {
 		t.Skip("root can write anywhere")
 	}

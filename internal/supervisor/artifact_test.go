@@ -221,7 +221,7 @@ func claudeWriting(t *testing.T, repo, script string) {
 		t.Skip("git is not available")
 	}
 	result := `{"type":"result","is_error":false,"terminal_reason":"success","num_turns":1}`
-	body := "#!/bin/sh\ncd " + repo + "\n" + script + "\necho '" + result + "'\nexit 0\n"
+	body := "#!/bin/sh\ncd " + shPath(repo) + "\n" + script + "\necho '" + result + "'\nexit 0\n"
 	writeFakeBin(t, "claude", body)
 }
 
