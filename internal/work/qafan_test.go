@@ -2,6 +2,7 @@ package work
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/suite"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -284,5 +286,61 @@ func TestTheSuiteRunsEvenWhenNothingFanned(t *testing.T) {
 	runAuthoredSuite(job, config.Config{}, log, &buf)
 	if !strings.Contains(buf.String(), "green") {
 		t.Errorf("Orion did not run the suite on the un-fanned path:\n%s", buf.String())
+	}
+}
+
+// TestARedSuiteReachesTheVerdict is OR-312's regression guard.
+//
+// The first cut of the suite runner printed "the suite is red", logged the
+// output, and returned nothing. QA then formed its verdict having never been
+// told, so four tickets in one run reported "every case passes" over a suite
+// Orion had already failed -- and a gofmt error reached a shared branch and
+// failed CI twenty minutes later.
+func TestARedSuiteReachesTheVerdict(t *testing.T) {
+	red := &suite.Result{Cmd: "./scripts/test.sh", Passed: false,
+		Output: "these files are not gofmt'd:\ninternal/decide/decide_test.go"}
+
+	got := suiteEvidence(red)
+	if got == "" {
+		t.Fatal("a failing suite produced no evidence for the verdict")
+	}
+	if !strings.Contains(got, "not gofmt'd") {
+		t.Error("the failure OUTPUT is missing; the fix round has nothing to act on")
+	}
+	if !strings.Contains(got, "FAILED") {
+		t.Error("the evidence does not say the suite failed")
+	}
+}
+
+// TestAGreenSuiteAddsNothing. QA runs its own cases regardless, so a passing
+// suite is not news -- and padding every prompt with it would crowd out the
+// cases that are.
+func TestAGreenSuiteAddsNothing(t *testing.T) {
+	if got := suiteEvidence(&suite.Result{Passed: true}); got != "" {
+		t.Errorf("a green suite added %q to the prompt", got)
+	}
+}
+
+// TestAnUnrunnableSuiteIsNotEvidence. Not knowing is not the same as failing.
+// A suite that could not be detected, or a command that would not start, must
+// not read to QA as a failure.
+func TestAnUnrunnableSuiteIsNotEvidence(t *testing.T) {
+	for name, res := range map[string]*suite.Result{
+		"never ran":     nil,
+		"could not run": {Err: errors.New("exec: not found")},
+	} {
+		if got := suiteEvidence(res); got != "" {
+			t.Errorf("%s: produced evidence %q", name, got)
+		}
+	}
+}
+
+// TestATimedOutSuiteSaysSoRatherThanFailing. A hung suite and a failing suite
+// call for different responses, and reporting one as the other sends a person
+// looking for a defect that is not there.
+func TestATimedOutSuiteSaysSoRatherThanFailing(t *testing.T) {
+	got := suiteEvidence(&suite.Result{TimedOut: true, Cmd: "./scripts/test.sh"})
+	if !strings.Contains(got, "DID NOT FINISH") {
+		t.Errorf("a timeout was not distinguished from a failure:\n%s", got)
 	}
 }

@@ -62,7 +62,7 @@ func Run(w io.Writer, path string, autoFix bool) int {
 		checkGit(),
 		checkGH(),
 		checkGHScopes(),
-		checkNJAgents(config.Load(rootOr(path)).Delegation.NJAgentsDir, autoFix),
+		checkNJAgents(config.Load(rootOr(path)).Toolkit, autoFix),
 		checkSandbox(),
 		checkHome(),
 		checkDisk(),

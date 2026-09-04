@@ -7,6 +7,7 @@ package main
 // same pattern releaseclose_cli_test.go uses for `orion release close`.
 
 import (
+	"github.com/orion-sdlc/orion/internal/testproc"
 	"os"
 	"os/exec"
 	"strings"
@@ -28,7 +29,7 @@ func TestCLIResetHeldUnknownFaultListsKnownFaultsAndExits64(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command(bin, "reset", "--held", "unknown-fault")
+	cmd := testproc.Command(t, bin, "reset", "--held", "unknown-fault")
 	cmd.Env = append(os.Environ(), "ORION_HOME="+home)
 	out, runErr := cmd.CombinedOutput()
 
@@ -56,7 +57,7 @@ func TestCLIResetHeldWithNothingHeldReportsAndExitsZero(t *testing.T) {
 	bin := orionBinary(t)
 	home := t.TempDir()
 
-	cmd := exec.Command(bin, "reset", "--held")
+	cmd := testproc.Command(t, bin, "reset", "--held")
 	cmd.Env = append(os.Environ(), "ORION_HOME="+home)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

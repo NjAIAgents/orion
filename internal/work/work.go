@@ -42,6 +42,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/claim"
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/decide"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/registry"
@@ -1124,6 +1125,11 @@ func artifactsFor(dir string, cfg config.Config) []string {
 		filepath.Join(cfg.Paths.Specs, "spec.md"),
 		filepath.Join(cfg.Paths.Plans, "plan.md"),
 		"docs/decisions",
+		// Confirmed recommendations only. The pending directory beside it is
+		// deliberately absent: an implementer handed an unconfirmed proposal
+		// would build on it, and by the time anybody read the diff the thing
+		// nobody agreed to would be the premise (internal/decide).
+		decide.ConfirmedDir,
 	} {
 		clean := filepath.Clean(rel)
 		if _, err := os.Stat(filepath.Join(dir, clean)); err == nil {

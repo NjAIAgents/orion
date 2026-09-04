@@ -32,7 +32,7 @@ func Recheck(fault, root string) (label, detail string) {
 	case "forge":
 		c = checkGH()
 	case "nj-agents":
-		c = checkNJAgents(config.Load(rootOr(root)).Delegation.NJAgentsDir, false)
+		c = checkNJAgents(config.Load(rootOr(root)).Toolkit, false)
 	default:
 		return "", "there is no check for this that does not cost a run"
 	}

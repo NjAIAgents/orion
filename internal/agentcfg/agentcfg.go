@@ -49,7 +49,7 @@ import (
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/config"
-	"github.com/orion-sdlc/orion/internal/njagents"
+	"github.com/orion-sdlc/orion/internal/toolkit"
 )
 
 // DirName is the curated directory's name under ORION_HOME. One directory
@@ -151,7 +151,7 @@ func For(orionHome string, cfg config.Config, stage, actor string) (*Run, error)
 		}
 	}
 
-	inst := njagents.Discover(cfg.Delegation.NJAgentsDir, orionHome)
+	inst := toolkit.Discover(orionHome, cfg.Toolkit.Spec())
 	if inst == nil || inst.Root == "" {
 		// Not fatal here: `orion doctor` is what grades a missing toolkit,
 		// and it grades it FAIL. Saying it twice at different severities

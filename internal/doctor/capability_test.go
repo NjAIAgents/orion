@@ -5,10 +5,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/creds"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -139,6 +141,14 @@ func TestCacheIsOwnerOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Windows has no POSIX mode bits: every file reports 0666 there, and a
+	// permission assertion tests the operating system rather than the code
+	// (OR-334). The guarantee this asserts is real and holds on POSIX; it is
+	// simply not expressible on Windows.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits do not exist on Windows")
+	}
+
 	if mode := fi.Mode().Perm(); mode&0o077 != 0 {
 		t.Errorf("mode = %o", mode)
 	}
@@ -372,6 +382,11 @@ func TestChecksDegradeWhenToolsAreMissing(t *testing.T) {
 // trade -- but it means the warning is dead code, not a live safety net, and
 // the repair is what must be tested.
 func TestCheckDiskRepairsAnOpenHome(t *testing.T) {
+	// Windows has no POSIX mode bits: every file reports 0666 there, so this
+	// asserts the operating system rather than the code (OR-334).
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits do not exist on Windows")
+	}
 	home := homeAt(t)
 	if c := checkDisk(); c.grade != ok {
 		t.Fatalf("a fresh home graded %v: %+v", c.grade, c)
@@ -508,7 +523,7 @@ func TestAMissingNJAgentsIsStillAFailure(t *testing.T) {
 	t.Setenv("ORION_HOME", t.TempDir()) // and no managed clone
 	t.Setenv("ORION_NJ_AGENTS_DIR", "")
 
-	c := checkNJAgents(filepath.Join(t.TempDir(), "nowhere"), false)
+	c := checkNJAgents(config.Toolkit{Dir: filepath.Join(t.TempDir(), "nowhere")}, false)
 
 	if c.grade != fail {
 		t.Errorf("missing nj-agents graded %v, want fail: %+v", c.grade, c)

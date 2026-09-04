@@ -213,6 +213,10 @@ func Run(opts Options, deps Deps) error {
 	lw := io.Writer(live)
 	liveOut.Store(&lw)
 	defer liveOut.Store(nil)
+	// Everything the supervisor says, and nothing a subprocess says, reaches
+	// the terminal through the region from here on (OR-330).
+	ui.SetConsole(live)
+	defer ui.SetConsole(nil)
 	ui.LiveReset()
 	// The window shows what the agents are saying, so how much it has to hold
 	// scales with how many are talking (OR-264).
@@ -455,6 +459,7 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 	// takes the shared-clone lock (workspace/gitlock.go).
 	if deps.Collect != nil {
 		inCI := 0
+		var pending []collect.Result
 		for _, r := range deps.Collect(collect.Options{
 			Out: w, Home: opts.Home, DryRun: opts.DryRun,
 			// A tick is not a person at a terminal. Without this the
@@ -475,9 +480,11 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 			// one holding it up.
 			if r.Verdict == collect.VerdictPending {
 				inCI++
+				pending = append(pending, r)
 			}
 		}
 		ui.LiveCI(inCI)
+		liveChecks(inCI, pending)
 	}
 
 	// 2. How much is already claimed? The label is the lock, and it lives on
@@ -497,6 +504,15 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 		s.free -= len(s.elsewhere)
 	}
 
+	// The queue is read on EVERY tick, not only when a slot is free: the
+	// rows are the queue, and a ticket waiting on the batch while four
+	// others run still has a row to keep current (OR-325).
+	q, err := deps.Queued(opts.Home, opts.Projects, opts.QueueLabel)
+	if err != nil {
+		return unfinished, err
+	}
+	ui.LiveQueue(queueRows(q.All))
+
 	if s.free <= 0 && !opts.DryRun {
 		// Worth a line only when a claim held elsewhere is WHY. A rate-limit
 		// pause and the job limit both announce themselves already, and a tick
@@ -511,10 +527,6 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 	}
 
 	// 3. Start the next tickets.
-	q, err := deps.Queued(opts.Home, opts.Projects, opts.QueueLabel)
-	if err != nil {
-		return unfinished, err
-	}
 	// Before the empty check, because "nothing is queued" and "everything
 	// queued is unschedulable" are the two states this most has to tell
 	// apart, and the second one prints nothing at all without this.
@@ -577,6 +589,61 @@ func reportHeld(w io.Writer, held []HeldTicket) {
 	for _, r := range reasons {
 		ui.Say(w, "", events.ActorOrion, ui.VerbWarn, "%s: %s", strings.Join(keys[r], ", "), r)
 	}
+}
+
+// liveChecks pushes what the tickets awaiting CI are actually doing into the
+// display, so an ordinary watch names the checks instead of counting tickets.
+//
+// The count in the header answers "how many tickets are waiting"; it cannot
+// answer "is ubuntu done and windows still going", which on this project is
+// the question worth asking -- the Windows leg runs several times longer than
+// Linux (OR-292), so nine minutes of "1 in CI" is usually one platform.
+//
+// PUSHED, NEVER PULLED. Every check here came out of the `gh pr view` the
+// reconciler ALREADY made to decide the verdict; nothing extra is fetched, and
+// nothing at all happens on a redraw tick. That is the same rule
+// internal/cost/cost.go states about spend: a number in the header must not be
+// the most expensive thing on the screen.
+//
+// One line for the whole watch, not a row per ticket. The rows below already
+// belong to the tickets THIS process is working; a ticket awaiting CI is not
+// one of them, and giving it a row would mean inventing an elapsed for work
+// this process did not start -- the reason LiveCI is a count in the first
+// place. When more than one ticket is waiting their checks share the line, so
+// each name is prefixed with its key: two tickets both running "go (ubuntu)"
+// would otherwise render as two identical cells.
+//
+// Silence when there is nothing collected AND nothing in CI: that clears a
+// finished run's row. A batch reports its own checks from batchrun.go and its
+// members come back PENDING with no per-ticket rollup, so inCI is non-zero
+// there and this leaves the batch's line exactly as it found it.
+// toberetired: OR-334 removed the live region. liveChecks and checkRows sort
+// and format check rows for ui.LiveChecks, which is now a no-op -- the work
+// is done and discarded. The facts still reach the operator: collect prints
+// each verdict as it reads it.
+func liveChecks(inCI int, pending []collect.Result) {
+	rows := checkRows(pending)
+	if len(rows) == 0 && inCI > 0 {
+		return
+	}
+	ui.LiveChecks(rows)
+}
+
+// checkRows is the display's rows for the tickets awaiting CI, in key order so
+// a cell does not move between redraws.
+func checkRows(pending []collect.Result) []ui.Check {
+	pending = append([]collect.Result(nil), pending...)
+	sort.Slice(pending, func(i, j int) bool { return pending[i].Key < pending[j].Key })
+	var out []ui.Check
+	for _, r := range pending {
+		for _, c := range collect.UIChecks(r.Checks) {
+			if len(pending) > 1 {
+				c.Name = r.Key + " " + c.Name
+			}
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // slots is one tick's slot arithmetic: the cap, everything that took a slot,
@@ -820,6 +887,8 @@ func claimedElsewhere(claimed, mine []string) []string {
 // An unreadable history is not an error here. It means no median, the row
 // draws no bar, and the region says nothing it cannot support: the display is
 // an accessory to the run and must never be able to fail it.
+// toberetired: OR-334 removed the live region. This fed ui.LiveMedians, which
+// is now a no-op, so the cost history is read for a bar nobody draws.
 func medianFor(home string, projects []string) func(string) time.Duration {
 	return func(actor string) time.Duration {
 		rows, err := cost.ReadHistory(home)
@@ -840,6 +909,9 @@ func medianFor(home string, projects []string) func(string) time.Duration {
 // Package-level for the same reason `running` is: Listen installs the handler
 // before Run builds anything, and the handler's first message -- how to force
 // a quit -- is the one line that must not be erased by the next redraw.
+// toberetired (partly): with the region gone the writer this publishes is a
+// plain pass-through, so the indirection buys nothing. The signal handler
+// could take the watch's own writer directly.
 var liveOut atomic.Pointer[io.Writer]
 
 // out is where a message from outside the loop should go: the live writer if
@@ -1007,6 +1079,9 @@ func (s *syncWriter) Write(b []byte) (int, error) {
 type Queue struct {
 	Ready []tracker.Issue
 	Held  []HeldTicket
+	// All is every ticket in scope carrying the queue label or any state
+	// label, in queue order: what the watch keeps a row for (OR-325).
+	All []tracker.Issue
 }
 
 // HeldTicket is one labelled ticket the queue will not claim, and the reason
@@ -1035,6 +1110,10 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 		return Queue{}, err
 	}
 	issues, err := j.Search(queuedJQL(keys, label, sched), 25)
+	if err != nil {
+		return Queue{}, err
+	}
+	all, err := j.Search(allJQL(keys, label), 50)
 	if err != nil {
 		return Queue{}, err
 	}
@@ -1067,7 +1146,7 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 		Scheduled: func(i tracker.Issue) string { return sched.HoldReason(i, label) },
 	})
 
-	q := Queue{}
+	q := Queue{All: all}
 	byKey := make(map[string]tracker.Issue, len(candidates))
 	for _, i := range candidates {
 		byKey[i.Key] = i
@@ -1139,6 +1218,41 @@ func queuedJQL(keys []string, label string, sched tracker.Schedules) string {
 // that would have been claimed but for their release. Empty when no project
 // in scope enforces the gate, which is how a project that does not use
 // versions avoids a second query it can have no answers to.
+// allJQL is every ticket Orion is responsible for in scope: the queue label
+// or any state label, not Done, in queue order (OR-325).
+func allJQL(keys []string, label string) string {
+	if label == "" {
+		label = tracker.QueueLabelDefault
+	}
+	return tracker.JQLAnd(
+		tracker.JQLIn("project", keys...),
+		tracker.JQLIn("labels", tracker.Managed(label)...),
+		tracker.JQLNotDone(),
+	) + " ORDER BY priority DESC, Rank ASC"
+}
+
+// queueRows maps tracker state to the stage word a row shows (OR-325).
+func queueRows(issues []tracker.Issue) []ui.QueueRow {
+	out := make([]ui.QueueRow, 0, len(issues))
+	for _, i := range issues {
+		stage := "queued"
+		for _, l := range i.Labels {
+			switch l {
+			case tracker.LabelWorking:
+				stage = "working"
+			case tracker.LabelCIWait:
+				stage = "ci-wait"
+			case tracker.LabelReady:
+				stage = "ready"
+			case tracker.LabelFailed:
+				stage = "failed"
+			}
+		}
+		out = append(out, ui.QueueRow{Key: i.Key, Stage: stage, Title: i.Summary})
+	}
+	return out
+}
+
 func heldJQL(keys []string, label string, sched tracker.Schedules) string {
 	if label == "" {
 		label = tracker.QueueLabelDefault

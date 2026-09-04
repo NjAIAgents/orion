@@ -2,6 +2,7 @@ package creds
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -39,6 +40,11 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 // The file holds secrets. Created 0600 at open time rather than chmod'ed
 // afterwards, so there is no window where it is readable by anyone else.
 func TestFileIsNotReadableByOthers(t *testing.T) {
+	// Windows has no POSIX mode bits: every file reports 0666 there, so this
+	// asserts the operating system rather than the code (OR-334).
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits do not exist on Windows")
+	}
 	if !PermsSupported() {
 		t.Skip("Unix permission bits are emulated on this platform; NTFS ACLs govern access")
 	}

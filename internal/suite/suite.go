@@ -30,6 +30,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"time"
 )
@@ -71,6 +72,26 @@ func (errNotFound) Error() string { return "no test command this package is cert
 // failure it was collected for.
 const maxOutput = 64 << 10
 
+func statOK(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// shellScript is how a .sh is invoked (OR-334).
+//
+// A shell script is not an executable on Windows: exec'ing one directly
+// fails with `fork/exec ...`, which is what every suite test hit there --
+// invisibly, because the Windows CI leg reported success over its own
+// failures. POSIX can exec it directly (the shebang does the work), and
+// Windows runners carry Git Bash, so naming bash explicitly is the one form
+// that works on both.
+func shellScript(path string) []string {
+	if runtime.GOOS == "windows" {
+		return []string{"bash", path}
+	}
+	return []string{path}
+}
+
 // Detect returns the command that runs this repository's suite, or
 // ErrNotFound.
 //
@@ -84,10 +105,10 @@ const maxOutput = 64 << 10
 // how many packages compile and run at once, which is the toolchain doing
 // natively what Orion would otherwise reimplement worse.
 func Detect(dir string, procs int) ([]string, error) {
-	if _, err := os.Stat(filepath.Join(dir, "scripts", "test.sh")); err == nil {
+	if script := filepath.Join(dir, "scripts", "test.sh"); statOK(script) {
 		// No concurrency flag: the script owns its own invocation, and
 		// second-guessing it here would fight the repository's own choice.
-		return []string{filepath.Join(dir, "scripts", "test.sh")}, nil
+		return shellScript(script), nil
 	}
 	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 		args := []string{"go", "test", "./...", "-count=1"}

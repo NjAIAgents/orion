@@ -27,12 +27,17 @@ type fakeTracker struct {
 	searchErr   error
 	labelErr    error
 	commentErr  error
+	// transitionErr is the workflow with no Done transition -- the tracker
+	// that cannot close a ticket however correct the request is. A merge must
+	// survive it (OR-314).
+	transitionErr error
 }
 
 func newTracker() *fakeTracker {
 	return &fakeTracker{
 		added: map[string][]string{}, removed: map[string][]string{},
 		transitions: map[string]string{}, comments: map[string][]string{},
+		children: map[string][]tracker.Issue{},
 	}
 }
 
@@ -51,6 +56,9 @@ func (f *fakeTracker) SetLabels(key string, add, remove []string) error {
 	return nil
 }
 func (f *fakeTracker) TransitionTo(key, status string) error {
+	if f.transitionErr != nil {
+		return f.transitionErr
+	}
 	f.transitions[key] = status
 	return nil
 }
@@ -73,10 +81,7 @@ func bound(t *testing.T) (home, source string) {
 	if err := os.MkdirAll(source, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ws, err := workspace.New(workspace.NewOptions{Idea: "fcia"})
-	if err != nil {
-		t.Fatalf("creating workspace: %v", err)
-	}
+	ws := newWorkspace(t, "fcia")
 	if err := registry.Bind(home, registry.Entry{
 		Key: "FCIA", Source: source, Workspace: ws.ID,
 	}); err != nil {
@@ -128,6 +133,53 @@ func TestPendingChecksChangeNothing(t *testing.T) {
 	}
 	if !strings.Contains(out, "still running") {
 		t.Errorf("the user should be told why nothing happened, got: %s", out)
+	}
+}
+
+// The rollup the verdict was decided from is CARRIED OUT, so the watcher can
+// name the checks without asking the forge again (OR-310).
+//
+// This is the only thing that makes the per-check row free on an ordinary
+// watch: drop Checks here and the display can only get them with a second
+// `gh pr view` per redraw, which is the pull this design refuses.
+func TestAPendingResultCarriesTheChecksItWasDecidedFrom(t *testing.T) {
+	home, _ := bound(t)
+	res, _, _ := run(t, home, newTracker(), PR{
+		Verdict: VerdictPending, Detail: "1 running",
+		Checks: []Check{
+			{Name: "go (ubuntu)", State: CheckPassed},
+			{Name: "go (windows)", State: CheckRunning},
+		},
+	}, Options{})
+
+	if len(res[0].Checks) != 2 {
+		t.Fatalf("the result must carry the rollup, got %+v", res[0].Checks)
+	}
+	if res[0].Checks[1].Name != "go (windows)" || res[0].Checks[1].State != CheckRunning {
+		t.Errorf("the checks must arrive as read: %+v", res[0].Checks)
+	}
+}
+
+// Result.Checks is a field on the struct, not something derived from the
+// verdict -- so a failing read carries the rollup exactly as a pending one
+// does (OR-310). The prior test only proved this for VerdictPending; a
+// watcher naming the check that actually failed needs the same field
+// populated on the verdict that ends the wait.
+func TestResultCarriesChecksWhateverTheVerdict(t *testing.T) {
+	home, _ := bound(t)
+	res, _, _ := run(t, home, newTracker(), PR{
+		Verdict: VerdictFailing, Detail: "1 failed",
+		Checks: []Check{
+			{Name: "go (ubuntu)", State: CheckPassed},
+			{Name: "go (windows)", State: CheckFailed},
+		},
+	}, Options{})
+
+	if len(res[0].Checks) != 2 {
+		t.Fatalf("the Checks field must be populated regardless of verdict, got %+v", res[0].Checks)
+	}
+	if res[0].Checks[1].Name != "go (windows)" || res[0].Checks[1].State != CheckFailed {
+		t.Errorf("the checks must arrive as read: %+v", res[0].Checks)
 	}
 }
 

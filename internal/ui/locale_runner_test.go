@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"github.com/orion-sdlc/orion/internal/testproc"
 	"os"
 	"os/exec"
 	"strings"
@@ -41,7 +42,7 @@ func TestLocaleSensitiveTestsSurviveWhateverTheRunnerExports(t *testing.T) {
 
 	for _, tc := range runnerEnvs {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command("go", "test", "-run", "^("+strings.Join(localeSensitiveTests, "|")+")$", ".")
+			cmd := testproc.Command(t, "go", "test", "-run", "^("+strings.Join(localeSensitiveTests, "|")+")$", ".")
 			cmd.Dir = "."
 			cmd.Env = filterLocaleVars(os.Environ())
 			cmd.Env = append(cmd.Env, tc.env...)

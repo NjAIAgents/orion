@@ -74,6 +74,20 @@ func fanAuthoring(job qaJob, cfg config.Config, cases string,
 	// the display lying by omission -- the same class of gap OR-265 closed
 	// for finished rows.
 	ui.LiveActivityNote(key, events.ActorQA, "authoring x"+strconv.Itoa(len(groups)))
+	// The row's subagent count, one per author, said EXPLICITLY.
+	//
+	// ActivityLogger increments this when an agent calls the Task or Agent
+	// TOOL, which is how an ordinary delegation becomes visible. This fan
+	// dispatches sessions from Go through supervisor.Fan, so no such tool
+	// call ever happens and nothing else would tell the display that five
+	// authors exist.
+	//
+	// Observed on the first real run of the feature: the note read
+	// "authoring x5" while the agents column stayed blank, so the row
+	// contradicted itself about the same fan.
+	for range groups {
+		ui.LiveAgents(key)
+	}
 
 	jobs := make([]supervisor.Options, 0, len(groups))
 	for _, g := range groups {
@@ -133,14 +147,29 @@ func fanAuthoring(job qaJob, cfg config.Config, cases string,
 // the delegated path exactly as it was -- the agent is still told how to run
 // the tests. Degrading is allowed; degrading silently is not, so an
 // undetectable suite says so.
-func runAuthoredSuite(job qaJob, cfg config.Config, log *events.Log, w io.Writer) {
+// The RESULT is returned, not only reported (OR-312).
+//
+// The first cut printed "the suite is red", logged the output, and returned
+// nothing. QA then formed its verdict having never been told, so a ticket
+// whose suite Orion had ALREADY RUN AND FAILED reported "every case passes".
+// Observed on four tickets in one run: a gofmt error found in the worktree
+// reached a shared branch and failed CI twenty minutes later.
+//
+// That is worse than not running the suite at all. The stage had more
+// information and acted on less, and a red line nobody acts on teaches a
+// reader to skip it.
+//
+// A nil result means no verdict is available -- the suite could not be
+// detected, or the workspace was absent. Not knowing is not the same as
+// failing, and the caller must treat it as the former.
+func runAuthoredSuite(job qaJob, cfg config.Config, log *events.Log, w io.Writer) *suite.Result {
 	key := job.Key
 	// No workspace means there is nowhere to run, which is a caller error
 	// rather than a repository without tests. Returning beats panicking on
 	// the QA path: a stage that crashes takes the whole ticket with it, and
 	// this step is evidence-gathering, not the verdict.
 	if job.WS == nil {
-		return
+		return nil
 	}
 	dir := job.WS.RepoDir()
 
@@ -150,7 +179,7 @@ func runAuthoredSuite(job qaJob, cfg config.Config, log *events.Log, w io.Writer
 			"no suite Orion can run here, so QA runs the tests itself")
 		log.Emitf(events.KindNote, events.ActorQA,
 			"suite detection found nothing certain; QA runs the tests in its own session")
-		return
+		return nil
 	}
 
 	ui.LiveActivityNote(key, events.ActorQA, "running the suite")
@@ -183,4 +212,54 @@ func runAuthoredSuite(job qaJob, cfg config.Config, log *events.Log, w io.Writer
 			Model: actors.Model(events.ActorQA),
 			Msg:   "suite failed: " + res.Cmd + "\n" + res.Output})
 	}
+	return &res
+}
+
+// suiteEvidence is what the QA session is told about a suite Orion already
+// ran (OR-312).
+//
+// EVIDENCE, NOT A VERDICT. QA still decides; this gives it the one thing it
+// could not otherwise know, which is what the repository's own suite says
+// about the whole tree rather than about the cases QA chose to run.
+//
+// Empty for anything that is not a definite failure. A pass needs no telling
+// -- QA runs its own cases regardless -- and a suite that could not run is
+// not evidence of anything. Only a red suite changes what QA should conclude.
+func suiteEvidence(res *suite.Result) string {
+	if res == nil || res.Passed || res.Err != nil {
+		return ""
+	}
+	if res.TimedOut {
+		return "\n" + strings.Join([]string{
+			"",
+			"ORION RAN THE SUITE AND IT DID NOT FINISH within its wall clock:",
+			"  " + res.Cmd,
+			"",
+			"That is not the same as a failure, and it is not the same as a pass.",
+			"Say so in your verdict rather than reporting the change verified.",
+		}, "\n")
+	}
+	return "\n" + strings.Join([]string{
+		"",
+		"ORION RAN THE SUITE AND IT FAILED. This is the repository's own suite,",
+		"run as a process over the whole tree after every test was written:",
+		"  " + res.Cmd,
+		"",
+		res.Output,
+		"",
+		"DO NOT RUN THE SUITE AGAIN. Orion has run it; the result above is the",
+		"one that counts, and re-running it wastes several minutes and tells you",
+		"nothing new. Your job now is the VERDICT.",
+		"",
+		"Read that before you decide. It covers ground your own cases do not --",
+		"formatting, vet, the coverage floor, and every package rather than the",
+		"ones this ticket touched.",
+		"",
+		"If the failure belongs to this change, it is a finding: report it and",
+		"let the fix round address it. If it does not -- a pre-existing failure",
+		"elsewhere in the tree -- say which, and say why this change is still",
+		"verified. What you must NOT do is report every case passing without",
+		"mentioning it: a green verdict over a red suite is how a formatting",
+		"error reached a shared branch and failed CI twenty minutes later.",
+	}, "\n")
 }

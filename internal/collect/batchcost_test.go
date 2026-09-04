@@ -169,3 +169,30 @@ func TestTheCostLineLeadsWithElapsed(t *testing.T) {
 }
 
 func TestMain(m *testing.M) { os.Exit(m.Run()) }
+
+// A batch that ran no CI is not a sample of a CI run (OR-320). Observed: eight
+// "0 run(s) in 1s" notes from passes that assembled nothing, and the CI rule
+// reading "median 1s" over a seven-minute run.
+func TestZeroRunBatchesDoNotEnterTheCIBaseline(t *testing.T) {
+	t0 := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	note := func(at time.Time, runs int, elapsed time.Duration) events.Event {
+		return events.Event{At: at, Kind: events.KindNote, Actor: events.ActorOrion,
+			Msg: events.BatchNote{Ref: "orion/batch", Runs: runs, Elapsed: elapsed}.String()}
+	}
+	evs := []events.Event{
+		note(t0, 0, time.Second), note(t0.Add(time.Minute), 0, time.Second),
+		note(t0.Add(2*time.Minute), 0, time.Second), note(t0.Add(3*time.Minute), 0, time.Second),
+		// Two real runs: below the floor of three, so still no baseline.
+		note(t0.Add(time.Hour), 1, 11*time.Minute), note(t0.Add(2*time.Hour), 1, 12*time.Minute),
+	}
+	got := batchBaseline(writeLog(t, evs))
+	if got.Samples != 2 || got.Median != 0 {
+		t.Errorf("baseline = %+v: four zero-run batches must not count, and two real runs "+
+			"are below the floor", got)
+	}
+	// A third real run crosses the floor, and the median is a CI figure.
+	got = batchBaseline(writeLog(t, append(evs, note(t0.Add(3*time.Hour), 2, 10*time.Minute))))
+	if got.Samples != 3 || got.Median != 11*time.Minute {
+		t.Errorf("baseline = %+v, want 3 samples with median 11m", got)
+	}
+}

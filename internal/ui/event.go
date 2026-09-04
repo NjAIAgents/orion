@@ -546,26 +546,34 @@ func sttySize() (int, int) {
 
 	// /dev/tty rather than stdin: the region is drawn to stdout, and a piped
 	// stdin must not make a real terminal look sizeless.
+	// A FAILED read keeps the last answer (OR-317). The size is re-asked
+	// once a second so a resize is noticed, and asking means opening
+	// /dev/tty and forking stty beside five agent subprocesses; when that
+	// fails for one poll the terminal has not changed width. Answering 0
+	// instead made the region draw its rows UNCLIPPED and count each as
+	// one row, so on a terminal that wrapped them the erase moved up short
+	// and the top of the block -- the window's frame -- stayed behind in
+	// scrollback, once per redraw for as long as the width was unknown.
 	tty, err := os.Open("/dev/tty")
 	if err != nil {
-		return 0, 0
+		return sttyRowsCached, sttyColsCached
 	}
 	defer tty.Close()
 	cmd := exec.Command("stty", "size")
 	cmd.Stdin = tty
 	out, err := cmd.Output()
 	if err != nil {
-		return 0, 0
+		return sttyRowsCached, sttyColsCached
 	}
 	// "rows cols".
 	f := strings.Fields(string(out))
 	if len(f) != 2 {
-		return 0, 0
+		return sttyRowsCached, sttyColsCached
 	}
 	rows, rerr := strconv.Atoi(f[0])
 	cols, cerr := strconv.Atoi(f[1])
 	if rerr != nil || cerr != nil {
-		return 0, 0
+		return sttyRowsCached, sttyColsCached
 	}
 	if rows >= 10 {
 		sttyRowsCached = rows
@@ -581,7 +589,6 @@ func sttySize() (int, int) {
 func invalidateTerminalSize() {
 	sttyOnce.Lock()
 	sttyAsked = false
-	sttyRowsCached, sttyColsCached = 0, 0
 	sttyOnce.Unlock()
 }
 

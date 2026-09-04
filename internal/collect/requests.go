@@ -29,6 +29,20 @@ type Request struct {
 	AskedAt   time.Time `json:"asked_at"`
 	Commit    string    `json:"commit"`
 	Approvers []string  `json:"approvers"` // the allowlist as it stood when asked
+	// Members are the tickets a BATCH request covered, and Decided says its
+	// answer has already been acted on (OR-318).
+	//
+	// Both exist because a batch ref name is constant -- every batch is
+	// orion/batch -- so the key alone cannot tell one batch from the next.
+	// The approval used to be forgotten on the way out to get that effect,
+	// which meant the next pass re-asked about a batch a human had already
+	// ticked. Keeping the record and comparing MEMBERS distinguishes "this
+	// same batch again" from "a different batch on the same ref".
+	//
+	// Empty on a per-ticket request, where the key is the ticket and no
+	// disambiguation is needed.
+	Members []string `json:"members,omitempty"`
+	Decided bool     `json:"decided,omitempty"`
 }
 
 type requestFile struct {

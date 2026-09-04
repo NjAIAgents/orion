@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/orion-sdlc/orion/internal/testproc"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,7 +96,7 @@ func TestOutsideARunTheBreakerAllowsAndSaysSoWhileGateAndShieldStayArmed(t *test
 func buildOrion(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "orion")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	cmd := testproc.Command(t, "go", "build", "-o", bin, ".")
 	cmd.Dir = repoRoot(t)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
@@ -116,7 +117,7 @@ func repoRoot(t *testing.T) string {
 // combined output and exit code. env entries are appended last so they win.
 func runHookBinary(t *testing.T, bin, name, payload string, env ...string) (string, int) {
 	t.Helper()
-	cmd := exec.Command(bin, "hook", name)
+	cmd := testproc.Command(t, bin, "hook", name)
 	cmd.Stdin = strings.NewReader(payload)
 	cmd.Dir = repoRoot(t)
 	cmd.Env = append(os.Environ(), append([]string{"ORION_BREAKER_FORCE="}, env...)...)

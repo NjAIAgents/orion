@@ -22,9 +22,13 @@ type fakeGit struct {
 	// landed records what LandRef merged, in order, so a test can assert that
 	// the ref that was TESTED is the ref that merged -- the property the whole
 	// design turns on.
-	landed   []string
-	landErr  error
-	landInto map[string]string
+	// deletedRemote records every ref removed from the forge (OR-337). The
+	// scratch refs a bisection cuts are PUSHED to be tested, so dropping the
+	// local branch alone leaks the remote one.
+	deletedRemote []string
+	landed        []string
+	landErr       error
+	landInto      map[string]string
 }
 
 func newFakeGit(conflicting ...string) *fakeGit {
@@ -61,6 +65,10 @@ func (g *fakeGit) LandRef(ref, base string) (string, error) {
 
 func (g *fakeGit) CutRef(ref, base string) error { g.contents[ref] = nil; return nil }
 func (g *fakeGit) DropRef(ref string) error      { delete(g.contents, ref); return nil }
+func (g *fakeGit) DeleteRemoteRef(ref string) error {
+	g.deletedRemote = append(g.deletedRemote, ref)
+	return nil
+}
 func (g *fakeGit) MergeInto(ref, branch string) error {
 	if g.conflict[branch] {
 		return errors.New("CONFLICT (content): Merge conflict in a.go\nfix it on the branch")
@@ -433,5 +441,46 @@ func TestANilObserverIsSafe(t *testing.T) {
 	tr := &fakeTester{g: g, bad: map[string]bool{}}
 	if _, err := Land(g, tr, "batch", "develop", members("OR-1"), nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Every scratch ref a bisection cuts is deleted from the FORGE, not only
+// from the clone (OR-337).
+//
+// Test pushes each split -- it cannot reach CI otherwise -- so dropping the
+// local branch alone left the remote one behind for good. Observed as
+// orion/batch-iso-2-0 and orion/batch-iso-2-1 still on the remote days after
+// the search that created them, among twenty-five stale branches. Nothing
+// will ever read them again.
+func TestEveryIsolationRefIsDeletedFromTheForgeToo(t *testing.T) {
+	g := newFakeGit()
+	tr := &fakeTester{g: g, bad: map[string]bool{"orion/or-3": true}}
+
+	if _, err := Land(g, tr, "batch", "develop",
+		members("OR-1", "OR-2", "OR-3", "OR-4"), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// The search cut refs; every one of them is gone from the remote.
+	var scratch []string
+	for _, ref := range g.deletedRemote {
+		if strings.Contains(ref, "-iso-") || strings.HasSuffix(ref, "-clean") {
+			scratch = append(scratch, ref)
+		}
+	}
+	if len(scratch) == 0 {
+		t.Fatalf("no scratch ref was deleted from the forge; deleted = %v", g.deletedRemote)
+	}
+	// The ref that LANDED is deleted too, and that is correct: the drop is
+	// deferred past land(), so the merge is on the work branch before the
+	// ref goes. An ephemeral ref that survives its own landing is exactly
+	// the leak this fixes -- what matters is the ORDER, which the deferred
+	// drop guarantees, not that the ref is spared.
+	//
+	// What must never be deleted is the work branch itself.
+	for _, ref := range g.deletedRemote {
+		if ref == "develop" {
+			t.Fatalf("the work branch was deleted from the forge: %v", g.deletedRemote)
+		}
 	}
 }
