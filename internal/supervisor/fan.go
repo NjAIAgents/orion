@@ -3,13 +3,14 @@ package supervisor
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/workspace"
+
+	"github.com/orion-sdlc/orion/internal/ui"
 )
 
 // WriteOnlyTools is what a fan-out child is given: it may read the tree and
@@ -42,7 +43,16 @@ var ShellTools = []string{"Bash", "BashOutput", "KillShell", "Task"}
 // progress. A variable so a test can read what a dispatch actually said:
 // "announce before dispatch" is a behaviour, and a behaviour nothing can
 // observe is one that regresses silently.
-var fanOut io.Writer = os.Stderr
+var fanOut io.Writer
+
+// fanWriter is fanOut when a test has set it, else the process console
+// (OR-330): the fan narrates through the live region rather than under it.
+func fanWriter() io.Writer {
+	if fanOut != nil {
+		return fanOut
+	}
+	return ui.Console()
+}
 
 // FanResult pairs one child's Result with whatever error Run returned for
 // it. Indexed the same as the Options slice given to Fan, so a caller
@@ -145,7 +155,7 @@ func announceLanding(i, landed, total int, r FanResult) {
 	case r.Result.ExitCode != 0:
 		verdict = fmt.Sprintf("exit %d: %s", r.Result.ExitCode, r.Result.Reason)
 	}
-	fmt.Fprintf(os.Stderr, "orion: fan-out child %d %s (%d/%d landed)\n",
+	fmt.Fprintf(fanWriter(), "orion: fan-out child %d %s (%d/%d landed)\n",
 		i+1, verdict, landed, total)
 }
 
@@ -165,10 +175,10 @@ func announceFan(jobs []Options, maxConcurrent int) {
 	for i, o := range jobs {
 		models[i] = modelOf(o)
 	}
-	fmt.Fprintf(fanOut, "orion: fan-out %d children (cap %d) -- models: %s\n",
+	fmt.Fprintf(fanWriter(), "orion: fan-out %d children (cap %d) -- models: %s\n",
 		len(jobs), maxConcurrent, strings.Join(models, ", "))
 	for i, o := range jobs {
-		fmt.Fprintf(fanOut, "orion:   ... %s  %s\n", labelOf(i, o), modelOf(o))
+		fmt.Fprintf(fanWriter(), "orion:   ... %s  %s\n", labelOf(i, o), modelOf(o))
 	}
 }
 
@@ -196,7 +206,7 @@ func announceLanded(i int, o Options, res *Result, err error, n, total int) {
 	if res != nil {
 		took = fmt.Sprintf(" in %s", res.Duration.Round(time.Second))
 	}
-	fmt.Fprintf(fanOut, "orion:   %s %d/%d %s  %s%s\n", mark, n, total, labelOf(i, o), verdict, took)
+	fmt.Fprintf(fanWriter(), "orion:   %s %d/%d %s  %s%s\n", mark, n, total, labelOf(i, o), verdict, took)
 }
 
 // labelOf names a child the way its caller would recognise it: its position

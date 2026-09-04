@@ -22,3 +22,4 @@ already have been decided against, on purpose.
 - [0016](0016-fan-implementation-by-go-package.md) — implementation fans out by Go package, the implementer proposes and a deterministic check disposes, and only the parent verifies
 - [0017](0017-integration-state-machine-not-a-job-queue.md) — the integration state machine carries the sophistication; the queue is Go channels and JSON, with a git SHA recorded at every transition
 - [0018](0018-fan-unit-is-per-stage.md) — the fan-out unit is per stage: the Go package for implementation, the case group for test authoring, where 0016's two hazards do not apply
+- [0019](0019-toolkit-agnostic-nj-agents-is-the-default.md) — Orion is toolkit-agnostic; nj-agents ships as the default, not a hardcoded dependency

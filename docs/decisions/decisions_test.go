@@ -52,6 +52,13 @@ var expectedDecisions = []string{
 	// a child testing against its peers' half-written files, and a call site
 	// written against a signature another child is still changing.
 	"0016-fan-implementation-by-go-package.md",
+	// OR-301. Load-bearing: without it, "just hardcode a second toolkit's repo
+	// URL and skill names alongside nj-agents' own" reads as a small addition
+	// and reintroduces exactly the coupling this record explains was never a
+	// deliberate design -- a maintainer who only reads njagents.go and
+	// prompts.go has no way to know a config seam already exists in front of
+	// them.
+	"0019-toolkit-agnostic-nj-agents-is-the-default.md",
 }
 
 func TestEveryDecisionHasContextDecisionConsequences(t *testing.T) {
@@ -191,6 +198,23 @@ func TestDecisionContentMatchesTicket(t *testing.T) {
 			// the roster decision would document nothing.
 			"0010-routing-vocabulary-is-a-published-contract.md",
 			[]string{"OR-171", "OR-176", "OR-191", "orion routes", "docsite-infra"},
+		},
+		{
+			// The four hardcoded sites, the map-not-list shape, and Orion's
+			// retained ownership are the whole substance of OR-301's record.
+			// A file that kept the sections but lost a site citation would
+			// leave a future maintainer unable to find what this decision is
+			// actually about; one that lost "COMMAND" or the ownership
+			// sentence would read as though the toolkit could decide
+			// sequencing after all.
+			"0019-toolkit-agnostic-nj-agents-is-the-default.md",
+			[]string{
+				"njagents.go:30", "njagents.go:34", "njagents.go:64", "prompts.go",
+				"COMMAND", "artifact paths, gates and verdicts",
+				"nj-agents remains the shipped default",
+				"absent", "zero-change",
+				"0001", "enforced by shape",
+			},
 		},
 	}
 

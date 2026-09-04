@@ -40,6 +40,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/procsafe"
 	"github.com/orion-sdlc/orion/internal/quota"
 	"github.com/orion-sdlc/orion/internal/registry"
+	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -235,7 +236,7 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	lim := budget.Limits{WeeklyUSD: cfg.Budget.WeeklyUSD, WeeklyTokens: cfg.Budget.WeeklyTokens}
 	ledger, ledgerErr := budget.Load(workspace.Home())
 	if ledgerErr != nil {
-		fmt.Fprintf(os.Stderr, "orion: %v\n", ledgerErr)
+		fmt.Fprintf(ui.Console(), "orion: %v\n", ledgerErr)
 	}
 	if st := ledger.Status(lim); st.Crossed > 0 && !opts.SkipBudgetCheck {
 		return &Result{
@@ -252,7 +253,7 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 		return nil, err
 	}
 	for _, warning := range ac.Warnings {
-		warnOnce(os.Stderr, warning)
+		warnOnce(ui.Console(), warning)
 	}
 
 	overall := time.Now()
@@ -375,7 +376,7 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 		Reason: last.Reason, Log: last.LogPath, Attempts: last.Attempts,
 	})
 	if err := ws.SaveTask(); err != nil {
-		fmt.Fprintf(os.Stderr, "orion: could not update task.json: %v\n", err)
+		fmt.Fprintf(ui.Console(), "orion: could not update task.json: %v\n", err)
 	}
 
 	if last.ExitCode != 0 {
@@ -400,7 +401,7 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 			last.Reason = "the stage left no artifact"
 			ws.Task.Status = "failed"
 			if saveErr := ws.SaveTask(); saveErr != nil {
-				fmt.Fprintf(os.Stderr, "orion: could not update task.json: %v\n", saveErr)
+				fmt.Fprintf(ui.Console(), "orion: could not update task.json: %v\n", saveErr)
 			}
 			notify.Send(notify.Event{
 				Level: notify.Blocked, Workspace: ws.ID, Channel: channelFor(ws),
@@ -485,7 +486,7 @@ func reportContextPressure(peak, window int) {
 	if p < 70 {
 		return
 	}
-	fmt.Fprintf(os.Stderr,
+	fmt.Fprintf(ui.Console(),
 		"orion: context peaked at %d%% of the %s window on this stage (%s in one turn).\n"+
 			"  Orion cannot compact mid-run; the CLI exposes no control for it.\n"+
 			"  If this recurs, split the stage: each stage starts a fresh session.\n",
@@ -507,11 +508,11 @@ func recordUsage(ws *workspace.Workspace, stage, out string) {
 		l.Record(run)
 	}); err != nil {
 		if errors.Is(err, procsafe.ErrLockTimeout) {
-			fmt.Fprintf(os.Stderr,
+			fmt.Fprintf(ui.Console(),
 				"orion: recorded usage without the lock (%v); if two watchers are "+
 					"running, spend may be undercounted for this run\n", err)
 		} else {
-			fmt.Fprintf(os.Stderr, "orion: could not record usage: %v\n", err)
+			fmt.Fprintf(ui.Console(), "orion: could not record usage: %v\n", err)
 			return
 		}
 	}
@@ -564,10 +565,10 @@ func recordTicketCost(ws *workspace.Workspace, opts Options, res *Result, out st
 	r.Project, r.Session = registry.ProjectOf(opts.Key), res.SessionID
 	if err := cost.Record(log, workspace.Home(), opts.Actor, opts.Key, r); err != nil {
 		if errors.Is(err, procsafe.ErrLockTimeout) {
-			fmt.Fprintf(os.Stderr,
+			fmt.Fprintf(ui.Console(),
 				"orion: appended the usage history without the lock (%v)\n", err)
 		} else {
-			fmt.Fprintf(os.Stderr, "orion: could not append the usage history: %v\n", err)
+			fmt.Fprintf(ui.Console(), "orion: could not append the usage history: %v\n", err)
 		}
 	}
 }
@@ -718,10 +719,14 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	// the ring buffer holds the tail for quota detection and for the closing
 	// result object.
 	cmd.Stdout = io.MultiWriter(logFile, tail, activity)
-	// stderr stays on the terminal. It is where the CLI reports its own
-	// failures -- a bad flag, an auth problem -- and swallowing those would
-	// turn a clear error into a silent empty run.
-	cmd.Stderr = io.MultiWriter(os.Stderr, logFile, tail)
+	// stderr reaches the terminal only when nothing else owns it. It is
+	// where the CLI reports its own failures -- a bad flag, an auth problem
+	// -- and the log and the tail keep every byte either way. While the
+	// watch's region is up it must NOT reach the screen: the region erases
+	// by the rows it drew, and a stream it cannot count moves the cursor
+	// under it, which is how the window's frame ended up stacked down the
+	// scrollback once per agent write (OR-330).
+	cmd.Stderr = io.MultiWriter(agentStderr(), logFile, tail)
 
 	started := time.Now()
 	if err := cmd.Start(); err != nil {
@@ -1162,4 +1167,13 @@ func quoteAll(args []string) []string {
 		}
 	}
 	return out
+}
+
+// agentStderr is where a subprocess's stderr goes besides its log: the
+// terminal, unless a live region owns it (OR-330).
+func agentStderr() io.Writer {
+	if ui.ConsoleEngaged() {
+		return io.Discard
+	}
+	return os.Stderr
 }
