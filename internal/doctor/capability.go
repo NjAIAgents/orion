@@ -153,9 +153,9 @@ func checkNJAgents(tk config.Toolkit, autoFix bool) check {
 	detail += ")"
 
 	if len(inst.Warnings) > 0 {
-		return check{"nj-agents", warn, detail, strings.Join(inst.Warnings, "\n")}
+		return check{name, warn, detail, strings.Join(inst.Warnings, "\n")}
 	}
-	return check{"nj-agents", ok, detail, ""}
+	return check{name, ok, detail, ""}
 }
 
 // toolkitName is what the doctor line calls the toolkit. The default keeps
