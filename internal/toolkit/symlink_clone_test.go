@@ -31,6 +31,7 @@ func evalSymlinksOrFatal(t *testing.T, root string) string {
 // -- fromRunnerSymlink: searching for configured skill names -------------
 
 func TestFromRunnerSymlinkReturnsToolkitRootWhenSymlinkResolvesToIt(t *testing.T) {
+	requireSymlinks(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -65,6 +66,7 @@ func TestFromRunnerSymlinkReturnsEmptyStringWhenNoConfiguredSymlinksExist(t *tes
 }
 
 func TestFromRunnerSymlinkWorksAcrossAllRunnerDirectories(t *testing.T) {
+	requireSymlinks(t)
 	for _, runner := range []string{".claude", ".agents", ".codex", ".gemini", ".cursor"} {
 		t.Run(runner, func(t *testing.T) {
 			home := t.TempDir()
@@ -97,6 +99,7 @@ func TestFromRunnerSymlinkWorksAcrossAllRunnerDirectories(t *testing.T) {
 // CONVENTIONS.md is required and missing -- the root must be rejected even
 // though the symlink itself resolves cleanly.
 func TestFromRunnerSymlinkRejectsRootFailingIsToolkitRootEvenWithSkillFound(t *testing.T) {
+	requireSymlinks(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 

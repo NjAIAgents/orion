@@ -160,16 +160,12 @@ func TestFixActivityLogsToolEventsEvenWhenTheConsoleIsQuiet(t *testing.T) {
 // assert on exactly what the describer invoked the CLI with.
 func fakeClaude(t *testing.T) (argsFile string) {
 	t.Helper()
-	dir := t.TempDir()
-	argsFile = filepath.Join(dir, "args.txt")
+	argsFile = filepath.Join(t.TempDir(), "args.txt")
 	script := "#!/bin/sh\n" +
 		`echo "$@" > ` + argsFile + "\n" +
 		`echo '{"result":"{\"title\":\"T\",\"body\":\"B\"}","is_error":false}'` + "\n" +
 		"exit 0\n"
-	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeBin(t, "claude", script)
 	// The describer builds its own curated config directory under ORION_HOME
 	// (OR-213), and reads the operator's home to discover nj-agents. Both are
 	// redirected so a unit test writes nothing into the real one and asserts

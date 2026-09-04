@@ -3,6 +3,7 @@ package collect
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -79,6 +80,12 @@ func TestCopyTreePreservesExecutableBitsAndStructure(t *testing.T) {
 		info, err := os.Stat(filepath.Join(dst, rel))
 		if err != nil {
 			t.Fatalf("copied file %s missing: %v", rel, err)
+		}
+		// Windows has no POSIX permission bits -- every file reads 0666 --
+		// so the assertion would be testing the OS rather than copyTree.
+		// The file's EXISTENCE is still checked above, on every platform.
+		if runtime.GOOS == "windows" {
+			continue
 		}
 		if got := info.Mode().Perm(); got != wantMode {
 			t.Errorf("%s copied with mode %o, want %o", rel, got, wantMode)

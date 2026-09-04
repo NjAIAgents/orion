@@ -339,16 +339,27 @@ func Run(opts Options, deps Deps) []Result {
 	// pass belongs to one registered project in practice, and a batch spanning
 	// two repositories is not a thing that can be assembled anyway -- so
 	// reading one and using it for the set is honest rather than convenient.
-	if ws, log, w, cfg, ok := batchContext(pass, opts, deps); ok && cfg.Collect.BatchIntegration {
+	//
+	// The context is taken whatever the setting, and its log closed on EVERY
+	// path out. batchContext opens the log before it can know whether
+	// batching is on, so closing only inside the enabled branch leaked a
+	// descriptor on every ordinary pass -- which is every pass, batching
+	// being off by default. Invisible on Linux, where unlink succeeds on an
+	// open file; on Windows `t.TempDir()` cleanup could not remove
+	// events.jsonl, and 80 of this package's tests failed on it as soon as
+	// the Windows leg began to gate (OR-334, OR-340).
+	if ws, log, bw, cfg, ok := batchContext(pass, opts, deps); ok {
 		if log != nil {
 			defer log.Close()
 		}
-		if res := runBatch(pass, cfg, opts, deps, ws, log, w); res != nil {
-			return res
+		if cfg.Collect.BatchIntegration {
+			if res := runBatch(pass, cfg, opts, deps, ws, log, bw); res != nil {
+				return res
+			}
+			// Nothing was assemblable -- no pull requests open yet, say. Fall
+			// through rather than reporting an empty pass, so a ticket that
+			// the per-branch path CAN say something about still gets said.
 		}
-		// Nothing was assemblable -- no pull requests open yet, say. Fall
-		// through rather than reporting an empty pass, so a ticket that the
-		// per-branch path CAN say something about still gets said.
 	}
 
 	// Tickets waiting for the next batch are skipped here, not failed
