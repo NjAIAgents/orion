@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -123,5 +124,38 @@ func TestAFailedSizeReadKeepsTheLastKnownSize(t *testing.T) {
 	// No terminal in a test process, so the re-read fails.
 	if rows, cols := sttySize(); rows != 40 || cols != 132 {
 		t.Errorf("a failed re-read forgot the size: got %dx%d, want 40x132", cols, rows)
+	}
+}
+
+// Whatever the process says to the terminal while the region is up goes
+// through the region (OR-330). The supervisor's warnings and run headers
+// went to os.Stderr underneath it, and every one left the frame's top border
+// behind.
+func TestConsoleFollowsTheLiveRegionAndStrandsNothing(t *testing.T) {
+	if Console() != os.Stderr {
+		t.Fatal("with no region the console is stderr")
+	}
+	t.Setenv("COLUMNS", "120")
+	t.Setenv("LINES", "40")
+	LiveReset()
+	t.Cleanup(LiveReset)
+	sim := newTermSim(120, 40)
+	l := &Live{w: sim, cursor: true}
+	SetConsole(l)
+	t.Cleanup(func() { SetConsole(nil) })
+	if !ConsoleEngaged() {
+		t.Fatal("the console must report the region as engaged")
+	}
+	liveStart("OR-295", time.Now())
+	redraw := func() { l.lock.Lock(); l.eraseLocked(); l.drawLocked(); l.lock.Unlock() }
+	for i := 0; i < 8; i++ {
+		fmt.Fprintf(Console(), "orion: context peaked at %d%% of the window on this stage.\n  If this recurs, split the stage.\n", 70+i)
+		redraw()
+		fmt.Fprintln(Console(), "OR-295    Rename internal/njagents to internal/toolkit")
+		fmt.Fprintln(Console(), "          Mahesh · backend developer · opus · orion/or-295-2")
+		redraw()
+	}
+	if n := sim.count("recent "); n != 1 {
+		t.Errorf("%d top borders on screen, want 1:\n%s", n, sim.screen())
 	}
 }

@@ -446,6 +446,48 @@ func LiveQueue(rows []QueueRow) {
 	}
 }
 
+// THE CONSOLE (OR-330). One writer for everything the process says to the
+// terminal while the region is up.
+//
+// The region erases by moving the cursor up the rows IT drew. Anything that
+// reaches the terminal by another road -- a subprocess's stderr, a warning
+// printed to os.Stderr -- moves the cursor without the count knowing, so the
+// next erase starts too low and the top of the block stays in scrollback:
+// the window's frame, stacked down the screen, once per stray write. The
+// supervisor and the fan-out narrate through Console so the region hears
+// them; a subprocess's stderr goes to its log and tail while the region is
+// engaged, because a stream the region cannot count must not reach the
+// screen at all.
+var termConsole struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+// SetConsole installs the writer the process should narrate through; nil
+// restores os.Stderr.
+func SetConsole(w io.Writer) {
+	termConsole.mu.Lock()
+	termConsole.w = w
+	termConsole.mu.Unlock()
+}
+
+// Console is where a message meant for the terminal goes.
+func Console() io.Writer {
+	termConsole.mu.Lock()
+	defer termConsole.mu.Unlock()
+	if termConsole.w == nil {
+		return os.Stderr
+	}
+	return termConsole.w
+}
+
+// ConsoleEngaged reports whether a live region owns the terminal.
+func ConsoleEngaged() bool {
+	termConsole.mu.Lock()
+	defer termConsole.mu.Unlock()
+	return termConsole.w != nil
+}
+
 // LiveEnd removes a run. Called when the watcher reaps it.
 func LiveEnd(key string) { LiveDone(key, "") }
 
