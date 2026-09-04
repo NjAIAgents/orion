@@ -178,3 +178,41 @@ func TestABatchWhereNothingLandedClosesNoTickets(t *testing.T) {
 		}
 	}
 }
+
+// A landed member's branch is pruned (OR-337).
+//
+// The per-branch path has always pruned a merged branch; the batch path
+// closed the ticket and left the branch behind. Twenty-five accumulated on
+// the remote, at which point the list stops answering "what is in flight".
+//
+// Asserted through deps.Prune, which is the seam the per-branch path uses
+// too -- so both paths clean up the same way rather than by two mechanisms
+// that can drift.
+func TestALandedBatchPrunesItsMembersBranches(t *testing.T) {
+	ms := members("OR-150", "OR-153")
+	st, g, ws, cfg := landResumedFixture(t, ms)
+	cfg.VCS.BranchPrefix = "orion/"
+
+	var pruned []string
+	deps := Deps{
+		Jira: newTracker(),
+		Prune: func(_ *workspace.Workspace, branch string) error {
+			pruned = append(pruned, branch)
+			return nil
+		},
+	}
+	var buf bytes.Buffer
+	landResumed(st, ms, cfg, deps, g, ws, &buf)
+
+	for _, want := range []string{"orion/or-150", "orion/or-153"} {
+		found := false
+		for _, got := range pruned {
+			if got == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s landed but was not pruned; pruned = %v", want, pruned)
+		}
+	}
+}

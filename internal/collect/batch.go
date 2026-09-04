@@ -146,8 +146,15 @@ type Git interface {
 	// MergeInto merges branch into ref. A non-nil error means it conflicted:
 	// the caller ejects rather than resolving.
 	MergeInto(ref, branch string) error
-	// DropRef removes an ephemeral ref. Best effort.
+	// DropRef removes an ephemeral ref LOCALLY. Best effort.
 	DropRef(ref string) error
+	// DeleteRemoteRef removes it from the forge (OR-337). Best effort.
+	//
+	// Separate from DropRef because Test PUSHES these refs -- a split has to
+	// reach CI to be tested -- so dropping only the local branch leaves the
+	// remote one behind. Twenty-five branches accumulated that way, including
+	// pure bisection scratch that nothing would ever read again.
+	DeleteRemoteRef(ref string) error
 
 	// SHAOf resolves a ref or branch to a commit. Used to stamp what a
 	// result was validated against (ADR 0017), so a merge can refuse a base
@@ -314,6 +321,20 @@ func (p proven) matches(want []string) bool {
 // the search as the tree it is. depth is the indent; total is shared across
 // the whole recursion rather than summed on the way out, because the display
 // needs the run number DURING the search, not after it.
+// dropScratch removes an ephemeral ref from BOTH the clone and the forge
+// (OR-337).
+//
+// Test pushes every ref it tests -- a split cannot reach CI otherwise -- so
+// dropping the local branch alone left the remote one behind for good. The
+// isolation refs are the clearest case: orion/batch-iso-2-0 and -2-1 outlived
+// the search that created them by days, and nothing will ever read them
+// again. Best effort on both, as DropRef always was: a ref that cannot be
+// deleted is untidy, never incorrect.
+func dropScratch(g Git, ref string) {
+	_ = g.DropRef(ref)
+	_ = g.DeleteRemoteRef(ref)
+}
+
 func isolateProving(t Tester, g Git, refPrefix, base string, members []Member,
 	o Observer, depth int, total *int) (culprits []Member, runs int, green []proven, err error) {
 
@@ -337,7 +358,7 @@ func isolateProving(t Tester, g Git, refPrefix, base string, members []Member,
 		runs++
 		*total++
 		if terr != nil {
-			_ = g.DropRef(ref)
+			dropScratch(g, ref)
 			return nil, runs, green, terr
 		}
 		o.Split(keysOf(kept), ok, depth, *total, false)
@@ -354,7 +375,7 @@ func isolateProving(t Tester, g Git, refPrefix, base string, members []Member,
 		// A red ref is worth nothing to anybody: dropped immediately, as
 		// before. Its NAME lives on as the prefix for the next level, which
 		// is why the drop is safe here.
-		_ = g.DropRef(ref)
+		dropScratch(g, ref)
 		// Both halves are examined rather than stopping at the first red
 		// one: a batch can hold more than one culprit, and stopping early
 		// would land the second.
@@ -578,7 +599,7 @@ func Land(g Git, t Tester, ref, base string, members []Member, o Observer,
 	// is what lets one of them be reused.
 	defer func() {
 		for _, p := range green {
-			_ = g.DropRef(p.ref)
+			dropScratch(g, p.ref)
 		}
 	}()
 	if err != nil {
@@ -662,7 +683,7 @@ func (b *Batch) landInnocent(g Git, t Tester, ref, base string,
 	if len(kept) == 0 {
 		return nil
 	}
-	defer func() { _ = g.DropRef(clean) }()
+	defer func() { dropScratch(g, clean) }()
 
 	ob.Testing(b.Runs + 1)
 	ok, err := t.Test(clean)
