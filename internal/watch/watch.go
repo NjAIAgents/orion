@@ -213,6 +213,10 @@ func Run(opts Options, deps Deps) error {
 	lw := io.Writer(live)
 	liveOut.Store(&lw)
 	defer liveOut.Store(nil)
+	// Everything the supervisor says, and nothing a subprocess says, reaches
+	// the terminal through the region from here on (OR-330).
+	ui.SetConsole(live)
+	defer ui.SetConsole(nil)
 	ui.LiveReset()
 	// The window shows what the agents are saying, so how much it has to hold
 	// scales with how many are talking (OR-264).
