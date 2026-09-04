@@ -144,5 +144,5 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           go vet ./...
-          go test ./... -count=1
+          go test ./... -p 2 -count=1
           go build ./cmd/orion
