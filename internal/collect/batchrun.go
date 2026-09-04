@@ -490,7 +490,8 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		dir: ws.CloneDir(), base: cfg.VCS.WorkBranch,
 		wait: 30 * time.Minute, out: w, log: log}
 	b, err := Land(g, t, ref, cfg.VCS.WorkBranch, members, liveObserver{},
-		WithApproval(batchApprover(cfg, opts, deps, ws, log, w)))
+		WithApproval(batchApprover(cfg, opts, deps, ws, log, w)),
+		WithIsolationWait(t.wait))
 
 	// Local ref and its worktree, then the published branch. Both, and only
 	// here: Test used to drop the remote ref as it returned, which cannot

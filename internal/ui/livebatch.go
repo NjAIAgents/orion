@@ -390,7 +390,15 @@ func renderTesting(w io.Writer, b *liveBatch, now time.Time, cols int) []string 
 			continue
 		}
 		g, note := memberGlyph(w, MemberEjected)
-		out = append(out, clip(fmt.Sprintf("    %s %s  %s", g, m.key, Dim(w, note)), cols))
+		line := fmt.Sprintf("    %s %s  %s", g, m.key, Dim(w, note))
+		// WITH ITS REASON. "returns to the queue" alone cannot tell a real
+		// conflict from a dependency-order problem -- a rename ejected by
+		// the two stories built on top of it looks identical to a genuine
+		// clash -- and the file is what a person acts on.
+		if m.detail != "" {
+			line += " " + Dim(w, liveSep+" "+m.detail)
+		}
+		out = append(out, clip(line, cols))
 	}
 	return append(out, ciBlock(w, b, now, cols)...)
 }

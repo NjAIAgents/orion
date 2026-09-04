@@ -396,6 +396,13 @@ type landOpts struct {
 	// now is the clock, injectable so a test can assert an elapsed figure
 	// without sleeping for it. Defaults to time.Now via landOpts.clock.
 	clock func() time.Time
+	// isoWait is how long an isolation run waits for its check to report
+	// before giving up (OR-321). Zero means an isolation run that has not
+	// reported is an error at once -- the behaviour that tore a red batch
+	// down and re-assembled it every pass, restarting CI each time.
+	isoWait time.Duration
+	// sleep is what the wait sleeps with; injectable so the test does not.
+	sleep func(time.Duration)
 }
 
 // now reads the clock, defaulting to the real one. A method rather than a
@@ -413,6 +420,53 @@ func (o landOpts) now() time.Time {
 // runs.
 func WithClock(f func() time.Time) LandOption {
 	return func(o *landOpts) { o.clock = f }
+}
+
+// WithIsolationWait lets an isolation run wait for its check (OR-321).
+//
+// The first test of a batch returns at once on silence and the next pass
+// resumes it, because there is a record to resume from. Isolation has no
+// such record: it is a search, and a search interrupted is a search started
+// over -- which is what happened: the first split's check had not reported,
+// the batch was declared not to have completed, its ref was deleted, and the
+// next pass assembled it again and restarted CI. So an isolation run polls,
+// bounded by d, and only then gives up.
+func WithIsolationWait(d time.Duration) LandOption {
+	return func(o *landOpts) { o.isoWait = d }
+}
+
+// WithSleeper replaces the wait's sleep. For tests.
+func WithSleeper(f func(time.Duration)) LandOption {
+	return func(o *landOpts) { o.sleep = f }
+}
+
+// isolationPoll is how often a waiting isolation run re-reads its check.
+const isolationPoll = 30 * time.Second
+
+// waitingTester re-reads a pending check until it reports or the wait runs
+// out. Wraps the batch's tester for isolation only.
+type waitingTester struct {
+	t  Tester
+	lo landOpts
+}
+
+func (w waitingTester) Test(ref string) (bool, error) {
+	started := w.lo.now()
+	for {
+		ok, err := w.t.Test(ref)
+		if !errors.Is(err, ErrCheckPending) {
+			return ok, err
+		}
+		if waited := w.lo.now().Sub(started); waited >= w.lo.isoWait {
+			return false, fmt.Errorf("no check result on %s after waiting %s: %w",
+				ref, waited.Round(time.Second), ErrCheckPending)
+		}
+		sleep := w.lo.sleep
+		if sleep == nil {
+			sleep = time.Sleep
+		}
+		sleep(isolationPoll)
+	}
 }
 
 // WithApproval gates the merge on a human. Absent, a green batch lands as
@@ -492,7 +546,14 @@ func Land(g Git, t Tester, ref, base string, members []Member, o Observer,
 		return b, nil
 	}
 
-	culprits, runs, green, err := isolateProving(t, g, ref+"-iso", base, kept, ob, 0, new(int))
+	// The search waits for its checks where the first test did not: it has
+	// no record to resume from, so silence must be waited out rather than
+	// treated as a verdict or an error (OR-321).
+	var iso Tester = t
+	if lo.isoWait > 0 {
+		iso = waitingTester{t: t, lo: lo}
+	}
+	culprits, runs, green, err := isolateProving(iso, g, ref+"-iso", base, kept, ob, 0, new(int))
 	b.Runs += runs
 	// Whatever happens next, the search's green refs are litter once the
 	// choice below is made. Dropped here rather than inside the search, which

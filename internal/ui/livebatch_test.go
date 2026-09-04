@@ -356,7 +356,7 @@ func TestAnEjectedMemberKeepsItsRowWhileTheBatchIsTesting(t *testing.T) {
 	b := &liveBatch{
 		ref: "orion/batch", base: "develop", phase: BatchTesting, runs: 1,
 		members: []batchMember{
-			{key: "OR-223"}, {key: "OR-229", state: MemberEjected}, {key: "OR-242"},
+			{key: "OR-223"}, {key: "OR-229", state: MemberEjected, detail: "internal/toolkit/toolkit.go"}, {key: "OR-242"},
 		},
 		median: 11 * time.Minute, ciStarted: now.Add(-4 * time.Minute),
 	}
@@ -367,6 +367,10 @@ func TestAnEjectedMemberKeepsItsRowWhileTheBatchIsTesting(t *testing.T) {
 	}
 	if !strings.Contains(got, "returns to the queue") {
 		t.Errorf("the ejected row must say it is coming back, not read as a failure:\n%s", got)
+	}
+	// AND WHY (OR-321): the conflicting file is what a person acts on.
+	if !strings.Contains(got, "internal/toolkit/toolkit.go") {
+		t.Errorf("the ejected row must name the conflict:\n%s", got)
 	}
 	// It is NOT in the chain: that line is "who is in this CI run", and it
 	// is not.
