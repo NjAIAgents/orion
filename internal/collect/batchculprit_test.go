@@ -34,7 +34,7 @@ func TestABatchCulpritIsMarkedFailedCommentedAndSentToTheFixAgent(t *testing.T) 
 	cfg := config.Config{}
 	cfg.CI.AutoFix = true
 	res := failCulprit(Result{Key: "OR-297", Changed: true},
-		Member{Key: "OR-297", Branch: "orion/or-297"}, cfg, Options{},
+		Member{Key: "OR-297", Branch: "orion/or-297"}, "orion/batch", cfg, Options{},
 		Deps{Jira: jira, Fix: fix.fix}, ws, log, &buf)
 
 	if fix.calls != 1 {
@@ -66,7 +66,7 @@ func TestABatchCulpritWithoutAutoFixIsMarkedFailedAndToldWhy(t *testing.T) {
 	t.Cleanup(func() { rememberBatchDetail("") })
 
 	res := failCulprit(Result{Key: "OR-297", Changed: true},
-		Member{Key: "OR-297", Branch: "orion/or-297"}, config.Config{}, Options{},
+		Member{Key: "OR-297", Branch: "orion/or-297"}, "orion/batch", config.Config{}, Options{},
 		Deps{Jira: jira}, ws, log, &buf)
 
 	if res.Verdict != VerdictFailing {
@@ -79,5 +79,44 @@ func TestABatchCulpritWithoutAutoFixIsMarkedFailedAndToldWhy(t *testing.T) {
 	comments := strings.Join(jira.comments["OR-297"], "\n")
 	if !strings.Contains(comments, "pull/406") || !strings.Contains(comments, "internal/njagents") {
 		t.Errorf("the comment must name the batch pull request and the failure:\n%s", comments)
+	}
+}
+
+// The fix run is told WHERE the failure happened (OR-336).
+//
+// A culprit failed on the batch ref, tested alongside its siblings -- its own
+// branch's last CI run is stale, green, or absent. The fix agent looks the log
+// up by ref, so pointing it at the member's branch found nothing and it was
+// handed the conviction sentence with no log at all. Observed twice on OR-299
+// on 2026-09-04, the second time reporting "cannot see the actual CI log",
+// which was exactly true: two attempts spent on a one-line signature mismatch
+// that took a minute to find once the log was read.
+func TestACulpritsFixRunIsPointedAtTheRefThatActuallyFailed(t *testing.T) {
+	t.Setenv("ORION_HOME", t.TempDir())
+	ws := newWorkspace(t, "culprit-ref")
+	log, err := events.Open(filepath.Join(ws.Dir, ".orion", "events.jsonl"), events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	fix := &fixSpy{pushed: true}
+	var buf bytes.Buffer
+	rememberBatchPR("https://forge/pull/406")
+	rememberBatchDetail("go (ubuntu-latest): FAIL internal/supervisor")
+	t.Cleanup(func() { rememberBatchDetail("") })
+
+	cfg := config.Config{}
+	cfg.CI.AutoFix = true
+	failCulprit(Result{Key: "OR-299", Changed: true},
+		Member{Key: "OR-299", Branch: "orion/or-299"}, "orion/batch", cfg, Options{},
+		Deps{Jira: newTracker(), Fix: fix.fix}, ws, log, &buf)
+
+	if len(fix.sawRef) != 1 {
+		t.Fatalf("the fix agent was dispatched %d times, want once", len(fix.sawRef))
+	}
+	if fix.sawRef[0] != "orion/batch" {
+		t.Errorf("the fix run was told to read the log from %q; it must be the ref that "+
+			"went red, not the member's own branch", fix.sawRef[0])
 	}
 }

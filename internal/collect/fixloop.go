@@ -111,7 +111,7 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 			"it stops and says so._", quote(pr.Detail), link(pr.URL, "open it"), max),
 	})
 
-	pushed, summary, denied, err := deps.Fix(ws, key, branch, pr.Detail, log)
+	pushed, summary, denied, err := deps.Fix(ws, key, branch, pr.FailedOn, pr.Detail, log)
 	if err != nil {
 		giveUp(key, ws, log, w, "the fix run failed: "+err.Error())
 		res.Err = err
