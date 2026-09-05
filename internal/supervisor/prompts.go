@@ -1079,7 +1079,10 @@ func venvPython(repoPath string) string {
 	if err != nil {
 		return ""
 	}
-	common := strings.TrimSpace(string(out))
+	// git prints forward slashes on every platform; FromSlash makes the
+	// path native before it is joined, or a Windows prompt carries a
+	// mixed-separator path nothing can compare against (OR-344).
+	common := filepath.FromSlash(strings.TrimSpace(string(out)))
 	if !filepath.IsAbs(common) {
 		common = filepath.Join(repoPath, common)
 	}
