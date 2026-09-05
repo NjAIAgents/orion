@@ -6,6 +6,581 @@ now refuses to do**.
 
 ## Unreleased
 
+## v0.9.0
+
+### Added
+
+- **`orion plan` turns a tracker idea into a confirmed, scaffolded project.** A roster of
+  agents chosen from the registry rather than hardcoded; a PM stage that records what is
+  being built, why, and how success is measured; a database architect that recommends
+  with its reasoning and waits; and question convergence bounded by a round ceiling so
+  planning escalates rather than looping. Every recommendation stays a recommendation
+  until a person confirms it -- nothing downstream reads an unconfirmed choice as fact.
+
+- `orion plan` now selects the actors on a planning run from the registered
+  roster plus deterministic signals in the idea itself, and prints which word
+  selected each one. An idea that mentions a database puts the database
+  architect on the run; an idea that names nobody says so rather than staying
+  silent. Selection is a word lookup, not a model call, so the same idea always
+  produces the same roster at the same cost — and registering a new actor puts
+  it into planning without a code change.
+
+- `discovery.max_rounds` bounds the question rounds that run before the
+  discovery gate, defaulting to **2** and settable with
+  `orion config limits discovery.max_rounds N`. The gate is "zero open
+  questions"; with several agents each free to add questions it can recede
+  faster than a round moves toward it, and every receding round is paid for.
+  At the ceiling Orion escalates what is still open to a person — it never
+  loops and never proceeds with an unanswered question. Every agent's
+  questions are written into the one intent file, so `orion answer <id>`
+  still resolves the whole round in one pass, and each round is logged with
+  which agent added what and how many questions are left.
+
+- A recommendation is now recorded as an artifact with two structural states, and
+  only a confirmed one is readable by a later stage. An unconfirmed recommendation
+  is written to `docs/recommendations/pending/<KEY>.md` and is in no agent's scope;
+  it moves to `docs/recommendations/confirmed/<KEY>.md` -- and into what the
+  advisors and the implementer may reason from -- only when somebody on
+  `slack.merge_approvers` confirms it with a reaction on the Slack message that
+  asked. The confirmation is appended to the record naming the approver and
+  pointing at that message, and the ticket gets an attributed comment in both
+  states, so a reader months later can tell what was proposed from what was agreed.
+
+- The database architect now takes part in planning. `orion run <workspace> --stage database`
+  reads the intent and the spec, recommends one database **with its reasoning** — what the
+  requirements demand, what was rejected and why, what would make it the wrong answer — and
+  records it as an unconfirmed recommendation, asking about it in Slack. Only once somebody
+  confirms it does the next run design the initial schema on it, and that schema is recorded
+  the same way. Neither the choice nor the schema is readable by a later stage until it is
+  confirmed, so nothing gets built on a database decision nobody made.
+- `orion plan` now prints the command that runs that step beside the database architect when
+  the idea selects it. The step is not part of the fixed chain: a project that stores nothing
+  is never billed for it.
+
+- **Planning ends where the work queue begins.** A confirmed plan is scaffolded into the
+  project and its tracker tree, handing off to the ordinary `orion watch` queue. Where
+  nj-agents is installed its `/pm-plan` builds the tree; where it is not, Orion's own
+  provisioning does, and the run says which path it took.
+
+- **A plan-conformance review: is this the thing we agreed to build?** Three readers
+  already look at a finished change and none of them asked that question. The review
+  class reads the diff (is this code good), QA reads the acceptance criteria (does it do
+  what the ticket said), and done triage reads those criteria against the diff (is it
+  genuinely finished). A change can satisfy all three and still quietly build something
+  other than what was agreed during planning, and that divergence is only visible to
+  somebody reading the plan and the diff side by side — which, at approval time, is
+  nobody. The new pass runs immediately after done triage, on the same green run and the
+  same already-fetched diff, and compares the change against the **confirmed** plan
+  artifacts only: the plan stage's own `plans/<slug>.plan.md` and this ticket's record in
+  `docs/recommendations/confirmed/`. The pending directory beside it is deliberately not
+  read — holding a change to a recommendation nobody answered would enforce a decision
+  that was never made.
+- **It reports and cannot block.** A divergence is frequently the implementer finding
+  something better while building, so the pass never merges, never hands a ticket back,
+  never moves a label, and returns nothing a caller could gate on — it puts the
+  difference on the ticket and in the event log so a person decides, instead of it
+  landing unremarked. A change that matches its plan gets no tracker comment at all; a
+  tracker with a note on every ticket is one people stop reading.
+- **Every outcome reaches the audit trail, including the ones where nothing ran.**
+  "Checked and matched" and "never checked" are different facts, and the second is what
+  an auditor is asking about later, so the event carries which happened, the artifacts it
+  was judged against, and the divergences in their own words. A ticket with no confirmed
+  plan artifact says so and costs no model call.
+- **A `plan-conform` actor in the roster**, "Nadia · plan conformance reviewer" by
+  default, on sonnet, configurable through the `agents` block like every other actor. Its
+  own actor rather than done triage's, so its spend is its own row in the ticket's cost
+  report and its findings are attributable — the two passes read the same commit and only
+  one of them may hand work back.
+
+- Tickets can now declare, at planning time, the packages, directories or files
+  they expect to touch — a `Files:` line under `## Scope` in the description.
+  `orion decompose` writes one on every story it creates, and the decompose
+  stage prompt asks the delegated planner for the same line. The queue manager
+  reads it back and will not admit two tickets that named the same ground into
+  one batch, naming the overlap in the held line; a ticket already in flight
+  counts, so a batch forming across passes is judged as one batch. `pick` uses
+  the declaration where there is one, falls back to its area heuristic where
+  there is not, and says which it used. The independence decision is
+  `internal/fanout`'s, the same one `orion fan` applies to the import graph, so
+  there is one implementation rather than two that drift.
+- `orion decompose` now reports sibling stories that declared the same ground —
+  in the preview, before anything is created, and on both stories' records. It
+  states the coupling rather than resolving it: merging two items or ordering
+  them with a blocking link is a judgement about the work, not about the text.
+- A ticket's predicted scope is recorded beside the files its branch actually
+  changed (`queue-scopes.json` in the workspace), so whether planning's
+  estimates are worth anything can be judged rather than assumed.
+
+An absent scope holds nothing back — unknown is not conflict, and most tickets
+will carry no declaration. Nothing here replaces the assembly-time check that
+ejects a branch which will not merge; it only makes that check fire less often.
+
+- `orion.json` now takes an optional `toolkit` block — `repo`, `ref`, `dir`
+  and a `stages` map of stage name to command — so a team can point Orion at
+  its own skill repository without a Go change. Leaving the block out changes
+  nothing: `repo` defaults to the nj-agents URL, `dir`/`ref` fall back to
+  `delegation.nj_agents_dir` / `delegation.nj_agents_ref`, and a stage with no
+  command keeps Orion's built-in prompt. An unknown stage name, both spellings
+  of one stage carrying different commands, or any attempt to express ORDER
+  (a list, an `order` or `sequence` key) is refused as a config error rather
+  than ignored — sequencing across stages stays Orion's, per ADR 0001. A
+  toolkit Orion clones itself now lands in `<ORION_HOME>/vendor/<repo-name>`
+  so two toolkits cannot collide; the default still resolves to
+  `vendor/nj-agents`.
+
+- `toolkit.stages` now takes effect in the stage prompts. A project that
+  declares, say, `"intent": "/speckit.specify"` gets a prompt naming its own
+  command where Orion would have named nj-agents' `/capture-intent`; the
+  scaffold and decompose stages resolve the same way. A partial map is
+  supported — any stage with no entry keeps its built-in prompt — and a
+  project that declares no `toolkit` block sees prompts identical to before,
+  byte for byte. Orion still states the artifact each stage must commit and
+  still owns the routing contract, whichever command fills the slot.
+
+- A stage now fails immediately when it exits without leaving its artifact.
+  The intent, spec and plan stages each owe one committed, non-empty file; a
+  run that finishes without it stops there and the message names the artifact
+  path, the stage and the command that was configured to produce it — so a
+  wrong skill name in `toolkit.stages` is caught at the stage that carries it
+  instead of surfacing several stages downstream. Which artifact a stage owes
+  is decided in Go and cannot be changed from `orion.json`; stages that
+  produce no single committed file (verify, review, pr, build, scaffold,
+  decompose, ticket) are skipped.
+
+- **ADR 0019 records that Orion is toolkit-agnostic** and that nj-agents is the shipped
+  default rather than the only option -- so the next reader finds the decision written
+  down instead of inferring it from the code.
+
+- `orion decompose <KEY> [tasks.md]` creates the tracker tree itself, from a
+  spec-kit `/speckit.tasks` task list, with no skill in the middle. One Epic,
+  one Story per `[USn]` group, each task a child of its story, and a task in no
+  story group hanging off the Epic; the `[P]` parallel markers, the phases, the
+  dependency section and the exact file paths survive into the descriptions.
+  The routing marker `orion routes` publishes is set by Orion rather than asked
+  for in a prompt, so an unmarked docs ticket worked by the wrong actor stops
+  being possible. The whole tree is previewed with new-versus-existing marked
+  and one answer creates it; an unattended run creates nothing. A re-run links
+  what a previous run made rather than duplicating it, and a run that fails
+  halfway reports the item it stopped at and resumes from there.
+  **Opt-in and Jira-only for now**: the `decompose` stage still runs the
+  configured skill on every tracker, unchanged.
+
+- **Every ticket in the queue keeps its row on the watch; only its status changes.** A row
+  used to be an agent running in this process, so a ticket waiting on the batch, one not
+  yet claimed, or one worked before a restart had no row at all -- the watch listed the
+  queue at startup and then the rows vanished, leaving only the batch block. The queue is
+  now read on every tick and every ticket carrying the queue label or a state label has a
+  row: `queued`, `working`, `ci-wait`, `ready`, `failed`, and -- when it is a member of the
+  batch on screen -- `in batch`, `landed`, `culprit` or `ejected`. A queued row neither
+  spins nor draws a bar; a row an agent owns is never replaced by a tracker read; a ticket
+  that leaves the queue leaves the screen on the next tick. The status line counts them:
+  `1 running · 3 queued`.
+
+### Changed
+
+- The intent stage now leaves behind a capture with **Success measures** and
+  **Open questions** sections, worded the way `internal/discovery` parses them.
+  Anything the PM cannot decide has to be recorded as an open question rather
+  than assumed, so the existing discovery gate blocks the later stages on it
+  instead of letting an invented answer reach spec, plan, scaffold and the
+  tracker tree. A re-run extends the capture that is already there; a question
+  is settled in place with `[x]`, a strikethrough or an inline `Answer:`, never
+  by deleting it.
+
+- The decompose stage now hands the planner a fixed shape for every tracker
+  item's description: a one-sentence summary and a two-line WHY above a
+  horizontal rule, everything else (open questions, scope, grounding, tests)
+  below it. A human triaging the backlog reads to the rule; an agent reads
+  past it. Grounding is cited rather than quoted, and rejected alternatives
+  are referenced by ADR id instead of re-argued in each ticket.
+
+- **The test suite can run its packages in parallel.** `workspace.Home` is injectable
+  rather than read from the process environment, which was the one thing preventing
+  `t.Parallel` across the slowest packages. Measured at 3.7x on the work they dominate.
+
+- **`internal/njagents` is now `internal/toolkit`.** A rename with no behaviour change,
+  ahead of Orion supporting any skill repository rather than one by name.
+
+- `orion doctor` now validates the toolkit against the skills your
+  `toolkit.stages` actually name, instead of against nj-agents' own catalogue.
+  A team pointing Orion at its own skill repository no longer fails the check
+  for six nj-agents skills it never invokes, and a missing skill is reported
+  with the stage that required it, so the message names the config line to
+  change. With no `toolkit.stages` configured nothing moves: the required set
+  is the same six skills, under the same `nj-agents` label.
+- `CONVENTIONS.md` and `install.sh` are required only of the default
+  nj-agents toolkit. A foreign toolkit shipping neither now validates as
+  healthy, and `orion njagents install` explains that the toolkit ships no
+  installer rather than failing on a missing file.
+- `orion doctor --fix` clones the repository named in `toolkit.repo`. A
+  non-default URL is confirmed before anything is fetched — a checked-in
+  config naming a URL is not consent to run its code — and declining leaves
+  the machine untouched, printing the `git clone` command to run by hand. A
+  non-interactive run (CI) declines.
+
+- **The two slowest test packages are roughly half as slow.** `internal/collect` and
+  `internal/work` built their git fixtures per test; they are now built once and copied.
+  Measured on CI: collect 351s to 189s on Windows, 22s to 11s on Linux.
+
+- **The Windows CI leg has an honest baseline for the first time.** Every earlier figure
+  measured a suite that stopped at its first failure, so the numbers the project had been
+  planning against were time-to-give-up rather than run time.
+
+- The fan-out's narration now reads like the rest of the log: each line carries
+  the timestamp, ticket key and actor every other line has, the per-child lines
+  are indented one level under the announcement that dispatched them, and each
+  child names what it was given (its package, its question, its share of the
+  cases) rather than only an index. The announcement says "5 children, 2 at a
+  time" instead of "5 children (cap 2)" -- the bound is on concurrency, never on
+  count -- and a landing reports its outcome once, in the verb column, instead of
+  saying both "ok" and "exit 0".
+
+- **The batch landing line says what was not tested again.** It read "landed 1 approved
+  branch(es) as one, with no further CI run", which sounds like a claim about CI in
+  general -- and merging to the work branch starts that branch's own checks a second
+  later, so the next thing on screen appeared to contradict it. The saving is real but
+  narrower, and the line now says so: the batch ref was already green and was not tested
+  again, while the work branch runs its own checks as usual.
+
+### Deprecated
+
+- `delegation.nj_agents_dir` and `delegation.nj_agents_ref` are superseded by
+  `toolkit.dir` and `toolkit.ref`. They still work; when both are set the
+  `toolkit` spelling wins and the config names the older key.
+
+### Fixed
+
+- A project that sets a non-default `paths.plans` now gets stage prompts naming
+  that directory. The plan, decompose, build and verify prompts hardcoded
+  `plans/`, so on such a project the plan stage wrote where the prompt said and
+  the shield's plan gate looked where the config said — and every edit after it
+  was refused. Prompts and gate now resolve the plan artifact through one
+  helper, so the two cannot drift.
+
+- A release now tags the source repository for the commit it built, in the same
+  run that publishes the assets, and refuses to publish if that tag cannot be
+  pushed. Previously the release workflow used the dispatched tag only to name
+  things — the channel, the package-manager version, the archive names — and
+  created no tag at all, so a published version was unidentifiable from the
+  source repo (`git log v0.8.10` failed) and every later local build reported
+  itself as commits-past-the-*previous* release, because `make build` derives
+  its version from `git describe --tags`. Re-running a release for a tag that
+  already names the same commit is a no-op rather than a failure; one that
+  names a different commit is refused rather than moved, since re-pointing a
+  published tag rewrites what every existing checkout and archived build meant
+  by that version.
+
+- **A finished row draws its bar.** The bar was blank whenever there was no baseline to
+  measure against, which is right for a run still going and wrong for one that has
+  ended: completion is a fact rather than an estimate, and needs no baseline. A
+  finished ticket with no history drew fourteen empty cells, indistinguishable from a
+  row that had not started. A culprit's row still finishes red.
+
+- **The row's columns line up.** The `/ ~4m` median was printed only when a row had one
+  and sized to whatever it printed as, so a ticket with a baseline pushed the
+  sparkline, the tool count and the notes right while a ticket without one did not, and
+  two different medians disagreed by a character. Four rows made a ragged edge instead
+  of columns. The suffix now reserves a fixed width, and gives it up entirely on a
+  terminal too narrow for it.
+
+- `orion watch`: a run past its actor's median no longer sits at a saturated bar
+  that looks the same at 5 minutes as at 28. The cells past the median convert
+  to overrun on a log scale of elapsed over that same median, so a long run
+  still reads as long. A run with no baseline still draws no bar, and the
+  median the bar measures against is still the one the row prints.
+
+- `orion watch` now names the CI checks a ticket is waiting on — `go (ubuntu) ✓  go (windows) ⠹` — instead of only counting tickets in the footer. The row already existed but only a batch ever fed it, so an ordinary watch could not tell whether one platform had finished six minutes ago. Off a terminal the same line reaches the log, printed only when a check changes state. No extra API call: the checks come out of the read the verdict was already made from.
+
+- **A finished ticket reaches the next batch instead of waiting forever.** The agent
+  finished, QA gave its verdict, the branch was pushed — and then nothing happened. A
+  ticket set `orion-ready`, and the pass that assembles batches searched only
+  `orion-ci-wait`, so the integration queue's inbox was written to and never read.
+  Four tickets sat for 41 minutes with no batch and no pull request; one did the same
+  the day before and was rescued by hand. The two labels stay separate, because they
+  mean opposite things — `ci-wait` says a machine is working and the answer is
+  patience, `ready` says nothing is working and the next pass takes it — and the batch
+  now reads both. The batch display returns with it: nothing was wrong with that code,
+  it just lived behind the pass that never ran.
+
+- **A red suite is no longer invisible to QA.** Orion runs the repository's own suite
+  after the tests are written, and it was reporting the result to the log and to nobody
+  else. QA then formed its verdict having never been told, so a ticket whose suite had
+  already failed reported that every case passed. On one run that shipped a formatting
+  error to a shared branch, where CI found it twenty minutes later — the same error
+  Orion had already printed in the worktree. The failure output now reaches the QA
+  session, which decides what it means: a failure belonging to this change is a
+  finding, one that does not is something to name and explain. A green suite adds
+  nothing, and a suite that could not run is not evidence of anything.
+
+- **The recent-lines pane is on screen again.** A watch run was meant to show a bounded,
+  framed window of the last few lines above the ticket rows — `recent 5 line(s)` at the
+  top, `scrolls, then gone` at the bottom — and it had not appeared for two releases.
+  Every part of it was still there and still tested: the frame, the labels, the height
+  resolution against the terminal, the per-concurrency cap, the rule that the ticket
+  rows outrank the window on a short screen. Nothing called any of it. The lines went
+  straight to scrollback instead, so log output scrolled the terminal freely and there
+  was no wall between the two zones.
+
+  It was removed deliberately, on the argument that a ticket's own row now carries its
+  latest tool call and the window was therefore redundant. What that missed is that the
+  two show different things. A row is one ticket doing one thing right now. The window
+  is what happened across the whole run — a file edited, a suite run with its duration,
+  a branch pushed with its commit count, a batch merged — including actors like the
+  batch itself, which has no row at all.
+
+  `ctrl-r` still drops the cap and writes everything through, and closing a run still
+  commits the visible lines to real scrollback, so nothing that was on screen is lost.
+
+- A batch that merges now closes the tickets it merged. Every member the batch
+  actually landed has its Orion labels cleared, is transitioned to Done, is
+  commented with the batch's pull request URL, and has its sub-tasks closed --
+  the same sequence the per-branch path has always run, now shared by both
+  rather than copied. Previously a batch told only the screen and the log, so
+  merged tickets stayed In Progress carrying the queue label and were collected
+  again on every subsequent pass. Ejected members and the culprit are left
+  untouched: their work did not land. A tracker with no Done transition still
+  lets the merge stand, with a warning.
+
+- **The watch no longer leaves the window's top border behind in scrollback.** On a real
+  run the frame's top line stacked up the screen, once per redraw for a while, then a whole
+  frame, then more borders. The cause was a moment with the terminal's width UNKNOWN: the
+  size is re-asked once a second so a resize is noticed, and when that one poll failed --
+  opening /dev/tty and forking `stty` beside five agent subprocesses -- the cache answered 0.
+  At width 0 the region drew every row unclipped and counted each as one screen row; the
+  terminal wrapped what the count did not, the erase moved up short, and the top of the
+  block stayed behind. A failed poll now keeps the last known size, and the block is never
+  drawn at an unknown width. Reproduced and pinned by a test that replays a watch against a
+  small terminal emulator and counts the borders on screen: twelve before, one after.
+
+- **A batch is asked about once, not on every pass.** The approval record was forgotten on
+  the way out, and since every batch uses the same ref name the next pass found no record,
+  decided nobody had been asked, and posted the request again -- four asks for two batches,
+  each already carrying a green tick, and every duplicate a message whose reaction may be
+  read from the wrong one. The record is kept now and compared by MEMBERS, so a genuinely
+  different set of tickets on the same ref still asks afresh while the same batch stays quiet.
+
+- **The batch block matches the OR-246 mockup, and fits the screen.** During a batch the
+  foot of the watch display is now one CI block: a titled rule carrying the verdict and the
+  measure (`── CI ─── running ──── 4m12s / ~11m median ──`), a chain with one cell per
+  member and ONE fill sweeping across them (`┝━━ OR-223 ━━┿━━ OR-224 ──┿── OR-242 ──┥`),
+  the jobs three to a row with a glyph each, and a tally (`4 of 6 green · waiting on 2`;
+  when red, the failing job and the failing test are named). The three bars that used to
+  share the batch line -- membership, checks and time -- overflowed 76 columns and clipped
+  the elapsed, the median and the run number with `…`, and the check line clipped checks
+  four to six. Nothing in the block clips at 76 columns now, in any phase.
+
+- **The pinned block can no longer outgrow the terminal and repeat.** Nothing capped the
+  region against the terminal's height; only the frozen window yielded. Once the rows,
+  the status line and the batch block together exceeded the screen, the erase's cursor-up
+  clamped at the top row, the lines that had scrolled into history were missed, and the
+  next redraw painted them again -- the "recent lines came several times" report. The
+  block is now trimmed to the terminal's height, from the top, so the status line and the
+  batch stay nearest the cursor.
+
+- **The status line fits inside its rule.** Single spaces around the separators, `$12.40`
+  rather than `$12.40 this session`, the hint at the right edge, and no CI count while a
+  batch is on screen (the CI block owns it). At two spaces a side it ran to 96 cells and
+  wrapped at 76 columns.
+
+- **The frozen window's frame is the mockup's:** `┌ ┐ └ ┘` corners, `│` side bars, and
+  `recent 5 lines` rather than `5 line(s)`. The isolation tree puts the verdict before
+  the set (`├─ ✓ [223 224]`), and the run estimate rounds up per split so a three-member
+  search no longer prints `run 4 of ~3`.
+
+- **The batch CI baseline no longer counts batches that ran no CI.** A pass that assembled
+  nothing still wrote its note -- `0 run(s) in 1s` -- and eight of those outvoted every real
+  run, so the CI rule read `median 1s` over a seven-minute run and said `running long` from
+  its first second. A batch is a sample only when it ran; the elapsed of one that did not
+  measures assembly, not the run.
+
+- **A red batch no longer restarts CI every pass.** When a batch went red, the search for
+  the culprit pushed its first split and read its checks at once; nothing had reported, and
+  that silence was returned as an error. The batch was declared incomplete, its ref deleted,
+  a `landed nothing … in 20s` note written, and the next pass assembled it again -- a fresh
+  merge commit, a fresh CI run -- forever. Seen as three runs in flight on `orion/batch` at
+  once, ninety seconds apart. An isolation run now waits for its check, polling every thirty
+  seconds for up to thirty minutes, and says how long it waited if it gives up. The first
+  test of a batch is unchanged: it still returns at once and resumes on the next pass.
+
+- **An ejected member's row names the conflict while the batch tests.** `returns to the
+  queue` alone could not tell a real clash from a dependency-order problem; the file is
+  what a person acts on, and the assembling view already showed it.
+
+- **A batch culprit now enters the CI fix loop.** When isolation convicted a member, the
+  batch path set its verdict and returned; the per-ticket path that relabels
+  `orion-failed`, comments where and why it failed, notifies, and -- with `auto_fix` --
+  dispatches the fix agent was never reached. So the culprit stayed `orion-ready`, was
+  collected into the next batch, and was convicted again, while its row said
+  `fix round 1 of 3` about a loop that did not exist. A convicted member now takes the same
+  road a per-branch red build takes: the pull request it cites is the batch's, because that
+  is where the failure is, and the branch it fixes is its own, because that is where the
+  fault is.
+
+- **A batch resumed after a restart is on screen.** Restarting the watch with a batch in
+  CI showed nothing but the log line `ci orion/batch: 3 branch(es), 2m0s elapsed` -- no
+  rule, no status line, no chain, no jobs. The region draws the batch it was told about,
+  and only a batch assembled by the running process ever told it. A resumed batch now
+  appears with every member riding, the elapsed counted from the record's `testing_since`,
+  and the jobs as they report.
+
+- **A red batch is isolated, not rebuilt.** When a batch went red its record was cleared,
+  so the next pass assembled the same set again -- fresh merge commits, a fresh CI run,
+  six more minutes to learn the same verdict -- and did so on every pass, never once
+  isolating. Isolation only ever began if the status read after the re-push happened to
+  return the previous run's failure, a race. The red verdict is now recorded, and the next
+  pass over the same members on the same base assembles them and begins the search at
+  once, with the whole set's run already counted. A different set, or a base that moved,
+  is tested from scratch as before.
+
+- **A closed ticket with a stale `orion-ready` label is no longer assembled into a batch.**
+  The pass query found tickets by label alone, so two tickets closed by hand a day earlier
+  were offered to the batch and their old branches merged into the ref -- work that had
+  already landed, merged again. The query now excludes Done.
+
+- **A passing verdict is grounded in the workflow runs, not the check rollup.** Right after
+  a push the pull request's rollup holds only the checks GitHub has registered so far -- the
+  fast analysis jobs report success inside a minute while the slow build jobs do not yet
+  exist as checks -- so two successes and nothing running read as "2 check(s) passed". A
+  batch was declared green on that, approved, and landed on develop two minutes before its
+  run had been queued. A pass now also requires that a workflow run exists for the head
+  commit and that none is queued or in progress; until then the verdict is pending and says
+  which run it is waiting on.
+
+- **The window's frame no longer strands when an agent runs.** The supervisor wrote to
+  the terminal underneath the live region -- the agent subprocess's stderr, the run header,
+  `orion:` warnings, fan-out announcements -- and the region erases by the rows it drew, so
+  every such write moved the cursor without the count knowing and left the frame's top
+  border behind, once per write. Everything the process says now goes through one console
+  the region owns; a subprocess's stderr goes to its log and tail while the region is up,
+  and to the terminal as before when it is not.
+
+- **An agent can no longer wait forever for something that will never arrive.** A QA
+  session re-ran a suite Orion had already run, backgrounded it, and polled for twenty
+  minutes -- so the red verdict that should have handed its ticket back to the implementer
+  was never produced, and the ticket sat until the operator stopped the watch. Three
+  changes: QA is told plainly not to re-run a suite Orion has already run, since the
+  result is in its prompt; every stage prompt now states that the run is headless, where a
+  backgrounded command is never announced and `ScheduleWakeup` does nothing; and the
+  breaker bounds waiting at twelve consecutive polls with nothing else in between. Waiting
+  for a genuinely running command is unchanged -- the budget sits well above what a real
+  wait costs.
+
+- **The suite stopped failing on macOS for reasons that had nothing to do with the change.**
+  `go test ./...` runs packages in parallel up to GOMAXPROCS, and this suite is not
+  CPU-bound: sixteen packages spawn real subprocesses, so the default put several of them
+  on the runner at once and they starved each other. The tests that lost were the ones with
+  a clock in them -- a wall-clock kill waiting for a grandchild to report its pid, a watch
+  loop expected to complete two passes at a millisecond interval -- and each failure named
+  a different test, which is the signature of contention rather than of a broken assertion.
+  macOS failed about two runs in five while Linux passed, because its runner has three
+  cores to Linux's four. Package parallelism is now capped at two (`TEST_PARALLEL_PACKAGES`
+  to override), on every platform. No assertion was weakened.
+
+- **A killed test run no longer leaves processes behind.** Around twenty test sites spawned
+  a long-lived binary -- the built orion binary, `go build`, `go test` -- with a plain
+  `exec.Command`, so when the parent `go test` was killed by a timeout, a ctrl-c or a
+  cancelled CI job, the child was reparented to init and ran forever. They accumulated
+  until the machine was unusable: 619 orphans and a load average of 256 in one evening,
+  cleared four times and back each time, with every measurement taken in between worthless.
+  Those spawns now go through `internal/testproc`, which puts each child in its own process
+  group and kills that group when the test ends -- including when it fails or panics.
+  Orion's own agent path was already correct; this was the test path only.
+
+- **The Windows CI leg gates again, and the tests it was hiding pass.** The `checks (windows)`
+  step had no `shell:`, so GitHub ran it under PowerShell, which fails a step only on the
+  LAST command's exit code -- `go build` succeeded, so `go test`'s failure was discarded and
+  the job reported success over 110+ failing tests across 14 packages, for as long as the leg
+  has existed. It now runs under bash with `set -euo pipefail`, and three real causes behind
+  those failures are fixed: a virtualenv's interpreter is at `Scripts/python.exe` on Windows
+  rather than `bin/python`; a `.sh` cannot be exec'd directly there and is invoked through
+  bash; and six tests asserting POSIX permission bits now skip on Windows, where every file
+  reports 0666 and the assertion tests the operating system rather than the code.
+
+- **A batch culprit's fix agent is given the CI log again.** The fix run looks a failing
+  log up by ref, and it was handed the ticket's own branch -- but a culprit failed on
+  `orion/batch`, tested alongside its siblings, so its own branch's last run was stale,
+  green or absent. Nothing was found, and the agent was handed the sentence "convicted by
+  the batch's isolation" instead of a failure: it spent two attempts on one ticket
+  reporting, accurately, that it could not see the actual CI log. The log is now read from
+  the ref that actually went red, and when no log is reachable the prompt says so rather
+  than quietly passing off a conviction as the whole failure.
+
+- **A landed batch cleans up after itself.** Twenty-five branches had accumulated on the
+  remote, including `orion/batch-iso-*` refs left over from finished bisections -- pure
+  scratch that nothing would ever read again. Two leaks: every ephemeral ref was dropped
+  locally but never deleted from the forge, although the search PUSHES each one to test it;
+  and a member's branch survived its own landing, because the batch path closed the ticket
+  without the prune the per-branch path has always done. Both are fixed, driven by what the
+  batch actually landed rather than by ancestry -- a batched branch merges through a merge
+  commit, so it is never an ancestor of the work branch and deleting on that signal would
+  destroy work.
+
+- A working agent no longer prints nothing between "started" and its verdict.
+  Removing the live region left the console silent at default verbosity, so a
+  long run and a hung one looked identical. Each ticket now prints a throttled
+  progress line -- at most one every 30 seconds -- naming how long it has been
+  working and what it last did. `--verbose` still prints the full per-tool
+  transcript, and a run that genuinely does nothing still prints nothing.
+
+- **The Windows CI leg is a real gate again.** It had been reporting success while
+  discarding its own test results, so failures accumulated unseen for the life of the
+  leg.
+
+- **`orion collect` no longer leaks a file handle on every pass.** The batch context
+  opened the event log before it could know whether batch integration was enabled, and
+  the close was inside the enabled branch -- so with batching off, which is the default,
+  every collect pass leaked a descriptor. Harmless on Linux, where a file can be
+  unlinked while open; on Windows it made the file undeletable.
+
+- **Windows: a running agent's claim could be stolen out from under it.** The liveness
+  check used a POSIX signal that Windows has no equivalent of, so every live process
+  read as dead and a watcher was free to take its ticket mid-run.
+- **Windows: killing a run left everything it had started still running** -- the agent's
+  tests, dev servers and containers survived it -- and made timeouts expire without
+  taking effect.
+- **Windows: concurrent writes to one file could fail outright** rather than waiting
+  their turn.
+- **Windows: `orion doctor` never recognised its own hooks**, so a correctly configured
+  machine was told none were wired.
+
+- **Windows: a local toolkit path was mangled before cloning.** A repository path was cut
+  at its drive letter, so the clone was nested a dozen directories deep under `vendor/`
+  and failed.
+- **Windows: a timed-out suite could outlive its own deadline**, waiting on a process the
+  kill could not reach.
+
+- **Windows: `gh` and `git` calls could outlive the timeout that bounded them.** Anything
+  they spawned -- a credential helper, a pager -- held the call open past its deadline.
+- **Windows: the agent prompt could not find a virtualenv's interpreter**, because it
+  looked only where a POSIX virtualenv keeps one.
+- **Repository paths in tracker comments and reports are slash-separated everywhere**, so
+  a path written on Windows still reads correctly in Jira.
+
+- **Windows: a release could be tagged by an identity nobody can be reached at.** Git
+  invents one from the machine name when none is configured, so the check now asks for a
+  configured name and email and refuses without them.
+
+- **A ticket convicted by a batch is no longer put straight back into the next one.**
+  Failing it cleared only one of the two queue states it could be in, so a culprit kept
+  both "failed" and "ready" and was re-assembled every tick -- each time into a batch
+  that could only fail again.
+
+- **The watch log gives every actor its own colour.** Seven actors were sharing four
+  colours, so `orion`, QA and the implementer could not be told apart at a glance.
+- **A long run keeps its identity columns.** Repeated-identity suppression was written
+  for a burst of lines; with a progress line every thirty seconds it blanked the actor
+  column for minutes at a time.
+
+- **A very large `max_concurrent_tickets` crashed the watcher at startup.** The result
+  channel was sized from that number without a bound, so a big enough value overflowed
+  and the allocation was refused. The cap itself is unchanged; only the internal buffer
+  is bounded.
+
+### Security
+
+- **CI declares read-only permissions explicitly** rather than inheriting the
+  repository default, so widening that default later cannot silently widen what CI can do.
+
 ## v0.8.11
 
 ### Added
