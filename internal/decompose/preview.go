@@ -43,6 +43,29 @@ func Preview(w io.Writer, p *Plan) {
 	fmt.Fprintf(w, "\n  %d to create, %d already in %s\n",
 		p.NewCount(), p.ExistingCount(), p.Project)
 	fmt.Fprintf(w, "  identity label: %s\n", p.Tree.Label())
+	previewCoupled(w, p.Tree.Coupled)
+}
+
+// previewCoupled names the siblings that declared the same ground, at the
+// point a human is deciding whether to create the tree (OR-260).
+//
+// BEFORE CREATION IS THE ONLY USEFUL MOMENT. Once these exist as siblings the
+// queue will refuse to admit them together for the rest of their lives, and no
+// downstream stage can undo a decomposition. It is stated, not blocked on: a
+// coupled pair is sometimes exactly right, and a parser cannot tell which of
+// merge, sequence or accept the reader wants.
+func previewCoupled(w io.Writer, coupled []Coupling) {
+	if len(coupled) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\n  %d coupled pair(s): these declare the same ground and will not be\n"+
+		"  admitted to one batch. Merge them, order them with a blocking link, or\n"+
+		"  accept the coupling -- but decide it now rather than at merge time.\n",
+		len(coupled))
+	for _, c := range coupled {
+		fmt.Fprintf(w, "    ! %s\n      %s\n      both declare: %s\n",
+			c.A, c.B, strings.Join(c.Shared, ", "))
+	}
 }
 
 // labelNote shows the routing marker, which is the part of an item a reader
