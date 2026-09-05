@@ -768,6 +768,108 @@ const (
 	doneReplyNotDone = "NOT DONE:"
 )
 
+// ConformPrompt asks the one question no other reader of a change asks: is
+// this the thing we agreed to build (OR-158)?
+//
+// The review class reads the diff, QA reads the acceptance criteria, and
+// done triage reads the criteria against the diff. A change can satisfy all
+// three and still be something other than what the plan said, and that
+// divergence is invisible to anyone who has not read both documents at once
+// -- which, at approval time, is everybody.
+//
+// Four clauses carry it.
+//
+// THE PLAN IS THE ONLY YARDSTICK. Not the ticket, not the code's quality,
+// not the tests. Those grounds belong to passes that already cover them, and
+// an agent that wanders onto them produces findings a reader has already seen
+// under another heading and learns to skip.
+//
+// A DIVERGENCE IS NOT A FAULT. It is frequently the implementer discovering
+// something better while building. The agent is told this outright, because
+// an agent that believes it is catching wrongdoing writes an accusation, and
+// the thing being asked for is a neutral difference report a person decides on.
+//
+// CONFORMS IS THE EXPECTED ANSWER. Same reasoning DonePrompt gives: the bar
+// is a plan clause it can QUOTE and a diff that does something else, not a
+// feeling that the shape is off. Wording, ordering, naming and implementation
+// detail the plan never fixed are not divergences.
+//
+// NOTHING IS BLOCKED EITHER WAY. Stated so the agent does not reach for a
+// severity it has no way to act on, and does not soften a real difference for
+// fear of stopping the pipeline. It cannot stop anything.
+func ConformPrompt(key, plan, stat, patch string, truncated bool) string {
+	lines := []string{
+		"A run working " + key + " has finished and its checks are green. Answer one",
+		"question about it, and only this one.",
+		"",
+		"THE CONFIRMED PLAN -- what was agreed during planning",
+		quote(plan),
+		"",
+		"WHAT THE BRANCH ACTUALLY CARRIES",
+		quote(stat),
+		"",
+		"THE DIFF",
+		quote(patch),
+	}
+	if truncated {
+		lines = append(lines, "",
+			"SOME OF THIS IS TRUNCATED. Parts of the plan or the diff are not shown",
+			"to you. Something you cannot find may simply be in the part that was cut.")
+	}
+	lines = append(lines,
+		"",
+		"THE QUESTION: does this change build what the confirmed plan says to build?",
+		"",
+		"THE PLAN IS THE ONLY YARDSTICK",
+		"Not the ticket, not whether the code is good, not whether it is well",
+		"tested, not whether you would have written it differently. Other passes",
+		"already read all of those and report on them separately. You are reading",
+		"the change against the plan and against nothing else.",
+		"",
+		"A DIVERGENCE IS NOT AN ACCUSATION",
+		"An implementer who departs from the plan has often found something better",
+		"while building, and that is a good outcome. You are not catching anyone",
+		"out. You are writing down a difference so a person can decide whether to",
+		"accept it, which is the thing that otherwise never happens.",
+		"",
+		"CONFORMS IS THE EXPECTED ANSWER, AND USUALLY THE RIGHT ONE",
+		"Say "+conformReplyDiverges+" only when you can QUOTE something the plan states and point",
+		"at what the diff does instead, or at a part of the plan the diff does not",
+		"build at all. Different wording, different ordering, different naming, and",
+		"any implementation detail the plan left open are NOT divergences. Nor is a",
+		"change doing less than the plan when the plan covered several tickets and",
+		"this is one of them.",
+		"",
+		"AT MOST THREE. More than three means you are listing differences rather",
+		"than judging them, and none of them will be read.",
+		"",
+		"NOTHING IS BLOCKED BY YOUR ANSWER",
+		"This pass reports and stops. It does not merge, hand work back, or hold a",
+		"queue open, whichever way you answer -- so do not soften a real difference,",
+		"and do not reach for one to justify the run.",
+		"",
+		"DO NOT CHANGE ANYTHING",
+		"Do not edit a file, commit, merge, approve, comment on the ticket, or run",
+		"any command that would. You are reporting; Orion records it.",
+		"",
+		"ANSWER WITH ONE LINE PER FINDING AND NOTHING ELSE",
+		"  "+conformReplyConforms,
+		"or one line per divergence, up to three",
+		"  "+conformReplyDiverges+" <what the plan says, and what the diff does instead, in one",
+		"  sentence>",
+	)
+	return join(lines...)
+}
+
+// The reply contract for ConformPrompt. Stated here rather than imported
+// from internal/conform, for the reason the done markers above are: this
+// package is what every stage runs through and must not depend on the one
+// that parses its output. A test pins the two spellings together.
+const (
+	conformReplyConforms = "CONFORMS"
+	conformReplyDiverges = "DIVERGES:"
+)
+
 // TicketPrompt is the instruction for implementing one tracker issue.
 //
 // Every clause here is load-bearing, because this text is what decides how

@@ -135,6 +135,12 @@ var otherPaths = []OtherPath{
 	// only moment its answer changes anything -- a label that also invoked it
 	// would be the second way to reach one thing that OR-176 cost us.
 	{events.ActorDoneTriage, "reads a green run against its diff, after CI and before approval"},
+	// Not routable for the same reason done triage is not: a fixed point in
+	// the pipeline rather than a choice made per ticket. It runs immediately
+	// after done triage, on the evidence that pass already gathered, because
+	// the two questions are asked of the same green run and re-reading the
+	// diff for the second would be paying twice for one fetch.
+	{events.ActorPlanConform, "reads a green run against the confirmed plan, beside done triage"},
 }
 
 // OtherPaths lists the actors that are not routable, and why not.

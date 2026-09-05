@@ -46,6 +46,7 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/collect"
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 )
 
@@ -55,9 +56,17 @@ import (
 // scope, so a pending record placed beneath it would be read as agreed on
 // the day it was written, which is the whole failure this package exists to
 // prevent.
+//
+// The strings themselves live in internal/config, which is the leaf every
+// package may import; this package reads a Slack approval through
+// internal/collect, so a caller that needs only the paths -- the
+// plan-conformance pass does (OR-158) -- cannot reach them through here
+// without an import cycle. Re-exported rather than replaced so every
+// existing reader keeps spelling it decide.ConfirmedDir, which is where the
+// reasoning above is written down.
 const (
-	PendingDir   = "docs/recommendations/pending"
-	ConfirmedDir = "docs/recommendations/confirmed"
+	PendingDir   = config.PendingDir
+	ConfirmedDir = config.ConfirmedDir
 )
 
 // The status line, spelled once. It is matched exactly on confirmation, so

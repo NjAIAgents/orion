@@ -260,10 +260,19 @@ func TestOnlyTheIdentityColumnsCarryColour(t *testing.T) {
 	// CLICOLOR_FORCE paints the id cell -- so find the row by the pair only
 	// this actor has: the id must lead the first painted cell and the name
 	// must lead the second.
+	// The id cell is padded to the widest id in the roster, so it is followed
+	// by ESC only while the implementer happens to BE the widest. Matching on
+	// that made this test fail the day an actor with a longer id was added,
+	// for a reason that had nothing to do with colour -- so the cell is
+	// matched with its padding trimmed.
 	name := shipped(t, events.ActorImplementer).Name
 	var row string
 	for _, line := range strings.Split(got, "\n") {
-		if strings.Contains(line, "m"+events.ActorImplementer+"\x1b") && strings.Contains(line, name) {
+		id, _, painted := strings.Cut(line, "\x1b[0m")
+		if !painted || !strings.HasSuffix(strings.TrimRight(id, " "), "m"+events.ActorImplementer) {
+			continue
+		}
+		if strings.Contains(line, name) {
 			row = line
 			break
 		}
