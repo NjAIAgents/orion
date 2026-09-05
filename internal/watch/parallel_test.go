@@ -22,7 +22,7 @@ func TestPickSpreadsAcrossAreasRatherThanTakingTheTopN(t *testing.T) {
 		{Key: "OR-2", Components: []string{"watch"}}, // same area as the head
 		{Key: "OR-3", Components: []string{"notify"}},
 	}
-	got := pick(queued, 2)
+	got, _ := pick(queued, 2)
 
 	if len(got) != 2 {
 		t.Fatalf("picked %v, want 2", got)
@@ -44,7 +44,7 @@ func TestPickFallsBackToPriorityOrderWhenEveryTicketSharesAnArea(t *testing.T) {
 		{Key: "OR-2", Components: []string{"watch"}},
 		{Key: "OR-3", Components: []string{"watch"}},
 	}
-	got := pick(queued, 2)
+	got, _ := pick(queued, 2)
 
 	if len(got) != 2 || got[0] != "OR-1" || got[1] != "OR-2" {
 		t.Fatalf("picked %v, want [OR-1 OR-2]: with nothing to spread across, rank decides", got)
@@ -59,7 +59,7 @@ func TestPickAtOneIsExactlyTheHeadOfTheQueue(t *testing.T) {
 		{Key: "OR-1", Components: []string{"watch"}},
 		{Key: "OR-2", Components: []string{"notify"}},
 	}
-	if got := pick(queued, 1); len(got) != 1 || got[0] != "OR-1" {
+	if got, _ := pick(queued, 1); len(got) != 1 || got[0] != "OR-1" {
 		t.Fatalf("picked %v, want [OR-1]", got)
 	}
 }
@@ -68,7 +68,7 @@ func TestPickAtOneIsExactlyTheHeadOfTheQueue(t *testing.T) {
 // projects still spreads rather than draining one backlog first.
 func TestPickTreatsTheProjectAsTheAreaWhenThereAreNoComponents(t *testing.T) {
 	queued := []tracker.Issue{{Key: "OR-1"}, {Key: "OR-2"}, {Key: "FCIA-9"}}
-	got := pick(queued, 2)
+	got, _ := pick(queued, 2)
 
 	if len(got) != 2 || got[1] != "FCIA-9" {
 		t.Fatalf("picked %v; a second project is a different area", got)
