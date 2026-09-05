@@ -387,6 +387,26 @@ func statusColor(verb string) string {
 // accelerator rather than the identifier.
 var ticketPalette = []string{cyan, magenta, blue, brightCyan, brightMagenta, brightBlue}
 
+// actorPalette is DISJOINT from ticketPalette, so a colour answers one
+// question rather than two.
+//
+// Both drew from the same six before OR-346, which meant an actor could
+// wear a ticket's hue in the same row and the eye had nothing to group by.
+// A 256-colour set here, against the ticket palette's basic ANSI, so the
+// two columns are separable at a glance. Not green/red/yellow: those are
+// spoken for as verdicts, and an actor rendered in red would read as
+// broken on every line it emits (see color.go).
+// Eight, not six: the roster is seven actors today (orion, implementer,
+// qa, reviewer, devops, dba, ci) and a palette the same size as the roster
+// leaves no room for the next one. Measured -- at six, the seventh actor
+// collided.
+var actorPalette = []string{orange, violet, teal, rose, lime, sky, amber, slate}
+
+var (
+	actorColors = map[string]string{}
+	actorNext   int
+)
+
 var (
 	ticketColors = map[string]string{}
 	ticketNext   int
@@ -438,18 +458,47 @@ func ticketColor(key string) string {
 // piped, which is how anybody captures a roster to share it.
 func Identity(w io.Writer, id, s string) string { return paint(w, actorColor(id), s) }
 
-// actorColor is deterministic per actor, and drawn from the same
-// non-semantic set for the same reason: an agent is not a status.
+// actorColor assigns on first sight and keeps it, the same contract
+// ticketColor has and for the same reason: a colour that changed between
+// ticks would say "different actor".
+//
+// ASSIGNED, not hashed. A hash into a six-colour palette collides hard at
+// the sizes that actually occur -- measured on this roster, seven actors
+// produced four colours, with orion sharing blue with dba, qa sharing
+// bright cyan with ci, and devops sharing magenta with reviewer. Three
+// collisions out of seven is not a colour scheme, and it is why a real
+// watch screen read as one coloured actor and three plain ones (OR-346).
+//
+// Non-semantic set, deliberately: an agent is not a status.
 func actorColor(id string) string {
 	if id == "" {
 		return ""
 	}
-	var h uint32 = 2166136261
-	for i := 0; i < len(id); i++ {
-		h ^= uint32(id[i])
-		h *= 16777619
+	colorMu.Lock()
+	defer colorMu.Unlock()
+	if c, ok := actorColors[id]; ok {
+		return c
 	}
-	return ticketPalette[int(h)%len(ticketPalette)]
+	// Skip colours another actor already holds, so two actors on screen
+	// together are never the same hue.
+	held := map[string]bool{}
+	for _, c := range actorColors {
+		held[c] = true
+	}
+	for range actorPalette {
+		c := actorPalette[actorNext%len(actorPalette)]
+		actorNext++
+		if !held[c] {
+			actorColors[id] = c
+			return c
+		}
+	}
+	// More actors than colours: reuse rather than go colourless. A repeated
+	// hue is worse than a unique one and better than none.
+	c := actorPalette[actorNext%len(actorPalette)]
+	actorNext++
+	actorColors[id] = c
+	return c
 }
 
 // pad widens to n columns, counting RUNES rather than bytes: the separator

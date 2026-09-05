@@ -87,7 +87,12 @@ func TestConformanceReusesDoneTriagesDiffRatherThanRefetching(t *testing.T) {
 	logPath := fetchSpy(t)
 
 	origin := t.TempDir()
-	gitRun(t, origin, "init", "--quiet", "--bare", "--initial-branch=develop")
+	// HEAD is set after init rather than with --initial-branch, which git
+	// only learned in 2.28 and which the fake git wrapping this test does
+	// not pass through cleanly on every platform (OR-346). symbolic-ref is
+	// as old as bare repositories are.
+	gitRun(t, origin, "init", "--quiet", "--bare")
+	gitRun(t, origin, "symbolic-ref", "HEAD", "refs/heads/develop")
 	gitRun(t, dir, "remote", "add", "origin", origin)
 	gitRun(t, dir, "push", "--quiet", "origin", "develop")
 	write(t, dir, "internal/ledger/index.go", "package ledger\n\n// composite index\n")

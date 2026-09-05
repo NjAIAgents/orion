@@ -41,6 +41,18 @@ const (
 	brightCyan    = "\x1b[96m"
 	brightMagenta = "\x1b[95m"
 	brightBlue    = "\x1b[94m"
+	// 256-colour identities, so tickets and actors can have a palette each
+	// without either borrowing a status colour. Chosen for legibility on
+	// both a dark and a light terminal: no near-black, no near-white, and
+	// nothing close enough to green or red to be misread as a verdict.
+	orange = "\x1b[38;5;208m"
+	violet = "\x1b[38;5;141m"
+	teal   = "\x1b[38;5;80m"
+	rose   = "\x1b[38;5;175m"
+	lime   = "\x1b[38;5;149m"
+	sky    = "\x1b[38;5;117m"
+	amber  = "\x1b[38;5;180m"
+	slate  = "\x1b[38;5;110m"
 )
 
 // colorMu guards the ticket-colour assignment in event.go. A watcher renders
