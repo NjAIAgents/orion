@@ -86,7 +86,17 @@ const confirmEmoji = "white_check_mark"
 // Record is one recommendation and, once somebody confirms it, the decision
 // it became.
 type Record struct {
-	Key            string // the ticket it was raised on
+	Key string // the ticket it was raised on
+	// Topic distinguishes two recommendations raised on the SAME ticket, and
+	// is empty when there is only one.
+	//
+	// It exists because the record is a file named after the ticket, and one
+	// ticket can legitimately need two decisions in sequence: the database
+	// architect recommends a database, waits for that to be confirmed, and
+	// then designs the schema against it (OR-154). Without a topic the second
+	// recommendation overwrites the first -- and the overwrite lands in
+	// ConfirmedDir, so what is lost is a decision somebody actually made.
+	Topic          string
 	Title          string
 	Recommendation string
 	Grounding      string // where it was derived from, in the advisor's sense
@@ -161,7 +171,8 @@ func Recommend(deps Deps, dir string, r Record) (Record, error) {
 		}
 	}
 
-	if err := write(filepath.Join(dir, PendingDir, r.Key+".md"), r.markdown()); err != nil {
+	name := r.Name()
+	if err := write(filepath.Join(dir, PendingDir, name+".md"), r.markdown()); err != nil {
 		return r, err
 	}
 
@@ -176,7 +187,7 @@ func Recommend(deps Deps, dir string, r Record) (Record, error) {
 			"%s\n\nThis is a RECOMMENDATION, not a decision. It is recorded unconfirmed "+
 				"at %s, and no later stage reads it: it moves to %s -- and into what the "+
 				"agents may reason from -- only when somebody confirms it with :%s: in Slack.",
-			strings.TrimSpace(r.Recommendation), filepath.Join(PendingDir, r.Key+".md"),
+			strings.TrimSpace(r.Recommendation), PendingDir+"/"+name+".md",
 			ConfirmedDir, confirmEmoji)))
 	}
 
@@ -185,8 +196,22 @@ func Recommend(deps Deps, dir string, r Record) (Record, error) {
 	return r, slackErr
 }
 
+// Name is the record's file name, without the extension: the ticket key, or
+// KEY-topic when the ticket carries more than one recommendation.
+func (r Record) Name() string {
+	if strings.TrimSpace(r.Topic) == "" {
+		return r.Key
+	}
+	return r.Key + "-" + strings.TrimSpace(r.Topic)
+}
+
 // Confirm reads the Slack answer and, only on an allowlisted approval,
 // promotes the record.
+//
+// name is Record.Name: the ticket key on its own, or KEY-topic. The ticket
+// the record was raised on is read back out of the record itself, so the
+// tracker comment lands on the ticket even when the file is named for a
+// topic under it.
 //
 // Returns the decision as it was read, so a caller can report "nobody has
 // answered yet" and "someone objected" differently -- they are different
@@ -196,8 +221,8 @@ func Recommend(deps Deps, dir string, r Record) (Record, error) {
 // write: unconfirmed is already what the artifact says, and a rejected
 // recommendation that got its own third state would be a state every reader
 // of the directory would have to learn.
-func Confirm(deps Deps, dir, key string) (collect.Decision, bool, error) {
-	pending := filepath.Join(dir, PendingDir, key+".md")
+func Confirm(deps Deps, dir, name string) (collect.Decision, bool, error) {
+	pending := filepath.Join(dir, PendingDir, name+".md")
 	b, err := os.ReadFile(pending)
 	if err != nil {
 		return collect.Decision{}, false, err
@@ -209,6 +234,10 @@ func Confirm(deps Deps, dir, key string) (collect.Decision, bool, error) {
 				"promoting it would be inventing a confirmation", pending, statusUnconfirmed)
 	}
 	r := parseHeader(body)
+	key := r.Key
+	if strings.TrimSpace(key) == "" {
+		key = name
+	}
 
 	if deps.Slack == nil || r.Channel == "" || r.TS == "" {
 		return collect.Decision{Why: "it was never asked about in Slack, so there is " +
@@ -229,7 +258,7 @@ func Confirm(deps Deps, dir, key string) (collect.Decision, bool, error) {
 	// Written before the pending copy is removed. A crash between the two
 	// leaves the record in both places, which every reader resolves as
 	// confirmed; the other order can lose it entirely.
-	if err := write(filepath.Join(dir, ConfirmedDir, key+".md"), confirmed); err != nil {
+	if err := write(filepath.Join(dir, ConfirmedDir, name+".md"), confirmed); err != nil {
 		return d, false, err
 	}
 	if err := os.Remove(pending); err != nil {
@@ -240,7 +269,7 @@ func Confirm(deps Deps, dir, key string) (collect.Decision, bool, error) {
 		_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion, fmt.Sprintf(
 			"%s confirmed this with %s in Slack (%s), so it is now a decision: %s.\n\n"+
 				"Later stages read it from here on.",
-			d.By, d.How, slackRef(r), recordPath(key))))
+			d.By, d.How, slackRef(r), recordPath(name))))
 	}
 	// A decision in the log's sense: the alternative was to leave it
 	// unconfirmed, and the reason it was not taken is a named person's
@@ -251,7 +280,7 @@ func Confirm(deps Deps, dir, key string) (collect.Decision, bool, error) {
 		Detail: map[string]any{
 			"approver": d.By, "how": d.How,
 			"slack_channel": r.Channel, "slack_ts": r.TS,
-			"record": recordPath(key),
+			"record": recordPath(name),
 		},
 	})
 	return d, true, nil
