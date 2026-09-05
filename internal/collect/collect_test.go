@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -325,7 +326,10 @@ func TestNoPullRequestReleasesFromCIWaitInsteadOfPollingForever(t *testing.T) {
 	if res[0].Verdict != VerdictUnknown || !res[0].Changed {
 		t.Fatalf("unexpected result: %+v", res[0])
 	}
-	if got := jira.removed["FCIA-6"]; len(got) != 1 || got[0] != tracker.LabelCIWait {
+	// Contains, not an exact list: failing() clears every pre-failure state
+	// (OR-345), and pinning the length here is what let a culprit keep
+	// orion-ready alongside orion-failed and be re-assembled.
+	if got := jira.removed["FCIA-6"]; !slices.Contains(got, tracker.LabelCIWait) {
 		t.Errorf("must clear ci-wait so nothing polls it again: %v", got)
 	}
 	if got := jira.added["FCIA-6"]; len(got) != 1 || got[0] != tracker.LabelFailed {
@@ -361,7 +365,10 @@ func TestNoPullRequestWithARecordedBranchDoesNotClaimItWasGuessed(t *testing.T) 
 	if res[0].Verdict != VerdictUnknown || !res[0].Changed {
 		t.Fatalf("unexpected result: %+v", res[0])
 	}
-	if got := jira.removed["FCIA-6"]; len(got) != 1 || got[0] != tracker.LabelCIWait {
+	// Contains, not an exact list: failing() clears every pre-failure state
+	// (OR-345), and pinning the length here is what let a culprit keep
+	// orion-ready alongside orion-failed and be re-assembled.
+	if got := jira.removed["FCIA-6"]; !slices.Contains(got, tracker.LabelCIWait) {
 		t.Errorf("must clear ci-wait so nothing polls it again: %v", got)
 	}
 	if got := jira.added["FCIA-6"]; len(got) != 1 || got[0] != tracker.LabelFailed {

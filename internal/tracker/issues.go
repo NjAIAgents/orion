@@ -637,6 +637,27 @@ func Managed(queueLabel string) []string {
 	return []string{queueLabel, LabelWorking, LabelCIWait, LabelReady, LabelFailed}
 }
 
+// PreFailure are the states a ticket can be in at the moment it fails, and
+// therefore every label that must be REMOVED when LabelFailed is added.
+//
+// There are two, not one, and forgetting the second is not cosmetic. A
+// ticket failing on the per-branch path is in ci-wait; a batch culprit is in
+// ready, the integration queue's inbox. Clearing only ci-wait left a
+// convicted culprit carrying BOTH orion-failed and orion-ready -- and since
+// the pass query matches on ready, the next tick assembled the branch that
+// had just been convicted, into a batch that could only fail again (OR-345).
+//
+// It read as correct from the outside the whole time: `orion queue` checks
+// orion-failed first, so the ticket displayed as failed while the batch kept
+// eating its branch.
+//
+// A function rather than a slice literal at each call site, because there
+// were three call sites and all three had the same gap. A fourth added later
+// gets this right by construction.
+func PreFailure() []string {
+	return []string{LabelCIWait, LabelReady}
+}
+
 // StaleLocks returns the keys of issues that are FINISHED but still carry
 // the claim label.
 //

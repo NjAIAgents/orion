@@ -92,6 +92,13 @@ func triageDone(res Result, key string, pr PR, cfg config.Config, branch string,
 			Msg: "triaged the finished run: done. " + v.Note})
 		ui.Say(w, key, events.ActorDoneTriage, ui.VerbOK,
 			"this looks genuinely done; going on to ask for approval")
+		// The third question, on the evidence just gathered (OR-158). Done
+		// and QA both read the change against the TICKET; this reads it
+		// against the confirmed PLAN, and a change can satisfy both of them
+		// and still not be what was agreed. It reports and returns nothing:
+		// whatever it finds, the ticket goes on to approval exactly as it
+		// would have.
+		reviewConformance(key, pr, ev.Diff, cfg, branch, opts, deps, ws, log, w)
 		if pr.Head != "" {
 			if err := markTriaged(ws.Dir, key, pr.Head); err != nil {
 				// Not fatal: the cost of losing the record is one repeated
@@ -142,7 +149,7 @@ func notDone(res Result, key string, pr PR, v done.Verdict, cfg config.Config,
 	report := v.Report()
 
 	if err := deps.Jira.SetLabels(key, []string{tracker.LabelFailed},
-		[]string{tracker.LabelCIWait}); err != nil {
+		tracker.PreFailure()); err != nil {
 		res.Err = err
 		ui.Warn(w, "%s: %s, but the ticket could not be relabelled: %v", key, v.Summary(), err)
 		return res
@@ -240,8 +247,10 @@ func readDiff(dir, base, branch string) done.Diff {
 	}
 	// Fetch first, for the reason upToDate does: the sandbox clone is shared
 	// and may be behind, and a diff against a stale remote-tracking ref
-	// describes a branch nobody is merging.
-	if err := gitQuiet(dir, "fetch", "--quiet", "origin"); err != nil {
+	// describes a branch nobody is merging. Through fetchOnce, so a pass that
+	// already fetched this checkout for the staleness gate does not fetch it
+	// again to answer a question about the same commit (OR-158).
+	if err := fetchOnce(dir); err != nil {
 		return done.Diff{Unreadable: "could not fetch the remote: " + err.Error()}
 	}
 	spec := "origin/" + base + "...origin/" + branch

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/actors"
@@ -58,14 +59,58 @@ import (
 // stale would block every merge in a repository this code failed to read.
 // Unknown means proceed: this gate exists to catch a specific, detectable
 // situation, not to be the last word on whether a merge is wise.
+// fetchOnce fetches a checkout at most once per collect pass.
+//
+// Two callers need the remote current and neither can assume the other ran:
+// upToDate's staleness gate, and readDiff's diff for done triage. Both fetch
+// the same shared clone for the same reason, so in one pass over one ticket
+// the second fetch re-asks a question just answered -- paying a network
+// round trip to learn nothing (OR-158).
+//
+// Keyed by DIRECTORY, not by ticket: what a fetch makes current is a
+// checkout, and two tickets sharing the sandbox clone share the benefit.
+//
+// Reset at the start of every pass, never process-wide. A watch tick that
+// reused the previous tick's fetch would answer from a remote minutes old,
+// which is the staleness these fetches exist to prevent.
+var fetched struct {
+	mu   sync.Mutex
+	seen map[string]error
+}
+
+// resetFetchMemo clears the memo. Called once per pass.
+func resetFetchMemo() {
+	fetched.mu.Lock()
+	defer fetched.mu.Unlock()
+	fetched.seen = nil
+}
+
+func fetchOnce(dir string) error {
+	fetched.mu.Lock()
+	defer fetched.mu.Unlock()
+	if fetched.seen == nil {
+		fetched.seen = map[string]error{}
+	}
+	if err, done := fetched.seen[dir]; done {
+		return err
+	}
+	// Held across the fetch deliberately: two goroutines reaching the same
+	// checkout at once should have the second WAIT for the first rather than
+	// start a duplicate, which is the whole point.
+	err := gitQuiet(dir, "fetch", "--quiet", "origin")
+	fetched.seen[dir] = err
+	return err
+}
+
 func upToDate(dir, base, branch string) (ok bool, known bool) {
 	if dir == "" || base == "" || branch == "" {
 		return false, false
 	}
 	// Fetch first. The sandbox clone is shared across jobs and may be behind,
 	// and answering from a stale remote-tracking ref is exactly the mistake
-	// this function exists to prevent -- one level down.
-	if err := gitQuiet(dir, "fetch", "--quiet", "origin"); err != nil {
+	// this function exists to prevent -- one level down. Through fetchOnce so
+	// the pass pays for it once however many callers need it current.
+	if err := fetchOnce(dir); err != nil {
 		return false, false
 	}
 	baseRef := "origin/" + base
