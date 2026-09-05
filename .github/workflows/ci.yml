@@ -81,17 +81,36 @@ jobs:
       fail-fast: true
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        # Windows runs on PROMOTION, not on every pull request.
+        # Windows AND macOS run on PROMOTION, not on every pull request.
         #
-        # It is the slowest leg by 5-6x -- internal/collect and internal/work
-        # spawn git roughly 20x slower there (OR-292) -- and it is the
-        # critical path on every run, so every PR waited on it. What it
+        # Windows is the slowest leg by 5-6x -- internal/collect and
+        # internal/work spawn git roughly 20x slower there (OR-292) -- and it
+        # is the critical path on every run, so every PR waited on it. What it
         # proves is that the code compiles and passes on Windows, which is
         # worth knowing before a release, not before every review.
         #
-        # A push to develop or main still runs it, so nothing reaches a
-        # release tag without a Windows verdict. Pull requests gate on Linux
-        # and macOS and finish in roughly a third of the time.
+        # macOS joined it for the same reason, measured rather than assumed
+        # (OR-348). On three sampled runs:
+        #
+        #   pull_request   ubuntu 108s   macos 285s
+        #   pull_request   ubuntu 108s   macos 174s
+        #   push           ubuntu 114s   macos 314s   windows 597s
+        #
+        # macOS is 1.6-2.6x Linux and was therefore the critical path on every
+        # pull request once Windows left it. It costs that on EVERY attempt of
+        # a fix loop: measured over 200 runs, a quarter of branches were built
+        # more than once and the worst four times, so the cost is paid again
+        # per attempt, not once per branch.
+        #
+        # What a pull request needs is a fast, honest answer to "did this
+        # change break anything", and Linux answers it. What the other two
+        # platforms catch is platform-specific breakage, which is real -- the
+        # whole of OR-334 through OR-346 was exactly that -- but it is caught
+        # at the point work LANDS rather than at every intermediate attempt.
+        #
+        # A push to develop or main still runs all three, so nothing reaches a
+        # release tag without a verdict from every platform, and orion/batch
+        # is where a merged set is proven before it lands.
         #
         # Done as a matrix EXCLUDE rather than a job-level `if`: matrix.os is
         # not in scope for a job-level condition -- the matrix expands after
@@ -99,12 +118,23 @@ jobs:
         # error that kills the whole workflow with zero jobs and no log.
         # That happened on the first attempt at this change.
         #
-        # develop's branch protection must NOT require go (windows-latest):
-        # an excluded job never reports, and a required check that never
-        # reports blocks the merge forever. main keeps requiring it, because
-        # a promotion is a push and the leg runs there.
+        # develop's branch protection must NOT require go (windows-latest)
+        # or go (macos-latest): an excluded job never reports, and a required
+        # check that never reports blocks the merge forever. main keeps
+        # requiring them, because a promotion is a push and both legs run
+        # there.
+        # One entry per excluded platform, for the reason the note below
+        # gives: matrix.os is not in scope for a job-level `if`, so this has
+        # to be an exclude.
+        #
+        # The two no-op sentinels must DIFFER. An exclude entry that matches
+        # no platform is inert, but two identical entries are the same key
+        # twice, and the second is not guaranteed to survive. Naming them
+        # after the platform they stand in for keeps them distinct and says
+        # which line is which.
         exclude:
-          - os: ${{ github.event_name == 'pull_request' && 'windows-latest' || '__none__' }}
+          - os: ${{ github.event_name == 'pull_request' && 'windows-latest' || 'no-windows-exclude' }}
+          - os: ${{ github.event_name == 'pull_request' && 'macos-latest' || 'no-macos-exclude' }}
     steps:
       - uses: actions/checkout@v4
       # 'stable' rather than a pin. Pinning to 1.22 broke the macOS leg:
