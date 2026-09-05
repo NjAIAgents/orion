@@ -156,7 +156,16 @@ func TestTheInterpreterIsFoundInTheMainWorktree(t *testing.T) {
 
 	p := TicketPrompt("OR-39", "s", "d", "u", tree, nil)
 
-	if !strings.Contains(p, py) {
+	// Either spelling of the same file. venvPython builds the path from
+	// git's own output, and git prints the CANONICAL form -- long names on
+	// Windows, resolved symlinks elsewhere -- while t.TempDir may have
+	// handed this test a short-name (RUNNER~1) form. Both name one file;
+	// the prompt is right whichever it carries (OR-344).
+	canonical, evalErr := filepath.EvalSymlinks(py)
+	if evalErr != nil {
+		canonical = py
+	}
+	if !strings.Contains(p, py) && !strings.Contains(p, canonical) {
 		t.Errorf("the worktree must be told about the clone's interpreter (%s):\n%s", py, p)
 	}
 }
