@@ -95,7 +95,10 @@ func TestOutsideARunTheBreakerAllowsAndSaysSoWhileGateAndShieldStayArmed(t *test
 
 func buildOrion(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "orion")
+	// The suffix matters: `go build -o` writes exactly the name it is given,
+	// and Windows will not exec an extension-less file -- every CLI test
+	// then failed with "executable file not found in %PATH%" (OR-342).
+	bin := filepath.Join(t.TempDir(), "orion"+exeSuffix())
 	cmd := testproc.Command(t, "go", "build", "-o", bin, ".")
 	cmd.Dir = repoRoot(t)
 	if out, err := cmd.CombinedOutput(); err != nil {

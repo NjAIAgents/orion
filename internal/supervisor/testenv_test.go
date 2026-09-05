@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -26,11 +27,16 @@ func writeTestScript(t *testing.T, dir string) {
 
 func writeVenv(t *testing.T, dir string) string {
 	t.Helper()
-	bin := filepath.Join(dir, ".venv", "bin")
+	// The platform's own layout, matching venvInterpreter in prompts.go.
+	sub, name := "bin", "python"
+	if runtime.GOOS == "windows" {
+		sub, name = "Scripts", "python.exe"
+	}
+	bin := filepath.Join(dir, ".venv", sub)
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	py := filepath.Join(bin, "python")
+	py := filepath.Join(bin, name)
 	if err := os.WriteFile(py, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}

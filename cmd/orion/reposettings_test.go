@@ -17,7 +17,7 @@ func TestApplyProtectionSendsTheRequestedStrictValue(t *testing.T) {
 		t.Run(boolLabel(strict), func(t *testing.T) {
 			dir := t.TempDir()
 			capture := filepath.Join(dir, "captured.json")
-			fakeBin(t, "gh", "#!/bin/sh\ncat > "+capture+"\nexit 0\n")
+			fakeBin(t, "gh", "#!/bin/sh\ncat > "+shPath(capture)+"\nexit 0\n")
 
 			if err := applyProtection(t.TempDir(), "acme/widgets", "main", []string{"build"}, 1, strict); err != nil {
 				t.Fatalf("applyProtection returned an error: %v", err)
