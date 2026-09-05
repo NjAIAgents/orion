@@ -81,17 +81,31 @@ jobs:
       fail-fast: true
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        # Windows runs on PROMOTION, not on every pull request.
+        # macOS runs on PROMOTION; Linux and Windows run on every pull
+        # request. The split is by what BREAKS, not by what is cheap.
         #
-        # It is the slowest leg by 5-6x -- internal/collect and internal/work
-        # spawn git roughly 20x slower there (OR-292) -- and it is the
-        # critical path on every run, so every PR waited on it. What it
-        # proves is that the code compiles and passes on Windows, which is
-        # worth knowing before a release, not before every review.
+        # Windows is where the platform bugs actually are. OR-334 through
+        # OR-346 was one continuous week of them: a claim thief, a leaked
+        # process tree, a broken atomic write, a mangled vendor path, a
+        # shell that is not on PATH, POSIX-only fixtures. Every one was
+        # invisible until the leg reported honestly, and every one would
+        # have been cheaper to find on the pull request that introduced it
+        # than on develop afterwards. It is the slowest leg by 5-6x (OR-292)
+        # and it is worth the wait.
         #
-        # A push to develop or main still runs it, so nothing reaches a
-        # release tag without a Windows verdict. Pull requests gate on Linux
-        # and macOS and finish in roughly a third of the time.
+        # macOS has produced no platform-specific defect. Its failures this
+        # month were a kill-timing flake and a toolchain-pin problem, both
+        # environmental. It is 1.6-2.6x Linux -- measured 174s, 285s and
+        # 314s against Linux's 108-114s -- and that is paid on EVERY attempt
+        # of a fix loop, not once per branch: over 200 runs, a quarter of
+        # branches were built more than once and the worst four times
+        # (OR-348).
+        #
+        # So Linux answers "did this change break anything" fast, Windows
+        # answers "did it break the platform that keeps breaking", and macOS
+        # answers before anything lands rather than before every attempt. A
+        # push to develop or main runs all three, and orion/batch proves a
+        # merged set before it lands.
         #
         # Done as a matrix EXCLUDE rather than a job-level `if`: matrix.os is
         # not in scope for a job-level condition -- the matrix expands after
@@ -99,12 +113,15 @@ jobs:
         # error that kills the whole workflow with zero jobs and no log.
         # That happened on the first attempt at this change.
         #
-        # develop's branch protection must NOT require go (windows-latest):
+        # The sentinel on the false branch has to be a platform that does not
+        # exist in the matrix, so the entry is inert off a pull request.
+        #
+        # develop's branch protection must NOT require go (macos-latest):
         # an excluded job never reports, and a required check that never
-        # reports blocks the merge forever. main keeps requiring it, because
-        # a promotion is a push and the leg runs there.
+        # reports blocks the merge forever. main keeps requiring all three,
+        # because a promotion is a push and every leg runs there.
         exclude:
-          - os: ${{ github.event_name == 'pull_request' && 'windows-latest' || '__none__' }}
+          - os: ${{ github.event_name == 'pull_request' && 'macos-latest' || 'no-macos-exclude' }}
     steps:
       - uses: actions/checkout@v4
       # 'stable' rather than a pin. Pinning to 1.22 broke the macOS leg:
