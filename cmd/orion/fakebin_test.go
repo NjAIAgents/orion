@@ -1,6 +1,7 @@
 package main
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/orion-sdlc/orion/internal/fakebin"
@@ -22,3 +23,11 @@ func writeFakeBinIn(t *testing.T, dir, name, script string) string {
 }
 
 func shPath(p string) string { return fakebin.ShPath(p) }
+
+// exeSuffix is what an executable's name must end with here.
+func exeSuffix() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
+}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/changelog"
@@ -1070,7 +1071,7 @@ func testEnv(repoPath string) string {
 // two answers to "which python" is how the prompt and the suite end up
 // disagreeing.
 func venvPython(repoPath string) string {
-	here := filepath.Join(repoPath, ".venv", "bin", "python")
+	here := venvInterpreter(repoPath)
 	if _, err := os.Stat(here); err == nil {
 		return here
 	}
@@ -1082,11 +1083,23 @@ func venvPython(repoPath string) string {
 	if !filepath.IsAbs(common) {
 		common = filepath.Join(repoPath, common)
 	}
-	main := filepath.Join(filepath.Dir(common), ".venv", "bin", "python")
+	main := venvInterpreter(filepath.Dir(common))
 	if _, err := os.Stat(main); err != nil {
 		return ""
 	}
 	return main
+}
+
+// venvInterpreter is where a virtualenv under dir keeps its python. The
+// layout is the platform's, not POSIX's: Scripts\python.exe on Windows,
+// bin/python elsewhere -- the same split internal/ciscaffold makes when it
+// BUILDS the venv, and hardcoding bin/python here meant a Windows prompt
+// never found the interpreter that existed (OR-342).
+func venvInterpreter(dir string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(dir, ".venv", "Scripts", "python.exe")
+	}
+	return filepath.Join(dir, ".venv", "bin", "python")
 }
 
 // childList renders the sub-tasks as the ordered checklist they are.

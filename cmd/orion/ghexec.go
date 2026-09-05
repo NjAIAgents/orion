@@ -30,6 +30,12 @@ var ghTimeout = 45 * time.Second
 func ghCommand(dir string, args ...string) (*exec.Cmd, context.CancelFunc) {
 	ctx, cancel := context.WithTimeout(context.Background(), ghTimeout)
 	cmd := exec.CommandContext(ctx, "gh", args...)
+	// WaitDelay bounds the wait on the output PIPES once the context fires.
+	// Without it, killing gh is not enough: any process gh started -- a
+	// credential helper, a pager, on Windows the bash under a test fake --
+	// inherits the pipes and holds Wait open for its own lifetime, so the
+	// timeout above stops the process and not the call (OR-342).
+	cmd.WaitDelay = time.Second
 	cmd.Dir = dir
 	return cmd, cancel
 }
@@ -53,5 +59,8 @@ var pushTimeout = 10 * time.Minute
 func gitCommand(dir string, args ...string) (*exec.Cmd, context.CancelFunc) {
 	ctx, cancel := context.WithTimeout(context.Background(), pushTimeout)
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	// Same pipe bound as ghCommand above: a credential helper git spawned
+	// must not extend the wait past the deadline the caller chose.
+	cmd.WaitDelay = time.Second
 	return cmd, cancel
 }

@@ -418,7 +418,12 @@ func TestCommitAllHandlesUnusualFilenames(t *testing.T) {
 		"has space_test.go",
 		"héllo_wörld_test.go",
 		"日本語_test.go",
-		`quote"star*_test.go`,
+	}
+	// NTFS forbids quotes and stars in a filename outright, so on Windows
+	// this case cannot be created -- the OS refuses at WriteFile, not git.
+	// The names above still cover spaces and unicode there (OR-342).
+	if runtime.GOOS != "windows" {
+		names = append(names, `quote"star*_test.go`)
 	}
 	for _, n := range names {
 		if err := os.WriteFile(filepath.Join(j.Path, n), []byte("package fake\n"), 0o644); err != nil {

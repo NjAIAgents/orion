@@ -297,7 +297,11 @@ func fakeDun(t *testing.T, cloneExit int) {
 		"case \"$1\" in\n" +
 		"  version) echo v-test; exit 0 ;;\n" +
 		"  verify)\n" +
-		"    case \"${3##*/}\" in\n" +
+		// Strip the directory with both separators: on Windows the path
+		// argument arrives with backslashes, which ${3##*/} leaves whole,
+		// and the repo case then never matched (OR-342).
+		"    leaf=\"${3##*/}\"; leaf=\"${leaf##*\\\\}\"\n" +
+		"    case \"$leaf\" in\n" +
 		"      repo) exit " + itoa(cloneExit) + " ;;\n" +
 		"      *) exit 0 ;;\n" +
 		"    esac\n" +

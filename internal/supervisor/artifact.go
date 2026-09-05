@@ -41,14 +41,18 @@ import (
 // Both spellings of the two aliased stages are accepted, for the same reason
 // config.Toolkit.Stage accepts them: the caller passes supervisor's stage
 // vocabulary and that vocabulary has two words for some stages.
+// The result is a REPO-relative path in slash form on every platform: it is
+// read by people, git and the tracker more than by the filesystem, and the
+// one filesystem caller joins it under the repo dir with filepath.Join,
+// which absorbs the slashes on Windows (OR-342).
 func stageArtifact(cfg config.Config, stage, slug string) string {
 	switch strings.ToLower(strings.TrimSpace(stage)) {
 	case "intent":
-		return filepath.Join(cfg.Paths.Intent, slug+".md")
+		return filepath.ToSlash(filepath.Join(cfg.Paths.Intent, slug+".md"))
 	case "spec", "design":
-		return filepath.Join(cfg.Paths.Specs, slug+".spec.md")
+		return filepath.ToSlash(filepath.Join(cfg.Paths.Specs, slug+".spec.md"))
 	case "plan":
-		return filepath.Join(cfg.Paths.Plans, slug+".plan.md")
+		return filepath.ToSlash(filepath.Join(cfg.Paths.Plans, slug+".plan.md"))
 	}
 	return ""
 }
