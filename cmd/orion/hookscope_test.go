@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"github.com/orion-sdlc/orion/internal/testproc"
 	"os"
 	"os/exec"
@@ -67,8 +68,12 @@ func TestOnlyAnExplicitOneArmsTheBreaker(t *testing.T) {
 // apply to anyone holding the tool, so they stay armed with no workspace.
 func TestOutsideARunTheBreakerAllowsAndSaysSoWhileGateAndShieldStayArmed(t *testing.T) {
 	bin := buildOrion(t)
-	payload := `{"session_id":"or-263","cwd":"` + repoRoot(t) +
-		`","hook_event_name":"PreToolUse","tool_name":"Bash",` +
+	// The cwd goes through json.Marshal: a raw Windows path in a JSON
+	// string is a string of invalid escapes, and the hook then reads a
+	// document that fails to parse (OR-344).
+	cwdJSON, _ := json.Marshal(repoRoot(t))
+	payload := `{"session_id":"or-263","cwd":` + string(cwdJSON) +
+		`,"hook_event_name":"PreToolUse","tool_name":"Bash",` +
 		`"tool_input":{"command":"echo hello"}}`
 
 	t.Run("breaker is inactive and names the reason", func(t *testing.T) {

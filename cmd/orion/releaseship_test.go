@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -197,6 +198,15 @@ func TestShipListIsTheCommitsTheReleaseBranchLacks(t *testing.T) {
 // test run. Everything asserted here happens before that point.
 func runReleaseSh(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		// The harness starves the script of gh by appending a second PATH
+		// entry, and Windows environment blocks are case-insensitive with
+		// duplicate keys resolved unpredictably -- msys bash may see either
+		// value, so the starvation is not reliable there. The script is
+		// POSIX bash and its logic is fully exercised on the other two legs
+		// (OR-344).
+		t.Skip("PATH starvation via duplicate env entries is unreliable on Windows")
+	}
 	script := filepath.Join("..", "..", "scripts", "release.sh")
 	cmd := exec.Command("bash", append([]string{script}, args...)...)
 	cmd.Env = append(os.Environ(), "PATH=/nonexistent")

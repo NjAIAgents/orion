@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -97,6 +98,13 @@ func TestTheCutIsGuardedByAnInterruptHandler(t *testing.T) {
 // The handler installs and comes back down without leaking its goroutine into
 // the next command, and fn does not fire when nothing was signalled.
 func TestOnInterruptFiresOnceAndStopsCleanly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows has no way to deliver SIGTERM to a process, oneself
+		// included -- os.Process.Signal supports only Kill there. The
+		// handler under test still works (os/signal translates console
+		// events), but the trigger cannot be built (OR-344).
+		t.Skip("no self-deliverable termination signal on Windows")
+	}
 	fired := make(chan struct{}, 2)
 	stop := onInterrupt(func() { fired <- struct{}{} })
 
