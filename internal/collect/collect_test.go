@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -41,8 +42,37 @@ func newTracker() *fakeTracker {
 	}
 }
 
-func (f *fakeTracker) Search(string, int) ([]tracker.Issue, error) {
-	return f.issues, f.searchErr
+// Search answers with the planted issues, honouring a `labels = "..."` clause.
+//
+// IT HAS TO READ THAT ONE CLAUSE. A JQL-blind fake reports every planted issue
+// as a match for every query, and readySet asks specifically for the tickets
+// carrying orion-ready -- so planting an issue merely to give it a description
+// made the pass treat it as waiting for the next batch and skip it entirely
+// (OR-311's path). The ticket then never reached one(), which reads as a
+// defect in whatever the test was actually about. Every other query is
+// unfiltered, exactly as before, so a fake with no labels behaves as it
+// always did.
+func (f *fakeTracker) Search(jql string, _ int) ([]tracker.Issue, error) {
+	if f.searchErr != nil {
+		return nil, f.searchErr
+	}
+	want := ""
+	if m := regexp.MustCompile(`labels\s*=\s*"([^"]+)"`).FindStringSubmatch(jql); m != nil {
+		want = m[1]
+	}
+	if want == "" {
+		return f.issues, nil
+	}
+	var out []tracker.Issue
+	for _, i := range f.issues {
+		for _, l := range i.Labels {
+			if strings.EqualFold(l, want) {
+				out = append(out, i)
+				break
+			}
+		}
+	}
+	return out, nil
 }
 func (f *fakeTracker) Children(key string) ([]tracker.Issue, error) {
 	return f.children[key], f.childErr
