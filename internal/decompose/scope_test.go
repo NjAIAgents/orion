@@ -138,6 +138,41 @@ func TestThePreviewNamesTheCoupledPairsBeforeAnythingIsCreated(t *testing.T) {
 	}
 }
 
+// The coupling is written into the story's Body at Parse time, and Apply only
+// ever copies Item.Body verbatim into the create request (internal/decompose/
+// create.go) -- there is no path from tree.Coupled back into the body once it
+// is written. Mutating tree.Coupled after the fact must not change what a
+// story already says: the story that gets created is the one Parse wrote,
+// not whatever tree.Coupled happens to hold at Apply time.
+func TestACoupledStoryCannotBeUndiscoveredAfterTheTreeIsParsed(t *testing.T) {
+	tree := treeFor(t, collidingTasks)
+	us1 := storyNamed(t, tree, "US1")
+	if !strings.Contains(us1.Body, "Coupled with") {
+		t.Fatalf("US1's body does not record the coupling before the mutation:\n%s", us1.Body)
+	}
+
+	// Erase the tree's record of the coupling, as if a caller tried to
+	// un-discover it after the fact.
+	tree.Coupled = nil
+
+	if !strings.Contains(us1.Body, "Coupled with") {
+		t.Fatalf("clearing tree.Coupled erased the coupling already written into US1's body:\n%s",
+			us1.Body)
+	}
+
+	// And Apply creates exactly that body: nothing re-derives it from
+	// tree.Coupled at create time.
+	p, err := Build(tree, stubBackend{}, "OR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range p.Steps {
+		if s.Item == us1 && !strings.Contains(s.Item.Body, "Coupled with") {
+			t.Fatalf("the plan's step for US1 lost the coupling: %s", s.Item.Body)
+		}
+	}
+}
+
 type stubBackend struct{}
 
 func (stubBackend) Name() string { return "stub" }
