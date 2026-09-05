@@ -28,6 +28,37 @@
 #        scripts/release.sh v0.1.0-beta.1 --beta [--dry-run]
 set -euo pipefail
 
+# The directory this script lives in, for finding its siblings.
+#
+# ${0%/*} alone was not enough. It strips to the last FORWARD slash, and on
+# Windows $0 arrives as a backslash path containing none -- so the expansion
+# returned the whole path unchanged and the caller asked for
+# ...\tag-source.sh/tag-channel.sh, which does not exist. Measured on the
+# Windows CI leg: eight tests, exit 127 (OR-346). An operator running the
+# backfill by hand there would have hit the same wall.
+#
+# Backslashes are folded to forward slashes first; every Windows API and
+# every shell here accepts them, so one form is enough for the strip below.
+#
+# Still parameter expansion rather than `dirname`: these scripts run under a
+# deliberately minimal PATH in their own tests and dirname is not on it, so a
+# builtin is the only thing guaranteed to be present.
+here() {
+	d=$1
+	# Strip the leaf after whichever separator comes LAST. Two expansions
+	# rather than a tr: tr is not a builtin and these scripts run under a
+	# starved PATH in their own tests, which is the same reason dirname was
+	# ruled out. ${d##*/} and ${d##*\\} each remove everything up to their
+	# own separator, so the SHORTER result came from the later one.
+	a=${d##*/}
+	b=${d##*\\}
+	if [ ${#a} -le ${#b} ]; then leaf=$a; else leaf=$b; fi
+	case $d in
+	"$leaf") printf '.' ;;
+	*) printf '%s' "${d%"$leaf"}." ;;
+	esac
+}
+
 VERSION_TAG=""
 DRY_RUN=""
 CHANNEL="production"
@@ -81,7 +112,7 @@ fi
 # ${0%/*} rather than `dirname $0`: this script runs under a deliberately
 # minimal PATH in its own tests, and dirname is not on it. Parameter expansion
 # is a shell builtin and cannot be missing.
-IMPLIED="$("${0%/*}/tag-channel.sh" "$VERSION_TAG")" || die "$VERSION_TAG is not a release tag.
+IMPLIED="$("$(here "$0")/tag-channel.sh" "$VERSION_TAG")" || die "$VERSION_TAG is not a release tag.
   Expected vX.Y.Z for production, or vX.Y.Z-beta.N for a beta."
 if [ "$IMPLIED" != "$CHANNEL" ]; then
   case "$CHANNEL" in
@@ -189,7 +220,7 @@ step "Gate: build, vet, gofmt, tests"
 # what that step printed, which this block did not: it ended in
 # `go test ./... >/dev/null`, and a v0.8.9 release stopped here -- promotion
 # already merged -- with "exit status 1" as the entire account of why.
-"${0%/*}/release-gate.sh"
+"$(here "$0")/release-gate.sh"
 
 # ---------------------------------------------------------------- artifacts
 

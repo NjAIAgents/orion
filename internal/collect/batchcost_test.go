@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/fakebin"
 )
 
 // writeLog puts events on disk in the shape events.Read expects.
@@ -168,7 +169,17 @@ func TestTheCostLineLeadsWithElapsed(t *testing.T) {
 	}
 }
 
-func TestMain(m *testing.M) { os.Exit(m.Run()) }
+// TestMain lets a fakebin copy of this binary act as the fake it was
+// installed to be -- see internal/fakebin.
+//
+// Without this, a fake `git` on Windows IS this test binary and runs as one:
+// the fixture's `git init --bare` came back as "flag provided but not
+// defined: -C" followed by go test's own usage, exit 2 (OR-346). On unix the
+// fake is the script itself, so the omission was invisible.
+func TestMain(m *testing.M) {
+	fakebin.Main()
+	os.Exit(m.Run())
+}
 
 // A batch that ran no CI is not a sample of a CI run (OR-320). Observed: eight
 // "0 run(s) in 1s" notes from passes that assembled nothing, and the CI rule
