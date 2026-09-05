@@ -54,6 +54,14 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# Read-only, explicitly. CI builds and tests; it writes nothing back to the
+# repository, so the default token needs no more than this. Stated rather
+# than inherited: an unstated permissions block takes whatever the
+# repository default is, which can be widened later without anyone reading
+# this file (CodeQL actions/missing-workflow-permissions, OR-348).
+permissions:
+  contents: read
+
 jobs:
   go:
     runs-on: ${{ matrix.os }}
