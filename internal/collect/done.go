@@ -39,6 +39,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/done"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
+	"github.com/orion-sdlc/orion/internal/queue"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
@@ -200,8 +201,10 @@ func gatherEvidence(key string, pr PR, cfg config.Config, branch string,
 	deps Deps, ws *workspace.Workspace) done.Evidence {
 
 	ev := done.Evidence{Key: key}
+	var declared []string
 	if issue, ok := issueFor(deps.Jira, key); ok {
 		ev.Summary, ev.Criteria = issue.Summary, issue.Description
+		declared = issue.DeclaredScope()
 	}
 	if evs, err := events.Read(events.Path(ws.Dir)); err == nil {
 		ev.Events = done.LastQARun(evs, key)
@@ -216,7 +219,30 @@ func gatherEvidence(key string, pr PR, cfg config.Config, branch string,
 	ev.Diff = readDiff(dir, base, branch)
 	ev.Diff.Stranded = strandedTests(ws, branch, ev.Diff.Files)
 	ev.Rerun = rerunAtCountTwo(dir, base, branch, ev.Diff)
+	recordScope(ws.Dir, key, declared, ev.Diff)
 	return ev
+}
+
+// recordScope writes what planning predicted this ticket would touch beside
+// what it actually touched (OR-260).
+//
+// HERE because this is the one place both facts are in hand: the ticket's
+// description has just been read for its acceptance criteria, and the branch's
+// diff has just been read for the verdict. Nothing else in the system holds
+// both at once.
+//
+// BEST EFFORT, AND IT DECIDES NOTHING. A scope that turns out wrong is data,
+// not a failure -- an agent that finds the real fix in a fourth file is doing
+// its job. So a ticket that declared nothing is still recorded (how many
+// tickets carry a scope at all is the first thing anyone judging this will ask)
+// and a write that fails is dropped rather than allowed to affect a verdict.
+func recordScope(dir, key string, declared []string, d done.Diff) {
+	if dir == "" || d.Unreadable != "" {
+		return
+	}
+	s := queue.LoadScopes(dir)
+	s.Record(queue.Prediction{Key: key, Declared: declared, Actual: d.Files}, time.Now().UTC())
+	_ = queue.SaveScopes(dir, s)
 }
 
 // issueFor fetches the ticket, for its acceptance criteria. Best effort: a

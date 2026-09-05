@@ -211,6 +211,25 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"and wrong for everything else. Routing reads what you write here and infers",
 			"nothing from the summary, so an unmarked docs ticket is worked by the wrong",
 			"actor and nothing anywhere reports a mistake.",
+			"",
+			// The declared scope, and the only moment anyone can supply it
+			// (OR-260). The queue reads the `Files:` line back off the
+			// description and refuses to admit two tickets that named the same
+			// ground; without the line it admits both and the collision is
+			// discovered at merge time with the tokens already spent.
+			"DECOMPOSE TOWARD INDEPENDENCE, not just toward size. In the Scope section, give",
+			"every item a `Files:` line naming the packages, directories or files you expect",
+			"it to touch. It is a prediction and it is allowed to be wrong; what it is not",
+			"allowed to be is invented, so omit the line entirely rather than guess -- an",
+			"absent scope holds nothing back, and a wrong one holds back a ticket that never",
+			"collided.",
+			"",
+			"Then check the siblings against each other. Two items that name the same file",
+			"cannot be worked at the same time, and a tree whose siblings collide will batch",
+			"badly for its whole life. Where two would share ground, MERGE them into one item,",
+			"or ORDER them with a real `is blocked by` link -- and if neither is right, say in",
+			"both descriptions that they are coupled and why. What you must not do is emit",
+			"them as independent siblings and leave it to be found at merge time.",
 		), nil
 
 	case "build", "implement":
@@ -328,6 +347,7 @@ WHY: <Two lines maximum. Not three.>
 
 ## Scope
 <What is in, what is explicitly out.>
+Files: <the packages, directories or files this is expected to touch, comma-separated. Omit this line rather than guess.>
 
 ## Grounding
 <File paths, existing behaviour, ADR ids. Cite; do not quote at length.>
