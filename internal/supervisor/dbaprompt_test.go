@@ -163,6 +163,33 @@ func TestWithNoCommittedArtifactsTheChoosePromptSaysSo(t *testing.T) {
 	}
 }
 
+// A choose prompt with no committed artifacts must not merely note the fact:
+// it has to tell the architect to recommend nothing. Naming the gap without
+// forbidding the guess leaves a model free to choose from the one-line idea
+// anyway -- a database chosen from a sentence is a database chosen by
+// whoever wrote the sentence.
+func TestWithNoArtifactsTheChoosePromptSaysToRecommendNothing(t *testing.T) {
+	p := DBAChoosePrompt("ORPAY", "a payments ledger", nil)
+	if !strings.Contains(strings.ToLower(p), "recommend nothing") {
+		t.Errorf("the choose prompt does not tell the architect to recommend nothing "+
+			"when there is nothing committed to design from:\n%s", p)
+	}
+}
+
+// The choose prompt must forbid designing the schema outright, in its own
+// "WHAT YOU MAY NOT DO" clause -- not merely imply it by never mentioning a
+// schema. A person confirming the engine would otherwise be confirming a
+// schema they were never asked about.
+func TestTheChoosePromptForbidsDesigningTheSchema(t *testing.T) {
+	p := DBAChoosePrompt("ORPAY", "a payments ledger", []string{"specs/pay.spec.md"})
+	if !strings.Contains(p, "Do not design the schema") {
+		t.Errorf("the choose prompt does not forbid designing the schema:\n%s", p)
+	}
+	if !strings.Contains(p, "WHAT YOU MAY NOT DO") {
+		t.Errorf("the prohibition is not filed under what the architect may not do:\n%s", p)
+	}
+}
+
 // Both planning prompts have to ask for the reasoning as loudly as for the
 // answer, because Orion refuses a report that carries only one of them.
 func TestBothPlanningPromptsRequireTheReasoning(t *testing.T) {
@@ -189,5 +216,24 @@ func TestTheSchemaPromptQuotesTheConfirmedChoice(t *testing.T) {
 		"# ORPAY: the database\n- Status: confirmed\n\nPostgreSQL 16", nil)
 	if !strings.Contains(p, "PostgreSQL 16") || !strings.Contains(p, "Status: confirmed") {
 		t.Errorf("the confirmed record is not in the schema prompt:\n%s", p)
+	}
+}
+
+// VERBATIM, not a paraphrase. A summary of the confirmed record is Orion's
+// words, not the words a person actually confirmed, and the two can quietly
+// diverge -- a rewritten sentence, a dropped caveat -- without either side
+// noticing. The full confirmed body has to appear in the prompt byte for
+// byte, not merely its headline conclusion.
+func TestTheSchemaPromptQuotesTheConfirmedRecordVerbatim(t *testing.T) {
+	record := "# ORPAY: the database\n" +
+		"- Status: confirmed\n" +
+		"- By: U-APPROVER\n\n" +
+		"PostgreSQL 16\n\n" +
+		"BECAUSE the ledger is relational and the balance invariant needs a\n" +
+		"transaction across two tables. I rejected DynamoDB: it would push that\n" +
+		"invariant into application code."
+	p := DBASchemaPrompt("ORPAY", "a payments ledger", record, nil)
+	if !strings.Contains(p, quote(record)) {
+		t.Errorf("the schema prompt does not carry the confirmed record verbatim:\n%s", p)
 	}
 }
