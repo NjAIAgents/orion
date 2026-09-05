@@ -179,7 +179,24 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 		return nil
 	}
 	fmt.Fprintf(out, "next: orion run %s --stage %s\n", ws.ID, planStages[0].Stage)
+	// The database architect is on this run only when the idea selected it
+	// (OR-150), and its step is not in the fixed chain, so the one place a
+	// reader would look for it is here beside the chain it runs alongside.
+	if planSelected(planIdea(p), events.ActorDBA) {
+		fmt.Fprintf(out, "then: orion run %s --stage %s  %s\n", ws.ID, planDBAStage,
+			ui.Dim(out, "(recommend a database, confirm it, then design the schema)"))
+	}
 	return nil
+}
+
+// planSelected reports whether the idea itself put this actor on the run.
+func planSelected(idea, id string) bool {
+	for _, a := range planRoster(idea) {
+		if a.ID == id && a.FromIdea {
+			return true
+		}
+	}
+	return false
 }
 
 // planWorkspace provisions the workspace, or -- on a dry run -- reports the
@@ -253,14 +270,25 @@ func planWorkspace(out io.Writer, p tracker.Project, slug string, opts planOptio
 // which is the difference between "you already ran this" and "a different
 // project's name slugified to the same thing".
 func planExistingOwner(ws *workspace.Workspace, wantKey string) string {
-	var b tracker.Binding
-	if len(ws.Task.Tracker) > 0 && json.Unmarshal(ws.Task.Tracker, &b) == nil && b.Key != "" {
+	if b := trackerBinding(ws); b.Key != "" {
 		if b.Key != wantKey {
 			return b.Key + " -- a DIFFERENT project to the " + wantKey + " you asked for"
 		}
 		return b.Key
 	}
 	return wantKey + " (unverified: that workspace records no tracker binding)"
+}
+
+// trackerBinding is the tracker project a workspace is bound to, or a zero
+// binding when it records none. Unreadable JSON reads as no binding: this
+// answers "which project owns this workspace", and a caller that cannot be
+// told is in the same position as one bound to nothing.
+func trackerBinding(ws *workspace.Workspace) tracker.Binding {
+	var b tracker.Binding
+	if len(ws.Task.Tracker) > 0 && json.Unmarshal(ws.Task.Tracker, &b) == nil {
+		return b
+	}
+	return tracker.Binding{}
 }
 
 // planIdea is what the project says the work is, and it is the text the
