@@ -290,3 +290,27 @@ func TestPredictionHonoursDirectoryGrain(t *testing.T) {
 		t.Errorf("Extra = %v, want nothing: internal/queue/plan.go is covered by internal/queue", got)
 	}
 }
+
+// A row is written even when the branch's diff could not be read -- dropping
+// it would make the ledger a sample of the runs whose diff happened to fetch.
+// But an unreadable diff is not evidence of an empty change, so it answers
+// neither half of "was the prediction any good".
+func TestAnUnreadableDiffIsRecordedWithoutBeingJudged(t *testing.T) {
+	var s Scopes
+	s.Record(Prediction{
+		Key:        "OR-1",
+		Declared:   []string{"internal/a", "internal/b"},
+		Unreadable: "could not fetch the remote",
+	}, time.Now().UTC())
+
+	if len(s.Predictions) != 1 {
+		t.Fatalf("recorded %d rows, want 1: the prediction was made either way", len(s.Predictions))
+	}
+	p := s.Predictions[0]
+	if got := p.Missed(); len(got) != 0 {
+		t.Errorf("Missed = %v; nobody looked at the diff, so nothing was missed", got)
+	}
+	if got := p.Extra(); len(got) != 0 {
+		t.Errorf("Extra = %v; there is no diff to have touched anything", got)
+	}
+}

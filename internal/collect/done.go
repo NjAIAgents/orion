@@ -207,11 +207,15 @@ func gatherEvidence(key string, pr PR, cfg config.Config, branch string,
 	base, named := baseOf(pr, cfg)
 	if !named {
 		ev.Diff.Unreadable = "the pull request does not name a base branch"
-		return ev
+	} else {
+		ev.Diff = readDiff(dir, base, branch)
+		ev.Diff.Stranded = strandedTests(ws, branch, ev.Diff.Files)
+		ev.Rerun = rerunAtCountTwo(dir, base, branch, ev.Diff)
 	}
-	ev.Diff = readDiff(dir, base, branch)
-	ev.Diff.Stranded = strandedTests(ws, branch, ev.Diff.Files)
-	ev.Rerun = rerunAtCountTwo(dir, base, branch, ev.Diff)
+	// ON EVERY PATH, including the one that could not read a diff at all. The
+	// prediction was made whatever happened afterwards, and a population that
+	// silently excludes the runs whose diff would not fetch is a population
+	// selected by the thing being measured.
 	recordScope(ws.Dir, key, declared, ev.Diff)
 	return ev
 }
@@ -229,12 +233,20 @@ func gatherEvidence(key string, pr PR, cfg config.Config, branch string,
 // its job. So a ticket that declared nothing is still recorded (how many
 // tickets carry a scope at all is the first thing anyone judging this will ask)
 // and a write that fails is dropped rather than allowed to affect a verdict.
+//
+// AN UNREADABLE DIFF IS RECORDED TOO, carrying the reason. Dropping the row
+// would make the ledger a sample of the runs whose diff happened to fetch,
+// which is a sample chosen by something that has nothing to do with whether
+// the prediction was any good. The reason travels with it so an empty Actual
+// is never mistaken for a change that touched nothing.
 func recordScope(dir, key string, declared []string, d done.Diff) {
-	if dir == "" || d.Unreadable != "" {
+	if dir == "" {
 		return
 	}
 	s := queue.LoadScopes(dir)
-	s.Record(queue.Prediction{Key: key, Declared: declared, Actual: d.Files}, time.Now().UTC())
+	s.Record(queue.Prediction{
+		Key: key, Declared: declared, Actual: d.Files, Unreadable: d.Unreadable,
+	}, time.Now().UTC())
 	_ = queue.SaveScopes(dir, s)
 }
 
