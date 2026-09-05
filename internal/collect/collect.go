@@ -689,7 +689,7 @@ func noPullRequest(res Result, key, branch string, guessed bool, opts Options,
 		return res
 	}
 	if err := deps.Jira.SetLabels(key, []string{tracker.LabelFailed},
-		[]string{tracker.LabelCIWait}); err != nil {
+		tracker.PreFailure()); err != nil {
 		res.Err = err
 		ui.Warn(w, "%s: could not relabel: %v", key, err)
 		return res
@@ -736,7 +736,7 @@ func failing(res Result, key string, pr PR, cfg config.Config, branch string,
 		return res
 	}
 	if err := deps.Jira.SetLabels(key, []string{tracker.LabelFailed},
-		[]string{tracker.LabelCIWait}); err != nil {
+		tracker.PreFailure()); err != nil {
 		res.Err = err
 		ui.Warn(w, "%s: could not relabel: %v", key, err)
 		return res

@@ -142,7 +142,7 @@ func notDone(res Result, key string, pr PR, v done.Verdict, cfg config.Config,
 	report := v.Report()
 
 	if err := deps.Jira.SetLabels(key, []string{tracker.LabelFailed},
-		[]string{tracker.LabelCIWait}); err != nil {
+		tracker.PreFailure()); err != nil {
 		res.Err = err
 		ui.Warn(w, "%s: %s, but the ticket could not be relabelled: %v", key, v.Summary(), err)
 		return res
