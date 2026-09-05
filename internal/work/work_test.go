@@ -872,10 +872,31 @@ func pathWithoutDun(t *testing.T) string {
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
-	if err := os.Symlink(gitPath, filepath.Join(bin, "git")); err != nil {
+	// COPIED, not symlinked. Creating a symlink on Windows needs Developer
+	// Mode or SeCreateSymbolicLinkPrivilege, and the CI runner grants
+	// neither -- so the link failed, the test failed at its setup, and the
+	// failure read as though the code under test were broken (OR-342).
+	linkOrCopy(t, gitPath, filepath.Join(bin, filepath.Base(gitPath)))
+	return bin
+}
+
+// linkOrCopy puts a usable copy of src at dst.
+//
+// Symlink where that is free, a byte copy where it is not. A test binary on
+// PATH only has to be runnable; nothing here depends on it being the same
+// inode as the original.
+func linkOrCopy(t *testing.T, src, dst string) {
+	t.Helper()
+	if err := os.Symlink(src, dst); err == nil {
+		return
+	}
+	b, err := os.ReadFile(src)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return bin
+	if err := os.WriteFile(dst, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // The measured bug (OR-193): every agent commit landed with no attribution

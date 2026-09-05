@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -1555,6 +1556,13 @@ func TestQAsEditToAnAlreadyTrackedTestFileIsCommitted(t *testing.T) {
 // never a failed run -- the change QA verified is still good even when the
 // record of QA's own work could not be written (e.g. permission denied).
 func TestCommitFailureIsLoggedAsAWarningNotAFailedRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The failure is provoked by chmod-ing a git directory read-only,
+		// and chmod cannot take write access away from a directory on
+		// Windows -- the commit succeeds and the premise cannot be built
+		// (OR-342).
+		t.Skip("a directory cannot be made unwritable with chmod on Windows")
+	}
 	repo, baseSHA := qaRepo(t, "#!/bin/sh\nexit 0\n")
 	ws := &workspace.Workspace{RepoPath: repo}
 	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {

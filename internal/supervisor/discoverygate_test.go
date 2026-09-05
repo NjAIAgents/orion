@@ -24,13 +24,9 @@ func fakeClaudeThatFinishes(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	canary := filepath.Join(dir, "was-launched")
-	bin := filepath.Join(dir, "claude")
-	script := "#!/bin/sh\ntouch " + canary + "\n" +
+	script := "#!/bin/sh\ntouch " + shPath(canary) + "\n" +
 		`echo '{"type":"result","session_id":"abc","result":"done","total_cost_usd":0.1,"is_error":false}'` + "\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeBinIn(t, dir, "claude", script)
 	return canary
 }
 

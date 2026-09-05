@@ -1,8 +1,6 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -12,7 +10,6 @@ import (
 // proves the context actually cuts it off, rather than merely existing.
 func TestGhCommandEnforcesItsTimeout(t *testing.T) {
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "gh")
 	// `exec sleep` rather than a plain `sleep` line: the real `gh` binary is
 	// a single process (it does not shell out and fork), so `exec` here
 	// makes the fake match that shape -- the interpreter REPLACES itself
@@ -21,10 +18,7 @@ func TestGhCommandEnforcesItsTimeout(t *testing.T) {
 	// the stdout pipe open until its own 5s elapses regardless of the
 	// context firing -- a fixture artifact, not something a real gh hang
 	// would do.
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexec sleep 5\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeBinIn(t, dir, "gh", "#!/bin/sh\nexec sleep 5\n")
 
 	old := ghTimeout
 	ghTimeout = 200 * time.Millisecond
@@ -98,22 +92,14 @@ func TestPushBranchDoesNotHangOnAStalledGit(t *testing.T) {
 // `exec sleep` note above for why the body matters.
 func fakeBin(t *testing.T, name, script string) {
 	t.Helper()
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeBin(t, name, script)
 }
 
 // The ordinary case -- a fast gh -- must not be affected by the timeout
 // wiring at all.
 func TestGhCommandSucceedsWithinItsTimeout(t *testing.T) {
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "gh")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho ok\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeBinIn(t, dir, "gh", "#!/bin/sh\necho ok\n")
 
 	cmd, cancel := ghCommand(t.TempDir(), "pr", "view", "x")
 	defer cancel()

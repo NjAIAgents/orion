@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"encoding/json"
+	"github.com/orion-sdlc/orion/internal/fakebin"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -183,9 +184,13 @@ func TestCheckHooksCatchesCommandsThatDoNotResolve(t *testing.T) {
 
 	// Wired but pointing at something gone. This must be FAIL: every gate is
 	// silently doing nothing while orion.json still says they are enabled.
+	// jsonPath, not the raw path: on Windows it contains backslashes, and
+	// a bare backslash inside a JSON string is an invalid escape -- the
+	// whole settings file then reads as "not valid JSON" and the wrong
+	// branch is exercised (OR-342).
 	gone := filepath.Join(t.TempDir(), "removed", "orion")
 	write(`{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[
-	  {"type":"command","command":"` + gone + ` hook gate"}]}]}}`)
+	  {"type":"command","command":` + jsonStr(gone+" hook gate") + `}]}]}}`)
 	c := checkHooks(dir)
 	if c.grade != fail {
 		t.Errorf("an unresolvable hook graded %v, want fail", c.grade)
@@ -211,7 +216,7 @@ func TestCheckHooksCatchesCommandsThatDoNotResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(`{"hooks":{"PreToolUse":[{"hooks":[
-	  {"type":"command","command":"` + realOrion + ` hook gate"}]}]}}`)
+	  {"type":"command","command":` + jsonStr(realOrion+" hook gate") + `}]}]}}`)
 	if c := checkHooks(dir); c.grade != ok {
 		t.Errorf("a resolvable hook graded %v: %+v", c.grade, c)
 	}
@@ -288,7 +293,6 @@ func bound(t *testing.T) (source string) {
 // the checkout it was called with.
 func fakeDun(t *testing.T, cloneExit int) {
 	t.Helper()
-	bin := t.TempDir()
 	script := "#!/bin/sh\n" +
 		"case \"$1\" in\n" +
 		"  version) echo v-test; exit 0 ;;\n" +
@@ -299,10 +303,10 @@ func fakeDun(t *testing.T, cloneExit int) {
 		"    esac\n" +
 		"    ;;\n" +
 		"esac\n"
-	if err := os.WriteFile(filepath.Join(bin, "dun"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin)
+	// Prepended rather than replacing PATH outright: the fake shadows any
+	// real dun just the same, and on Windows the fakebin dispatch needs
+	// bash still reachable (OR-342).
+	fakebin.Install(t, t.TempDir(), "dun", script)
 }
 
 func itoa(n int) string {
@@ -536,4 +540,13 @@ func TestAMissingNJAgentsIsStillAFailure(t *testing.T) {
 	if c.grade != fail {
 		t.Errorf("missing nj-agents graded %v, want fail: %+v", c.grade, c)
 	}
+}
+
+// jsonStr renders s as a JSON string literal, quotes included. Windows
+// paths carry backslashes, which are escape characters inside JSON -- a
+// test that concatenates a raw path into a JSON document builds an invalid
+// one on exactly the platform whose paths need testing.
+func jsonStr(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

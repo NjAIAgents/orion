@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -686,6 +687,13 @@ func TestCommitFailureLeavesStagedChangesPreserved(t *testing.T) {
 // instance a permissions problem on .git/objects. The work must be kept
 // exactly the same way.
 func TestCommitFailureFromGitInfrastructureErrorLeavesFilesUntouched(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The failure is provoked by chmod-ing a git directory read-only,
+		// and chmod cannot take write access away from a directory on
+		// Windows -- the commit succeeds and the premise cannot be built
+		// (OR-342).
+		t.Skip("a directory cannot be made unwritable with chmod on Windows")
+	}
 	home := project(t, cfg)
 	var sent string
 	bindSlack(t, home, &sent)
