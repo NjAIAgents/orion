@@ -27,6 +27,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/creds"
+	"github.com/orion-sdlc/orion/internal/dbaplan"
 	"github.com/orion-sdlc/orion/internal/discovery"
 	"github.com/orion-sdlc/orion/internal/doctor"
 	"github.com/orion-sdlc/orion/internal/events"
@@ -1671,6 +1672,13 @@ func runSupervised(id string, rest []string) {
 		MaxTurns:   intFlag(rest, "--max-turns", 0),
 		DryRun:     hasFlag(rest, "--dry-run"),
 		NoWait:     hasFlag(rest, "--no-wait"),
+	}
+	// The database stage is a recommend -> confirm -> design flow rather than
+	// one supervised run, so it is driven by its own code (OR-154). Routed
+	// here so the operator types the same command for every planning stage.
+	if strings.EqualFold(opts.Stage, dbaplan.Stage) {
+		exitOn(runDatabaseStage(ws, opts))
+		return
 	}
 	res, err := supervisor.Run(ws, opts)
 	if res != nil {

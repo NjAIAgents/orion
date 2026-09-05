@@ -137,7 +137,7 @@ func TestPrintPlanRosterUsesTheGivenIdeaValue(t *testing.T) {
 	p := tracker.Project{Name: "ORPAY project", Description: "Take card payments, with a database behind it."}
 
 	var buf bytes.Buffer
-	printPlanRoster(&buf, planIdea(p))
+	printPlanRoster(&buf, "payments-api", planIdea(p))
 	got := buf.String()
 
 	if got == "" {
