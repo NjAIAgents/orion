@@ -16,6 +16,9 @@ func TestEveryDBAPromptForbidsRunningAMigration(t *testing.T) {
 		"ask": DBAAskPrompt("this query got slow",
 			DBATarget{DSN: "postgres://localhost/scratch"}),
 		"ask, static": DBAAskPrompt("this query got slow", DBATarget{}),
+		"choose":      DBAChoosePrompt("ORPAY", "a payments ledger", []string{"specs/pay.spec.md"}),
+		"schema": DBASchemaPrompt("ORPAY", "a payments ledger", "PostgreSQL 16",
+			[]string{"specs/pay.spec.md"}),
 	}
 	for name, p := range prompts {
 		low := strings.ToLower(p)
@@ -128,5 +131,63 @@ func TestTheFindingsMessageSaysHowToFixASchema(t *testing.T) {
 	if !strings.Contains(m, "NEW migration") {
 		t.Error("the message does not say a schema fix is a new migration rather than an " +
 			"edit to one that has already been applied")
+	}
+}
+
+// THE PLANNING ORDER (OR-154). The prompt that chooses the database must not
+// also ask for the schema: a person confirming the engine would be confirming
+// a schema they were never asked about, and the design is thrown away if the
+// choice changes.
+func TestTheChoosePromptDoesNotAskForASchema(t *testing.T) {
+	p := DBAChoosePrompt("ORPAY", "a payments ledger", []string{"specs/pay.spec.md"})
+	if !strings.Contains(p, "Do not design the schema") {
+		t.Errorf("the choose prompt does not defer the schema:\n%s", p)
+	}
+	if !strings.Contains(p, "specs/pay.spec.md") {
+		t.Error("the choose prompt does not name the committed artifacts to design from")
+	}
+	if !strings.Contains(p, "RECOMMEND NOTHING") {
+		t.Error("the choose prompt does not tell it to recommend nothing when the artifacts " +
+			"do not settle the choice; a database chosen from a sentence is chosen by " +
+			"whoever wrote the sentence")
+	}
+}
+
+// With nothing committed there is nothing to choose from, and the prompt has
+// to say so rather than naming files that are not there -- an agent handed a
+// path that does not exist goes looking, or invents what it would have said.
+func TestWithNoCommittedArtifactsTheChoosePromptSaysSo(t *testing.T) {
+	p := DBAChoosePrompt("ORPAY", "a payments ledger", nil)
+	if !strings.Contains(p, "Nothing is committed yet") {
+		t.Errorf("the prompt does not say there is nothing to design from:\n%s", p)
+	}
+}
+
+// Both planning prompts have to ask for the reasoning as loudly as for the
+// answer, because Orion refuses a report that carries only one of them.
+func TestBothPlanningPromptsRequireTheReasoning(t *testing.T) {
+	for name, p := range map[string]string{
+		"choose": DBAChoosePrompt("ORPAY", "a payments ledger", nil),
+		"schema": DBASchemaPrompt("ORPAY", "a payments ledger", "PostgreSQL 16", nil),
+	} {
+		for _, want := range []string{DBARecommends, DBABecause, "REFUSED"} {
+			if !strings.Contains(p, want) {
+				t.Errorf("the %s prompt does not mention %q:\n%s", name, want, p)
+			}
+		}
+		if !strings.Contains(p, "unconfirmed") {
+			t.Errorf("the %s prompt does not say what it writes is a recommendation "+
+				"nobody has agreed to yet", name)
+		}
+	}
+}
+
+// The schema is designed against the record a person confirmed, quoted rather
+// than paraphrased: Orion's summary of what was agreed is not what was agreed.
+func TestTheSchemaPromptQuotesTheConfirmedChoice(t *testing.T) {
+	p := DBASchemaPrompt("ORPAY", "a payments ledger",
+		"# ORPAY: the database\n- Status: confirmed\n\nPostgreSQL 16", nil)
+	if !strings.Contains(p, "PostgreSQL 16") || !strings.Contains(p, "Status: confirmed") {
+		t.Errorf("the confirmed record is not in the schema prompt:\n%s", p)
 	}
 }
