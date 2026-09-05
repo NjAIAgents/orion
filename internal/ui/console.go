@@ -46,6 +46,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // verbose is the level, as a process-wide setting.
@@ -80,7 +81,22 @@ var console struct {
 	have bool
 	// repeat counts identical lines suppressed since last was printed.
 	repeat int
+	// at is when last was printed, for the staleness rule below.
+	at time.Time
 }
+
+// identityRefresh is how long a line can be off-screen-adjacent before the
+// next one re-states who it belongs to.
+//
+// Shorter than the heartbeat interval so that every heartbeat carries its
+// identity, and long enough that a burst of tool calls in the same second
+// still collapses to one identity line -- which is the whole point of the
+// suppression it relaxes.
+const identityRefresh = 10 * time.Second
+
+// clock is time.Now, replaceable so a test can exercise a rule about
+// elapsed time without electing to take that long.
+var clock = time.Now
 
 // printLine is the funnel every status line goes through: Say, SayModel,
 // Trace, notify's echo and `orion logs`.
@@ -106,8 +122,17 @@ func printLine(w io.Writer, l Line) {
 	flushLocked()
 	// Rule 2. The first line after any change -- of ticket, actor or model --
 	// states the identity again.
-	fmt.Fprintln(w, renderLine(w, l, !console.have || !sameIdentity(console.last, l)))
-	console.last, console.have, console.repeat = l, true, 0
+	//
+	// Rule 2b: so does the first line after a GAP. Suppression assumes the
+	// reader still has the previous line in view, which holds for a burst
+	// and stops holding for a heartbeat thirty seconds later (OR-338). A
+	// long agent run then rendered as fifteen consecutive lines with an
+	// empty actor column and no way to tell whose they were -- measured on
+	// a real watch, 23:02 to 23:10 (OR-346).
+	identity := !console.have || !sameIdentity(console.last, l) ||
+		clock().Sub(console.at) >= identityRefresh
+	fmt.Fprintln(w, renderLine(w, l, identity))
+	console.last, console.have, console.repeat, console.at = l, true, 0, clock()
 }
 
 // Flush prints the count for a run of identical lines that has not been

@@ -43,7 +43,7 @@ func runTagSourceWithEnv(t *testing.T, work string, env []string, tag, commit st
 	if commit != "" {
 		args = append(args, commit)
 	}
-	cmd := exec.Command("sh", append([]string{tagSourceScript(t)}, args...)...)
+	cmd := exec.Command(shellFor(t), append([]string{tagSourceScript(t)}, args...)...)
 	cmd.Dir = work
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()

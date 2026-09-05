@@ -15,6 +15,23 @@ import (
 // and unlike the beta guards next door it can be exercised for real -- a bare
 // repository on disk is a complete remote, so these run the actual pushes.
 
+// shellFor names the POSIX shell to run a .sh with.
+//
+// "sh" is not on PATH on Windows -- Git Bash installs bash and the CI job's
+// own steps use it -- so an exec.Command("sh", ...) there fails with exit
+// 127, "command not found", and every test in this file reported that
+// instead of whatever it was checking (OR-346).
+func shellFor(t *testing.T) string {
+	t.Helper()
+	for _, sh := range []string{"sh", "bash"} {
+		if p, err := exec.LookPath(sh); err == nil {
+			return p
+		}
+	}
+	t.Skip("no POSIX shell on PATH to run the script with")
+	return ""
+}
+
 func tagSourceScript(t *testing.T) string {
 	t.Helper()
 	p, err := filepath.Abs(filepath.Join("..", "..", "scripts", "tag-source.sh"))
@@ -86,7 +103,7 @@ func newSourceRepo(t *testing.T) (work, first, second string) {
 
 func runTagSource(t *testing.T, work, tag, commit string) (string, error) {
 	t.Helper()
-	cmd := exec.Command("sh", tagSourceScript(t), tag, commit)
+	cmd := exec.Command(shellFor(t), tagSourceScript(t), tag, commit)
 	cmd.Dir = work
 	cmd.Env = tagSourceEnv()
 	out, err := cmd.CombinedOutput()

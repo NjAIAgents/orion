@@ -13,7 +13,7 @@ import (
 // GitHub Actions job gets for free from one step failing.
 func runShell(t *testing.T, dir, script string) (string, error) {
 	t.Helper()
-	cmd := exec.Command("sh", "-c", script)
+	cmd := exec.Command(shellFor(t), "-c", script)
 	cmd.Dir = dir
 	cmd.Env = tagSourceEnv()
 	out, err := cmd.CombinedOutput()
