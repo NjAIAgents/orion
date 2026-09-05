@@ -129,6 +129,10 @@ const (
 	ActorCaseDerive  = "case-derive" // reads the acceptance criteria and the diff, lists the cases to cover
 	ActorAIOps       = "aiops"       // reads a finished run's event log, reports what is worth filing
 	ActorDoneTriage  = "done-triage" // reads a green run against its diff: genuinely done, or only looks done
+	// ActorPlanConform reads the change against the CONFIRMED PLAN, which is
+	// the one question the three readers above it never ask: done-triage and
+	// QA both check the ticket, and the review class checks the code.
+	ActorPlanConform = "plan-conform"
 	ActorHuman       = "human"
 	ActorCI          = "ci"
 )

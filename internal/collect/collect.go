@@ -178,6 +178,18 @@ type Deps struct {
 	// already exists, cost nothing and cannot hallucinate, so they are the
 	// part that must not depend on a model being configured.
 	Judge func(ws *workspace.Workspace, key, prompt string) (string, error)
+	// Conform puts the OTHER question about the same green run: is this the
+	// thing we agreed to build (OR-158)? Separate from Judge rather than
+	// sharing it, because the two run as different actors on their own models
+	// and each one's spend belongs on its own row of the ticket's cost report
+	// -- a shared runner would attribute both to whichever actor it was built
+	// for.
+	//
+	// Nil disables the pass entirely, and unlike done triage there is no
+	// rule-based half left standing: "does this match the plan" is exactly the
+	// question no rule expresses, which is why it is a separate pass rather
+	// than a fourth check inside internal/done.
+	Conform func(ws *workspace.Workspace, key, prompt string) (string, error)
 	// Slack reads approvals. Nil disables the approval path entirely, which
 	// is the correct behaviour when the extra OAuth scopes are not granted:
 	// Orion then reports that checks pass and waits for a human to merge.
