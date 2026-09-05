@@ -158,7 +158,7 @@ func TestPlanRosterReadsTheConfiguredDesignation(t *testing.T) {
 func TestPlanRosterAnnouncementNamesEachActorAndItsSignal(t *testing.T) {
 	t.Cleanup(actors.Reset)
 	var buf bytes.Buffer
-	printPlanRoster(&buf, "Take card payments, with a database behind it.")
+	printPlanRoster(&buf, "payments-api", "Take card payments, with a database behind it.")
 	got := buf.String()
 
 	if !strings.Contains(got, actors.Display(events.ActorDBA)) {
@@ -174,7 +174,7 @@ func TestPlanRosterAnnouncementNamesEachActorAndItsSignal(t *testing.T) {
 func TestPlanRosterAnnouncementSaysWhenTheIdeaSelectedNobody(t *testing.T) {
 	t.Cleanup(actors.Reset)
 	var buf bytes.Buffer
-	printPlanRoster(&buf, "Take card payments from the web app.")
+	printPlanRoster(&buf, "payments-api", "Take card payments from the web app.")
 	if !strings.Contains(buf.String(), "names no other actor") {
 		t.Errorf("the roster is silent about having selected nobody:\n%s", buf.String())
 	}
@@ -296,7 +296,7 @@ func TestPlanRosterEachIdeaSelectedActorSignalNamesItsOwnWord(t *testing.T) {
 func TestPlanRosterAnnouncementExplicitlyStatesTheIdeaSelectedNoOne(t *testing.T) {
 	t.Cleanup(actors.Reset)
 	var buf bytes.Buffer
-	printPlanRoster(&buf, "a plain idea with nothing any actor answers to")
+	printPlanRoster(&buf, "payments-api", "a plain idea with nothing any actor answers to")
 	got := buf.String()
 	if !strings.Contains(got, "names no other actor") {
 		t.Errorf("announcement does not explicitly state the idea selected nobody:\n%s", got)
@@ -314,7 +314,7 @@ func TestPlanRosterAnnouncementExplicitlyStatesTheIdeaSelectedNoOne(t *testing.T
 func TestPlanRosterAnnouncementColumnsAreAligned(t *testing.T) {
 	t.Cleanup(actors.Reset)
 	var buf bytes.Buffer
-	printPlanRoster(&buf, "we need a database architect and a qa engineer for this")
+	printPlanRoster(&buf, "payments-api", "we need a database architect and a qa engineer for this")
 
 	var chosen []string
 	for _, line := range strings.Split(buf.String(), "\n") {
