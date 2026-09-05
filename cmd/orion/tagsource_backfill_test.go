@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -69,6 +70,18 @@ func originOf(t *testing.T, work string) string {
 // would let the job carry on to `gh release create` with an untagged commit,
 // which is the exact bug OR-304 was filed about.
 func TestWorkflowExitsBeforePublishingAssetsIfTagPushFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The failure is provoked by chmod-ing the origin repository
+		// read-only, and chmod cannot take write access away on Windows --
+		// it maps to the read-only ATTRIBUTE, which does not apply to
+		// directories. The push then SUCCEEDS and the script rightly exits
+		// 0, so the premise cannot be built here (OR-346).
+		//
+		// The property still holds -- `set -eu` plus git push's own exit
+		// status is what enforces it, and neither is platform-specific --
+		// and it is exercised on the other two legs.
+		t.Skip("a directory cannot be made unwritable with chmod on Windows")
+	}
 	work, released, _ := newSourceRepo(t)
 	breakPushesTo(t, originOf(t, work))
 
