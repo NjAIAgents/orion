@@ -54,7 +54,23 @@ fi
 # Peel to a commit and fail loudly on anything unresolvable. A backfill is
 # given a SHA by hand and the whole point is that it lands on the commit that
 # was actually released, not on whatever a branch name resolves to today.
-sha="$(git rev-parse --verify "${commit}^{commit}")"
+#
+# --quiet suppresses git's own "fatal: Needed a single revision", which never
+# names the reference it choked on. An operator who typo'd a SHA into a
+# backfill gets a sentence about revisions and no way to tell WHICH argument
+# was wrong; every other refusal here names the commits involved, and this one
+# is the likeliest to be hit by hand.
+if ! sha="$(git rev-parse --quiet --verify "${commit}^{commit}" 2>/dev/null)"; then
+	echo "cannot resolve '${commit}' to a commit in this repository.
+
+  Nothing was tagged. A release tag has to name the commit that was actually
+  built, so an unresolvable reference is refused rather than guessed at -- a
+  tag on the wrong commit is harder to notice, and harder to undo, than the
+  missing tag this script exists to prevent.
+
+  Check the SHA. If this is a shallow clone, fetch the commit first." >&2
+	exit 1
+fi
 
 # The remote is the source of truth, not the local tag list: a clone can be
 # missing a tag that exists, or hold one that was never pushed.

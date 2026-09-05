@@ -139,6 +139,31 @@ func TestTaggingTheSourceLandsOnTheCommitThatWasReleased(t *testing.T) {
 	}
 }
 
+// A tag is not scoped to the run that created it -- ordinary fetch/pull/push
+// traffic against the same remote afterwards must not touch it. If tagging
+// only "stuck" until the next network operation, the v0.8.10 defect would
+// resurface the moment anyone else interacted with the repo.
+func TestTagPersistsAfterSubsequentGitOperations(t *testing.T) {
+	work, released, _ := newSourceRepo(t)
+
+	if out, err := runTagSource(t, work, "v9.9.9", released); err != nil {
+		t.Fatalf("tagging failed: %v\n%s", err, out)
+	}
+
+	git(t, work, "fetch", "--quiet", "origin")
+	git(t, work, "pull", "--quiet", "origin", "main")
+	git(t, work, "push", "--quiet", "origin", "HEAD:refs/heads/main")
+
+	if got := publishedTag(t, work, "v9.9.9"); got != released {
+		t.Errorf("v9.9.9 names %q after fetch/pull/push, want it to still name the "+
+			"released commit %s -- a tag must not be undone by ordinary git traffic "+
+			"against the same remote", got, released)
+	}
+	if kind := git(t, work, "cat-file", "-t", "v9.9.9"); kind != "tag" {
+		t.Errorf("v9.9.9 is a %s after fetch/pull/push, want it to remain an annotated tag object", kind)
+	}
+}
+
 // Re-running a release for an already-existing tag is proven safe here, which
 // is the DONE WHEN clause a dry run would otherwise have to cover. A workflow
 // that could only ever be dispatched once would make every transient publish
@@ -178,9 +203,23 @@ func TestTaggingRefusesToMoveAPublishedTag(t *testing.T) {
 	if !strings.Contains(out, "refusing to move") {
 		t.Errorf("the refusal does not say what it refused; got:\n%s", out)
 	}
+	// An operator reading the refusal needs both SHAs to know what happened and
+	// what was attempted -- "refusing to move" alone tells them nothing to act on.
+	if !strings.Contains(out, released) {
+		t.Errorf("the refusal does not name the published commit %s it refused to move; got:\n%s", released, out)
+	}
+	if !strings.Contains(out, tip) {
+		t.Errorf("the refusal does not name the attempted commit %s; got:\n%s", tip, out)
+	}
 	if got := publishedTag(t, work, "v9.9.9"); got != released {
 		t.Errorf("v9.9.9 now names %s; the refusal did not leave the published tag "+
 			"on %s", got, released)
+	}
+	// The local tag object the first run created must be equally untouched --
+	// a refusal that moved the local ref while leaving the remote alone would
+	// just delay the corruption to the next push.
+	if local := git(t, work, "rev-parse", "refs/tags/v9.9.9^{commit}"); local != released {
+		t.Errorf("local tag v9.9.9 now points at %s, want it left on %s", local, released)
 	}
 }
 
@@ -195,8 +234,61 @@ func TestTaggingRefusesToMoveAnUnpushedLocalTag(t *testing.T) {
 	if err == nil {
 		t.Errorf("an unpushed v9.9.9 on another commit was overwritten. Output:\n%s", out)
 	}
+	if !strings.Contains(out, tip) {
+		t.Errorf("the refusal does not name the stale local commit %s; got:\n%s", tip, out)
+	}
+	if !strings.Contains(out, released) {
+		t.Errorf("the refusal does not name the attempted commit %s; got:\n%s", released, out)
+	}
 	if got := publishedTag(t, work, "v9.9.9"); got != "" {
 		t.Errorf("the refusal still pushed v9.9.9 (now %s)", got)
+	}
+	if local := git(t, work, "rev-parse", "refs/tags/v9.9.9^{commit}"); local != tip {
+		t.Errorf("local tag v9.9.9 now points at %s, want it left on the stale commit %s", local, tip)
+	}
+}
+
+// A commit that does not exist must fail loudly, not tag whatever HEAD
+// happens to be. `git rev-parse --verify` is the only thing standing between
+// a typo'd SHA and a release tagged on the wrong commit.
+func TestTaggingRejectsANonExistentCommit(t *testing.T) {
+	work, _, _ := newSourceRepo(t)
+
+	bogus := "0123456789abcdef0123456789abcdef01234567"
+	out, err := runTagSource(t, work, "v9.9.9", bogus)
+	if err == nil {
+		t.Fatalf("tag-source.sh accepted a commit that does not exist in the repo. Output:\n%s", out)
+	}
+	if !strings.Contains(out, bogus) {
+		t.Errorf("the error does not name the unresolvable commit %s so an operator can tell "+
+			"what was passed; got:\n%s", bogus, out)
+	}
+	if got := publishedTag(t, work, "v9.9.9"); got != "" {
+		t.Errorf("tag-source.sh pushed v9.9.9 anyway (%s), naming a commit it could not verify", got)
+	}
+}
+
+// A short reference that resolves to nothing must be rejected the same way --
+// it must never fall back to HEAD or otherwise guess which commit was meant.
+// Guessing here is exactly the failure mode this script exists to close off:
+// a release naming the wrong commit is indistinguishable from one naming none.
+func TestTaggingRejectsAnUnresolvableAbbreviatedCommit(t *testing.T) {
+	work, _, tip := newSourceRepo(t)
+
+	out, err := runTagSource(t, work, "v9.9.9", "deadbee")
+	if err == nil {
+		t.Fatalf("tag-source.sh accepted an abbreviated commit reference that matches nothing "+
+			"in the repo. Output:\n%s", out)
+	}
+	if got := publishedTag(t, work, "v9.9.9"); got != "" {
+		t.Errorf("tag-source.sh pushed v9.9.9 anyway (%s) instead of refusing the unresolvable "+
+			"reference", got)
+	}
+	// Confirms it did not silently fall back to the tip commit rather than
+	// simply failing to resolve anything.
+	if got := publishedTag(t, work, "v9.9.9"); got == tip {
+		t.Errorf("tag-source.sh guessed the tip commit %s for an unresolvable reference "+
+			"instead of refusing it", tip)
 	}
 }
 
