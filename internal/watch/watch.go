@@ -1014,8 +1014,28 @@ type pool struct {
 	wg   sync.WaitGroup
 }
 
+// poolBufferPerSlot is how many results a slot may have outstanding before a
+// send would block. Four is generous: a slot produces one result per ticket.
+const poolBufferPerSlot = 4
+
+// maxPoolBuffer bounds the buffer however large the configured cap is.
+//
+// n comes from limits.max_concurrent_tickets, which a person types into
+// orion.json. n*poolBufferPerSlot on a large enough n overflows int and asks
+// make() for a negative length, which panics -- and a config value reaching
+// an allocation unchecked is worth guarding even when the person who typed it
+// meant no harm (CodeQL go/allocation-size-overflow, OR-348).
+const maxPoolBuffer = 4096
+
 func newPool(n int) *pool {
-	return &pool{cap: n, live: map[string]bool{}, done: make(chan work.Result, n*4)}
+	if n < 1 {
+		n = 1
+	}
+	buf := maxPoolBuffer
+	if n <= maxPoolBuffer/poolBufferPerSlot {
+		buf = n * poolBufferPerSlot
+	}
+	return &pool{cap: n, live: map[string]bool{}, done: make(chan work.Result, buf)}
 }
 
 func (p *pool) len() int {
