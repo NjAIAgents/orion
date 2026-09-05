@@ -37,6 +37,37 @@
 
 set -eu
 
+# The directory this script lives in, for finding its siblings.
+#
+# ${0%/*} alone was not enough. It strips to the last FORWARD slash, and on
+# Windows $0 arrives as a backslash path containing none -- so the expansion
+# returned the whole path unchanged and the caller asked for
+# ...\tag-source.sh/tag-channel.sh, which does not exist. Measured on the
+# Windows CI leg: eight tests, exit 127 (OR-346). An operator running the
+# backfill by hand there would have hit the same wall.
+#
+# Backslashes are folded to forward slashes first; every Windows API and
+# every shell here accepts them, so one form is enough for the strip below.
+#
+# Still parameter expansion rather than `dirname`: these scripts run under a
+# deliberately minimal PATH in their own tests and dirname is not on it, so a
+# builtin is the only thing guaranteed to be present.
+here() {
+	d=$1
+	# Strip the leaf after whichever separator comes LAST. Two expansions
+	# rather than a tr: tr is not a builtin and these scripts run under a
+	# starved PATH in their own tests, which is the same reason dirname was
+	# ruled out. ${d##*/} and ${d##*\\} each remove everything up to their
+	# own separator, so the SHORTER result came from the later one.
+	a=${d##*/}
+	b=${d##*\\}
+	if [ ${#a} -le ${#b} ]; then leaf=$a; else leaf=$b; fi
+	case $d in
+	"$leaf") printf '.' ;;
+	*) printf '%s' "${d%"$leaf"}." ;;
+	esac
+}
+
 tag="${1-}"
 commit="${2-}"
 
@@ -49,7 +80,7 @@ fi
 # It prints the channel; here only its verdict matters -- a string that names
 # no channel is not a release tag, and tagging the source repo with one puts a
 # name into 70-odd tags' worth of history that nothing else will ever resolve.
-"${0%/*}/tag-channel.sh" "$tag" >/dev/null
+"$(here "$0")/tag-channel.sh" "$tag" >/dev/null
 
 # Peel to a commit and fail loudly on anything unresolvable. A backfill is
 # given a SHA by hand and the whole point is that it lands on the commit that
