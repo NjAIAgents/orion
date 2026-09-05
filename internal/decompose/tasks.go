@@ -31,6 +31,8 @@ import (
 	"path"
 	"regexp"
 	"strings"
+
+	"github.com/orion-sdlc/orion/internal/fanout"
 )
 
 // Kind is the level of an item in the tree.
@@ -73,6 +75,18 @@ type Item struct {
 	Children []*Item
 }
 
+// Coupling is two sibling items that declared the same ground (OR-260).
+//
+// A tracker tree whose siblings collide is a tree that will batch badly for
+// its whole life: the queue will refuse to admit them together, pass after
+// pass, and nothing downstream can undo a decomposition. So it is said HERE,
+// while the shape of the work is still in view and the tree has not been
+// created yet.
+type Coupling struct {
+	A, B   string   // the two summaries, in tree order
+	Shared []string // the ground they both declared
+}
+
 // Tree is one tasks.md, parsed.
 type Tree struct {
 	// Slug scopes reconciliation. Task IDs restart at T001 in every
@@ -83,6 +97,9 @@ type Tree struct {
 	Epic *Item
 	// Source is the file this came from, for the preview and the epic body.
 	Source string
+	// Coupled are the sibling pairs whose declared scopes overlap. Reported,
+	// never resolved: see couplings.
+	Coupled []Coupling
 }
 
 // Label is the identity label every item created from this tree carries.
@@ -288,13 +305,25 @@ func Parse(text, source string) (*Tree, error) {
 			title = "User Story " + num
 		}
 		st.Summary = st.ID + " " + title
-		st.Body = storyBody(st, storyGoal[num])
+		// The union of its tasks', because a STORY is the unit an agent
+		// claims and works in one branch (internal/tracker/children.go) --
+		// so the story is the level a batch collides at, and therefore the
+		// level a declared scope has to exist at.
+		st.Paths = declaredPaths(st)
 		stories = append(stories, st)
 	}
 	epic.Children = append(stories, epic.Children...)
 
 	tree.Slug = slug(epic.Summary)
 	tree.Epic = epic
+	// Coupling is found before the bodies are written, because it is written
+	// INTO them: a story that will collide with a sibling says so on its own
+	// record, where whoever picks it up will read it.
+	tree.Coupled = couplings(stories)
+	for _, num := range storyOrder {
+		st := storyByNum[num]
+		st.Body = storyBody(st, storyGoal[num], tree.Coupled)
+	}
 	epic.Body = epicBody(tree, phases, depends)
 
 	label(tree)
@@ -369,7 +398,7 @@ func taskBody(t *Item, desc string) string {
 	return b.String()
 }
 
-func storyBody(st *Item, goal string) string {
+func storyBody(st *Item, goal string, coupled []Coupling) string {
 	var b strings.Builder
 	if goal != "" {
 		b.WriteString(goal)
@@ -379,7 +408,77 @@ func storyBody(st *Item, goal string) string {
 		fmt.Fprintf(&b, "Phase: %s\n", st.Phase)
 	}
 	fmt.Fprintf(&b, "Tasks: %d\n", len(st.Children))
+	// The declared scope, in the one spelling the queue manager reads back
+	// (internal/tracker/scope.go). A story with no file paths in any of its
+	// tasks writes no line at all rather than an empty one: absent means
+	// unknown, and unknown must never read as "touches nothing".
+	if len(st.Paths) > 0 {
+		fmt.Fprintf(&b, "Files: %s\n", strings.Join(st.Paths, ", "))
+	}
+	for _, c := range coupled {
+		other := ""
+		switch st.Summary {
+		case c.A:
+			other = c.B
+		case c.B:
+			other = c.A
+		default:
+			continue
+		}
+		fmt.Fprintf(&b, "Coupled with %q: both declare %s. "+
+			"These two will not be admitted to one batch; merge them, or order them "+
+			"with a blocking link, before treating them as independent.\n",
+			other, strings.Join(c.Shared, ", "))
+	}
 	return b.String()
+}
+
+// declaredPaths is the union of an item's own paths and its children's, in
+// first-appearance order.
+func declaredPaths(it *Item) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(ps []string) {
+		for _, p := range ps {
+			if p != "" && !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	add(it.Paths)
+	for _, c := range it.Children {
+		add(declaredPaths(c))
+	}
+	return out
+}
+
+// couplings reports every pair of siblings whose declared scopes overlap.
+//
+// IT REPORTS AND DOES NOT RESOLVE. The issue that asked for this named three
+// answers to a collision -- merge the two items, sequence them with a real
+// blocking link, or state plainly that they are coupled -- and only the third
+// is one a parser can give honestly. Merging changes what the source artifact
+// said the work was; sequencing has to decide WHICH of the two goes first,
+// which is a judgement about the work and not about the text. So this says it,
+// on both records and in the preview, before a human approves the tree.
+//
+// Through fanout.Overlap, the same implementation the queue admits on, so what
+// planning warns about and what the queue later refuses cannot disagree.
+func couplings(items []*Item) []Coupling {
+	var out []Coupling
+	for i, a := range items {
+		for _, b := range items[i+1:] {
+			shared := fanout.Overlap(
+				fanout.Scope{Key: a.Summary, Paths: a.Paths},
+				fanout.Scope{Key: b.Summary, Paths: b.Paths})
+			if len(shared) == 0 {
+				continue
+			}
+			out = append(out, Coupling{A: a.Summary, B: b.Summary, Shared: shared})
+		}
+	}
+	return out
 }
 
 func epicBody(t *Tree, phases, depends []string) string {
