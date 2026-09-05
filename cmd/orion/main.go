@@ -1664,6 +1664,15 @@ func createProjectChannel(ws *workspace.Workspace) *workspace.SlackChannel {
 func runSupervised(id string, rest []string) {
 	ws, err := workspace.Open(id)
 	exitOn(err)
+
+	// The database architect's planning step is a SEQUENCE with a human
+	// confirmation in the middle of it, not a prompt (OR-154), so it is
+	// driven here rather than handed to supervisor.Run as a stage body.
+	if strings.EqualFold(strings.TrimSpace(argFlag(rest, "--stage", "")), planDBAStage) {
+		exitOn(runPlanDBA(ws))
+		return
+	}
+
 	opts := supervisor.Options{
 		Stage:      argFlag(rest, "--stage", "intent"),
 		Prompt:     argFlag(rest, "--prompt", ""),

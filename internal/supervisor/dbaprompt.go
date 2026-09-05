@@ -47,6 +47,185 @@ const DBAClean = "DBA CLEAN"
 // marks its own findings and nothing is inferred from prose.
 const DBAFindings = "DBA FINDINGS"
 
+// The planning-time pair (OR-154). The database architect joins planning
+// before anything is built, and what it produces there is a RECOMMENDATION
+// rather than a design decision: Orion records it unconfirmed and asks, and
+// only a person's confirmation makes it something a later stage may read
+// (internal/decide).
+//
+// TWO SENTINELS AGAIN, and the second is the whole point. A choice without
+// its argument -- "Postgres", on its own -- is not something anybody can
+// evaluate now or revisit in eighteen months, and it is the shape a model
+// produces by default when only the answer is asked for. So the reasoning is
+// marked, and a report that names a database and argues nothing is refused
+// rather than recorded: an unevaluable recommendation confirmed by somebody
+// who had nothing to read is worse than no recommendation at all.
+const (
+	// DBARecommends opens what is being recommended: the database on one
+	// line for the choice, the schema in full for the design.
+	DBARecommends = "DBA RECOMMENDS"
+	// DBABecause opens the reasoning, and is required.
+	DBABecause = "DBA BECAUSE"
+)
+
+// DBAChoosePrompt asks for the database itself, before any schema exists.
+//
+// artifacts are the committed planning documents that exist, named rather
+// than described for artifactsFor's reason: a prompt that names a file which
+// is not there invites the agent to go looking, or to invent what it would
+// have said.
+//
+// IT MAY NOT DESIGN THE SCHEMA HERE, and that is not tidiness. A schema
+// designed against a database nobody has agreed to is work that is thrown
+// away if the choice changes -- and worse, it arrives in the same report, so
+// a person confirming the database confirms a schema they were not asked
+// about.
+func DBAChoosePrompt(key, idea string, artifacts []string) string {
+	var b strings.Builder
+	b.WriteString(join(
+		"You are the database architect on this project, at planning time. Nothing",
+		"has been built yet. Choose the database this project should use.",
+		"",
+		key+": "+strings.TrimSpace(idea),
+		"",
+	))
+	b.WriteString(join(dbaGroundingLines(artifacts)...))
+	b.WriteString("\n")
+	b.WriteString(join(
+		"",
+		"WHAT TO DECIDE ON",
+		"1. The shape of the data this project actually stores, and how strongly the",
+		"   parts of it relate to each other.",
+		"2. The reads and writes it has to serve, and which of them are on a path a",
+		"   person waits for.",
+		"3. What has to still be true after a crash, and what may be lost.",
+		"4. What this team can actually run and operate, which is not the same",
+		"   question as which engine is best.",
+		"",
+		"Say what you rejected and why. The alternative that was considered and",
+		"turned down is the part somebody re-litigating this in a year needs, and it",
+		"is the part that is never written down afterwards.",
+		"",
+		"IF THE ARTIFACTS DO NOT SETTLE IT, SAY SO AND RECOMMEND NOTHING. What is",
+		"stored, who reads it, and what must survive a crash are not details you may",
+		"assume: a confident choice derived from nothing arrives wrapped in your",
+		"authority and is inherited by every table written against it afterwards.",
+		"",
+		"WHAT YOU MAY NOT DO",
+		"Do not design the schema. Nobody has agreed to a database yet, and a schema",
+		"designed against one that is not settled is either thrown away or confirmed",
+		"by somebody who thought they were only agreeing to the engine. You are asked",
+		"for it separately, after this is confirmed.",
+		"Do not run a migration, in either direction, against anything.",
+		"Do not create a database, and do not connect to one you found in this",
+		"repository, in an environment variable or in a compose file.",
+		"Do not write or edit any file. You propose; a person applies.",
+		"",
+	))
+	b.WriteString(dbaReportLines("the database, in one line: the engine, and the flavour or",
+		"version if it matters"))
+	return b.String()
+}
+
+// DBASchemaPrompt asks for the initial schema, and it is only ever built
+// against a database somebody has already confirmed.
+//
+// choice is the CONFIRMED record, quoted into the prompt rather than
+// summarised, so the design is grounded in the text a person actually agreed
+// to rather than in Orion's paraphrase of it.
+func DBASchemaPrompt(key, idea, choice string, artifacts []string) string {
+	var b strings.Builder
+	b.WriteString(join(
+		"You are the database architect on this project, at planning time. The",
+		"database is settled -- somebody confirmed this recommendation -- and the",
+		"initial schema is now yours to design.",
+		"",
+		key+": "+strings.TrimSpace(idea),
+		"",
+		"THE CONFIRMED DATABASE",
+		quote(choice),
+		"",
+		"Design for that database. If you now believe it is the wrong one, say so",
+		"plainly and design nothing: reopening a confirmed decision is a thing a",
+		"person does, and a schema built for an engine nobody agreed to is worse",
+		"than the argument you would have to have.",
+		"",
+	))
+	b.WriteString(join(dbaGroundingLines(artifacts)...))
+	b.WriteString("\n")
+	b.WriteString(join(
+		"",
+		"WHAT TO DESIGN",
+		"The tables this project starts with, normalised, with their keys, their",
+		"constraints, their nullability and their column types and widths. A column",
+		"that permits a value the domain does not is a defect on the day it is",
+		"created, not on the day something writes one.",
+		"The indexes the reads you know about will actually use, and no others.",
+		"The initial migration, as it would be written.",
+		"",
+		"This is the INITIAL schema, not every table this project will ever have.",
+		"Design what the committed artifacts describe; a table invented for a feature",
+		"nobody has specified is one the next twenty tickets inherit.",
+		"",
+		"WHAT YOU MAY NOT DO",
+		"Do not run a migration, in either direction, against anything.",
+		"Do not create a database and do not apply anything anywhere.",
+		"Do not write or edit any file. You propose; a person applies -- and until",
+		"somebody confirms this, no later stage may build against it.",
+		"",
+	))
+	b.WriteString(dbaReportLines("the schema in full: the DDL, and the initial migration"))
+	return b.String()
+}
+
+// dbaGroundingLines names the committed documents to design from, or says
+// there are none -- which is a normal answer at planning time and a reason to
+// recommend nothing rather than to go looking.
+func dbaGroundingLines(artifacts []string) []string {
+	if len(artifacts) == 0 {
+		return []string{
+			"WHAT TO READ FIRST",
+			"Nothing is committed yet: there is no intent capture, no spec and no plan",
+			"in this repository. Say so and recommend nothing rather than choosing from",
+			"the one-line idea above -- a database chosen from a sentence is a database",
+			"chosen by whoever wrote the sentence.",
+		}
+	}
+	out := []string{"WHAT TO READ FIRST", "These are committed in this repository, and they are what you design from:"}
+	for _, a := range artifacts {
+		out = append(out, "  "+a)
+	}
+	return append(out,
+		"",
+		"Read them before you decide anything. What is not in them is a thing you do",
+		"not know, not a thing you may assume.")
+}
+
+// dbaReportLines is the report contract both planning prompts end with.
+//
+// One shape for both, because Orion parses them with one reader: what is
+// recommended, then why, and neither on its own is a recommendation.
+func dbaReportLines(what ...string) string {
+	lines := []string{
+		"WHAT TO REPORT",
+		"Write " + DBARecommends + " on its own line and then " + strings.Join(what, " "),
+		"",
+		"Then write " + DBABecause + " on its own line, and then your reasoning: what you",
+		"weighed, what you rejected, and what would have to change for this to be the",
+		"wrong answer.",
+		"",
+		"Orion reads both lines literally. A report that names one and not the other is",
+		"REFUSED and nothing is recorded: a choice with no argument is not something",
+		"anybody can evaluate today or revisit in a year, and the reasoning is the",
+		"whole reason this is written down.",
+		"",
+		"What you write is recorded as a RECOMMENDATION, unconfirmed. Orion asks about",
+		"it in Slack, and until a person confirms it no later stage reads it and",
+		"nothing is built against it. Write it for that reader.",
+	}
+	return join(lines...)
+}
+
 // DBATarget is the database this review may reach, discovered from config
 // rather than from the repository.
 type DBATarget struct {
