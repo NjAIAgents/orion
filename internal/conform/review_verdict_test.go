@@ -50,7 +50,13 @@ func TestReviewBothMarkersInOneReplyDivergesWins(t *testing.T) {
 // question went unanswered and carries what the model actually said, cut to a
 // bound so one wall of prose does not blow out the audit record.
 func TestReviewUnparseableReplyRecordsWentUnansweredWithTruncatedText(t *testing.T) {
-	reply := "I looked at both documents closely and " + strings.Repeat("this is not a verdict. ", 20)
+	// The tail must be text that appears NOWHERE ELSE in the reply, or the
+	// truncation check below cannot fail: a fixture built only from a
+	// repeated phrase has its own last twenty characters inside the first
+	// two hundred, so Contains matches whether the note was cut or not.
+	const tail = "SENTINEL-TAIL-NOT-REPEATED"
+	reply := "I looked at both documents closely and " +
+		strings.Repeat("this is not a verdict. ", 20) + tail
 	if len(reply) <= 200 {
 		t.Fatalf("test fixture too short to exercise truncation: %d chars", len(reply))
 	}
@@ -70,7 +76,7 @@ func TestReviewUnparseableReplyRecordsWentUnansweredWithTruncatedText(t *testing
 	if !strings.Contains(v.Note, reply[:100]) {
 		t.Errorf("the note does not carry the model's actual reply: %q", v.Note)
 	}
-	if strings.Contains(v.Note, reply[len(reply)-20:]) {
+	if strings.Contains(v.Note, tail) {
 		t.Errorf("the reply was not truncated in the note: %q", v.Note)
 	}
 }

@@ -247,8 +247,10 @@ func readDiff(dir, base, branch string) done.Diff {
 	}
 	// Fetch first, for the reason upToDate does: the sandbox clone is shared
 	// and may be behind, and a diff against a stale remote-tracking ref
-	// describes a branch nobody is merging.
-	if err := gitQuiet(dir, "fetch", "--quiet", "origin"); err != nil {
+	// describes a branch nobody is merging. Through fetchOnce, so a pass that
+	// already fetched this checkout for the staleness gate does not fetch it
+	// again to answer a question about the same commit (OR-158).
+	if err := fetchOnce(dir); err != nil {
 		return done.Diff{Unreadable: "could not fetch the remote: " + err.Error()}
 	}
 	spec := "origin/" + base + "...origin/" + branch

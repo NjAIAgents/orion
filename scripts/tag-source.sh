@@ -111,6 +111,30 @@ if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
 		exit 1
 	fi
 else
+	# An annotated tag records a tagger, so an identity has to exist. A
+	# runner with none makes git either fail with its own opaque message or
+	# -- on a host where it can guess -- stamp the release with a
+	# synthesised user@hostname that names nobody.
+	#
+	# Checked rather than assumed: the workflow's `configure git` step sets
+	# one, and this catches the case where it did not run, or ran into a
+	# different HOME than this script sees.
+	# NOT `git var GIT_COMMITTER_IDENT`: that SUCCEEDS with a guess. With no
+	# configured identity git synthesises one from the OS -- on a laptop
+	# "Name <user@Hostname.local>", on a runner "runner@fv-az123.internal" --
+	# and stamps the release with a tagger nobody can be reached at. The
+	# guess is what has to be caught, so ask for the configured values.
+	if [ -z "${GIT_COMMITTER_NAME:-}$(git config --get user.name || true)" ] ||
+		[ -z "${GIT_COMMITTER_EMAIL:-}$(git config --get user.email || true)" ]; then
+		echo "refusing to tag ${tag}: no committer identity.
+
+  An annotated tag records who made it, and nothing here can say who that is.
+  Set user.name and user.email, or pass GIT_COMMITTER_NAME and
+  GIT_COMMITTER_EMAIL, and run this again.
+
+  Nothing was tagged and nothing was pushed." >&2
+		exit 1
+	fi
 	# Annotated, not lightweight: it carries who tagged it and when, and
 	# `git describe` prefers it.
 	git tag -a "$tag" -m "orion $tag" "$sha"

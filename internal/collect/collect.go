@@ -285,6 +285,11 @@ type Result struct {
 
 // Run reconciles every ticket awaiting CI.
 func Run(opts Options, deps Deps) []Result {
+	// One pass, one fetch per checkout. Cleared HERE rather than at process
+	// start, so a later tick fetches afresh: a memo that outlived the pass
+	// would answer from a remote minutes old, which is the staleness these
+	// fetches exist to prevent (OR-158).
+	resetFetchMemo()
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
