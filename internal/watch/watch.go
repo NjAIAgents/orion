@@ -58,6 +58,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/cost"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/fanout"
 	"github.com/orion-sdlc/orion/internal/queue"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
@@ -541,15 +542,23 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 		return unfinished, nil
 	}
 
-	next := pick(queued, s.free)
+	next, basis := pick(queued, s.free)
 	// Said on EVERY dispatch, not only when a slot was lost. The operator can
 	// see the cap in the banner and can see what started, and until OR-196
 	// nothing joined the two: "cap 2, 1 free" because a claim is held
 	// elsewhere, "2 free, starting 1" because only one ticket is queued, and
 	// "2 free, starting 2" all looked identical from outside, so a run at half
 	// capacity read as parallelism being broken.
+	//
+	// And on what grounds they were spread, when more than one started
+	// (OR-260): "spread by declared scope" and "spread by area" are different
+	// strengths of claim about whether these two will collide.
+	spread := ""
+	if basis != "" && len(next) > 1 {
+		spread = " -- " + basis
+	}
 	ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
-		"%s; starting %d of %d queued", s, len(next), len(queued))
+		"%s; starting %d of %d queued%s", s, len(next), len(queued), spread)
 	if len(s.elsewhere) > 0 {
 		ui.Say(w, s.elsewhere[0], events.ActorOrion, ui.VerbWarn, residueHint)
 	}
@@ -765,7 +774,7 @@ func rehearse(w io.Writer, opts Options, queued []tracker.Issue) {
 	// head. "would start FCIA-7 (3 queued)" says a number; the point of
 	// rehearsing is to see whether the ORDER is the one you meant, and that
 	// cannot be checked against a count.
-	first := pick(queued, opts.MaxConcurrent)
+	first, basis := pick(queued, opts.MaxConcurrent)
 	ui.Say(w, strings.Join(first, ", "), events.ActorOrion, ui.VerbWaiting,
 		"would start them together, then work down this queue:")
 	starting := map[string]bool{}
@@ -781,6 +790,9 @@ func rehearse(w io.Writer, opts Options, queued []tracker.Issue) {
 	}
 	fmt.Fprintf(w, "          %s\n", ui.Dim(w, fmt.Sprintf(
 		"limits.max_concurrent_tickets %d: that many run at once.", opts.MaxConcurrent)))
+	if basis != "" && len(first) > 1 {
+		fmt.Fprintf(w, "          %s\n", ui.Dim(w, basis+"."))
+	}
 	if opts.MaxJobs > 0 {
 		n := opts.MaxJobs
 		if n > len(queued) {
@@ -795,51 +807,121 @@ func rehearse(w io.Writer, opts Options, queued []tracker.Issue) {
 	}
 }
 
-// pick chooses which n of the queued tickets to start together.
+// pick chooses which n of the queued tickets to start together, and says on
+// what grounds.
 //
 // Concurrency does not cause merge conflicts; picking n tickets that all edit
 // the same files does. On 2026-08-29 five queued tickets all touched the fix
 // loop, the activity logger and the notify path, and taking the top five by
 // priority produced a hand-resolved three-way conflict.
 //
-// Orion cannot know a ticket's file set before it is worked, so it spreads
-// across the coarsest thing it CAN see: the ticket's area -- its first Jira
-// component, or failing that its project. Tickets from different areas are
-// less likely to touch the same code than the next two on one component's
-// backlog, which is a weaker claim than "disjoint" and the honest one.
+// TWO GROUNDS, AND IT SAYS WHICH. Where planning declared a scope, that is
+// used: the paths a ticket said it expects to touch, judged by the same
+// independence check `orion fan` uses on the import graph (OR-260). Where a
+// ticket declares nothing, this falls back to the coarsest thing Orion can see
+// by itself -- the ticket's area, its first Jira component or failing that its
+// project. The fallback is a guess and always was: a component is not a file,
+// and tickets from different areas are only LESS LIKELY to touch the same
+// code, which is a weaker claim than "disjoint" and the honest one. Saying
+// which ground was used is what lets a reader tell a considered spread from a
+// coincidence.
 //
-// A reordering, not a filter. Once every area is represented the rest are
-// taken in the tracker's own priority order, so nothing is refused and the
-// backlog ranking still decides what gets worked -- it only stops deciding
-// what gets worked SIMULTANEOUSLY. With n == 1 this is exactly the old
-// behaviour: the head of the queue, no reordering at all.
-func pick(queued []tracker.Issue, n int) []string {
+// A reordering, not a filter. Once the spread is exhausted the rest are taken
+// in the tracker's own priority order, so nothing is refused and the backlog
+// ranking still decides what gets worked -- it only stops deciding what gets
+// worked SIMULTANEOUSLY. With n == 1 this is exactly the old behaviour: the
+// head of the queue, no reordering and nothing to report.
+func pick(queued []tracker.Issue, n int) (keys []string, basis string) {
 	if n <= 0 || len(queued) == 0 {
-		return nil
+		return nil, ""
 	}
 	var out []string
 	taken := make([]bool, len(queued))
+	spokenFor := make([]fanout.Scope, 0, n)
 	seen := map[string]bool{}
+	declared, guessed := 0, 0
+
 	for i, is := range queued {
 		if len(out) == n {
-			return out
+			break
 		}
-		a := area(is)
-		if seen[a] {
+		s := fanout.Scope{Key: is.Key, Paths: is.DeclaredScope()}
+		if s.Declared() {
+			if fanout.Independent(s, spokenFor).Serial {
+				continue
+			}
+			declared++
+		} else if seen[area(is)] {
+			// No declaration to judge, so the area heuristic decides -- and
+			// only for this ticket. A mixed queue gets the better answer for
+			// the tickets that carry one rather than the worse answer for all
+			// of them.
 			continue
+		} else {
+			guessed++
 		}
-		seen[a] = true
+		// The area is marked taken whichever ground admitted the ticket. A
+		// ticket admitted on its declared scope still OCCUPIES its component,
+		// and forgetting that would hand the next slot to the one ticket in
+		// that component which declared nothing -- losing the old guess
+		// exactly where it is the only thing left to go on.
+		seen[area(is)] = true
+		spokenFor = append(spokenFor, s)
 		taken[i] = true
 		out = append(out, is.Key)
 	}
-	// Fewer areas than slots: the spread cannot be known any better than this,
-	// so fall back to priority order rather than leaving a slot idle.
+	// Fewer distinct areas and scopes than slots: the spread cannot be known
+	// any better than this, so fall back to priority order rather than leaving
+	// a slot idle.
 	for i, is := range queued {
 		if len(out) == n {
 			break
 		}
 		if !taken[i] {
 			out = append(out, is.Key)
+		}
+	}
+	if n == 1 {
+		return out, ""
+	}
+	return out, pickBasis(declared, guessed)
+}
+
+// pickBasis names the ground the spread was decided on, in the words the
+// dispatch line prints.
+//
+// NEVER SILENT WHEN A SPREAD HAPPENED, the rule printPlanSelected states for
+// the roster and for the same reason: a spread that says nothing about how it
+// was reached is indistinguishable from no spread at all, and the difference
+// is exactly what OR-260 changed.
+func pickBasis(declared, guessed int) string {
+	switch {
+	case declared > 0 && guessed > 0:
+		return "spread by declared scope where there was one, by area otherwise"
+	case declared > 0:
+		return "spread by declared scope"
+	case guessed > 0:
+		return "spread by area: no ticket declared a scope"
+	}
+	return ""
+}
+
+// working lists the tickets whose work is already in flight, so the scope rule
+// can see the ground they have taken (OR-260).
+//
+// WORKING AND CI-WAIT BOTH COUNT. A ticket awaiting CI has a branch pushed and
+// not yet merged, which is precisely the state a colliding branch meets at
+// assembly time -- treating it as finished would admit the collision this is
+// meant to design out, one pass before the ejection.
+func working(all []tracker.Issue) []tracker.Issue {
+	var out []tracker.Issue
+	for _, i := range all {
+		for _, l := range i.Labels {
+			if strings.EqualFold(l, tracker.LabelWorking) ||
+				strings.EqualFold(l, tracker.LabelCIWait) {
+				out = append(out, i)
+				break
+			}
 		}
 	}
 	return out
@@ -1141,7 +1223,13 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 		// Every eligible ticket, not a slice of them: the concurrency limit
 		// is the tick's arithmetic, and applying it twice would report a
 		// ticket as held for capacity that the tick then also counts.
-		Free:      len(candidates),
+		Free: len(candidates),
+		// What is already in flight, so a candidate is judged against the
+		// batch it would actually join (OR-260). Read off the all-labelled
+		// query rather than a second search: those tickets are excluded from
+		// the claim query by their working label, which is exactly why they
+		// would otherwise be invisible to the scope rule.
+		Working:   working(all),
 		Resolved:  resolvedLookup(j, candidates),
 		Scheduled: func(i tracker.Issue) string { return sched.HoldReason(i, label) },
 	})
