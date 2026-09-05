@@ -70,6 +70,10 @@ type newOptions struct {
 	// both answers, and so the terminal check stays in the wiring rather than
 	// in the logic.
 	Confirm func(prompt string) bool
+	// Ideas reads an idea already written down in the tracker, when Idea is a
+	// key rather than prose (OR-349). Nil means the key path is unavailable
+	// and the command interviews as it always has.
+	Ideas ideaReader
 }
 
 func runNew(idea string, rest []string) {
@@ -83,10 +87,14 @@ func runNew(idea string, rest []string) {
 		}
 	}
 
-	if !isTerminal(os.Stdin) {
+	// The terminal is required for the INTERVIEW, not for the command. An
+	// idea given by key is already written down, so there is nothing to ask
+	// and nothing to type -- which is what makes this path usable from a
+	// script (OR-349).
+	if !isTerminal(os.Stdin) && !looksLikeIdeaKey(idea) {
 		exitOn(fmt.Errorf("orion new needs a terminal: it interviews you about the idea.\n" +
-			"  For an idea already written down, create the tracker project by hand\n" +
-			"  and run: orion plan <KEY>"))
+			"  For an idea already written down in the tracker, pass its key:\n" +
+			"    orion new PRIOR-3"))
 	}
 
 	j, err := tracker.NewJiraFromEnv()
@@ -98,6 +106,7 @@ func runNew(idea string, rest []string) {
 		In:      os.Stdin,
 		Out:     os.Stdout,
 		Confirm: confirm,
+		Ideas:   j,
 	}))
 }
 
@@ -105,9 +114,10 @@ func runNew(idea string, rest []string) {
 func newRun(t tracker.Tracker, opts newOptions) error {
 	out := opts.Out
 	idea := strings.TrimSpace(opts.Idea)
-	if idea == "" {
-		return fmt.Errorf("an idea is required: orion new \"what you want built\"")
-	}
+	// An absent idea is NOT an error. This command interviews, so a missing
+	// idea is simply its first question -- asked below, after the permission
+	// probe, so that a run doomed by credentials fails before anything is
+	// typed rather than after.
 
 	// The permission is checked BEFORE the interview, not after it. Finding out
 	// that the account cannot create a project is cheap; finding out after five
@@ -131,17 +141,71 @@ func newRun(t tracker.Tracker, opts newOptions) error {
 
 	r := bufio.NewReader(opts.In)
 
-	fmt.Fprintln(out, ui.Heading(out, "The idea"))
-	fmt.Fprintf(out, "  %s\n\n", idea)
-	fmt.Fprintln(out, "Five questions. Every later stage runs non-interactively, so this is the")
-	fmt.Fprintln(out, "last point at which anything can be asked. Enter leaves one unanswered.")
-	fmt.Fprintln(out)
+	// An idea already written down answers the interview's questions before
+	// it is asked (OR-349). Only when it really is written down: every idea
+	// in a fresh discovery project carries the unfilled template, and
+	// planning from boilerplate is the failure the interview prevents.
+	var (
+		description string
+		name        string
+		source      tracker.Issue
+	)
+	if looksLikeIdeaKey(idea) && opts.Ideas != nil {
+		found, err := fetchIdea(opts.Ideas, idea)
+		if err != nil {
+			return err
+		}
+		ok, why := writtenDown(found)
+		if !ok {
+			// Not an error. The key is valid and the idea exists; it just has
+			// nothing in it yet, and the interview is the right answer.
+			ui.Warn(out, "%s is not written up yet: %s.", found.Key, why)
+			fmt.Fprintf(out, "  Interviewing instead. Fill the idea in and re-run to skip this.\n\n")
+			if !isTerminal(os.Stdin) {
+				return fmt.Errorf("%s has nothing to design from, and there is no terminal to interview in.\n"+
+					"  Write the idea up in the tracker, then re-run: orion new %s", found.Key, found.Key)
+			}
+		} else {
+			source = found
+			description = ideaDescription(found, opts.Site)
+			name = strings.TrimSpace(found.Summary)
+			fmt.Fprintln(out, ui.Heading(out, "The idea"))
+			fmt.Fprintf(out, "  %s  %s\n", found.Key, name)
+			fmt.Fprintf(out, "  %s\n\n", ui.Dim(out, "read from the tracker; no interview needed"))
+		}
+	}
 
-	description := elaborate(r, out, idea)
+	if description == "" {
+		fmt.Fprintln(out, ui.Heading(out, "The idea"))
+		// Given on the command line it is echoed; absent, it becomes the
+		// interview's first question rather than a usage error, since asking
+		// is what this command does.
+		if idea == "" {
+			fmt.Fprintln(out, "One or two sentences is plenty -- the questions after")
+			fmt.Fprintln(out, "this one go into the detail.")
+			fmt.Fprintln(out)
+			answer, ok := ask(r, out, "What do you want built?")
+			if !ok || strings.TrimSpace(answer) == "" {
+				return fmt.Errorf("no idea given, so there is nothing to plan.\n" +
+					"  Run it again with one: orion new \"what you want built\"")
+			}
+			idea = strings.TrimSpace(answer)
+		} else {
+			fmt.Fprintf(out, "  %s\n\n", idea)
+		}
+		fmt.Fprintln(out, "Five questions. Every later stage runs non-interactively, so this is the")
+		fmt.Fprintln(out, "last point at which anything can be asked. Enter leaves one unanswered.")
+		fmt.Fprintln(out)
 
-	name, err := askName(r, out)
-	if err != nil {
-		return err
+		description = elaborate(r, out, idea)
+	}
+
+	if name == "" {
+		var err error
+		name, err = askName(r, out)
+		if err != nil {
+			return err
+		}
 	}
 	slug := workspace.Slugify(name)
 	key, err := tracker.ResolveKey(t, tracker.DeriveKey(slug))
@@ -174,6 +238,20 @@ func newRun(t tracker.Tracker, opts newOptions) error {
 
 	fmt.Fprintln(out)
 	ui.Ok(out, "created", "%s project %s  %s/browse/%s", t.Name(), b.Key, opts.Site, b.Key)
+
+	// The back-link, so a reader of the idea can find the work (OR-349).
+	// BEST EFFORT: the project exists by now, and losing the link is untidy
+	// where losing the run would not be. The idea's own status is left alone
+	// deliberately -- that board's workflow belongs to whoever runs it.
+	if source.Key != "" && opts.Ideas != nil {
+		if err := opts.Ideas.Comment(source.Key, ideaBackLink(b.Key, opts.Site)); err != nil {
+			ui.Warn(out, "could not comment the new key onto %s: %v", source.Key, err)
+			fmt.Fprintf(out, "  The project was created; only the link back is missing.\n")
+		} else {
+			ui.Ok(out, "linked", "%s now names %s", source.Key, b.Key)
+		}
+	}
+
 	fmt.Fprintf(out, "\nnext: orion plan %s\n", b.Key)
 	return nil
 }

@@ -239,8 +239,13 @@ func main() {
 		mustArg(os.Args, 2, "orion answer <id>")
 		runAnswer(os.Args[2])
 	case "new":
-		mustArg(os.Args, 2, "orion new \"<idea>\"")
-		runNew(os.Args[2], os.Args[3:])
+		// No idea on the command line is not a usage error: this command
+		// interviews, so the missing idea is simply its first question.
+		if len(os.Args) < 3 {
+			runNew("", nil)
+		} else {
+			runNew(os.Args[2], os.Args[3:])
+		}
 	case "ls":
 		exitOn(workspace.List(os.Stdout))
 	case "open":

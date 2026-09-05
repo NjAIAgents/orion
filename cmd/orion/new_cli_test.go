@@ -17,8 +17,10 @@ import (
 // isTerminal(os.Stdin) is false here exactly as it would be for a script or
 // a CI job piping input in -- which is the case these tests are named for.
 
-// Command errors when stdin is not a terminal, and the error names the
-// manual-creation fallback rather than just failing silently.
+// Command errors when stdin is not a terminal, and the error names the way
+// out rather than just failing silently. That way out is now the idea key
+// (OR-349): an idea already written down needs no interview, so it is a
+// better answer than the old "create the project by hand" advice.
 func TestCLIRefusesWhenStdinIsNotATerminal(t *testing.T) {
 	bin := orionBinary(t)
 	cmd := testproc.Command(t, bin, "new", "customers should see claim status in the portal")
@@ -27,10 +29,26 @@ func TestCLIRefusesWhenStdinIsNotATerminal(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected a non-zero exit with no terminal attached, got success:\n%s", out)
 	}
-	for _, want := range []string{"terminal", "orion plan"} {
+	for _, want := range []string{"terminal", "orion new PRIOR-3"} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("refusal output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// The terminal is required for the INTERVIEW, not for the command. A key
+// gets past the gate and fails later on credentials instead -- which is what
+// makes the path usable from a script (OR-349). Asserted through the
+// subprocess because the gate lives in runNew(), which newRun() never runs.
+func TestCLIDoesNotDemandATerminalForAnIdeaKey(t *testing.T) {
+	bin := orionBinary(t)
+	cmd := testproc.Command(t, bin, "new", "PRIOR-3")
+	cmd.Env = append(cmd.Env, "ORION_HOME=/nonexistent-home-for-test")
+	out, _ := cmd.CombinedOutput()
+	// It still exits non-zero here: no Jira credentials in the test
+	// environment. The point is WHICH refusal it reaches.
+	if strings.Contains(string(out), "needs a terminal") {
+		t.Errorf("an idea key was refused for want of a terminal:\n%s", out)
 	}
 }
 
