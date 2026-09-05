@@ -183,7 +183,11 @@ func ConsoleReset() {
 	console.mu.Lock()
 	defer console.mu.Unlock()
 	flushLocked()
+	// `at` too. It is the identity-refresh clock (OR-346), and a reset that
+	// left it set carries one caller's timing into the next one's first
+	// line -- exactly the cross-talk the rest of this reset exists to stop.
 	console.w, console.have, console.repeat, console.last = nil, false, 0, Line{}
+	console.at = time.Time{}
 }
 
 func flushLocked() {

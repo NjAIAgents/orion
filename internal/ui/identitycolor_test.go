@@ -108,3 +108,25 @@ func TestAGapReStatesWhoTheLineBelongsTo(t *testing.T) {
 			identityRefresh, lines[len(lines)-1])
 	}
 }
+
+// ConsoleReset is the boundary BETWEEN runs: nothing about the previous one
+// may reach the next. That has to include the identity-refresh clock added
+// for OR-346, or one run's timing decides whether the next run's first line
+// states who it belongs to.
+func TestConsoleResetClearsTheIdentityClockToo(t *testing.T) {
+	now := time.Now()
+	restore := clock
+	clock = func() time.Time { return now }
+	t.Cleanup(func() { clock = restore; ConsoleReset() })
+
+	var first bytes.Buffer
+	ConsoleReset()
+	Say(&first, "OR-154", "qa", VerbWorking, "ran go test")
+
+	ConsoleReset()
+	if !console.at.IsZero() {
+		t.Errorf("ConsoleReset left the identity clock at %v; a later run's "+
+			"first line then depends on when an earlier, unrelated run "+
+			"printed (OR-154)", console.at)
+	}
+}
