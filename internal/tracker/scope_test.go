@@ -68,3 +68,45 @@ func TestProseOnTheDeclarationLineIsNotReadAsAPath(t *testing.T) {
 		t.Fatalf("DeclaredScope = %v, want %v -- an entry with spaces is prose", got, want)
 	}
 }
+
+// The label is a convention, not a case-sensitive token -- a description
+// typed as "FILES:" or "Files:" means the same declaration.
+func TestTheDeclarationLabelIsCaseInsensitive(t *testing.T) {
+	for _, line := range []string{
+		"Files: internal/watch",
+		"FILES: internal/watch",
+		"files: internal/watch",
+		"FiLeS: internal/watch",
+	} {
+		got := DeclaredScope(line)
+		if len(got) != 1 || got[0] != "internal/watch" {
+			t.Errorf("DeclaredScope(%q) = %v, want [internal/watch]", line, got)
+		}
+	}
+}
+
+// A path repeated on the same line is the same mistake as repeating it
+// across lines -- the union must still de-duplicate.
+func TestPathsAreDeduplicatedWithinOneLine(t *testing.T) {
+	got := DeclaredScope("Files: internal/a, internal/a, internal/b, internal/a")
+	want := []string{"internal/a", "internal/b"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DeclaredScope = %v, want %v", got, want)
+	}
+}
+
+// A line that declares the label but names nothing real -- blank entries, or
+// entries that are only whitespace -- is not a declaration of an empty
+// scope; it reads the same as no line at all.
+func TestADeclarationOfOnlyBlanksReadsAsAbsent(t *testing.T) {
+	for _, desc := range []string{
+		"Files:",
+		"Files:   ",
+		"Files: , ,",
+		"Files:  ,   ,  ",
+	} {
+		if got := DeclaredScope(desc); len(got) != 0 {
+			t.Errorf("DeclaredScope(%q) = %v, want nothing", desc, got)
+		}
+	}
+}

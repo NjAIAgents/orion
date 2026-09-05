@@ -207,3 +207,86 @@ func TestRecordingATicketTwiceReplacesTheOlderRow(t *testing.T) {
 		t.Errorf("kept %v, want the latest [b.go]", got)
 	}
 }
+
+// Two different pieces of ground are already spoken for by two different
+// working tickets. Each candidate is judged against that set on its own
+// merits: one colliding candidate must not drag down a sibling that shares
+// nothing with it, and the ticket it is held against must be the one it
+// actually collides with, not whichever came first in the working list.
+func TestEachCandidateIsHeldOnlyAgainstTheWorkItActuallyCollidesWith(t *testing.T) {
+	ds := Plan(Facts{
+		Working: []tracker.Issue{
+			scoped("OR-A", "internal/a"),
+			scoped("OR-B", "internal/b"),
+		},
+		Candidates: []tracker.Issue{
+			scoped("OR-1", "internal/a"), // collides with OR-A only
+			scoped("OR-2", "internal/b"), // collides with OR-B only
+			scoped("OR-3", "internal/c"), // collides with neither
+		},
+		Free: 3,
+	})
+
+	d1 := verdictOf(ds, "OR-1")
+	if d1.Verdict != Hold || !strings.Contains(d1.Reason, "OR-A") {
+		t.Fatalf("OR-1 = %s (%q), want held against OR-A", d1.Verdict, d1.Reason)
+	}
+	if strings.Contains(d1.Reason, "OR-B") {
+		t.Errorf("OR-1 was held against OR-B, which shares nothing with it: %q", d1.Reason)
+	}
+
+	d2 := verdictOf(ds, "OR-2")
+	if d2.Verdict != Hold || !strings.Contains(d2.Reason, "OR-B") {
+		t.Fatalf("OR-2 = %s (%q), want held against OR-B", d2.Verdict, d2.Reason)
+	}
+	if strings.Contains(d2.Reason, "OR-A") {
+		t.Errorf("OR-2 was held against OR-A, which shares nothing with it: %q", d2.Reason)
+	}
+
+	// The remainder: a candidate that collides with neither working ticket
+	// must be admitted, not swept into a hold because its siblings were held.
+	if d3 := verdictOf(ds, "OR-3"); d3.Verdict != Admit {
+		t.Errorf("OR-3 = %s, want admit: it collides with neither OR-A nor OR-B", d3.Verdict)
+	}
+}
+
+// Missed is the half of the ledger that asks "what did planning predict that
+// never landed". A path declared but not touched, at file grain, is a miss.
+func TestPredictionMissedReturnsDeclaredPathsNotCoveredByActualFiles(t *testing.T) {
+	p := Prediction{
+		Declared: []string{"internal/queue", "internal/fanout"},
+		Actual:   []string{"internal/queue/plan.go"},
+	}
+	if got := p.Missed(); len(got) != 1 || got[0] != "internal/fanout" {
+		t.Errorf("Missed = %v, want [internal/fanout]: internal/queue was touched, internal/fanout was not",
+			got)
+	}
+}
+
+// Extra is the other half: what the branch touched that nothing declared.
+func TestPredictionExtraReturnsActualFilesNotCoveredByDeclaredPaths(t *testing.T) {
+	p := Prediction{
+		Declared: []string{"internal/queue"},
+		Actual:   []string{"internal/queue/plan.go", "internal/watch/watch.go"},
+	}
+	if got := p.Extra(); len(got) != 1 || got[0] != "internal/watch/watch.go" {
+		t.Errorf("Extra = %v, want [internal/watch/watch.go]: internal/queue/plan.go was declared",
+			got)
+	}
+}
+
+// Both halves of the ledger honour directory grain through fanout.Overlap: a
+// declared internal/queue is not a miss when the change landed in
+// internal/queue/plan.go, and that file is not extra either.
+func TestPredictionHonoursDirectoryGrain(t *testing.T) {
+	p := Prediction{
+		Declared: []string{"internal/queue"},
+		Actual:   []string{"internal/queue/plan.go"},
+	}
+	if got := p.Missed(); len(got) != 0 {
+		t.Errorf("Missed = %v, want nothing: internal/queue covers internal/queue/plan.go", got)
+	}
+	if got := p.Extra(); len(got) != 0 {
+		t.Errorf("Extra = %v, want nothing: internal/queue/plan.go is covered by internal/queue", got)
+	}
+}
