@@ -46,6 +46,20 @@ func TestAFanChildCannotRunAnything(t *testing.T) {
 	}
 }
 
+// A fan of several packages dispatches children that all run as the same
+// actor and stage; the package is the only thing that tells one child's
+// roster line from another's (OR-335), so fanChildOptions must carry it as
+// About rather than only in the prompt.
+func TestFanChildOptionsCarriesThePackageAsAbout(t *testing.T) {
+	opts := fanChildOptions("OR-230", events.ActorImplementer,
+		fanout.Assignment{Package: "./internal/a", Task: "change it"})
+
+	if opts.About != "./internal/a" {
+		t.Errorf("About = %q, want the package so the roster line names which package "+
+			"this child was given", opts.About)
+	}
+}
+
 // The other half of this -- that the bound survives the trip into argv -- is
 // TestAToolBoundedRunSaysSoOnItsCommandLine in internal/supervisor, next to
 // the builder it asserts against.

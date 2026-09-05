@@ -30,7 +30,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -71,6 +73,39 @@ func (errNotFound) Error() string { return "no test command this package is cert
 // failure it was collected for.
 const maxOutput = 64 << 10
 
+func statOK(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// shellScript is how a .sh is invoked (OR-334).
+//
+// A shell script is not an executable on Windows: exec'ing one directly
+// fails with `fork/exec ...`, which is what every suite test hit there --
+// invisibly, because the Windows CI leg reported success over its own
+// failures. POSIX can exec it directly (the shebang does the work), and
+// Windows runners carry Git Bash, so naming bash explicitly is the one form
+// that works on both.
+func shellScript(path string) []string { return ScriptCommand(path) }
+
+// ScriptCommand is the argv that runs a shell script on this platform.
+//
+// Exported because internal/work's red-before-green check runs the same
+// scripts/test.sh and had its own direct exec of it, which meant OR-334's
+// Windows fix reached one caller and not the other: the second one failed
+// with "%1 is not a valid Win32 application" for as long as the Windows leg
+// went unread (OR-341). One spelling, one place.
+//
+// Windows will not exec a file because it starts with `#!` -- it dispatches
+// on the extension -- so the interpreter has to be named. Git Bash is what
+// the CI job's own steps use.
+func ScriptCommand(path string) []string {
+	if runtime.GOOS == "windows" {
+		return []string{"bash", path}
+	}
+	return []string{path}
+}
+
 // Detect returns the command that runs this repository's suite, or
 // ErrNotFound.
 //
@@ -84,10 +119,10 @@ const maxOutput = 64 << 10
 // how many packages compile and run at once, which is the toolchain doing
 // natively what Orion would otherwise reimplement worse.
 func Detect(dir string, procs int) ([]string, error) {
-	if _, err := os.Stat(filepath.Join(dir, "scripts", "test.sh")); err == nil {
+	if script := filepath.Join(dir, "scripts", "test.sh"); statOK(script) {
 		// No concurrency flag: the script owns its own invocation, and
 		// second-guessing it here would fight the repository's own choice.
-		return []string{filepath.Join(dir, "scripts", "test.sh")}, nil
+		return shellScript(script), nil
 	}
 	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 		args := []string{"go", "test", "./...", "-count=1"}
@@ -116,7 +151,7 @@ func Run(dir string, argv []string, timeout time.Duration) Result {
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 	setProcessGroup(cmd)
 
@@ -149,8 +184,19 @@ func Run(dir string, argv []string, timeout time.Duration) Result {
 	case <-ctx.Done():
 		killGroup(cmd)
 		// Collect the exit rather than abandoning the goroutine, so the
-		// output written before the kill is in the buffer when it is read.
-		<-done
+		// output written before the kill is in the buffer when it is read --
+		// but only for a bounded grace. Wait returns when the output PIPES
+		// close, not when the child exits, and on Windows a grandchild the
+		// kill could not reach inherits them: measured on the CI leg, a
+		// 300ms deadline waited out a grandchild's full 60 seconds here
+		// (OR-342). taskkill /T was tried first and does not reliably walk
+		// an msys2 process tree. Honouring Run's own deadline wins over a
+		// complete tail of output from a run being destroyed anyway; the
+		// buffer is locked, so a straggler writing during the read is safe.
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
 	}
 
 	res.Output = tail(buf.String(), maxOutput)
@@ -205,4 +251,26 @@ func shellish(argv []string) string {
 		out += a
 	}
 	return out
+}
+
+// lockedBuffer is a bytes.Buffer safe for one writer racing one reader.
+//
+// Needed by the abandoned-wait path in Run: when a kill cannot reach a
+// grandchild, Run stops waiting and reads the output while that survivor may
+// still be writing through the inherited pipe.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

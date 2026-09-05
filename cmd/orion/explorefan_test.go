@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -81,11 +80,7 @@ func claudePerQuestion(t *testing.T, answers map[string]string) {
 	}
 	b.WriteString("  esac\ndone\necho 'no answer for that question' >&2\nexit 1\n")
 
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(b.String()), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeBin(t, "claude", b.String())
 }
 
 // markerCollidesWithPrompt reports a marker that every child would match.

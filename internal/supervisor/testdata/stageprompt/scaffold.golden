@@ -1,0 +1,18 @@
+Lay out the repository skeleton for this project.
+
+Use the /scaffold-project skill. It grounds the security and governance
+layer in the OpenSSF OSPS Baseline and delegates the stack layout to the
+ecosystem's own generator rather than inventing one.
+
+Read docs/intent/thing.md and specs/thing.spec.md first
+so the stack choice follows the design rather than a default.
+
+Work on a branch cut from develop. Do not commit to develop or main directly;
+the gate will refuse it and the refusal is correct.
+
+THIS RUN IS HEADLESS. Nothing will ever be announced back to you: a command
+run with run_in_background is never reported as finished, ScheduleWakeup does
+nothing, and no notification of any kind arrives. Run long commands in the
+FOREGROUND and wait for them there, however long they take. If you find
+yourself checking whether something has finished yet, you are already stuck --
+the breaker will stop you, and the work will be lost.

@@ -40,6 +40,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/procsafe"
 	"github.com/orion-sdlc/orion/internal/quota"
 	"github.com/orion-sdlc/orion/internal/registry"
+	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -100,6 +101,17 @@ type Options struct {
 	// it belongs to no ticket, so there is nothing to attribute it to.
 	Actor string
 	Key   string
+	// About is one short phrase naming what THIS run was given -- the package
+	// it owns, the question it was asked, how many cases it is writing. Used
+	// only by the fan's narration, and only there because the fan is the one
+	// place where N runs share a stage, an actor and a model and differ solely
+	// in their share of the work (OR-335). Without it a fan of five prints
+	// five lines identical but for an index, and no reader can tell which
+	// child is which or why one took three times as long as another.
+	//
+	// Optional and free-form: the fan flattens and clips it. Empty simply
+	// leaves the label as position and name, which is what it was before.
+	About string
 }
 
 type Result struct {
@@ -197,7 +209,11 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	prompt := opts.Prompt
 	if prompt == "" {
 		var err error
-		prompt, err = stagePrompt(ws, opts.Stage)
+		// The toolkit block decides which command this stage delegates to.
+		// Read from the project's own config and passed in, never reached
+		// for inside stagePrompt: the prompt builder stays a pure function
+		// of what it is handed, which is what makes it testable per stage.
+		prompt, err = stagePrompt(ws, opts.Stage, config.Load(ws.RepoDir()).Toolkit)
 		if err != nil {
 			return nil, err
 		}
@@ -235,7 +251,7 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	lim := budget.Limits{WeeklyUSD: cfg.Budget.WeeklyUSD, WeeklyTokens: cfg.Budget.WeeklyTokens}
 	ledger, ledgerErr := budget.Load(workspace.Home())
 	if ledgerErr != nil {
-		fmt.Fprintf(os.Stderr, "orion: %v\n", ledgerErr)
+		fmt.Fprintf(ui.Console(), "orion: %v\n", ledgerErr)
 	}
 	if st := ledger.Status(lim); st.Crossed > 0 && !opts.SkipBudgetCheck {
 		return &Result{
@@ -252,7 +268,7 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 		return nil, err
 	}
 	for _, warning := range ac.Warnings {
-		warnOnce(os.Stderr, warning)
+		warnOnce(ui.Console(), warning)
 	}
 
 	overall := time.Now()
@@ -375,11 +391,40 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 		Reason: last.Reason, Log: last.LogPath, Attempts: last.Attempts,
 	})
 	if err := ws.SaveTask(); err != nil {
-		fmt.Fprintf(os.Stderr, "orion: could not update task.json: %v\n", err)
+		fmt.Fprintf(ui.Console(), "orion: could not update task.json: %v\n", err)
 	}
 
 	if last.ExitCode != 0 {
 		return last, fmt.Errorf("stage %s failed: %s", opts.Stage, last.Reason)
+	}
+
+	// The stage exited 0. That is the agent's opinion of itself, and it is
+	// worth exactly as much as the artifact it left behind: a skill name that
+	// resolves to nothing produces a run that reads the prompt, reports it
+	// cannot find the skill, and exits 0. Checked HERE, after the agent has
+	// exited and before the run is handed on, so a wrong orion.json line is
+	// named at the stage that carries it.
+	//
+	// Only when the STAGE PROMPT ran. A caller that supplied its own prompt --
+	// fix, triage, done, aiops, dba -- asked for something else entirely, and
+	// the artifact contract belongs to the prompt that states it (stagePrompt,
+	// "write X and commit it"), not to the stage name it was filed under.
+	// A dry run is excluded for the obvious reason: nothing was asked to write
+	// anything.
+	if !opts.DryRun && opts.Prompt == "" {
+		if err := checkStageArtifact(ws.RepoDir(), cfg, opts.Stage, ws.Task.Slug); err != nil {
+			last.Reason = "the stage left no artifact"
+			ws.Task.Status = "failed"
+			if saveErr := ws.SaveTask(); saveErr != nil {
+				fmt.Fprintf(ui.Console(), "orion: could not update task.json: %v\n", saveErr)
+			}
+			notify.Send(notify.Event{
+				Level: notify.Blocked, Workspace: ws.ID, Channel: channelFor(ws),
+				Title: fmt.Sprintf("orion: %s left no artifact in %s", opts.Stage, ws.ID),
+				Body:  err.Error() + "\nlog: " + last.LogPath,
+			})
+			return last, err
+		}
 	}
 	// Notify on failure, not only on the quota and timeout paths that
 	// already did. A supervisor that stays silent when a stage fails is one
@@ -456,7 +501,7 @@ func reportContextPressure(peak, window int) {
 	if p < 70 {
 		return
 	}
-	fmt.Fprintf(os.Stderr,
+	fmt.Fprintf(ui.Console(),
 		"orion: context peaked at %d%% of the %s window on this stage (%s in one turn).\n"+
 			"  Orion cannot compact mid-run; the CLI exposes no control for it.\n"+
 			"  If this recurs, split the stage: each stage starts a fresh session.\n",
@@ -478,11 +523,11 @@ func recordUsage(ws *workspace.Workspace, stage, out string) {
 		l.Record(run)
 	}); err != nil {
 		if errors.Is(err, procsafe.ErrLockTimeout) {
-			fmt.Fprintf(os.Stderr,
+			fmt.Fprintf(ui.Console(),
 				"orion: recorded usage without the lock (%v); if two watchers are "+
 					"running, spend may be undercounted for this run\n", err)
 		} else {
-			fmt.Fprintf(os.Stderr, "orion: could not record usage: %v\n", err)
+			fmt.Fprintf(ui.Console(), "orion: could not record usage: %v\n", err)
 			return
 		}
 	}
@@ -535,10 +580,10 @@ func recordTicketCost(ws *workspace.Workspace, opts Options, res *Result, out st
 	r.Project, r.Session = registry.ProjectOf(opts.Key), res.SessionID
 	if err := cost.Record(log, workspace.Home(), opts.Actor, opts.Key, r); err != nil {
 		if errors.Is(err, procsafe.ErrLockTimeout) {
-			fmt.Fprintf(os.Stderr,
+			fmt.Fprintf(ui.Console(),
 				"orion: appended the usage history without the lock (%v)\n", err)
 		} else {
-			fmt.Fprintf(os.Stderr, "orion: could not append the usage history: %v\n", err)
+			fmt.Fprintf(ui.Console(), "orion: could not append the usage history: %v\n", err)
 		}
 	}
 }
@@ -689,10 +734,14 @@ func runOnce(ws *workspace.Workspace, bin, prompt string, opts Options, attempt 
 	// the ring buffer holds the tail for quota detection and for the closing
 	// result object.
 	cmd.Stdout = io.MultiWriter(logFile, tail, activity)
-	// stderr stays on the terminal. It is where the CLI reports its own
-	// failures -- a bad flag, an auth problem -- and swallowing those would
-	// turn a clear error into a silent empty run.
-	cmd.Stderr = io.MultiWriter(os.Stderr, logFile, tail)
+	// stderr reaches the terminal only when nothing else owns it. It is
+	// where the CLI reports its own failures -- a bad flag, an auth problem
+	// -- and the log and the tail keep every byte either way. While the
+	// watch's region is up it must NOT reach the screen: the region erases
+	// by the rows it drew, and a stream it cannot count moves the cursor
+	// under it, which is how the window's frame ended up stacked down the
+	// scrollback once per agent write (OR-330).
+	cmd.Stderr = io.MultiWriter(agentStderr(), logFile, tail)
 
 	started := time.Now()
 	if err := cmd.Start(); err != nil {
@@ -1133,4 +1182,13 @@ func quoteAll(args []string) []string {
 		}
 	}
 	return out
+}
+
+// agentStderr is where a subprocess's stderr goes besides its log: the
+// terminal, unless a live region owns it (OR-330).
+func agentStderr() io.Writer {
+	if ui.ConsoleEngaged() {
+		return io.Discard
+	}
+	return os.Stderr
 }

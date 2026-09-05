@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -27,17 +29,51 @@ type fakeTracker struct {
 	searchErr   error
 	labelErr    error
 	commentErr  error
+	// transitionErr is the workflow with no Done transition -- the tracker
+	// that cannot close a ticket however correct the request is. A merge must
+	// survive it (OR-314).
+	transitionErr error
 }
 
 func newTracker() *fakeTracker {
 	return &fakeTracker{
 		added: map[string][]string{}, removed: map[string][]string{},
 		transitions: map[string]string{}, comments: map[string][]string{},
+		children: map[string][]tracker.Issue{},
 	}
 }
 
-func (f *fakeTracker) Search(string, int) ([]tracker.Issue, error) {
-	return f.issues, f.searchErr
+// Search answers with the planted issues, honouring a `labels = "..."` clause.
+//
+// IT HAS TO READ THAT ONE CLAUSE. A JQL-blind fake reports every planted issue
+// as a match for every query, and readySet asks specifically for the tickets
+// carrying orion-ready -- so planting an issue merely to give it a description
+// made the pass treat it as waiting for the next batch and skip it entirely
+// (OR-311's path). The ticket then never reached one(), which reads as a
+// defect in whatever the test was actually about. Every other query is
+// unfiltered, exactly as before, so a fake with no labels behaves as it
+// always did.
+func (f *fakeTracker) Search(jql string, _ int) ([]tracker.Issue, error) {
+	if f.searchErr != nil {
+		return nil, f.searchErr
+	}
+	want := ""
+	if m := regexp.MustCompile(`labels\s*=\s*"([^"]+)"`).FindStringSubmatch(jql); m != nil {
+		want = m[1]
+	}
+	if want == "" {
+		return f.issues, nil
+	}
+	var out []tracker.Issue
+	for _, i := range f.issues {
+		for _, l := range i.Labels {
+			if strings.EqualFold(l, want) {
+				out = append(out, i)
+				break
+			}
+		}
+	}
+	return out, nil
 }
 func (f *fakeTracker) Children(key string) ([]tracker.Issue, error) {
 	return f.children[key], f.childErr
@@ -51,6 +87,9 @@ func (f *fakeTracker) SetLabels(key string, add, remove []string) error {
 	return nil
 }
 func (f *fakeTracker) TransitionTo(key, status string) error {
+	if f.transitionErr != nil {
+		return f.transitionErr
+	}
 	f.transitions[key] = status
 	return nil
 }
@@ -73,10 +112,7 @@ func bound(t *testing.T) (home, source string) {
 	if err := os.MkdirAll(source, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ws, err := workspace.New(workspace.NewOptions{Idea: "fcia"})
-	if err != nil {
-		t.Fatalf("creating workspace: %v", err)
-	}
+	ws := newWorkspace(t, "fcia")
 	if err := registry.Bind(home, registry.Entry{
 		Key: "FCIA", Source: source, Workspace: ws.ID,
 	}); err != nil {
@@ -128,6 +164,53 @@ func TestPendingChecksChangeNothing(t *testing.T) {
 	}
 	if !strings.Contains(out, "still running") {
 		t.Errorf("the user should be told why nothing happened, got: %s", out)
+	}
+}
+
+// The rollup the verdict was decided from is CARRIED OUT, so the watcher can
+// name the checks without asking the forge again (OR-310).
+//
+// This is the only thing that makes the per-check row free on an ordinary
+// watch: drop Checks here and the display can only get them with a second
+// `gh pr view` per redraw, which is the pull this design refuses.
+func TestAPendingResultCarriesTheChecksItWasDecidedFrom(t *testing.T) {
+	home, _ := bound(t)
+	res, _, _ := run(t, home, newTracker(), PR{
+		Verdict: VerdictPending, Detail: "1 running",
+		Checks: []Check{
+			{Name: "go (ubuntu)", State: CheckPassed},
+			{Name: "go (windows)", State: CheckRunning},
+		},
+	}, Options{})
+
+	if len(res[0].Checks) != 2 {
+		t.Fatalf("the result must carry the rollup, got %+v", res[0].Checks)
+	}
+	if res[0].Checks[1].Name != "go (windows)" || res[0].Checks[1].State != CheckRunning {
+		t.Errorf("the checks must arrive as read: %+v", res[0].Checks)
+	}
+}
+
+// Result.Checks is a field on the struct, not something derived from the
+// verdict -- so a failing read carries the rollup exactly as a pending one
+// does (OR-310). The prior test only proved this for VerdictPending; a
+// watcher naming the check that actually failed needs the same field
+// populated on the verdict that ends the wait.
+func TestResultCarriesChecksWhateverTheVerdict(t *testing.T) {
+	home, _ := bound(t)
+	res, _, _ := run(t, home, newTracker(), PR{
+		Verdict: VerdictFailing, Detail: "1 failed",
+		Checks: []Check{
+			{Name: "go (ubuntu)", State: CheckPassed},
+			{Name: "go (windows)", State: CheckFailed},
+		},
+	}, Options{})
+
+	if len(res[0].Checks) != 2 {
+		t.Fatalf("the Checks field must be populated regardless of verdict, got %+v", res[0].Checks)
+	}
+	if res[0].Checks[1].Name != "go (windows)" || res[0].Checks[1].State != CheckFailed {
+		t.Errorf("the checks must arrive as read: %+v", res[0].Checks)
 	}
 }
 
@@ -273,7 +356,10 @@ func TestNoPullRequestReleasesFromCIWaitInsteadOfPollingForever(t *testing.T) {
 	if res[0].Verdict != VerdictUnknown || !res[0].Changed {
 		t.Fatalf("unexpected result: %+v", res[0])
 	}
-	if got := jira.removed["FCIA-6"]; len(got) != 1 || got[0] != tracker.LabelCIWait {
+	// Contains, not an exact list: failing() clears every pre-failure state
+	// (OR-345), and pinning the length here is what let a culprit keep
+	// orion-ready alongside orion-failed and be re-assembled.
+	if got := jira.removed["FCIA-6"]; !slices.Contains(got, tracker.LabelCIWait) {
 		t.Errorf("must clear ci-wait so nothing polls it again: %v", got)
 	}
 	if got := jira.added["FCIA-6"]; len(got) != 1 || got[0] != tracker.LabelFailed {
@@ -309,7 +395,10 @@ func TestNoPullRequestWithARecordedBranchDoesNotClaimItWasGuessed(t *testing.T) 
 	if res[0].Verdict != VerdictUnknown || !res[0].Changed {
 		t.Fatalf("unexpected result: %+v", res[0])
 	}
-	if got := jira.removed["FCIA-6"]; len(got) != 1 || got[0] != tracker.LabelCIWait {
+	// Contains, not an exact list: failing() clears every pre-failure state
+	// (OR-345), and pinning the length here is what let a culprit keep
+	// orion-ready alongside orion-failed and be re-assembled.
+	if got := jira.removed["FCIA-6"]; !slices.Contains(got, tracker.LabelCIWait) {
 		t.Errorf("must clear ci-wait so nothing polls it again: %v", got)
 	}
 	if got := jira.added["FCIA-6"]; len(got) != 1 || got[0] != tracker.LabelFailed {

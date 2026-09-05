@@ -1,8 +1,6 @@
 package supervisor
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,12 +11,7 @@ import (
 // fakeClaudeScript puts a `claude` stub with the given shell body onto PATH.
 func fakeClaudeScript(t *testing.T, body string) {
 	t.Helper()
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "claude")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeBin(t, "claude", "#!/bin/sh\n"+body)
 }
 
 // OR-212 as the supervisor sees it: an expired login makes the CLI complain on

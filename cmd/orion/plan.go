@@ -42,6 +42,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/dbaplan"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
@@ -153,7 +154,7 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 	}
 
 	// 4. What would be dispatched, and what it costs, before it is.
-	printPlanRoster(out)
+	printPlanRoster(out, ws.ID, planIdea(p))
 	st, budgetSet := printPlanCostShape(out, cfg, opts.Home)
 
 	// 5. The checkpoint, last, immediately before the handoff.
@@ -200,13 +201,7 @@ func planWorkspace(out io.Writer, p tracker.Project, slug string, opts planOptio
 			existing.ID, planExistingOwner(existing, p.Key), existing.ID, planStages[0].Stage, existing.ID)
 	}
 
-	// The description is what the project says the work is; the name is the
-	// honest fallback when nobody filled one in. Never the key: "ORPAY" tells
-	// a later stage prompt nothing it can design from.
-	idea := p.Description
-	if idea == "" {
-		idea = p.Name
-	}
+	idea := planIdea(p)
 
 	if opts.DryRun {
 		fmt.Fprintln(out, ui.Heading(out, "Workspace"))
@@ -269,6 +264,19 @@ func planExistingOwner(ws *workspace.Workspace, wantKey string) string {
 	return wantKey + " (unverified: that workspace records no tracker binding)"
 }
 
+// planIdea is what the project says the work is, and it is the text the
+// roster's own signals are read out of (OR-150).
+//
+// The description first; the name is the honest fallback when nobody filled
+// one in. Never the key: "ORPAY" tells a later stage prompt nothing it can
+// design from, and it holds no signal either.
+func planIdea(p tracker.Project) string {
+	if p.Description != "" {
+		return p.Description
+	}
+	return p.Name
+}
+
 // printPlanRoster is CONVENTIONS-orchestration §R: every agent, what it will
 // do, before dispatch.
 //
@@ -276,7 +284,13 @@ func planExistingOwner(ws *workspace.Workspace, wantKey string) string {
 // place a multi-agent run can be made legible. This is the sequential shape
 // §R distinguishes -- each stage feeds the next -- so it prints the chain,
 // and a stall is attributable to a named stage rather than to "it is thinking".
-func printPlanRoster(out io.Writer) {
+//
+// Then the actors the IDEA selected, each beside the word that selected it. A
+// roster that varies between two runs without saying why is as bad as one that
+// cannot vary at all: the reader cannot tell a considered choice from a bug,
+// which is exactly how the frontend developer stayed unreachable for a release
+// while every run looked correct (internal/work/route.go, OR-191).
+func printPlanRoster(out io.Writer, wsID, idea string) {
 	fmt.Fprintln(out, ui.Heading(out, "Roster"))
 	fmt.Fprintf(out, "  %s\n", ui.Dim(out, "sequential: each stage reads what the one before it committed"))
 
@@ -295,7 +309,62 @@ func printPlanRoster(out io.Writer) {
 		fmt.Fprintf(out, "  %d. %-*s  %-*s  %-6s  %s\n", i+1,
 			stageW, s.Stage, whoW, who[i], orNone(actors.Model(s.Actor)), ui.Dim(out, s.What))
 	}
+	printPlanSelected(out, wsID, idea)
 	fmt.Fprintln(out)
+}
+
+// planActorStages are the planning steps an actor runs only when the idea
+// selects it.
+//
+// NOT planStages, and the difference is the whole reason there are two lists.
+// planStages is the chain every project pays for; these run when the project
+// has the thing they are about. The database architect is the first: choosing
+// a database for a project that stores nothing is a run nobody should be
+// billed for, and the roster already decides -- for free, from the idea's own
+// words -- whether this project is one of those (OR-150, OR-154).
+//
+// Announced with the command that runs it, because a selected actor that is
+// named and never invoked is indistinguishable from one that was announced by
+// mistake.
+var planActorStages = map[string]string{events.ActorDBA: dbaplan.Stage}
+
+// printPlanSelected names the actors the idea itself put on this run, and the
+// signal that put each one there.
+//
+// NEVER SILENT, the rule internal/work/route.go states for the same reason: an
+// idea that selects nobody is a normal outcome, and a run that prints nothing
+// in that case is indistinguishable from selection having failed to run at all.
+func printPlanSelected(out io.Writer, wsID, idea string) {
+	var chosen []planActor
+	for _, a := range planRoster(idea) {
+		if a.FromIdea {
+			chosen = append(chosen, a)
+		}
+	}
+	if len(chosen) == 0 {
+		fmt.Fprintf(out, "  %s\n", ui.Dim(out, fmt.Sprintf(
+			"the idea names no other actor, so the %d stages above are the whole roster",
+			len(planStages))))
+		return
+	}
+
+	fmt.Fprintf(out, "  %s\n", ui.Dim(out, "also on this run, selected by the idea:"))
+	whoW := 0
+	who := make([]string, len(chosen))
+	for i, a := range chosen {
+		who[i] = actors.Display(a.ID)
+		if n := len([]rune(who[i])); n > whoW {
+			whoW = n
+		}
+	}
+	for i, a := range chosen {
+		fmt.Fprintf(out, "     %-*s  %-6s  %s\n",
+			whoW, who[i], orNone(actors.Model(a.ID)), ui.Dim(out, a.Signal))
+		if stage, ok := planActorStages[a.ID]; ok {
+			fmt.Fprintf(out, "     %-*s  %-6s  %s\n", whoW, "", "",
+				ui.Dim(out, "orion run "+wsID+" --stage "+stage))
+		}
+	}
 }
 
 // printPlanCostShape is CONVENTIONS-orchestration §C: the cost shape, stated

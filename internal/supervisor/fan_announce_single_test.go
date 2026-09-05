@@ -1,3 +1,5 @@
+//go:build !windows
+
 package supervisor
 
 import (
@@ -39,7 +41,7 @@ func TestFanStillAnnouncesForTwoJobs(t *testing.T) {
 		{Stage: "explore", Prompt: "y", MaxMinutes: 1, MaxTurns: 1, Actor: "explore"},
 	})
 
-	if got := out.String(); !strings.Contains(got, "fan-out") {
+	if got := out.String(); !strings.Contains(got, "fanning out") {
 		t.Errorf("a fan-out of two children printed nothing, want the cost-shape line: %q", got)
 	}
 }

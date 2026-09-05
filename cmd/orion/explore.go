@@ -50,8 +50,11 @@ const (
 // spawning a process -- the same reason fixOptions is split from fixRun.
 func exploreOptions(key, question string) supervisor.Options {
 	return supervisor.Options{
-		Stage:      "explore",
-		Prompt:     supervisor.ExplorePrompt(question),
+		Stage:  "explore",
+		Prompt: supervisor.ExplorePrompt(question),
+		// The question itself, so a fan of five explores reads as five
+		// different questions rather than five copies of the word "explore".
+		About:      question,
 		MaxMinutes: exploreMaxMinutes,
 		MaxTurns:   exploreMaxTurns,
 		// Its own actor on its own pinned cheap model rather than the asking

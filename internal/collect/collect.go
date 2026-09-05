@@ -100,6 +100,19 @@ type PR struct {
 	// tickets share one run -- so the operator needs to see WHICH of the
 	// three platforms is still going, not a count (OR-264).
 	Checks []Check
+	// FailedOn is the ref whose CI run actually went red, when that is not
+	// the ticket's own branch (OR-336).
+	//
+	// A batch culprit failed on orion/batch, tested alongside its siblings;
+	// its own branch's last run is stale, green, or absent. The fix agent
+	// looks the log up by ref, so without this it searched the member's
+	// branch, found nothing, and was handed the conviction sentence instead
+	// of the failure -- two attempts were spent reporting "cannot see the
+	// actual CI log", which was exactly true.
+	//
+	// Empty on the per-branch path, where the branch and the failure are the
+	// same thing.
+	FailedOn string
 }
 
 // Check is one CI check and where it got to.
@@ -152,7 +165,9 @@ type Deps struct {
 	//
 	// Takes the event log so the fix run's activity is attributed and recorded
 	// the same way every other supervised run's is (OR-176).
-	Fix func(ws *workspace.Workspace, key, branch, failure string, log *events.Log) (pushed bool, summary string, denied *PolicyDenial, err error)
+	// failedOn is the ref whose run to read the log from, or "" to read the
+	// branch's own (OR-336).
+	Fix func(ws *workspace.Workspace, key, branch, failedOn, failure string, log *events.Log) (pushed bool, summary string, denied *PolicyDenial, err error)
 	// Judge puts ONE question to a model about a finished, green run: does
 	// this diff do what the ticket asked for (OR-244)? It returns the reply
 	// verbatim; internal/done parses it.
@@ -163,6 +178,18 @@ type Deps struct {
 	// already exists, cost nothing and cannot hallucinate, so they are the
 	// part that must not depend on a model being configured.
 	Judge func(ws *workspace.Workspace, key, prompt string) (string, error)
+	// Conform puts the OTHER question about the same green run: is this the
+	// thing we agreed to build (OR-158)? Separate from Judge rather than
+	// sharing it, because the two run as different actors on their own models
+	// and each one's spend belongs on its own row of the ticket's cost report
+	// -- a shared runner would attribute both to whichever actor it was built
+	// for.
+	//
+	// Nil disables the pass entirely, and unlike done triage there is no
+	// rule-based half left standing: "does this match the plan" is exactly the
+	// question no rule expresses, which is why it is a separate pass rather
+	// than a fourth check inside internal/done.
+	Conform func(ws *workspace.Workspace, key, prompt string) (string, error)
 	// Slack reads approvals. Nil disables the approval path entirely, which
 	// is the correct behaviour when the extra OAuth scopes are not granted:
 	// Orion then reports that checks pass and waits for a human to merge.
@@ -245,10 +272,24 @@ type Result struct {
 	PR      string
 	Changed bool // whether anything was actually done
 	Err     error
+	// Checks is what THIS ticket's CI run is doing, carried out of the read
+	// the verdict was already made from.
+	//
+	// Pushed rather than pulled, for the reason internal/cost/cost.go gives
+	// about spend: the watcher redraws four times a second, and a display
+	// that asked the forge what the checks were would be the most expensive
+	// thing on the screen. `gh pr view` was called once, for the verdict;
+	// this is the same answer, kept instead of thrown away (OR-310).
+	Checks []Check
 }
 
 // Run reconciles every ticket awaiting CI.
 func Run(opts Options, deps Deps) []Result {
+	// One pass, one fetch per checkout. Cleared HERE rather than at process
+	// start, so a later tick fetches afresh: a memo that outlived the pass
+	// would answer from a remote minutes old, which is the staleness these
+	// fetches exist to prevent (OR-158).
+	resetFetchMemo()
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
@@ -315,30 +356,102 @@ func Run(opts Options, deps Deps) []Result {
 	// pass belongs to one registered project in practice, and a batch spanning
 	// two repositories is not a thing that can be assembled anyway -- so
 	// reading one and using it for the set is honest rather than convenient.
-	if ws, log, w, cfg, ok := batchContext(pass, opts, deps); ok && cfg.Collect.BatchIntegration {
+	//
+	// The context is taken whatever the setting, and its log closed on EVERY
+	// path out. batchContext opens the log before it can know whether
+	// batching is on, so closing only inside the enabled branch leaked a
+	// descriptor on every ordinary pass -- which is every pass, batching
+	// being off by default. Invisible on Linux, where unlink succeeds on an
+	// open file; on Windows `t.TempDir()` cleanup could not remove
+	// events.jsonl, and 80 of this package's tests failed on it as soon as
+	// the Windows leg began to gate (OR-334, OR-340).
+	if ws, log, bw, cfg, ok := batchContext(pass, opts, deps); ok {
 		if log != nil {
 			defer log.Close()
 		}
-		if res := runBatch(pass, cfg, opts, deps, ws, log, w); res != nil {
-			return res
+		if cfg.Collect.BatchIntegration {
+			if res := runBatch(pass, cfg, opts, deps, ws, log, bw); res != nil {
+				return res
+			}
+			// Nothing was assemblable -- no pull requests open yet, say. Fall
+			// through rather than reporting an empty pass, so a ticket that
+			// the per-branch path CAN say something about still gets said.
 		}
-		// Nothing was assemblable -- no pull requests open yet, say. Fall
-		// through rather than reporting an empty pass, so a ticket that the
-		// per-branch path CAN say something about still gets said.
 	}
+
+	// Tickets waiting for the next batch are skipped here, not failed
+	// (OR-311).
+	//
+	// one() below reconciles a ticket against ITS OWN pull request, and a
+	// ready ticket has none by design: OR-253 stopped tickets opening their
+	// own so a batch could land one tested ref. Handing it to that path makes
+	// noPullRequest label it orion-failed for a pull request nobody was ever
+	// going to open -- taking a healthy ticket out of the queue for doing
+	// exactly what it was told.
+	//
+	// They reach here whenever runBatch declined the pass: batch integration
+	// switched off, or a batch that could not assemble. Both mean "not this
+	// pass", not "this ticket is broken". They keep their label and wait.
+	ready := readySet(pass, deps)
 
 	var out []Result
 	for _, key := range pass {
+		if ready[key] {
+			continue
+		}
 		out = append(out, one(key, pass, opts, deps))
 	}
 	return out
 }
 
-// waiting asks the tracker which tickets carry the ci-wait label.
+// readySet is the subset of pass sitting in the integration queue's inbox
+// rather than awaiting its own CI.
+//
+// ONE search for the whole pass, not one per ticket: this runs on every
+// collect tick, and a per-ticket lookup would put N tracker calls on a path
+// whose common case has nothing to do.
+//
+// An unreadable tracker yields an EMPTY set, so every ticket falls through to
+// one(), which reports what it finds. Skipping on failure is how a ticket
+// vanishes from every report while looking fine; reporting a stale verdict is
+// visible and recoverable.
+func readySet(pass []string, deps Deps) map[string]bool {
+	out := map[string]bool{}
+	if len(pass) == 0 || deps.Jira == nil {
+		return out
+	}
+	jql := tracker.JQLAnd(
+		tracker.JQLIn("key", pass...),
+		tracker.JQLEq("labels", tracker.LabelReady),
+	)
+	issues, err := deps.Jira.Search(jql, len(pass))
+	if err != nil {
+		return out
+	}
+	for _, is := range issues {
+		out[strings.ToUpper(strings.TrimSpace(is.Key))] = true
+	}
+	return out
+}
+
+// waiting asks the tracker which tickets are the integration queue's to
+// handle: those awaiting their own CI, and those ready for the next batch.
 //
 // Scoped to the projects Orion actually knows about. An unscoped JQL would
 // match a label someone applied by hand in an unrelated project, and the
 // first thing this does with a match is transition its status.
+// waitingJQL is the pass: tickets in CI or ready for the batch, and NOT DONE
+// (OR-326). A closed ticket whose orion-ready label was never cleared -- two
+// of them, closed by hand -- was being offered to the batch, and its old
+// branch merged into the ref: work that had already landed, merged again.
+func waitingJQL(projects []string) string {
+	return tracker.JQLAnd(
+		tracker.JQLIn("project", projects...),
+		tracker.JQLIn("labels", tracker.LabelCIWait, tracker.LabelReady),
+		tracker.JQLNotDone(),
+	) + " ORDER BY updated ASC"
+}
+
 func waiting(j TrackerAPI, home string) ([]string, error) {
 	f, err := registry.Load(home)
 	if err != nil {
@@ -348,11 +461,27 @@ func waiting(j TrackerAPI, home string) ([]string, error) {
 	if len(projects) == 0 {
 		return nil, nil
 	}
-	jql := tracker.JQLAnd(
-		tracker.JQLIn("project", projects...),
-		tracker.JQLEq("labels", tracker.LabelCIWait),
-	) + " ORDER BY updated ASC"
-	issues, err := j.Search(jql, 50)
+	// BOTH labels, because this function feeds two jobs and they arrive in
+	// different states (OR-311).
+	//
+	// orion-ci-wait is a ticket whose own CI is running: reconcile it, close
+	// it, prune it. orion-ready is the integration queue's INBOX -- the agent
+	// finished, QA gave its verdict, the branch is pushed, and nothing is
+	// running. runBatch below is what takes those, and it is the only thing
+	// that ever will.
+	//
+	// Searching only ci-wait meant nothing read the inbox. A finished ticket
+	// set orion-ready and sat there forever: no batch, no pull request, and
+	// -- because runBatch is where liveObserver attaches -- no batch display
+	// either. Four tickets stranded for 41 minutes on 2026-09-02, and OR-135
+	// the day before, rescued by hand both times without the cause being
+	// found. Broken since OR-253 added the state and pointed nothing at it.
+	//
+	// They are NOT merged into one state. ci-wait says a machine is working
+	// and the answer is patience; ready says nothing is working and the
+	// ticket waits on the next pass. Reporting one as the other leaves an
+	// operator waiting on a build nobody started.
+	issues, err := j.Search(waitingJQL(projects), 50)
 	if err != nil {
 		return nil, fmt.Errorf("searching for tickets awaiting CI: %w", err)
 	}
@@ -434,7 +563,7 @@ func one(key string, pass []string, opts Options, deps Deps) (res Result) {
 		ui.Fail(w, "%s: could not read the pull request: %v", key, err)
 		return res
 	}
-	res.Verdict, res.PR = pr.Verdict, pr.URL
+	res.Verdict, res.PR, res.Checks = pr.Verdict, pr.URL, pr.Checks
 	log.Emit(events.Event{Kind: events.KindCI, Actor: events.ActorCI,
 		Msg: string(pr.Verdict) + ": " + firstLine(pr.Detail)})
 
@@ -577,7 +706,7 @@ func noPullRequest(res Result, key, branch string, guessed bool, opts Options,
 		return res
 	}
 	if err := deps.Jira.SetLabels(key, []string{tracker.LabelFailed},
-		[]string{tracker.LabelCIWait}); err != nil {
+		tracker.PreFailure()); err != nil {
 		res.Err = err
 		ui.Warn(w, "%s: could not relabel: %v", key, err)
 		return res
@@ -624,7 +753,7 @@ func failing(res Result, key string, pr PR, cfg config.Config, branch string,
 		return res
 	}
 	if err := deps.Jira.SetLabels(key, []string{tracker.LabelFailed},
-		[]string{tracker.LabelCIWait}); err != nil {
+		tracker.PreFailure()); err != nil {
 		res.Err = err
 		ui.Warn(w, "%s: could not relabel: %v", key, err)
 		return res
@@ -663,28 +792,11 @@ func merged(res Result, key string, pr PR, cfg config.Config, branch string,
 		return res
 	}
 
-	// Clear EVERY label Orion owns, not just the one that brought us here.
-	//
-	// A ticket that failed earlier, was fixed, and then merged kept its
-	// orion-failed label forever -- so `orion queue` reported it as "failed"
-	// on the same line as its status, "Done". Orion contradicting itself in
-	// one line is worse than either state alone, because the reader cannot
-	// tell which half to believe.
-	//
-	// The ticket is finished. Nothing Orion tracked about it is true any more.
-	if err := deps.Jira.SetLabels(key, nil,
-		tracker.Managed(cfg.Tracker.QueueLabel)); err != nil {
+	if err := closeTicket(key, pr.URL, cfg.Tracker.QueueLabel, deps, w); err != nil {
 		res.Err = err
 		ui.Warn(w, "%s: merged, but its labels could not be cleared: %v", key, err)
 		return res
 	}
-	// Best effort: a workflow without a Done transition must not turn a
-	// successful merge into a failure.
-	if err := deps.Jira.TransitionTo(key, "Done"); err != nil {
-		ui.Warn(w, "%s: merged and released, but could not transition to Done: %v", key, err)
-	}
-	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion, "merged: "+pr.URL))
-	closeChildren(key, pr.URL, cfg.Tracker.QueueLabel, deps, w)
 	// A branch that went red and then merged is a mistake with its own
 	// correction attached, which is the one shape a lesson can be built from
 	// without an agent inferring anything. Read the history BEFORE it is
@@ -825,6 +937,41 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// closeTicket is the sequence that says "this ticket is finished".
+//
+// ONE definition of finished, shared by the per-branch path and the batch
+// path. It used to exist only inside merged(), so a batch that landed three
+// tickets closed none of them: they stayed In Progress carrying the queue
+// label, and a merged ticket that keeps that label is collected again on the
+// next pass, and the one after, forever (OR-314).
+//
+// Clear EVERY label Orion owns, not just the one that brought us here.
+//
+// A ticket that failed earlier, was fixed, and then merged kept its
+// orion-failed label forever -- so `orion queue` reported it as "failed" on
+// the same line as its status, "Done". Orion contradicting itself in one line
+// is worse than either state alone, because the reader cannot tell which half
+// to believe.
+//
+// The ticket is finished. Nothing Orion tracked about it is true any more.
+//
+// The label clear is the ONLY step whose failure is returned: it is the record
+// everything else is reconciled against, and the one whose failure means this
+// ticket gets processed again. Everything after it is best effort, because by
+// then the merge has already happened -- a workflow without a Done transition
+// must not turn a successful merge into a failure.
+func closeTicket(key, prURL, queueLabel string, deps Deps, w io.Writer) error {
+	if err := deps.Jira.SetLabels(key, nil, tracker.Managed(queueLabel)); err != nil {
+		return err
+	}
+	if err := deps.Jira.TransitionTo(key, "Done"); err != nil {
+		ui.Warn(w, "%s: merged and released, but could not transition to Done: %v", key, err)
+	}
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion, "merged: "+prURL))
+	closeChildren(key, prURL, queueLabel, deps, w)
+	return nil
 }
 
 // closeChildren moves a merged story's sub-tasks to Done.

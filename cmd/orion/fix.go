@@ -105,7 +105,7 @@ func (f *fixWatch) record(a supervisor.Activity) {
 //
 // Takes the event log so this run's activity is attributed and recorded the
 // same way every other supervised run's is (OR-176).
-func fixRun(ws *workspace.Workspace, key, branch, failure string, log *events.Log) (bool, string, *collect.PolicyDenial, error) {
+func fixRun(ws *workspace.Workspace, key, branch, failedOn, failure string, log *events.Log) (bool, string, *collect.PolicyDenial, error) {
 	w := os.Stdout
 
 	jobs, err := workspace.ListWorktrees(ws)
@@ -142,9 +142,29 @@ func fixRun(ws *workspace.Workspace, key, branch, failure string, log *events.Lo
 	// raw CI log runs to thousands of lines, and everything in the fix run's
 	// prompt rides along on every one of its turns; a subagent reads it once
 	// in its own context and returns only its answer (OR-143).
+	// THE LOG COMES FROM WHERE THE FAILURE HAPPENED (OR-336).
+	//
+	// Usually that is the ticket's own branch. For a batch culprit it is the
+	// batch ref: the members were tested together, so the member's own
+	// branch has a stale or green run and searching it found nothing -- the
+	// fix agent was then handed the conviction sentence with no log, and
+	// spent two attempts reporting that it could not see one.
+	//
+	// When no log is reachable the prompt SAYS SO rather than quietly
+	// degrading to the bare failure line. An agent told the log is missing
+	// can say what it needs; one handed a conviction cannot tell the
+	// difference between "no log" and "this is the whole failure".
+	failedRef := failedOn
+	if failedRef == "" {
+		failedRef = branch
+	}
 	detail := failure
-	if full := failingLog(dir, branch); strings.TrimSpace(full) != "" {
-		detail = triageLog(&jobWS, key, branch, full)
+	if full := failingLog(dir, failedRef); strings.TrimSpace(full) != "" {
+		detail = triageLog(&jobWS, key, failedRef, full)
+	} else {
+		detail = failure + "\n\n(No CI log could be read for " + failedRef +
+			". What is above is all Orion has: if it does not name the failing\n" +
+			"test, say that you cannot see the failure rather than guessing at one.)"
 	}
 
 	// Caught live, off the same activity stream the console line below is

@@ -102,13 +102,20 @@ func (t batchTester) Test(ref string) (bool, error) {
 	// display costs nothing extra and cannot disagree with the decision made
 	// two lines below it. Same model as LiveSpend -- a number in the region
 	// must not be the most expensive thing on the screen.
-	ui.LiveChecks(liveChecks(pr.Checks))
+	ui.LiveChecks(UIChecks(pr.Checks))
+	// From the STATUS read, not from openPR's return: a ref whose pull
+	// request already exists gets an error and no URL from openPR, which is
+	// the ordinary case on every tick after the first. This read answers on
+	// every one of them, and it is the URL a landed member's ticket is
+	// commented with (OR-314).
+	rememberBatchPR(pr.URL)
 	switch {
 	case pr.Verdict == VerdictFailing:
 		// Remembered for the summary: the culprit's row names the check that
 		// actually failed, which is the difference between "CI failed" and a
 		// line an operator can act on without opening the forge.
 		rememberFailingCheck(pr.Checks)
+		rememberBatchDetail(pr.Detail)
 		return false, nil
 	case pr.Verdict == VerdictPassing && !noChecksYet(pr):
 		return true, nil
@@ -119,13 +126,18 @@ func (t batchTester) Test(ref string) (bool, error) {
 	return false, ErrCheckPending
 }
 
-// liveChecks converts this package's checks into the display's.
+// UIChecks converts this package's checks into the display's.
 //
 // Two types rather than one shared: internal/ui cannot import this package
 // (it is imported BY it, for rendering), and a display type that had to
 // track a forge's vocabulary would drag GitHub's dozen conclusions into a
 // file whose whole job is to draw three states.
-func liveChecks(in []Check) []ui.Check {
+//
+// Exported because the batch is no longer the only caller: internal/watch
+// pushes the same rows for an ordinary run's tickets (OR-310), and a second
+// copy of this switch is how the two paths would start disagreeing about
+// what "running" looks like.
+func UIChecks(in []Check) []ui.Check {
 	out := make([]ui.Check, 0, len(in))
 	for _, c := range in {
 		state := ui.CheckPassed
@@ -177,6 +189,51 @@ func failingCheck() string {
 	lastFailingCheck.mu.Lock()
 	defer lastFailingCheck.mu.Unlock()
 	return lastFailingCheck.name
+}
+
+// lastBatchPR is the pull request the batch ref was last read through.
+//
+// Package state for the same reason lastFailingCheck is: Test learns it and
+// runBatch needs it, with Land() in between carrying neither. One batch runs
+// at a time (see liveBatch), so there is one answer.
+//
+// It is ALSO written to the batch record, because a batch waiting on an
+// approver spans ticks and may span processes -- and the URL is what a landed
+// member's ticket is commented with, which must survive a restart rather than
+// silently become "the batch" with no address (OR-314).
+var lastBatchPR struct {
+	mu     sync.Mutex
+	url    string
+	detail string // the failure's why, as the last status read put it (OR-322)
+}
+
+// rememberBatchDetail keeps the last status read's Detail, which is what the
+// culprit's ticket is commented with and what the fix agent is handed.
+func rememberBatchDetail(detail string) {
+	lastBatchPR.mu.Lock()
+	lastBatchPR.detail = detail
+	lastBatchPR.mu.Unlock()
+}
+
+func batchDetail() string {
+	lastBatchPR.mu.Lock()
+	defer lastBatchPR.mu.Unlock()
+	return lastBatchPR.detail
+}
+
+func rememberBatchPR(url string) {
+	if url == "" {
+		return
+	}
+	lastBatchPR.mu.Lock()
+	lastBatchPR.url = url
+	lastBatchPR.mu.Unlock()
+}
+
+func batchPR() string {
+	lastBatchPR.mu.Lock()
+	defer lastBatchPR.mu.Unlock()
+	return lastBatchPR.url
 }
 
 // liveObserver forwards a batch's progress to the pinned region (OR-246).
@@ -281,6 +338,14 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 		return resumeTesting(st, members, cfg, opts, deps, g, ws, log, w), true
 	}
 
+	// A RED record over the same set on the same base is left for runBatch,
+	// which assembles the set and isolates at once (OR-324).
+	if err == nil && st.Status == batchRed &&
+		st.Base == base && st.BaseSHA != "" && st.BaseSHA == baseSHA &&
+		sameMembers(st.Members, members) {
+		return nil, false
+	}
+
 	if err != nil || !st.resumable(base, baseSHA, members) {
 		if st.BaseSHA != "" && baseSHA != "" && st.BaseSHA != baseSHA {
 			ui.Warn(w, "%s moved since the batch was proved green; "+
@@ -295,7 +360,7 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 	if approve == nil {
 		// The gate was removed while a batch waited on it. Landing without
 		// asking is the configured behaviour now, and the proof still stands.
-		return landResumed(st, members, g, ws, w), true
+		return landResumed(st, members, cfg, deps, g, ws, w), true
 	}
 	okd, err := approve(st.Ref, st.Members)
 	if err != nil {
@@ -310,7 +375,7 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 		}
 		return out, true
 	}
-	return landResumed(st, members, g, ws, w), true
+	return landResumed(st, members, cfg, deps, g, ws, w), true
 }
 
 // landResumed merges a proof recorded on an earlier pass.
@@ -318,8 +383,8 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 // The base is re-read one final time even though resumable() just compared
 // it: approval is a human-length gap, and the whole point of ADR 0017's
 // precondition is that the base can move in exactly such a gap.
-func landResumed(st batchState, members []Member, g repoGit,
-	ws *workspace.Workspace, w io.Writer) []Result {
+func landResumed(st batchState, members []Member, cfg config.Config, deps Deps,
+	g repoGit, ws *workspace.Workspace, w io.Writer) []Result {
 
 	now, err := g.SHAOf(st.Base)
 	if err != nil || now != st.BaseSHA {
@@ -339,8 +404,30 @@ func landResumed(st batchState, members []Member, g repoGit,
 	_ = g.DropRef(st.Ref)
 	_ = g.DeleteRemoteRef(st.Ref)
 
+	// WHAT WAS SKIPPED, and what was not (OR-336).
+	//
+	// "with no further CI run" read as a claim about CI in general, and a
+	// merge to the work branch starts that branch's own checks a second
+	// later -- so the line appeared to be contradicted by the next thing on
+	// screen. What is actually skipped is a RE-TEST OF THE BATCH REF: it was
+	// already green, and the tree that merges is the tree that was tested,
+	// which is the whole saving batching exists for.
 	ui.Say(w, "", events.ActorOrion, ui.VerbOK,
-		"landed %d approved branch(es) as one, with no further CI run", len(members))
+		"landed %d approved branch(es) into %s as one commit; %s was already green, "+
+			"so it was not tested again (%s runs its own checks now)",
+		len(members), st.Base, st.Ref, st.Base)
+
+	// Every member of a resumed batch landed: the proof covers the recorded
+	// set, and LandRef merged that set whole. The URL comes from the record
+	// first -- an approval is a human-length gap and this may be a different
+	// process from the one that opened the pull request (OR-314).
+	prURL := st.PRURL
+	if prURL == "" {
+		prURL = batchPR()
+	}
+	closeLanded(keysOf(members), prURL, cfg.Tracker.QueueLabel, deps, w)
+	pruneLanded(keysOf(members), cfg, false, deps, g, ws, w)
+
 	var out []Result
 	for _, m := range members {
 		out = append(out, Result{Key: m.Key, Verdict: VerdictMerged, Changed: true})
@@ -431,14 +518,26 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		return res
 	}
 
-	ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
-		"assembling %d branch(es) into %s", len(members), ref)
+	known := knownRed(ws.Dir, cfg.VCS.WorkBranch, g, members)
+	if known {
+		ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
+			"%s is red; assembling %d branch(es) again to isolate the cause", ref, len(members))
+	} else {
+		ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
+			"assembling %d branch(es) into %s", len(members), ref)
+	}
 
 	t := batchTester{git: g, status: deps.Status, openPR: deps.OpenPR,
 		dir: ws.CloneDir(), base: cfg.VCS.WorkBranch,
 		wait: 30 * time.Minute, out: w, log: log}
-	b, err := Land(g, t, ref, cfg.VCS.WorkBranch, members, liveObserver{},
-		WithApproval(batchApprover(cfg, opts, deps, ws, log, w)))
+	landOpts := []LandOption{
+		WithApproval(batchApprover(cfg, opts, deps, ws, log, w)),
+		WithIsolationWait(t.wait),
+	}
+	if known {
+		landOpts = append(landOpts, WithKnownRed())
+	}
+	b, err := Land(g, t, ref, cfg.VCS.WorkBranch, members, liveObserver{}, landOpts...)
 
 	// Local ref and its worktree, then the published branch. Both, and only
 	// here: Test used to drop the remote ref as it returned, which cannot
@@ -458,7 +557,8 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	if b.Pending {
 		if err := saveBatchState(ws.Dir, batchState{
 			Ref: ref, Base: cfg.VCS.WorkBranch, Members: keysOf(members),
-			Status: batchTesting, BaseSHA: b.BaseSHA, TestingSince: time.Now(),
+			Status: batchTesting, BaseSHA: b.BaseSHA, PRURL: batchPR(),
+			TestingSince: time.Now(),
 		}); err != nil {
 			ui.Warn(w, "the batch is building but its record could not be written "+
 				"(%v); the next pass will assemble it again", err)
@@ -482,6 +582,7 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		if err := saveBatchState(ws.Dir, batchState{
 			Ref: ref, Base: cfg.VCS.WorkBranch, Members: keysOf(members),
 			Status: batchValidated, BaseSHA: b.BaseSHA, ValidatedSHA: b.ValidatedSHA,
+			PRURL: batchPR(),
 		}); err != nil {
 			ui.Warn(w, "the batch is green but its record could not be written (%v); "+
 				"the next pass will test it again", err)
@@ -554,6 +655,14 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 			Key: key, Msg: "landed in the batch on " + ref})
 	}
 
+	// AND THE TRACKER, which knew none of this (OR-314). The batch names its
+	// landed members exactly -- it just told the screen and the log about them
+	// and stopped there, so three tickets merged in one pull request sat In
+	// Progress carrying orion-ready until somebody closed them by hand, and
+	// the label brought them back into the queue in the meantime.
+	closeLanded(landed, batchPR(), cfg.Tracker.QueueLabel, deps, w)
+	pruneLanded(landed, cfg, opts.NoPrune, deps, g, ws, w)
+
 	var out []Result
 	for _, r := range b.Results {
 		res := Result{Key: r.Key, Changed: true}
@@ -568,7 +677,15 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 			// to do with it.
 			res.Verdict = VerdictMerged
 		case Culprit:
-			res.Verdict = VerdictFailing
+			// INTO THE FIX LOOP, as a per-branch failure would be (OR-322).
+			//
+			// runBatch's results are returned directly; the per-ticket path
+			// that relabels, comments, notifies and dispatches the fix agent
+			// is never reached for a batch member. So a convicted culprit was
+			// left orion-ready, collected into the next batch, and convicted
+			// again -- with the row saying "fix round 1 of 3" about a loop
+			// that did not exist.
+			res = failCulprit(res, r.Member, ref, cfg, opts, deps, ws, log, w)
 		default:
 			// Ejected and deferred are not failures: the branch is sound and
 			// will be offered to the next batch. Saying "stale" reuses the
@@ -583,6 +700,61 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		out = append(out, Result{Err: err})
 	}
 	return out
+}
+
+// closeLanded finishes every ticket the batch actually landed.
+//
+// THE MEMBERS IT IS GIVEN AND NO OTHERS. An ejected member did not land -- its
+// branch is still waiting and will be offered to the next batch -- and a
+// culprit is the reason the batch went red. Closing either would report work
+// as delivered that is not on the trunk, which is the worse half of the bug
+// this fixes: OR-314's symptom was tickets left open, but a batch that closed
+// its ejections would strand branches nobody was looking for any more.
+//
+// Every failure is a warning. The merge HAS happened by the time this runs --
+// the ref is on the work branch -- so turning a tracker hiccup into a failed
+// collect would report a successful merge as a failure. Same judgement, and
+// for the same reason, as closeChildren's.
+func closeLanded(landed []string, prURL, queueLabel string, deps Deps, w io.Writer) {
+	if deps.Jira == nil {
+		return
+	}
+	for _, key := range landed {
+		if err := closeTicket(key, prURL, queueLabel, deps, w); err != nil {
+			ui.Warn(w, "%s: landed in the batch, but its labels could not be "+
+				"cleared: %v. It will be collected again until they are.", key, err)
+		}
+	}
+}
+
+// pruneLanded removes each landed member's branch and worktree (OR-337).
+//
+// The per-branch path has always pruned once a branch merged; the batch path
+// closed the ticket and left the branch. Twenty-five accumulated on the
+// remote, and a list that long stops answering "what is actually in flight".
+//
+// Driven by what the batch LANDED, never by ancestry: a batched branch merges
+// through a merge commit on the batch ref, so its own tip is not an ancestor
+// of the work branch and `git log branch ^develop` reports several unmerged
+// commits minutes after landing. Deleting on that signal would destroy work.
+//
+// Best effort and per member: a branch that will not delete is untidy, and
+// must not stop the ones after it or turn a landed batch into a failure.
+func pruneLanded(landed []string, cfg config.Config, noPrune bool, deps Deps,
+	g repoGit, ws *workspace.Workspace, w io.Writer) {
+
+	if noPrune {
+		return
+	}
+	for _, key := range landed {
+		branch := branchFor(cfg.VCS.BranchPrefix, key)
+		if deps.Prune != nil {
+			if err := deps.Prune(ws, branch); err != nil {
+				ui.Warn(w, "%s: landed, but its worktree could not be pruned: %v", key, err)
+			}
+		}
+		_ = g.DeleteRemoteRef(branch)
+	}
 }
 
 // batchContext resolves the workspace, log and config a batch needs.
@@ -638,6 +810,12 @@ func resumeTesting(st batchState, members []Member, cfg config.Config, opts Opti
 	t := batchTester{git: g, status: deps.Status, openPR: deps.OpenPR,
 		dir: ws.CloneDir(), base: st.Base, out: w, log: log}
 
+	// ON SCREEN, though this process did not assemble it (OR-323). A watch
+	// restarted with a batch in CI showed nothing but the log line: the
+	// region draws the batch it was told about, and nobody had told it.
+	ui.LiveBatchResume(st.Ref, st.Base, st.Members, st.TestingSince)
+	ui.LiveBatchMedian(batchBaseline(events.Path(ws.Dir)).Median)
+
 	ok, err := t.Test(st.Ref)
 	switch {
 	case errors.Is(err, ErrCheckPending):
@@ -660,9 +838,18 @@ func resumeTesting(st batchState, members []Member, cfg config.Config, opts Opti
 		return []Result{{Err: err}}
 
 	case !ok:
-		// Red. Cleared so the next pass reassembles and bisects, which needs
-		// the full Land path rather than this one.
-		clearBatchState(ws.Dir)
+		// Red. The record is KEPT, marked red, so the next pass reassembles
+		// the same set and bisects at once -- the full Land path rather
+		// than this one, but with the first verdict already in hand
+		// (OR-324). Clearing it made that pass test the whole set again:
+		// new merge commits, a new CI run, six more minutes to learn the
+		// same verdict, on every pass, so the batch was rebuilt forever and
+		// never once isolated.
+		st.Status = batchRed
+		if err := saveBatchState(ws.Dir, st); err != nil {
+			ui.Warn(w, "the batch is red but its record could not be updated (%v); "+
+				"the next pass will test it again", err)
+		}
 		ui.Warn(w, "%s went red; the next pass will isolate the cause", st.Ref)
 		return pendingResults(members)
 	}
@@ -671,12 +858,17 @@ func resumeTesting(st batchState, members []Member, cfg config.Config, opts Opti
 	// first-pass green batch goes through; nothing here is a second copy of
 	// that decision.
 	st.Status, st.ValidatedSHA = batchValidated, st.Ref
+	// Test just read the pull request, so this is the freshest the record will
+	// get before an approver is asked to look at it.
+	if url := batchPR(); url != "" {
+		st.PRURL = url
+	}
 	if err := saveBatchState(ws.Dir, st); err != nil {
 		ui.Warn(w, "the batch is green but its record could not be updated (%v)", err)
 	}
 	approve := batchApprover(cfg, opts, deps, ws, log, w)
 	if approve == nil {
-		return landResumed(st, members, g, ws, w)
+		return landResumed(st, members, cfg, deps, g, ws, w)
 	}
 	okd, err := approve(st.Ref, st.Members)
 	if err != nil {
@@ -685,7 +877,7 @@ func resumeTesting(st batchState, members []Member, cfg config.Config, opts Opti
 	if !okd {
 		return pendingResults(members)
 	}
-	return landResumed(st, members, g, ws, w)
+	return landResumed(st, members, cfg, deps, g, ws, w)
 }
 
 // batchCheckDeadline is how long a batch may wait for its checks to report.
@@ -701,4 +893,47 @@ func pendingResults(members []Member) []Result {
 		out = append(out, Result{Key: m.Key, Verdict: VerdictPending})
 	}
 	return out
+}
+
+// failCulprit hands a convicted member to the same failure path a per-branch
+// red build takes: orion-failed, a comment naming where and why, a
+// notification, and -- with auto_fix -- the fix agent on the member's own
+// branch. The pull request it cites is the BATCH's, because that is where
+// the failure is; the branch it fixes is the member's, because that is where
+// the fault is.
+func failCulprit(res Result, m Member, ref string, cfg config.Config, opts Options, deps Deps,
+	ws *workspace.Workspace, log *events.Log, w io.Writer) Result {
+
+	res.Verdict = VerdictFailing
+	if deps.Jira == nil {
+		return res
+	}
+	detail := batchDetail()
+	if detail == "" {
+		detail = "the batch went red"
+		if c := failingCheck(); c != "" {
+			detail += " on " + c
+		}
+	}
+	// FailedOn names the batch ref, so the fix run reads the log from where
+	// the failure actually happened rather than from the member's own branch,
+	// whose last run is stale or green (OR-336).
+	pr := PR{URL: batchPR(), Verdict: VerdictFailing, Head: m.Head,
+		FailedOn: ref,
+		Detail:   "convicted by the batch's isolation: " + detail}
+	return failing(res, m.Key, pr, cfg, m.Branch, opts, deps, ws, log, w)
+}
+
+// knownRed reports whether the record says this exact set on this exact base
+// already ran red, so the pass can isolate rather than test (OR-324).
+func knownRed(wsDir, base string, g repoGit, members []Member) bool {
+	st, ok := loadBatchState(wsDir)
+	if !ok || st.Status != batchRed || st.Base != base || st.BaseSHA == "" {
+		return false
+	}
+	baseSHA, err := g.SHAOf(base)
+	if err != nil || baseSHA != st.BaseSHA {
+		return false
+	}
+	return sameMembers(st.Members, members)
 }

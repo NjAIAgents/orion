@@ -3,13 +3,14 @@ package supervisor
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/workspace"
+
+	"github.com/orion-sdlc/orion/internal/ui"
 )
 
 // WriteOnlyTools is what a fan-out child is given: it may read the tree and
@@ -42,7 +43,16 @@ var ShellTools = []string{"Bash", "BashOutput", "KillShell", "Task"}
 // progress. A variable so a test can read what a dispatch actually said:
 // "announce before dispatch" is a behaviour, and a behaviour nothing can
 // observe is one that regresses silently.
-var fanOut io.Writer = os.Stderr
+var fanOut io.Writer
+
+// fanWriter is fanOut when a test has set it, else the process console
+// (OR-330): the fan narrates through the live region rather than under it.
+func fanWriter() io.Writer {
+	if fanOut != nil {
+		return fanOut
+	}
+	return ui.Console()
+}
 
 // FanResult pairs one child's Result with whatever error Run returned for
 // it. Indexed the same as the Options slice given to Fan, so a caller
@@ -145,14 +155,14 @@ func announceLanding(i, landed, total int, r FanResult) {
 	case r.Result.ExitCode != 0:
 		verdict = fmt.Sprintf("exit %d: %s", r.Result.ExitCode, r.Result.Reason)
 	}
-	fmt.Fprintf(os.Stderr, "orion: fan-out child %d %s (%d/%d landed)\n",
+	fmt.Fprintf(fanWriter(), "orion: fan-out child %d %s (%d/%d landed)\n",
 		i+1, verdict, landed, total)
 }
 
-// announceFan states the cost shape before any child starts: how many,
-// capped at what, and on which models. Per nj-agents
-// CONVENTIONS-orchestration §C -- concurrency that hides its own
-// multiplication is a way to spend money faster, not a way to save it.
+// announceFan states the cost shape before any child starts: how many, how
+// many at once, and on which models. Per nj-agents CONVENTIONS-orchestration
+// §C -- concurrency that hides its own multiplication is a way to spend money
+// faster, not a way to save it.
 //
 // Then the roster, one line per child, per §R. A subagent reports once at the
 // end and has no way to say anything while it works, so this is the only
@@ -160,15 +170,28 @@ func announceLanding(i, landed, total int, r FanResult) {
 // gap ending in a wall of output, and nobody watching can tell working from
 // stuck. Printed here rather than by each caller for the reason the cap is
 // enforced here -- one place, so it cannot drift between call sites.
+//
+// THROUGH ui.Say, LIKE EVERY OTHER LINE IN THE LOG (OR-335). These lines used
+// to be raw "orion: " prints: no timestamp, no ticket key, no actor. At a
+// concurrency of four -- the normal case -- two fans running at once were
+// indistinguishable from each other, and a fan was a wall of sibling lines
+// flush against the same prefix as the line that announced it. The children
+// are indented one level under that line so a child process looks like one.
+//
+// "5 children, 2 at a time" rather than "5 children (cap 2)": the cap is on
+// concurrency, never on count, and a line that reads as a contradiction is
+// read as a bug in the number rather than in the wording.
 func announceFan(jobs []Options, maxConcurrent int) {
 	models := make([]string, len(jobs))
 	for i, o := range jobs {
 		models[i] = modelOf(o)
 	}
-	fmt.Fprintf(fanOut, "orion: fan-out %d children (cap %d) -- models: %s\n",
+	ui.Say(fanWriter(), jobs[0].Key, jobs[0].Actor, ui.VerbWorking,
+		"fanning out %d children, %d at a time -- models: %s",
 		len(jobs), maxConcurrent, strings.Join(models, ", "))
 	for i, o := range jobs {
-		fmt.Fprintf(fanOut, "orion:   ... %s  %s\n", labelOf(i, o), modelOf(o))
+		ui.SayModel(fanWriter(), o.Key, o.Actor, o.Model, ui.VerbWorking,
+			"  ... %s", labelOf(i, o))
 	}
 }
 
@@ -181,34 +204,60 @@ func announceFan(jobs []Options, maxConcurrent int) {
 // The child is named by the same label its roster line used, so a reader
 // matches a landing to a dispatch by reading rather than by counting. In a
 // fan of five explores every label is the word "explore", which is why the
-// label carries the job's position too.
+// label carries the job's position and what it was given too.
+//
+// The outcome is the VERB, not a word in the message (OR-335): "exit 0" said
+// in machine vocabulary what "ok" already said in the reader's, and a line
+// carrying both says one thing twice. A non-zero exit still names its code,
+// because there the number is the finding rather than a restatement.
 func announceLanded(i int, o Options, res *Result, err error, n, total int) {
-	mark, verdict := "ok", "exit 0"
+	verb, verdict := ui.VerbOK, ""
 	switch {
 	case err != nil && res == nil:
-		mark, verdict = "FAILED", err.Error()
+		verb, verdict = ui.VerbFail, " failed: "+err.Error()
 	case res == nil:
-		mark, verdict = "FAILED", "no result"
+		verb, verdict = ui.VerbFail, " failed: no result"
 	case res.ExitCode != 0:
-		mark, verdict = "FAILED", fmt.Sprintf("exit %d: %s", res.ExitCode, res.Reason)
+		verb, verdict = ui.VerbFail, fmt.Sprintf(" failed: exit %d: %s", res.ExitCode, res.Reason)
 	}
 	var took string
 	if res != nil {
 		took = fmt.Sprintf(" in %s", res.Duration.Round(time.Second))
 	}
-	fmt.Fprintf(fanOut, "orion:   %s %d/%d %s  %s%s\n", mark, n, total, labelOf(i, o), verdict, took)
+	ui.SayModel(fanWriter(), o.Key, o.Actor, o.Model, verb,
+		"  %d/%d %s%s%s", n, total, labelOf(i, o), verdict, took)
 }
 
 // labelOf names a child the way its caller would recognise it: its position
-// in the jobs slice, and the actor it runs as, else the stage. Position alone
-// is unreadable and a name alone is ambiguous -- five explores dispatched
-// together share one name and differ only by which question they were given.
+// in the jobs slice, the actor it runs as (else the stage), and what that
+// child was given. Position alone is unreadable, a name alone is ambiguous --
+// five explores dispatched together share one name -- and five identical
+// lines differing only in an index carry nothing a reader can act on: with no
+// About, nothing says why one child took 2m59s and another 1m51s (OR-335).
 func labelOf(i int, o Options) string {
 	name := o.Actor
 	if name == "" {
 		name = o.Stage
 	}
-	return strings.TrimSpace(fmt.Sprintf("#%d %s", i+1, name))
+	label := strings.TrimSpace(fmt.Sprintf("#%d %s", i+1, name))
+	if about := aboutOf(o); about != "" {
+		label += " · " + about
+	}
+	return label
+}
+
+// aboutOf is one short phrase naming what this child was given.
+//
+// Clipped and flattened here rather than at each call site: a caller passing
+// a whole question or a file list should not have to know it is writing a log
+// line, and one long About must not push the rest of the line off the screen.
+func aboutOf(o Options) string {
+	about := strings.Join(strings.Fields(o.About), " ")
+	const max = 48
+	if r := []rune(about); len(r) > max {
+		about = string(r[:max-1]) + "…"
+	}
+	return about
 }
 
 func modelOf(o Options) string {

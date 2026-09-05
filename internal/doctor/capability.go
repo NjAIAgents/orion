@@ -12,8 +12,8 @@ import (
 	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/creds"
-	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/slack"
+	"github.com/orion-sdlc/orion/internal/toolkit"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -98,7 +98,7 @@ func checkGHScopes() check {
 // checkNJAgents confirms the delegated toolkit is present AND intact.
 //
 // This is a hard dependency. Orion delegates review, secret scanning,
-// test/build verification, PR authoring and PM decomposition to nj-agents;
+// test/build verification, PR authoring and PM decomposition to a toolkit;
 // those stages have no fallback and must not be faked with a thinner
 // substitute. So a missing toolkit is FAIL, not WARN.
 //
@@ -107,29 +107,35 @@ func checkGHScopes() check {
 // read (CONVENTIONS.md) lives at that clone's root, two levels up. Looking
 // only in ~/.claude/skills passes while the file the skills depend on is
 // absent.
-func checkNJAgents(configured string, autoFix bool) check {
+//
+// What it requires comes from the project's OWN toolkit block, not from
+// nj-agents' catalogue: a project delegating to its own skill repository
+// would otherwise fail this check for six skills it never invokes.
+func checkNJAgents(tk config.Toolkit, autoFix bool) check {
 	home := workspace.Home()
-	inst := njagents.Discover(configured, home)
+	spec := tk.Spec()
+	name := toolkitName(spec)
+	inst := toolkit.Discover(home, spec)
 
 	if inst == nil && autoFix {
-		cloned, err := njagents.Clone(home, "")
+		cloned, err := toolkit.Clone(home, spec, tk.Ref, toolkit.ConfirmOnStdin)
 		if err != nil {
-			return check{"nj-agents", fail, "not installed, and the clone failed",
-				err.Error() + "\nManually: " + njagents.CloneCommand(home)}
+			return check{name, fail, "not installed, and the clone failed",
+				err.Error() + "\nManually: " + toolkit.CloneCommand(home, spec)}
 		}
 		inst = cloned
 	}
 
 	if inst == nil {
-		return check{"nj-agents", fail, "not installed",
+		return check{name, fail, "not installed",
 			"Orion delegates review, security, testing, PR authoring and PM\n" +
-				"decomposition to nj-agents. Those stages have no fallback.\n" +
+				"decomposition to " + name + ". Those stages have no fallback.\n" +
 				"Fetch it automatically:  orion doctor --fix\n" +
-				"Or do it yourself:       " + njagents.CloneCommand(home)}
+				"Or do it yourself:       " + toolkit.CloneCommand(home, spec)}
 	}
 
 	if len(inst.Missing) > 0 {
-		return check{"nj-agents", fail,
+		return check{name, fail,
 			"incomplete at " + inst.Root + " (" + inst.Via + ")",
 			"Missing: " + strings.Join(inst.Missing, ", ") + "\n" +
 				"A partial checkout is worse than none: the review skills read the\n" +
@@ -147,9 +153,20 @@ func checkNJAgents(configured string, autoFix bool) check {
 	detail += ")"
 
 	if len(inst.Warnings) > 0 {
-		return check{"nj-agents", warn, detail, strings.Join(inst.Warnings, "\n")}
+		return check{name, warn, detail, strings.Join(inst.Warnings, "\n")}
 	}
-	return check{"nj-agents", ok, detail, ""}
+	return check{name, ok, detail, ""}
+}
+
+// toolkitName is what the doctor line calls the toolkit. The default keeps
+// its old label so nothing about an unconfigured machine's output moves; a
+// configured one is named after its own repository, because "nj-agents
+// incomplete" is a baffling line to read about a toolkit that is not it.
+func toolkitName(spec toolkit.Toolkit) string {
+	if spec.IsDefault() {
+		return "nj-agents"
+	}
+	return "toolkit " + filepath.Base(toolkit.VendorDirFor("", spec.Repo))
 }
 
 // checkJira probes reachability, authentication and the project-creation
@@ -317,7 +334,7 @@ func checkHooks(dir string) check {
 		for _, e := range entries {
 			for _, h := range e.Hooks {
 				cmd := strings.Fields(h.Command)
-				if len(cmd) == 0 || !strings.HasSuffix(cmd[0], "orion") {
+				if len(cmd) == 0 || !isOrionBinary(cmd[0]) {
 					continue // someone else's hook; not ours to judge
 				}
 				total++
@@ -508,4 +525,18 @@ func checkDisk() check {
 		}
 	}
 	return check{"disk", ok, dir + " writable, owner-only", ""}
+}
+
+// isOrionBinary reports whether a hook's command is Orion's own.
+//
+// The suffix is not always "orion": Windows names the binary orion.exe, so
+// matching the bare name meant Orion's own hooks were never recognised there
+// and doctor reported "no Orion hooks wired" on a correctly configured
+// machine -- advising a repair that would change nothing (OR-341).
+//
+// Compared against the base name rather than the whole path, so a hook at
+// C:\tools\orion.exe and one at /usr/local/bin/orion answer the same way.
+func isOrionBinary(command string) bool {
+	base := filepath.Base(command)
+	return base == "orion" || base == "orion.exe"
 }

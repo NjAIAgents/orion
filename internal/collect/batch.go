@@ -146,8 +146,15 @@ type Git interface {
 	// MergeInto merges branch into ref. A non-nil error means it conflicted:
 	// the caller ejects rather than resolving.
 	MergeInto(ref, branch string) error
-	// DropRef removes an ephemeral ref. Best effort.
+	// DropRef removes an ephemeral ref LOCALLY. Best effort.
 	DropRef(ref string) error
+	// DeleteRemoteRef removes it from the forge (OR-337). Best effort.
+	//
+	// Separate from DropRef because Test PUSHES these refs -- a split has to
+	// reach CI to be tested -- so dropping only the local branch leaves the
+	// remote one behind. Twenty-five branches accumulated that way, including
+	// pure bisection scratch that nothing would ever read again.
+	DeleteRemoteRef(ref string) error
 
 	// SHAOf resolves a ref or branch to a commit. Used to stamp what a
 	// result was validated against (ADR 0017), so a merge can refuse a base
@@ -314,6 +321,20 @@ func (p proven) matches(want []string) bool {
 // the search as the tree it is. depth is the indent; total is shared across
 // the whole recursion rather than summed on the way out, because the display
 // needs the run number DURING the search, not after it.
+// dropScratch removes an ephemeral ref from BOTH the clone and the forge
+// (OR-337).
+//
+// Test pushes every ref it tests -- a split cannot reach CI otherwise -- so
+// dropping the local branch alone left the remote one behind for good. The
+// isolation refs are the clearest case: orion/batch-iso-2-0 and -2-1 outlived
+// the search that created them by days, and nothing will ever read them
+// again. Best effort on both, as DropRef always was: a ref that cannot be
+// deleted is untidy, never incorrect.
+func dropScratch(g Git, ref string) {
+	_ = g.DropRef(ref)
+	_ = g.DeleteRemoteRef(ref)
+}
+
 func isolateProving(t Tester, g Git, refPrefix, base string, members []Member,
 	o Observer, depth int, total *int) (culprits []Member, runs int, green []proven, err error) {
 
@@ -337,7 +358,7 @@ func isolateProving(t Tester, g Git, refPrefix, base string, members []Member,
 		runs++
 		*total++
 		if terr != nil {
-			_ = g.DropRef(ref)
+			dropScratch(g, ref)
 			return nil, runs, green, terr
 		}
 		o.Split(keysOf(kept), ok, depth, *total, false)
@@ -354,7 +375,7 @@ func isolateProving(t Tester, g Git, refPrefix, base string, members []Member,
 		// A red ref is worth nothing to anybody: dropped immediately, as
 		// before. Its NAME lives on as the prefix for the next level, which
 		// is why the drop is safe here.
-		_ = g.DropRef(ref)
+		dropScratch(g, ref)
 		// Both halves are examined rather than stopping at the first red
 		// one: a batch can hold more than one culprit, and stopping early
 		// would land the second.
@@ -396,6 +417,16 @@ type landOpts struct {
 	// now is the clock, injectable so a test can assert an elapsed figure
 	// without sleeping for it. Defaults to time.Now via landOpts.clock.
 	clock func() time.Time
+	// isoWait is how long an isolation run waits for its check to report
+	// before giving up (OR-321). Zero means an isolation run that has not
+	// reported is an error at once -- the behaviour that tore a red batch
+	// down and re-assembled it every pass, restarting CI each time.
+	isoWait time.Duration
+	// sleep is what the wait sleeps with; injectable so the test does not.
+	sleep func(time.Duration)
+	// knownRed says the whole set's run has already come back red, so the
+	// first test is skipped and the search begins at once (OR-324).
+	knownRed bool
 }
 
 // now reads the clock, defaulting to the real one. A method rather than a
@@ -413,6 +444,61 @@ func (o landOpts) now() time.Time {
 // runs.
 func WithClock(f func() time.Time) LandOption {
 	return func(o *landOpts) { o.clock = f }
+}
+
+// WithIsolationWait lets an isolation run wait for its check (OR-321).
+//
+// The first test of a batch returns at once on silence and the next pass
+// resumes it, because there is a record to resume from. Isolation has no
+// such record: it is a search, and a search interrupted is a search started
+// over -- which is what happened: the first split's check had not reported,
+// the batch was declared not to have completed, its ref was deleted, and the
+// next pass assembled it again and restarted CI. So an isolation run polls,
+// bounded by d, and only then gives up.
+func WithIsolationWait(d time.Duration) LandOption {
+	return func(o *landOpts) { o.isoWait = d }
+}
+
+// WithKnownRed starts at isolation: the previous pass already ran the whole
+// set and it was red (OR-324). Without it the next pass re-cut the ref, pushed
+// fresh merge commits, and waited six minutes to learn what it already knew --
+// and, since the record was cleared, did so on every pass, never isolating.
+func WithKnownRed() LandOption {
+	return func(o *landOpts) { o.knownRed = true }
+}
+
+// WithSleeper replaces the wait's sleep. For tests.
+func WithSleeper(f func(time.Duration)) LandOption {
+	return func(o *landOpts) { o.sleep = f }
+}
+
+// isolationPoll is how often a waiting isolation run re-reads its check.
+const isolationPoll = 30 * time.Second
+
+// waitingTester re-reads a pending check until it reports or the wait runs
+// out. Wraps the batch's tester for isolation only.
+type waitingTester struct {
+	t  Tester
+	lo landOpts
+}
+
+func (w waitingTester) Test(ref string) (bool, error) {
+	started := w.lo.now()
+	for {
+		ok, err := w.t.Test(ref)
+		if !errors.Is(err, ErrCheckPending) {
+			return ok, err
+		}
+		if waited := w.lo.now().Sub(started); waited >= w.lo.isoWait {
+			return false, fmt.Errorf("no check result on %s after waiting %s: %w",
+				ref, waited.Round(time.Second), ErrCheckPending)
+		}
+		sleep := w.lo.sleep
+		if sleep == nil {
+			sleep = time.Sleep
+		}
+		sleep(isolationPoll)
+	}
 }
 
 // WithApproval gates the merge on a human. Absent, a green batch lands as
@@ -470,7 +556,14 @@ func Land(g Git, t Tester, ref, base string, members []Member, o Observer,
 	b.BaseSHA = baseSHA
 
 	ob.Testing(1)
-	ok, err := t.Test(ref)
+	var ok bool
+	if lo.knownRed {
+		// The run was spent by the previous pass; it counts, and its
+		// verdict is the one being acted on.
+		ok, err = false, nil
+	} else {
+		ok, err = t.Test(ref)
+	}
 	if errors.Is(err, ErrCheckPending) {
 		// NOT A FAILURE, AND NOT A RUN SPENT. CI is still going; the caller
 		// records the batch and comes back on a later tick (OR-251). Counting
@@ -492,14 +585,21 @@ func Land(g Git, t Tester, ref, base string, members []Member, o Observer,
 		return b, nil
 	}
 
-	culprits, runs, green, err := isolateProving(t, g, ref+"-iso", base, kept, ob, 0, new(int))
+	// The search waits for its checks where the first test did not: it has
+	// no record to resume from, so silence must be waited out rather than
+	// treated as a verdict or an error (OR-321).
+	var iso Tester = t
+	if lo.isoWait > 0 {
+		iso = waitingTester{t: t, lo: lo}
+	}
+	culprits, runs, green, err := isolateProving(iso, g, ref+"-iso", base, kept, ob, 0, new(int))
 	b.Runs += runs
 	// Whatever happens next, the search's green refs are litter once the
 	// choice below is made. Dropped here rather than inside the search, which
 	// is what lets one of them be reused.
 	defer func() {
 		for _, p := range green {
-			_ = g.DropRef(p.ref)
+			dropScratch(g, p.ref)
 		}
 	}()
 	if err != nil {
@@ -583,7 +683,7 @@ func (b *Batch) landInnocent(g Git, t Tester, ref, base string,
 	if len(kept) == 0 {
 		return nil
 	}
-	defer func() { _ = g.DropRef(clean) }()
+	defer func() { dropScratch(g, clean) }()
 
 	ob.Testing(b.Runs + 1)
 	ok, err := t.Test(clean)

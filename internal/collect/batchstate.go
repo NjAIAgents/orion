@@ -42,6 +42,15 @@ type batchState struct {
 	BaseSHA      string `json:"base_sha"`
 	ValidatedSHA string `json:"validated_sha"`
 
+	// PRURL is the batch's pull request, recorded so a landed member's ticket
+	// can be commented with where its work went (OR-314).
+	//
+	// IN THE RECORD because approval is a human-length gap: the process that
+	// opened the pull request is often not the process that merges it, and a
+	// comment that has to say "the batch" with no address sends the reader
+	// nowhere.
+	PRURL string `json:"pr_url,omitempty"`
+
 	// TestingSince is when the batch was published for CI, and it is where
 	// the deadline lives now (OR-251).
 	//
@@ -69,6 +78,12 @@ const batchTesting = "testing"
 // batchValidated is the only status that resumes to a MERGE. A batch in any other state
 // has nothing worth reusing, and the honest thing is to assemble again.
 const batchValidated = "validated"
+
+// batchRed is a batch whose one run came back red (OR-324). The next pass
+// over the same members on the same base ISOLATES rather than assembles: the
+// verdict is known, and re-cutting the ref would only spend another run to
+// learn it again.
+const batchRed = "red"
 
 func batchStatePath(wsDir string) string {
 	return filepath.Join(wsDir, "batch-state.json")

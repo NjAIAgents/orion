@@ -92,20 +92,6 @@ func runWatch(args []string) {
 	once := hasFlag(args, "--once")
 	dry := hasFlag(args, "--dry-run")
 
-	// --demo drives the live region through its states against fabricated
-	// data and exits. Before the credential read and the tracker client on
-	// purpose: looking at the display must not need a configured project, a
-	// network, or a ticket somebody is willing to spend an agent on.
-	//
-	// --dry-run cannot serve this. It rehearses ONE tick and starts nothing,
-	// so there are no rows, no batch and no checks -- the region correctly
-	// draws nothing, which is indistinguishable from a region that was never
-	// built. That confusion is what this exists to end.
-	if hasFlag(args, "--demo") {
-		runWatchDemo(w, args)
-		return
-	}
-
 	// The banner goes out BEFORE anything that could block -- before the
 	// credential read, before the tracker client, and long before the first
 	// network call (OR-128). It used to print after the client was built,
@@ -139,7 +125,8 @@ func runWatch(args []string) {
 				Jira: mustJiraSearch(), Status: prStatus,
 				Refresh: workspace.Refresh, Prune: pruneBranch,
 				Merge: mergePR, OpenPR: openPR, Fix: fixRun, Judge: doneJudge,
-				Slack: slackForApproval(),
+				Conform: conformReview,
+				Slack:   slackForApproval(),
 			})
 		},
 		Work: func(o work.Options) []work.Result {

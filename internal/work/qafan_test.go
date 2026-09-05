@@ -2,6 +2,7 @@ package work
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/suite"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -116,6 +118,52 @@ func TestTheWidthIsHonoured(t *testing.T) {
 
 	if len(dispatched) != 2 {
 		t.Errorf("width 2 dispatched %d job(s), want 2", len(dispatched))
+	}
+}
+
+// TestFanAuthoringCarriesEachAuthorsCaseCountAsAbout. Every author runs as
+// the same actor and stage, so the roster's only way to say which author got
+// what is the About the fan prints alongside the label (OR-335) -- and that
+// has to be THIS author's share, not the whole ticket's.
+func TestFanAuthoringCarriesEachAuthorsCaseCountAsAbout(t *testing.T) {
+	var dispatched []supervisor.Options
+	var buf bytes.Buffer
+	cfg := config.Config{QA: config.QA{AuthorAgents: 2}}
+
+	fanAuthoring(qaJob{Key: "OR-1", Summary: "s"}, cfg, fanCases,
+		Deps{Fan: recordingFan(&dispatched)}, fanTestLog(t), &buf)
+
+	for i, j := range dispatched {
+		if !strings.Contains(j.About, "case(s)") {
+			t.Errorf("author %d: About = %q, want it to name its own case count", i, j.About)
+		}
+	}
+}
+
+// TestFanAuthoringAboutValuesDistinguishTheAuthors. An uneven split -- one
+// author with two cases, two with one each -- must not print the same About
+// on every roster line, or nothing says why one author took longer than the
+// others.
+func TestFanAuthoringAboutValuesDistinguishTheAuthors(t *testing.T) {
+	var dispatched []supervisor.Options
+	var buf bytes.Buffer
+	cfg := config.Config{QA: config.QA{AuthorAgents: 3}}
+
+	fanAuthoring(qaJob{Key: "OR-1", Summary: "s"}, cfg, fanCases,
+		Deps{Fan: recordingFan(&dispatched)}, fanTestLog(t), &buf)
+
+	if len(dispatched) < 2 {
+		t.Fatalf("expected an uneven fan of the four cases, got %d job(s)", len(dispatched))
+	}
+	allSame := true
+	for _, j := range dispatched[1:] {
+		if j.About != dispatched[0].About {
+			allSame = false
+		}
+	}
+	if allSame {
+		t.Errorf("every author's About was %q; an uneven split must not print an "+
+			"identical roster line for every child", dispatched[0].About)
 	}
 }
 
@@ -284,5 +332,61 @@ func TestTheSuiteRunsEvenWhenNothingFanned(t *testing.T) {
 	runAuthoredSuite(job, config.Config{}, log, &buf)
 	if !strings.Contains(buf.String(), "green") {
 		t.Errorf("Orion did not run the suite on the un-fanned path:\n%s", buf.String())
+	}
+}
+
+// TestARedSuiteReachesTheVerdict is OR-312's regression guard.
+//
+// The first cut of the suite runner printed "the suite is red", logged the
+// output, and returned nothing. QA then formed its verdict having never been
+// told, so four tickets in one run reported "every case passes" over a suite
+// Orion had already failed -- and a gofmt error reached a shared branch and
+// failed CI twenty minutes later.
+func TestARedSuiteReachesTheVerdict(t *testing.T) {
+	red := &suite.Result{Cmd: "./scripts/test.sh", Passed: false,
+		Output: "these files are not gofmt'd:\ninternal/decide/decide_test.go"}
+
+	got := suiteEvidence(red)
+	if got == "" {
+		t.Fatal("a failing suite produced no evidence for the verdict")
+	}
+	if !strings.Contains(got, "not gofmt'd") {
+		t.Error("the failure OUTPUT is missing; the fix round has nothing to act on")
+	}
+	if !strings.Contains(got, "FAILED") {
+		t.Error("the evidence does not say the suite failed")
+	}
+}
+
+// TestAGreenSuiteAddsNothing. QA runs its own cases regardless, so a passing
+// suite is not news -- and padding every prompt with it would crowd out the
+// cases that are.
+func TestAGreenSuiteAddsNothing(t *testing.T) {
+	if got := suiteEvidence(&suite.Result{Passed: true}); got != "" {
+		t.Errorf("a green suite added %q to the prompt", got)
+	}
+}
+
+// TestAnUnrunnableSuiteIsNotEvidence. Not knowing is not the same as failing.
+// A suite that could not be detected, or a command that would not start, must
+// not read to QA as a failure.
+func TestAnUnrunnableSuiteIsNotEvidence(t *testing.T) {
+	for name, res := range map[string]*suite.Result{
+		"never ran":     nil,
+		"could not run": {Err: errors.New("exec: not found")},
+	} {
+		if got := suiteEvidence(res); got != "" {
+			t.Errorf("%s: produced evidence %q", name, got)
+		}
+	}
+}
+
+// TestATimedOutSuiteSaysSoRatherThanFailing. A hung suite and a failing suite
+// call for different responses, and reporting one as the other sends a person
+// looking for a defect that is not there.
+func TestATimedOutSuiteSaysSoRatherThanFailing(t *testing.T) {
+	got := suiteEvidence(&suite.Result{TimedOut: true, Cmd: "./scripts/test.sh"})
+	if !strings.Contains(got, "DID NOT FINISH") {
+		t.Errorf("a timeout was not distinguished from a failure:\n%s", got)
 	}
 }

@@ -1,0 +1,70 @@
+Decompose plans/thing.plan.md into tracker work items.
+
+Use /pm-plan. Preview the ENTIRE Epic, Story and Task tree and wait for
+explicit approval before creating anything.
+
+This approval is not optional and is not waived by auto-merge being on.
+A sandboxed workspace can be deleted; issues in a shared tracker are seen
+by other people and cannot be cleanly withdrawn.
+
+Search the tracker first and reconcile, so a re-run never double-creates.
+
+Write EVERY item's description in this shape, in this order:
+
+  <One sentence: what changes.>
+  
+  WHY: <Two lines maximum. Not three.>
+  
+  ---
+  
+  ## Open questions
+  - <One bullet per thing you could not decide, or "None".>
+  
+  ## Scope
+  <What is in, what is explicitly out.>
+  Files: <the packages, directories or files this is expected to touch, comma-separated. Omit this line rather than guess.>
+  
+  ## Grounding
+  <File paths, existing behaviour, ADR ids. Cite; do not quote at length.>
+  
+  ## Tests
+  <What would fail if this regressed.>
+
+A human reads down to the rule and stops; an agent reads past it. That is
+the whole point of the rule being there, and it is why one description can
+serve both without a second, shorter ticket nobody keeps current.
+
+Below the rule, CITE rather than restate. Name the file and let the agent
+read it: a quoted excerpt goes stale in place while the code moves on.
+Reference a decision by its ADR id (docs/decisions/NNNN-*.md) rather than
+re-arguing the alternatives you rejected -- that reasoning belongs in one
+file, not copied into every ticket that touches it. If the decision has no
+ADR yet, that is an ADR to write, not a paragraph to paste.
+
+Run `orion routes` before you write the tree, and set the marker it names on
+every item you create -- as the issue type, a component, or a label. A ticket
+with no marker goes to the backend developer, which is correct for backend work
+and wrong for everything else. Routing reads what you write here and infers
+nothing from the summary, so an unmarked docs ticket is worked by the wrong
+actor and nothing anywhere reports a mistake.
+
+DECOMPOSE TOWARD INDEPENDENCE, not just toward size. In the Scope section, give
+every item a `Files:` line naming the packages, directories or files you expect
+it to touch. It is a prediction and it is allowed to be wrong; what it is not
+allowed to be is invented, so omit the line entirely rather than guess -- an
+absent scope holds nothing back, and a wrong one holds back a ticket that never
+collided.
+
+Then check the siblings against each other. Two items that name the same file
+cannot be worked at the same time, and a tree whose siblings collide will batch
+badly for its whole life. Where two would share ground, MERGE them into one item,
+or ORDER them with a real `is blocked by` link -- and if neither is right, say in
+both descriptions that they are coupled and why. What you must not do is emit
+them as independent siblings and leave it to be found at merge time.
+
+THIS RUN IS HEADLESS. Nothing will ever be announced back to you: a command
+run with run_in_background is never reported as finished, ScheduleWakeup does
+nothing, and no notification of any kind arrives. Run long commands in the
+FOREGROUND and wait for them there, however long they take. If you find
+yourself checking whether something has finished yet, you are already stuck --
+the breaker will stop you, and the work will be lost.

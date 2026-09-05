@@ -7,6 +7,8 @@ isolated sandboxed workspace, under deterministic guardrails.
 Built on the plays in Anthropic's
 [AI-native SDLC playbook](https://claude.com/blog/the-ai-native-sdlc-playbook).
 
+> **Requires Go 1.25 or newer.** No third-party modules.
+>
 > **Status: builds and passes its tests** on go1.26.5 darwin/arm64.
 > `go build`, `go vet` and `go test ./...` are clean, `gofmt` is clean, and
 > the hooks, `doctor` and workspace provisioning have been exercised end to

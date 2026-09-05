@@ -94,6 +94,21 @@ jobs:
           ORION_LICENSE: ${{ vars.ORION_LICENSE }}
         run: scripts/render-packaging.sh "${{ steps.v.outputs.version }}"
 
+      # BEFORE any asset is published, so nothing ships that cannot be
+      # traced back to the commit it was built from. v0.8.10 went out the
+      # other way round -- assets in the releases repo, no tag in the source
+      # repo -- and `git log v0.8.10` failed while every later `make build`
+      # reported the version before it (OR-304).
+      #
+      # GITHUB_SHA, not a branch name: the tag has to name the commit this
+      # run actually built. The script refuses to move a tag that already
+      # names a different commit, and exits 0 when it already names this one,
+      # so re-dispatching a release is safe.
+      - name: Tag the source repo
+        env:
+          TAG: ${{ inputs.tag }}
+        run: scripts/tag-source.sh "$TAG" "$GITHUB_SHA"
+
       # Artifacts go to a PUBLIC repo while the source stays private.
       # Homebrew and Scoop download release assets unauthenticated, so a
       # formula pointing at a private repository 404s for everyone, including

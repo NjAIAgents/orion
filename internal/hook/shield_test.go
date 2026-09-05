@@ -96,6 +96,94 @@ func TestShieldPlanGate(t *testing.T) {
 	}
 }
 
+// planExists must say no both when the plans directory was never created and
+// when it exists but holds nothing recognisable as a plan -- two distinct
+// ways to have "no plan yet" that must not be conflated with "has a plan".
+func TestPlanExistsFalseWhenDirectoryMissingOrEmpty(t *testing.T) {
+	cfg := shieldCfg(t)
+
+	if planExists(cfg) {
+		t.Error("no plans directory at all must not count as a plan existing")
+	}
+
+	if err := os.MkdirAll(filepath.Join(cfg.Root, "plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if planExists(cfg) {
+		t.Error("an empty plans directory must not count as a plan existing")
+	}
+}
+
+// Any file ending in the configured plan extension, sitting in the plans
+// directory, must be enough -- planExists answers "has this project produced
+// a plan", not "does a specific one exist".
+func TestPlanExistsTrueForAnyPlanFile(t *testing.T) {
+	cfg := shieldCfg(t)
+
+	if err := os.MkdirAll(filepath.Join(cfg.Root, "plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.Root, "plans", "whatever.plan.md"),
+		[]byte("# plan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !planExists(cfg) {
+		t.Error("a *.plan.md file in the plans directory must make planExists true")
+	}
+}
+
+// The gate opens on ANY plan file, not one named after the current task: it
+// sees a directory, not a slug, so a plan written under a different name must
+// still satisfy it.
+func TestShieldPlanGateRecognisesByExtensionRegardlessOfSlug(t *testing.T) {
+	cfg := shieldCfg(t)
+	cfg.Gates.RequirePlanBeforeEdit = true
+
+	if err := os.MkdirAll(filepath.Join(cfg.Root, "plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.Root, "plans", "completely-unrelated-name.plan.md"),
+		[]byte("# plan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if d := Shield(edit(filepath.Join(cfg.Root, "src/main.go")), cfg); d.Blocked() {
+		t.Errorf("a .plan.md file present under any name must open the gate, got: %s", d.Msg)
+	}
+}
+
+// A project that moves paths.plans off the default must have the gate follow
+// it there rather than continuing to look in plans/.
+func TestShieldPlanGateUsesConfiguredPlansDirectory(t *testing.T) {
+	cfg := shieldCfg(t)
+	cfg.Gates.RequirePlanBeforeEdit = true
+	cfg.Paths.Plans = "docs/plans"
+
+	// A plan sitting in the OLD default location must not satisfy a gate
+	// configured to look elsewhere.
+	if err := os.MkdirAll(filepath.Join(cfg.Root, "plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.Root, "plans", "x.plan.md"), []byte("# plan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if d := Shield(edit(filepath.Join(cfg.Root, "src/main.go")), cfg); !d.Blocked() {
+		t.Fatal("a plan in the unconfigured default plans/ must not open a gate configured for docs/plans")
+	}
+
+	// Writing it where the config actually points must open the gate.
+	if err := os.MkdirAll(filepath.Join(cfg.Root, "docs", "plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.Root, "docs", "plans", "x.plan.md"),
+		[]byte("# plan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if d := Shield(edit(filepath.Join(cfg.Root, "src/main.go")), cfg); d.Blocked() {
+		t.Errorf("a plan written at the configured docs/plans must open the gate, got: %s", d.Msg)
+	}
+}
+
 func TestShieldIgnoresEmptyPath(t *testing.T) {
 	cfg := shieldCfg(t)
 	in := Input{HookEventName: "PreToolUse", ToolName: "Edit", ToolInput: json.RawMessage(`{}`)}

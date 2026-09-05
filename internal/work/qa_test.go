@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,9 +13,9 @@ import (
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
-	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
+	"github.com/orion-sdlc/orion/internal/toolkit"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -139,9 +140,12 @@ func fakeToolkit(t *testing.T, withTesting bool) string {
 	if err := os.WriteFile(filepath.Join(root, "CONVENTIONS.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	skills := append([]string{}, njagents.RequiredSkills...)
+	var skills []string
+	for _, r := range toolkit.RequiredSkills(toolkit.Toolkit{}) {
+		skills = append(skills, r.Skill)
+	}
 	if withTesting {
-		skills = append(skills, njagents.TestingSkills...)
+		skills = append(skills, toolkit.TestingSkills...)
 	}
 	for _, s := range skills {
 		dir := filepath.Join(root, "skills", s)
@@ -874,7 +878,7 @@ func TestQADegradesToTheRepositorysOwnToolingAndSaysSo(t *testing.T) {
 func TestQAUsesTheTestingSkillsWhenTheToolkitHasThem(t *testing.T) {
 	root := fakeToolkit(t, true)
 	cfg := config.Defaults()
-	cfg.Delegation.NJAgentsDir = root
+	cfg.Toolkit.Dir = root
 	got := qaTools(cfg, t.TempDir())
 	if !got.Skills {
 		t.Fatalf("the testing skills were present and were not detected: %+v", got)
@@ -886,7 +890,7 @@ func TestQAUsesTheTestingSkillsWhenTheToolkitHasThem(t *testing.T) {
 	// One missing testing skill is enough to fall back: half the chain is
 	// not the chain, and a prompt naming a skill that is not there sends the
 	// agent looking for it.
-	if err := os.RemoveAll(filepath.Join(root, "skills", njagents.TestingSkills[0])); err != nil {
+	if err := os.RemoveAll(filepath.Join(root, "skills", toolkit.TestingSkills[0])); err != nil {
 		t.Fatal(err)
 	}
 	if qaTools(cfg, t.TempDir()).Skills {
@@ -1552,6 +1556,13 @@ func TestQAsEditToAnAlreadyTrackedTestFileIsCommitted(t *testing.T) {
 // never a failed run -- the change QA verified is still good even when the
 // record of QA's own work could not be written (e.g. permission denied).
 func TestCommitFailureIsLoggedAsAWarningNotAFailedRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The failure is provoked by chmod-ing a git directory read-only,
+		// and chmod cannot take write access away from a directory on
+		// Windows -- the commit succeeds and the premise cannot be built
+		// (OR-342).
+		t.Skip("a directory cannot be made unwritable with chmod on Windows")
+	}
 	repo, baseSHA := qaRepo(t, "#!/bin/sh\nexit 0\n")
 	ws := &workspace.Workspace{RepoPath: repo}
 	sup := func(w *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {

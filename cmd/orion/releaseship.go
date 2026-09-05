@@ -58,6 +58,8 @@ import (
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/work"
 	"github.com/orion-sdlc/orion/internal/workspace"
+
+	"github.com/orion-sdlc/orion/internal/suite"
 )
 
 // shipPoll is how often the two waits re-read their subject. CI and a Slack
@@ -739,8 +741,10 @@ func sameRoot(a, b string) bool {
 // the stream has to stay on the terminal; the copy is for the event log,
 // which is what is left once the terminal is not.
 func releaseScript(root, version string, extra ...string) error {
-	cmd := exec.Command(filepath.Join(root, "scripts", "release.sh"),
-		append([]string{version}, extra...)...)
+	// suite.ScriptCommand, not a direct exec: Windows dispatches on the
+	// extension, so a .sh needs its interpreter named (OR-342).
+	argv := suite.ScriptCommand(filepath.Join(root, "scripts", "release.sh"))
+	cmd := exec.Command(argv[0], append(append(argv[1:], version), extra...)...)
 	cmd.Dir = root
 	tail := &tailWriter{}
 	cmd.Stdout = io.MultiWriter(os.Stdout, tail)

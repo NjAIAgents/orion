@@ -54,6 +54,14 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# Read-only, explicitly. CI builds and tests; it writes nothing back to the
+# repository, so the default token needs no more than this. Stated rather
+# than inherited: an unstated permissions block takes whatever the
+# repository default is, which can be widened later without anyone reading
+# this file (CodeQL actions/missing-workflow-permissions, OR-348).
+permissions:
+  contents: read
+
 jobs:
   go:
     runs-on: ${{ matrix.os }}
@@ -140,9 +148,21 @@ jobs:
       # exactly the drift the shared script exists to prevent. The Windows
       # leg proves the code COMPILES and passes there; the coverage floor and
       # race detector are enforced once, on Linux and macOS.
+      # shell: bash is LOAD-BEARING, not a style choice (OR-334).
+      #
+      # Without it GitHub runs a multi-line block on Windows under
+      # PowerShell, which fails the step only on the LAST command's exit
+      # code. `go build` succeeded, so `go test`'s failure was discarded and
+      # this job reported success over failing tests for as long as it has
+      # existed -- its own comment claiming the leg "proves the code COMPILES
+      # and passes there" was half true. Git Bash is on the runner and is
+      # what the other two legs already use, so this also makes all three
+      # behave alike.
       - name: checks (windows)
         if: runner.os == 'Windows'
+        shell: bash
         run: |
+          set -euo pipefail
           go vet ./...
-          go test ./... -count=1
+          go test ./... -p 2 -count=1
           go build ./cmd/orion

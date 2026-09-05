@@ -27,12 +27,12 @@ import (
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/creds"
+	"github.com/orion-sdlc/orion/internal/dbaplan"
 	"github.com/orion-sdlc/orion/internal/discovery"
 	"github.com/orion-sdlc/orion/internal/doctor"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/hook"
 	"github.com/orion-sdlc/orion/internal/lessons"
-	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/provision"
 	"github.com/orion-sdlc/orion/internal/registry"
@@ -40,6 +40,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/slack"
 	"github.com/orion-sdlc/orion/internal/state"
 	"github.com/orion-sdlc/orion/internal/supervisor"
+	"github.com/orion-sdlc/orion/internal/toolkit"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/update"
@@ -83,6 +84,12 @@ RUNNING
   orion plan <KEY>            design a provisioned tracker project: workspace
                               first, then the roster and cost shape
                               (--dry-run prints it all and spends nothing)
+  orion decompose <KEY> [f]   create the Epic, Story and Task tree from a
+                              /speckit.tasks tasks.md: the whole tree is
+                              previewed and one answer creates it. Links what a
+                              previous run made rather than duplicating it.
+                              Jira only for now; the decompose STAGE still uses
+                              the configured skill on every tracker
   orion run <id> [--stage S]  supervise a sandboxed claude run in a workspace
   orion status                show this repo: branch, hooks, Jira, Slack, spend
   orion status <id>           show stage, breaker state and last run
@@ -101,8 +108,7 @@ RUNNING
                               which actors are reached another way (read-only)
   orion watch [PROJECT...]    run the queue by itself: work, collect, repeat
                               (--once, --interval S, --max-jobs N, --dry-run,
-                              --verbose for the full tool-call stream,
-                              --demo to see the live display with no agents)
+                              --verbose for the full tool-call stream)
   orion collect [KEY...]      finish tickets awaiting CI: close, refresh, prune
                               (--dry-run for verdicts only, --no-prune, --no-fix)
   orion protect               require the checks CI actually runs, and that
@@ -274,6 +280,9 @@ func main() {
 		} else {
 			runQueue(os.Args[2:])
 		}
+	case "decompose":
+		mustArg(os.Args, 2, "orion decompose <KEY> [path/to/tasks.md]")
+		runDecompose(os.Args[2:])
 	case "routes":
 		runRoutes()
 	case "repos":
@@ -1664,6 +1673,13 @@ func runSupervised(id string, rest []string) {
 		DryRun:     hasFlag(rest, "--dry-run"),
 		NoWait:     hasFlag(rest, "--no-wait"),
 	}
+	// The database stage is a recommend -> confirm -> design flow rather than
+	// one supervised run, so it is driven by its own code (OR-154). Routed
+	// here so the operator types the same command for every planning stage.
+	if strings.EqualFold(opts.Stage, dbaplan.Stage) {
+		exitOn(runDatabaseStage(ws, opts))
+		return
+	}
 	res, err := supervisor.Run(ws, opts)
 	if res != nil {
 		fmt.Printf("\nstage      %s\nexit       %d\nreason     %s\nattempts   %d\nduration   %s\nlog        %s\n",
@@ -2197,14 +2213,14 @@ func runNJAgents(args []string) {
 	}
 	home := workspace.Home()
 	cfg := config.Load(rootOrCwd())
-	inst := njagents.Discover(cfg.Delegation.NJAgentsDir, home)
+	inst := toolkit.Discover(home, cfg.Toolkit.Spec())
 
 	switch sub {
 	case "status":
 		if inst == nil {
 			fmt.Println("nj-agents  NOT FOUND")
 			fmt.Println("fetch it:  orion doctor --fix")
-			fmt.Println("or:        " + njagents.CloneCommand(home))
+			fmt.Println("or:        " + toolkit.CloneCommand(home, cfg.Toolkit.Spec()))
 			os.Exit(1)
 		}
 		fmt.Printf("root       %s\nfound via  %s\ncommit     %s\n", inst.Root, inst.Via, inst.Commit)
@@ -2212,7 +2228,7 @@ func runNJAgents(args []string) {
 			fmt.Println("tree       MODIFIED (local changes present)")
 		}
 		fmt.Printf("owner      %s\n", ownerLabel(inst))
-		if behind, known := njagents.Refreshed(inst); known && behind > 0 {
+		if behind, known := toolkit.Refreshed(inst); known && behind > 0 {
 			fmt.Printf("stale      %d commit(s) behind origin as of the last fetch\n", behind)
 			fmt.Println("           run: orion njagents update")
 		} else if known {
@@ -2226,7 +2242,7 @@ func runNJAgents(args []string) {
 		}
 
 	case "update":
-		res, err := njagents.Update(inst, cfg.Delegation.NJAgentsRef)
+		res, err := toolkit.Update(inst, cfg.Toolkit.Ref)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "orion: %v\n", err)
 			os.Exit(1)
@@ -2259,8 +2275,8 @@ func runNJAgents(args []string) {
 		// Running a third-party installer is a different consent level from
 		// reading files, so it is never a side effect of another command.
 		fmt.Println("This runs the toolkit's own installer:")
-		fmt.Println("  " + njagents.InstallCommand(inst, dir))
-		out, err := njagents.InstallInto(inst, dir)
+		fmt.Println("  " + toolkit.InstallCommand(inst, dir))
+		out, err := toolkit.InstallInto(inst, dir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "orion: %v\n", err)
 			os.Exit(1)
@@ -2285,7 +2301,7 @@ func human(n int) string {
 	return fmt.Sprint(n)
 }
 
-func ownerLabel(i *njagents.Install) string {
+func ownerLabel(i *toolkit.Install) string {
 	if i.Managed {
 		return "Orion's own clone (orion njagents update maintains it)"
 	}

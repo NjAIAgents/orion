@@ -11,6 +11,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/orion-sdlc/orion/internal/testproc"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -98,7 +99,7 @@ func (f *fakeMilestoneJira) writtenKeys() []string {
 // Jira server, isolated from any real Orion home or registry.
 func runAdd(t *testing.T, bin, jiraURL string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
-	cmd := exec.Command(bin, append([]string{"release", "add"}, args...)...)
+	cmd := testproc.Command(t, bin, append([]string{"release", "add"}, args...)...)
 	cmd.Dir = t.TempDir()
 	cmd.Env = append(os.Environ(),
 		"ORION_HOME="+t.TempDir(),

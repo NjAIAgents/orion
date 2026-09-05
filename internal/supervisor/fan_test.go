@@ -1,3 +1,5 @@
+//go:build !windows
+
 package supervisor
 
 import (
@@ -13,9 +15,6 @@ import (
 	"github.com/orion-sdlc/orion/internal/cost"
 	"github.com/orion-sdlc/orion/internal/events"
 )
-
-const fanResultJSON = `{"type":"result","session_id":"s","result":"done",` +
-	`"total_cost_usd":0.01,"is_error":false}`
 
 // TestFanReturnsResultsInInputOrder proves N children run concurrently
 // (OR-181) and that results[i] always corresponds to jobs[i], regardless of
@@ -284,13 +283,13 @@ exit 0
 		}
 	})
 
-	// A landing line is the one that reports a child's exit; the roster lines
-	// printed before dispatch carry the same running count and must not be
-	// mistaken for landings. Keyed on "exit" rather than on the running count
-	// for exactly that reason.
+	// A landing line is the one that reports how long a child took; the roster
+	// lines printed before dispatch name the same children and must not be
+	// mistaken for landings, so they are excluded by their "..." marker rather
+	// than by the running count, which both carry.
 	var landedAt []time.Duration
 	for i, l := range lines {
-		if strings.Contains(l, "exit") {
+		if strings.Contains(l, "/3 #") && !strings.Contains(l, "...") {
 			landedAt = append(landedAt, at[i])
 		}
 	}
@@ -331,8 +330,9 @@ func TestFanAnnouncesTheCostShapeBeforeAnyChildStarts(t *testing.T) {
 		t.Fatal("Fan announced nothing at all")
 	}
 	first := lines[0]
-	if !strings.Contains(first, "fan-out 2 children") || !strings.Contains(first, "cap 2") {
-		t.Errorf("first announcement = %q, want the fan width and cap stated before any child runs", first)
+	if !strings.Contains(first, "2 children, 2 at a time") {
+		t.Errorf("first announcement = %q, want the fan width and its concurrency stated "+
+			"before any child runs", first)
 	}
 	if strings.Contains(first, "landed") {
 		t.Error("the cost-shape announcement and a landing announcement are the same line")

@@ -392,6 +392,97 @@ After a breaker trips, a human decides whether to continue:
 orion reset --session <id>
 ```
 
+### Declaring which toolkit you delegate to
+
+The optional `toolkit` block in `orion.json` names the skill repository Orion
+delegates to, and what each stage invokes inside it. **Leaving it out changes
+nothing**: `toolkit.repo` falls back to the nj-agents URL Orion has always
+used, `toolkit.dir` and `toolkit.ref` fall back to the older
+`delegation.nj_agents_dir` / `delegation.nj_agents_ref` spellings, and a stage
+with no command declared runs Orion's own built-in prompt.
+
+```jsonc
+{
+  "toolkit": {
+    "repo": "https://github.com/navjyotnishant/nj-agents.git",  // the default
+    "ref": "v1.4.0",                 // pin a tag; empty clones the default branch
+    "dir": "/home/me/nj-agents",     // an existing clone; overrides the vendor path
+    "stages": {
+      "review": "/pre-push-review",
+      "pr": "/pr-describe"
+    }
+  }
+}
+```
+
+A team with its own skill repository points Orion at it without a Go change:
+
+```jsonc
+{
+  "toolkit": {
+    "repo": "https://github.com/github/spec-kit.git",
+    "stages": {
+      "intent": "/specify",
+      "spec": "/plan",
+      "plan": "/tasks",
+      "decompose": "/breakdown",
+      "review": "/analyze"
+    }
+  }
+}
+```
+
+Orion clones a toolkit it manages into `<ORION_HOME>/vendor/<repo-name>` —
+`vendor/spec-kit` above, `vendor/nj-agents` for the default — so two toolkits
+never land on the same directory. `toolkit.dir` overrides that entirely.
+
+**Stage names.** Only the stages Orion runs: `intent`, `spec` (or `design`),
+`plan`, `ticket`, `scaffold`, `decompose`, `build` (or `implement`), `verify`
+(or `test`), `review`, `pr` (or `ship`). Either spelling of a pair means the
+same stage. Naming a stage twice with two different commands is refused, with
+both keys quoted, rather than one being picked silently; so is a stage name
+Orion does not run, because a typo that is ignored is a stage nobody notices
+is still unconfigured.
+
+**No ordering.** `stages` is a map — what a stage runs — and never a list, an
+`order` key or a `sequence` key. Those express what runs *after* what, and
+sequencing across stages is Orion's, not a toolkit's
+([decisions/0001](decisions/0001-precedence-rule-orion-owns-orchestration.md)).
+A block that expresses order is rejected with an error citing that decision,
+so the rule holds by shape rather than by prose.
+
+### Creating the tracker tree from a spec-kit task list
+
+If your `plan` stage runs spec-kit's `/speckit.tasks`, the artifact it leaves
+behind — `specs/<nnn-feature>/tasks.md` — is a phased task list with `[P]`
+parallel markers, `[USn]` story groups and exact file paths. `orion decompose`
+turns that into the tracker tree itself, without a skill in the middle:
+
+```bash
+orion decompose CAT                       # finds specs/*/tasks.md
+orion decompose CAT specs/003-cat/tasks.md
+```
+
+One Epic, one Story per `[USn]` group, and each task as a child of its story —
+a task in no story group (Setup, Foundational, Polish) hangs off the Epic
+directly, since that is where it belongs and no story was described for it. The
+`[P]` marker, the phase, the dependency section and the file paths all survive
+into the descriptions, and the routing marker `orion routes` publishes is set
+on each item **by Orion** rather than requested in a prompt.
+
+The whole tree is printed first, with `+` for what would be created and `=` for
+what a previous run already made, and **one answer covers all of it**. A run
+with nobody present to answer creates nothing and says so. A re-run searches by
+the tree's identity label (`orion-spec-<feature>`), links what is there and
+creates only the rest — so a run that failed halfway is resumed by running the
+same command again, and it reports the item it stopped at.
+
+**This is opt-in and Jira-only for now.** The `decompose` STAGE still runs
+whatever your toolkit block names (`/pm-plan` by default), on any tracker, and
+that path is unchanged — a project with no spec-kit output decomposes exactly as
+it did before. The tracker-neutral seam that would let this reach Linear, Notion
+and GitHub Issues is tracked as OR-303.
+
 ---
 
 ## 6. Weekly budget checkpoints

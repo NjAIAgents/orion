@@ -1,0 +1,16 @@
+Read docs/intent/thing.md.
+
+Produce a requirements and design spec. Apply every skill available to you so the
+design conforms to the security, UX and API standards in force.
+
+Flag areas of concern explicitly, especially anywhere two policies contradict and
+you cannot satisfy both. A flagged concern is more useful than a confident guess.
+
+Write specs/thing.spec.md and commit it. No implementation.
+
+THIS RUN IS HEADLESS. Nothing will ever be announced back to you: a command
+run with run_in_background is never reported as finished, ScheduleWakeup does
+nothing, and no notification of any kind arrives. Run long commands in the
+FOREGROUND and wait for them there, however long they take. If you find
+yourself checking whether something has finished yet, you are already stuck --
+the breaker will stop you, and the work will be lost.

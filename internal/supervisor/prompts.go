@@ -5,9 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/changelog"
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -21,8 +23,55 @@ import (
 // These are starting prompts. The skills shipped with the plugin carry
 // the detail; keeping the prompt short here means the skill stays the
 // single source of truth rather than drifting against a duplicate.
-func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
+// headlessNote is on EVERY stage prompt (OR-331).
+//
+// A QA session backgrounded the repository's suite and then polled for its
+// completion for twenty minutes. Nothing was coming: run_in_background
+// re-invokes an agent when the command exits in an INTERACTIVE session, and
+// Orion runs its agents with `claude -p`, where no such re-invocation exists
+// and ScheduleWakeup does nothing. The run never produced the verdict that
+// would have handed its ticket back to the implementer.
+const headlessNote = `THIS RUN IS HEADLESS. Nothing will ever be announced back to you: a command
+run with run_in_background is never reported as finished, ScheduleWakeup does
+nothing, and no notification of any kind arrives. Run long commands in the
+FOREGROUND and wait for them there, however long they take. If you find
+yourself checking whether something has finished yet, you are already stuck --
+the breaker will stop you, and the work will be lost.`
+
+func stagePrompt(ws *workspace.Workspace, stage string, tk config.Toolkit) (string, error) {
+	p, err := stageBody(ws, stage, tk)
+	if err != nil || p == "" {
+		return p, err
+	}
+	return p + "\n\n" + headlessNote, nil
+}
+
+// command resolves what a stage delegates to: the project's configured
+// command, or the nj-agents skill Orion has always named.
+//
+// The built-in is passed in rather than held in a table beside the config,
+// because the fallback belongs next to the prompt that states it -- a second
+// copy of "the intent stage runs /capture-intent" is a copy that drifts.
+// An unset stage is a NORMAL answer, not a failure, and a partial map is a
+// supported configuration (decisions/0019): every stage resolves
+// independently, so configuring one stage never disturbs the others.
+func command(tk config.Toolkit, stage, builtin string) string {
+	if c := strings.TrimSpace(tk.Stage(stage)); c != "" {
+		return c
+	}
+	return builtin
+}
+
+func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string, error) {
 	idea := ws.Task.Idea
+
+	// Four stages name the plan file: the one that writes it, and the three
+	// that read it. The path comes from config rather than a literal so a
+	// project with a non-default paths.plans gets prompts that agree with
+	// the shield's plan gate, which reads the same setting through the same
+	// helper. A build prompt pointing at a file the plan stage never wrote
+	// is the same silent break as a gate looking in the wrong directory.
+	plan := config.Load(ws.RepoDir()).PlanPath(ws.Task.Slug)
 
 	switch strings.ToLower(stage) {
 	case "intent":
@@ -30,13 +79,40 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 			"Capture the intent behind this idea, in the originator's words:",
 			quote(idea),
 			"",
-			"Use the /capture-intent skill. It writes docs/intent/<slug>.md with a fixed",
+			"Use the "+command(tk, "intent", "/capture-intent")+" skill. It writes docs/intent/<slug>.md with a fixed",
 			"shape and proposes the commit; the path is part of its contract, so do not",
-			"relocate the file. /pm-plan later points at this capture as grounding.",
+			"relocate the file. "+command(tk, "decompose", "/pm-plan")+" later points at this capture as grounding.",
+			"",
+			"You are the product manager here, and that one file is everything you leave",
+			"behind: what is being built, why it matters, and how success will be",
+			"measured. Every later stage treats it as settled, and none of them can ask",
+			"you anything -- they run non-interactively.",
 			"",
 			"Interrogate the idea first, the way an analyst would: who is affected, what is",
-			"out of scope, what constraints apply, what success looks like. Where it is",
-			"ambiguous, record the question rather than inventing an answer.",
+			"out of scope, what constraints apply, what success looks like.",
+			"",
+			"EXTEND THE FILE THAT IS ALREADY THERE if there is one; do not start a second",
+			"artifact beside it. These two headings must be in it when you finish, worded",
+			"exactly like this -- Orion's discovery gate finds the second one BY ITS",
+			"HEADING, so a file that words it differently parses as having nothing open:",
+			"",
+			quote(intentShape),
+			"",
+			"SUCCESS MEASURES ARE PART OF THE DELIVERABLE, not a nice-to-have. \"How will",
+			"we know this worked\" is exactly the thing that never gets written down",
+			"afterwards. State each one so a person could check it later,",
+			"not as an aspiration.",
+			"",
+			"ANYTHING YOU CANNOT DECIDE IS AN OPEN QUESTION, NEVER AN ASSUMPTION.",
+			"An assumption written as a statement is indistinguishable from a decision by",
+			"the time the next stage reads it, and spec, plan, scaffold and the tracker",
+			"tree all inherit it -- nine stage floors plus the rework, against one",
+			"conversation now. The gate blocks every later stage while a bullet there is",
+			"unanswered, and that is the point of writing it there rather than smoothing",
+			"it over. Write `"+intentNone+"` under the heading when there genuinely are",
+			"none, so nobody has to guess whether you thought about it.",
+			"Never delete a question to unblock the chain. Mark it answered in place, with",
+			"`[x]`, with ~~strikethrough~~, or with an inline \"Answer: ...\".",
 			"",
 			"Record only what was actually said. Do not write code or design a solution.",
 		), nil
@@ -65,7 +141,7 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 			"The bar: an engineer who has never seen this conversation could implement the change",
 			"from the plan alone.",
 			"",
-			"Write plans/"+ws.Task.Slug+".plan.md and commit it. Do not implement yet.",
+			"Write "+plan+" and commit it. Do not implement yet.",
 		), nil
 
 	case "ticket":
@@ -79,7 +155,7 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 		return join(
 			"Lay out the repository skeleton for this project.",
 			"",
-			"Use the /scaffold-project skill. It grounds the security and governance",
+			"Use the "+command(tk, "scaffold", "/scaffold-project")+" skill. It grounds the security and governance",
 			"layer in the OpenSSF OSPS Baseline and delegates the stack layout to the",
 			"ecosystem's own generator rather than inventing one.",
 			"",
@@ -92,9 +168,9 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 
 	case "decompose":
 		return join(
-			"Decompose plans/"+ws.Task.Slug+".plan.md into tracker work items.",
+			"Decompose "+plan+" into tracker work items.",
 			"",
-			"Use /pm-plan. Preview the ENTIRE Epic, Story and Task tree and wait for",
+			"Use "+command(tk, "decompose", "/pm-plan")+". Preview the ENTIRE Epic, Story and Task tree and wait for",
 			"explicit approval before creating anything.",
 			"",
 			"This approval is not optional and is not waived by auto-merge being on.",
@@ -102,6 +178,22 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 			"by other people and cannot be cleanly withdrawn.",
 			"",
 			"Search the tracker first and reconcile, so a re-run never double-creates.",
+			"",
+			// One description, two readers (OR-164). See ticketShape.
+			"Write EVERY item's description in this shape, in this order:",
+			"",
+			quote(ticketShape),
+			"",
+			"A human reads down to the rule and stops; an agent reads past it. That is",
+			"the whole point of the rule being there, and it is why one description can",
+			"serve both without a second, shorter ticket nobody keeps current.",
+			"",
+			"Below the rule, CITE rather than restate. Name the file and let the agent",
+			"read it: a quoted excerpt goes stale in place while the code moves on.",
+			"Reference a decision by its ADR id (docs/decisions/NNNN-*.md) rather than",
+			"re-arguing the alternatives you rejected -- that reasoning belongs in one",
+			"file, not copied into every ticket that touches it. If the decision has no",
+			"ADR yet, that is an ADR to write, not a paragraph to paste.",
 			"",
 			// Routing reads a marker off the created ticket. Nothing that
 			// created a ticket knew the vocabulary existed, so the metadata
@@ -119,11 +211,30 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 			"and wrong for everything else. Routing reads what you write here and infers",
 			"nothing from the summary, so an unmarked docs ticket is worked by the wrong",
 			"actor and nothing anywhere reports a mistake.",
+			"",
+			// The declared scope, and the only moment anyone can supply it
+			// (OR-260). The queue reads the `Files:` line back off the
+			// description and refuses to admit two tickets that named the same
+			// ground; without the line it admits both and the collision is
+			// discovered at merge time with the tokens already spent.
+			"DECOMPOSE TOWARD INDEPENDENCE, not just toward size. In the Scope section, give",
+			"every item a `Files:` line naming the packages, directories or files you expect",
+			"it to touch. It is a prediction and it is allowed to be wrong; what it is not",
+			"allowed to be is invented, so omit the line entirely rather than guess -- an",
+			"absent scope holds nothing back, and a wrong one holds back a ticket that never",
+			"collided.",
+			"",
+			"Then check the siblings against each other. Two items that name the same file",
+			"cannot be worked at the same time, and a tree whose siblings collide will batch",
+			"badly for its whole life. Where two would share ground, MERGE them into one item,",
+			"or ORDER them with a real `is blocked by` link -- and if neither is right, say in",
+			"both descriptions that they are coupled and why. What you must not do is emit",
+			"them as independent siblings and leave it to be found at merge time.",
 		), nil
 
 	case "build", "implement":
 		return join(
-			"Implement plans/"+ws.Task.Slug+".plan.md.",
+			"Implement "+plan+".",
 			"",
 			"First cut a branch from develop for this task. Every task gets its own",
 			"branch; it merges into develop, and develop reaches main later through",
@@ -145,7 +256,7 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 			"",
 			"Run the build, the tests and the linter. Exercise the changed behaviour and the two",
 			"nearest neighbouring flows. Report what you ran, what you saw, and anything that does",
-			"not match plans/"+ws.Task.Slug+".plan.md.",
+			"not match "+plan+".",
 			"",
 			"Report only. Do not fix anything you find; a fix here would be an unreviewed change",
 			"riding along with a verification pass.",
@@ -184,6 +295,71 @@ func stagePrompt(ws *workspace.Workspace, stage string) (string, error) {
 			"unknown stage %q (want: intent, spec, plan, scaffold, decompose, build, verify, review, pr)", stage)
 	}
 }
+
+// intentShape is the skeleton the intent stage must leave behind, shown to the
+// agent verbatim.
+//
+// A literal block rather than prose describing a shape, because the second
+// heading is a CONTRACT with internal/discovery: the gate finds open questions
+// by matching that heading, and a capture that words it differently parses as
+// having none. That failure is silent and it is the worst one available here --
+// a file full of unanswered questions that every later stage is cleared to
+// design from. TestIntentPromptWritesWhatTheDiscoveryGateParses pins the two
+// sides together by round-tripping this text through discovery.Assess.
+//
+// The first heading has no parser behind it and is here for the other half of
+// the deliverable: "how will we know this worked" is the thing nobody writes
+// down afterwards, so it is asked for in the shape rather than in a sentence
+// the agent can satisfy with a paragraph about ambitions.
+const intentShape = `## Success measures
+- How anyone will know this worked, stated so it can be checked later.
+
+## Open questions
+- One bullet per thing you could not decide.`
+
+// ticketShape is the shape every tracker item's description must have, shown
+// to the planner verbatim.
+//
+// Tickets written for agents grew long, because an agent that is not given
+// the grounding -- the file paths, the existing behaviour, why the obvious
+// approach is wrong -- reinvents it badly. That was the right instinct paid
+// for by the wrong reader: a backlog a person cannot scan is a backlog they
+// cannot prioritise (OR-164).
+//
+// The horizontal rule is the fix, and it is a rule rather than a convention
+// because it has to be visible at a glance in whatever the tracker renders.
+// Above it is what a human needs to triage; below it is what an agent needs
+// to build. Neither reader loses anything, and there is still only one
+// description to keep current.
+//
+// Open questions sit FIRST below the rule rather than at the end, because
+// "visible without reading the body" is the requirement -- an open question
+// buried under scope and prior art is one nobody sees until it has already
+// been decided by accident.
+const ticketShape = `<One sentence: what changes.>
+
+WHY: <Two lines maximum. Not three.>
+
+---
+
+## Open questions
+- <One bullet per thing you could not decide, or "None".>
+
+## Scope
+<What is in, what is explicitly out.>
+Files: <the packages, directories or files this is expected to touch, comma-separated. Omit this line rather than guess.>
+
+## Grounding
+<File paths, existing behaviour, ADR ids. Cite; do not quote at length.>
+
+## Tests
+<What would fail if this regressed.>`
+
+// intentNone is how the capture says there is nothing open. Spelled out here
+// rather than inside the prompt string because discovery.isNone decides which
+// words count, and a prompt telling the agent to write something that spelling
+// does not cover would block the chain on a complete intent.
+const intentNone = "- None"
 
 // NoopMarker is the sentence an agent writes when it finds this issue's work
 // already done. It lives here, next to the prompt that asks for it, so the
@@ -612,6 +788,108 @@ const (
 	doneReplyNotDone = "NOT DONE:"
 )
 
+// ConformPrompt asks the one question no other reader of a change asks: is
+// this the thing we agreed to build (OR-158)?
+//
+// The review class reads the diff, QA reads the acceptance criteria, and
+// done triage reads the criteria against the diff. A change can satisfy all
+// three and still be something other than what the plan said, and that
+// divergence is invisible to anyone who has not read both documents at once
+// -- which, at approval time, is everybody.
+//
+// Four clauses carry it.
+//
+// THE PLAN IS THE ONLY YARDSTICK. Not the ticket, not the code's quality,
+// not the tests. Those grounds belong to passes that already cover them, and
+// an agent that wanders onto them produces findings a reader has already seen
+// under another heading and learns to skip.
+//
+// A DIVERGENCE IS NOT A FAULT. It is frequently the implementer discovering
+// something better while building. The agent is told this outright, because
+// an agent that believes it is catching wrongdoing writes an accusation, and
+// the thing being asked for is a neutral difference report a person decides on.
+//
+// CONFORMS IS THE EXPECTED ANSWER. Same reasoning DonePrompt gives: the bar
+// is a plan clause it can QUOTE and a diff that does something else, not a
+// feeling that the shape is off. Wording, ordering, naming and implementation
+// detail the plan never fixed are not divergences.
+//
+// NOTHING IS BLOCKED EITHER WAY. Stated so the agent does not reach for a
+// severity it has no way to act on, and does not soften a real difference for
+// fear of stopping the pipeline. It cannot stop anything.
+func ConformPrompt(key, plan, stat, patch string, truncated bool) string {
+	lines := []string{
+		"A run working " + key + " has finished and its checks are green. Answer one",
+		"question about it, and only this one.",
+		"",
+		"THE CONFIRMED PLAN -- what was agreed during planning",
+		quote(plan),
+		"",
+		"WHAT THE BRANCH ACTUALLY CARRIES",
+		quote(stat),
+		"",
+		"THE DIFF",
+		quote(patch),
+	}
+	if truncated {
+		lines = append(lines, "",
+			"SOME OF THIS IS TRUNCATED. Parts of the plan or the diff are not shown",
+			"to you. Something you cannot find may simply be in the part that was cut.")
+	}
+	lines = append(lines,
+		"",
+		"THE QUESTION: does this change build what the confirmed plan says to build?",
+		"",
+		"THE PLAN IS THE ONLY YARDSTICK",
+		"Not the ticket, not whether the code is good, not whether it is well",
+		"tested, not whether you would have written it differently. Other passes",
+		"already read all of those and report on them separately. You are reading",
+		"the change against the plan and against nothing else.",
+		"",
+		"A DIVERGENCE IS NOT AN ACCUSATION",
+		"An implementer who departs from the plan has often found something better",
+		"while building, and that is a good outcome. You are not catching anyone",
+		"out. You are writing down a difference so a person can decide whether to",
+		"accept it, which is the thing that otherwise never happens.",
+		"",
+		"CONFORMS IS THE EXPECTED ANSWER, AND USUALLY THE RIGHT ONE",
+		"Say "+conformReplyDiverges+" only when you can QUOTE something the plan states and point",
+		"at what the diff does instead, or at a part of the plan the diff does not",
+		"build at all. Different wording, different ordering, different naming, and",
+		"any implementation detail the plan left open are NOT divergences. Nor is a",
+		"change doing less than the plan when the plan covered several tickets and",
+		"this is one of them.",
+		"",
+		"AT MOST THREE. More than three means you are listing differences rather",
+		"than judging them, and none of them will be read.",
+		"",
+		"NOTHING IS BLOCKED BY YOUR ANSWER",
+		"This pass reports and stops. It does not merge, hand work back, or hold a",
+		"queue open, whichever way you answer -- so do not soften a real difference,",
+		"and do not reach for one to justify the run.",
+		"",
+		"DO NOT CHANGE ANYTHING",
+		"Do not edit a file, commit, merge, approve, comment on the ticket, or run",
+		"any command that would. You are reporting; Orion records it.",
+		"",
+		"ANSWER WITH ONE LINE PER FINDING AND NOTHING ELSE",
+		"  "+conformReplyConforms,
+		"or one line per divergence, up to three",
+		"  "+conformReplyDiverges+" <what the plan says, and what the diff does instead, in one",
+		"  sentence>",
+	)
+	return join(lines...)
+}
+
+// The reply contract for ConformPrompt. Stated here rather than imported
+// from internal/conform, for the reason the done markers above are: this
+// package is what every stage runs through and must not depend on the one
+// that parses its output. A test pins the two spellings together.
+const (
+	conformReplyConforms = "CONFORMS"
+	conformReplyDiverges = "DIVERGES:"
+)
+
 // TicketPrompt is the instruction for implementing one tracker issue.
 //
 // Every clause here is load-bearing, because this text is what decides how
@@ -915,7 +1193,7 @@ func testEnv(repoPath string) string {
 // two answers to "which python" is how the prompt and the suite end up
 // disagreeing.
 func venvPython(repoPath string) string {
-	here := filepath.Join(repoPath, ".venv", "bin", "python")
+	here := venvInterpreter(repoPath)
 	if _, err := os.Stat(here); err == nil {
 		return here
 	}
@@ -923,15 +1201,30 @@ func venvPython(repoPath string) string {
 	if err != nil {
 		return ""
 	}
-	common := strings.TrimSpace(string(out))
+	// git prints forward slashes on every platform; FromSlash makes the
+	// path native before it is joined, or a Windows prompt carries a
+	// mixed-separator path nothing can compare against (OR-344).
+	common := filepath.FromSlash(strings.TrimSpace(string(out)))
 	if !filepath.IsAbs(common) {
 		common = filepath.Join(repoPath, common)
 	}
-	main := filepath.Join(filepath.Dir(common), ".venv", "bin", "python")
+	main := venvInterpreter(filepath.Dir(common))
 	if _, err := os.Stat(main); err != nil {
 		return ""
 	}
 	return main
+}
+
+// venvInterpreter is where a virtualenv under dir keeps its python. The
+// layout is the platform's, not POSIX's: Scripts\python.exe on Windows,
+// bin/python elsewhere -- the same split internal/ciscaffold makes when it
+// BUILDS the venv, and hardcoding bin/python here meant a Windows prompt
+// never found the interpreter that existed (OR-342).
+func venvInterpreter(dir string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(dir, ".venv", "Scripts", "python.exe")
+	}
+	return filepath.Join(dir, ".venv", "bin", "python")
 }
 
 // childList renders the sub-tasks as the ordered checklist they are.

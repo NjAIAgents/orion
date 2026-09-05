@@ -54,14 +54,10 @@ func triageWS(t *testing.T) *workspace.Workspace {
 // claudeSaying puts a `claude` on PATH that returns final as its result.
 func claudeSaying(t *testing.T, final string, exit int) {
 	t.Helper()
-	dir := t.TempDir()
 	script := "#!/bin/sh\n" +
 		`echo '{"type":"result","session_id":"s","result":"` + final + `","total_cost_usd":0.01,"is_error":false}'` + "\n" +
 		"exit " + itoaTest(exit) + "\n"
-	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeBin(t, "claude", script)
 }
 
 func itoaTest(i int) string {

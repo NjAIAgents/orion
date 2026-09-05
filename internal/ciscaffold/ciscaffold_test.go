@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -416,6 +417,13 @@ func TestAPlantedSecretFailsTheScanAndIsNotPrintedInTheClear(t *testing.T) {
 }
 
 func TestTheScriptIsExecutable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// NTFS has no execute bit, so the mode this asserts cannot exist
+		// here. Nothing is lost: on Windows the workflow reaches the script
+		// through bash, which cares about the shebang and not the mode
+		// (OR-334, OR-341).
+		t.Skip("no POSIX execute bit on Windows")
+	}
 	dir := repo(t, "go.mod")
 	if _, err := Ensure(dir); err != nil {
 		t.Fatal(err)

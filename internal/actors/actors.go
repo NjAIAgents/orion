@@ -212,8 +212,21 @@ func defaults() map[string]Actor {
 		// not warranted -- the input is one ticket and one diff, not a
 		// codebase.
 		events.ActorDoneTriage: {ID: events.ActorDoneTriage, Name: "Hema", Designation: "delivery triage", Model: "sonnet"},
-		events.ActorCI:         {ID: events.ActorCI, Designation: "ci"},
-		events.ActorHuman:      {ID: events.ActorHuman, Designation: "you"},
+		// Plan conformance reads the same green run against the CONFIRMED
+		// PLAN rather than against the ticket (OR-158). A separate actor from
+		// done triage because it is a separate question with a separate
+		// consequence: done triage may hand work back, this one may only
+		// report, and folding them together would put a divergence -- which
+		// is often an improvement -- one parse away from stopping a pipeline.
+		//
+		// Sonnet, the same argument as the two passes above it. The work is
+		// reading two documents against each other and naming a specific
+		// departure; a cheap model that flags a rewording as a divergence
+		// makes a report people stop reading, which is the only way this pass
+		// can fail. Opus is not warranted: the input is one plan and one diff.
+		events.ActorPlanConform: {ID: events.ActorPlanConform, Name: "Nadia", Designation: "plan conformance reviewer", Model: "sonnet"},
+		events.ActorCI:          {ID: events.ActorCI, Designation: "ci"},
+		events.ActorHuman:       {ID: events.ActorHuman, Designation: "you"},
 	}
 }
 

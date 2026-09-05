@@ -10,7 +10,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/config"
 )
 
-// isolate cuts the test off from the machine it runs on. njagents.Discover
+// isolate cuts the test off from the machine it runs on. toolkit.Discover
 // resolves an installed skill's symlink back to its clone root under the
 // user's home, so without this a developer's own nj-agents would answer for
 // the fixture and the assertions would be about their laptop.
@@ -20,9 +20,9 @@ func isolate(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 }
 
-// toolkit writes a minimal nj-agents checkout: what njagents.Validate needs
+// toolkitCheckout writes a minimal nj-agents checkout: what toolkit.Validate needs
 // to accept it as one, plus the skills and agents a run should end up with.
-func toolkit(t *testing.T) string {
+func toolkitCheckout(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "CONVENTIONS.md"), []byte("x"), 0o644); err != nil {
@@ -51,7 +51,7 @@ func toolkit(t *testing.T) string {
 
 func cfgWith(root string, inherit ...string) config.Config {
 	cfg := config.Defaults()
-	cfg.Delegation.NJAgentsDir = root
+	cfg.Toolkit.Dir = root
 	cfg.Delegation.InheritOperatorConfig = inherit
 	return cfg
 }
@@ -64,7 +64,7 @@ func TestACuratedRunGetsTheToolkitAndNoMCPServers(t *testing.T) {
 	isolate(t)
 	home := t.TempDir()
 
-	r, err := For(home, cfgWith(toolkit(t)), "build", "implementer")
+	r, err := For(home, cfgWith(toolkitCheckout(t)), "build", "implementer")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestTheCuratedDirectoryHoldsNothingOrionDidNotPutThere(t *testing.T) {
 	}
 	t.Setenv("CLAUDE_CONFIG_DIR", operator)
 
-	r, err := For(home, cfgWith(toolkit(t)), "build", "implementer")
+	r, err := For(home, cfgWith(toolkitCheckout(t)), "build", "implementer")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestEnvReplacesAnInheritedConfigDirRatherThanShadowingIt(t *testing.T) {
 func TestAnOperatorCanOptOneStageOrOneActorIn(t *testing.T) {
 	isolate(t)
 	home := t.TempDir()
-	root := toolkit(t)
+	root := toolkitCheckout(t)
 
 	for _, tc := range []struct {
 		name, inherit, stage, actor, want string
@@ -193,7 +193,7 @@ func TestAnOperatorCanOptOneStageOrOneActorIn(t *testing.T) {
 func TestAnUnrelatedOptInLeavesTheRunCurated(t *testing.T) {
 	requireCuration(t)
 	isolate(t)
-	r, err := For(t.TempDir(), cfgWith(toolkit(t), "review"), "build", "implementer")
+	r, err := For(t.TempDir(), cfgWith(toolkitCheckout(t), "review"), "build", "implementer")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestRebuildingDropsStaleLinksAndKeepsRealFiles(t *testing.T) {
 	requireCuration(t)
 	isolate(t)
 	home := t.TempDir()
-	root := toolkit(t)
+	root := toolkitCheckout(t)
 
 	if _, err := For(home, cfgWith(root), "build", "implementer"); err != nil {
 		t.Fatal(err)
@@ -246,7 +246,7 @@ func TestAMissingToolkitWarnsAndStaysCurated(t *testing.T) {
 	empty := t.TempDir()
 
 	cfg := config.Defaults()
-	cfg.Delegation.NJAgentsDir = filepath.Join(empty, "nowhere")
+	cfg.Toolkit.Dir = filepath.Join(empty, "nowhere")
 
 	r, err := For(home, cfg, "build", "implementer")
 	if err != nil {

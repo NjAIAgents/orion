@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -204,8 +205,16 @@ func project(t *testing.T, cfgJSON string) string {
 	seed := filepath.Join(root, "seed")
 	copyTree(t, buildSeed(t, cfgJSON), root)
 
+	// Remote and Force are given rather than discovered. Left to itself Bind
+	// runs `git remote get-url` and then Preflight's rev-parse, status,
+	// branch and log -- five subprocesses to establish two things this
+	// fixture already knows: where the origin is, and that a repository built
+	// three lines ago has nothing uncommitted. project() is called 114 times
+	// in this package, and on the Windows CI runner a subprocess costs about
+	// twenty times what it does on Linux (OR-292).
 	ws, err := workspace.Bind(workspace.BindOptions{
-		SourcePath: seed, DefaultBranch: "main", WorkBranch: "develop",
+		SourcePath: seed, Remote: filepath.Join(root, "origin.git"),
+		DefaultBranch: "main", WorkBranch: "develop", Force: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -859,6 +868,18 @@ func TestWithoutAnAdvisorItStillBlocksCleanly(t *testing.T) {
 // branch is exercised even on a machine that has dun installed.
 func pathWithoutDun(t *testing.T) string {
 	t.Helper()
+	// Windows cannot rebuild a one-tool PATH: a symlink needs a privilege
+	// the runner does not grant, and a byte copy of git.exe severs it from
+	// its DLLs and git-core, so git itself stops working -- both were tried
+	// and both failed (OR-342). When dun is already absent, the real PATH
+	// IS the path without dun; when it is present, the condition cannot be
+	// built here and the test says so.
+	if runtime.GOOS == "windows" {
+		if _, err := exec.LookPath("dun"); err == nil {
+			t.Skip("dun is installed and PATH cannot be safely rebuilt on Windows")
+		}
+		return os.Getenv("PATH")
+	}
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)

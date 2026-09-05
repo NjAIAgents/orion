@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -26,11 +27,16 @@ func writeTestScript(t *testing.T, dir string) {
 
 func writeVenv(t *testing.T, dir string) string {
 	t.Helper()
-	bin := filepath.Join(dir, ".venv", "bin")
+	// The platform's own layout, matching venvInterpreter in prompts.go.
+	sub, name := "bin", "python"
+	if runtime.GOOS == "windows" {
+		sub, name = "Scripts", "python.exe"
+	}
+	bin := filepath.Join(dir, ".venv", sub)
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	py := filepath.Join(bin, "python")
+	py := filepath.Join(bin, name)
 	if err := os.WriteFile(py, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +156,16 @@ func TestTheInterpreterIsFoundInTheMainWorktree(t *testing.T) {
 
 	p := TicketPrompt("OR-39", "s", "d", "u", tree, nil)
 
-	if !strings.Contains(p, py) {
+	// Either spelling of the same file. venvPython builds the path from
+	// git's own output, and git prints the CANONICAL form -- long names on
+	// Windows, resolved symlinks elsewhere -- while t.TempDir may have
+	// handed this test a short-name (RUNNER~1) form. Both name one file;
+	// the prompt is right whichever it carries (OR-344).
+	canonical, evalErr := filepath.EvalSymlinks(py)
+	if evalErr != nil {
+		canonical = py
+	}
+	if !strings.Contains(p, py) && !strings.Contains(p, canonical) {
 		t.Errorf("the worktree must be told about the clone's interpreter (%s):\n%s", py, p)
 	}
 }

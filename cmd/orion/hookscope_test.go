@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"github.com/orion-sdlc/orion/internal/testproc"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,8 +68,12 @@ func TestOnlyAnExplicitOneArmsTheBreaker(t *testing.T) {
 // apply to anyone holding the tool, so they stay armed with no workspace.
 func TestOutsideARunTheBreakerAllowsAndSaysSoWhileGateAndShieldStayArmed(t *testing.T) {
 	bin := buildOrion(t)
-	payload := `{"session_id":"or-263","cwd":"` + repoRoot(t) +
-		`","hook_event_name":"PreToolUse","tool_name":"Bash",` +
+	// The cwd goes through json.Marshal: a raw Windows path in a JSON
+	// string is a string of invalid escapes, and the hook then reads a
+	// document that fails to parse (OR-344).
+	cwdJSON, _ := json.Marshal(repoRoot(t))
+	payload := `{"session_id":"or-263","cwd":` + string(cwdJSON) +
+		`,"hook_event_name":"PreToolUse","tool_name":"Bash",` +
 		`"tool_input":{"command":"echo hello"}}`
 
 	t.Run("breaker is inactive and names the reason", func(t *testing.T) {
@@ -94,8 +100,11 @@ func TestOutsideARunTheBreakerAllowsAndSaysSoWhileGateAndShieldStayArmed(t *test
 
 func buildOrion(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "orion")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	// The suffix matters: `go build -o` writes exactly the name it is given,
+	// and Windows will not exec an extension-less file -- every CLI test
+	// then failed with "executable file not found in %PATH%" (OR-342).
+	bin := filepath.Join(t.TempDir(), "orion"+exeSuffix())
+	cmd := testproc.Command(t, "go", "build", "-o", bin, ".")
 	cmd.Dir = repoRoot(t)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
@@ -116,7 +125,7 @@ func repoRoot(t *testing.T) string {
 // combined output and exit code. env entries are appended last so they win.
 func runHookBinary(t *testing.T, bin, name, payload string, env ...string) (string, int) {
 	t.Helper()
-	cmd := exec.Command(bin, "hook", name)
+	cmd := testproc.Command(t, bin, "hook", name)
 	cmd.Stdin = strings.NewReader(payload)
 	cmd.Dir = repoRoot(t)
 	cmd.Env = append(os.Environ(), append([]string{"ORION_BREAKER_FORCE="}, env...)...)

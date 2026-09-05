@@ -58,6 +58,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/cost"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/fanout"
 	"github.com/orion-sdlc/orion/internal/queue"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
@@ -213,6 +214,10 @@ func Run(opts Options, deps Deps) error {
 	lw := io.Writer(live)
 	liveOut.Store(&lw)
 	defer liveOut.Store(nil)
+	// Everything the supervisor says, and nothing a subprocess says, reaches
+	// the terminal through the region from here on (OR-330).
+	ui.SetConsole(live)
+	defer ui.SetConsole(nil)
 	ui.LiveReset()
 	// The window shows what the agents are saying, so how much it has to hold
 	// scales with how many are talking (OR-264).
@@ -455,6 +460,7 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 	// takes the shared-clone lock (workspace/gitlock.go).
 	if deps.Collect != nil {
 		inCI := 0
+		var pending []collect.Result
 		for _, r := range deps.Collect(collect.Options{
 			Out: w, Home: opts.Home, DryRun: opts.DryRun,
 			// A tick is not a person at a terminal. Without this the
@@ -475,9 +481,11 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 			// one holding it up.
 			if r.Verdict == collect.VerdictPending {
 				inCI++
+				pending = append(pending, r)
 			}
 		}
 		ui.LiveCI(inCI)
+		liveChecks(inCI, pending)
 	}
 
 	// 2. How much is already claimed? The label is the lock, and it lives on
@@ -497,6 +505,15 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 		s.free -= len(s.elsewhere)
 	}
 
+	// The queue is read on EVERY tick, not only when a slot is free: the
+	// rows are the queue, and a ticket waiting on the batch while four
+	// others run still has a row to keep current (OR-325).
+	q, err := deps.Queued(opts.Home, opts.Projects, opts.QueueLabel)
+	if err != nil {
+		return unfinished, err
+	}
+	ui.LiveQueue(queueRows(q.All))
+
 	if s.free <= 0 && !opts.DryRun {
 		// Worth a line only when a claim held elsewhere is WHY. A rate-limit
 		// pause and the job limit both announce themselves already, and a tick
@@ -511,10 +528,6 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 	}
 
 	// 3. Start the next tickets.
-	q, err := deps.Queued(opts.Home, opts.Projects, opts.QueueLabel)
-	if err != nil {
-		return unfinished, err
-	}
 	// Before the empty check, because "nothing is queued" and "everything
 	// queued is unschedulable" are the two states this most has to tell
 	// apart, and the second one prints nothing at all without this.
@@ -529,15 +542,23 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 		return unfinished, nil
 	}
 
-	next := pick(queued, s.free)
+	next, basis := pick(queued, s.free)
 	// Said on EVERY dispatch, not only when a slot was lost. The operator can
 	// see the cap in the banner and can see what started, and until OR-196
 	// nothing joined the two: "cap 2, 1 free" because a claim is held
 	// elsewhere, "2 free, starting 1" because only one ticket is queued, and
 	// "2 free, starting 2" all looked identical from outside, so a run at half
 	// capacity read as parallelism being broken.
+	//
+	// And on what grounds they were spread, when more than one started
+	// (OR-260): "spread by declared scope" and "spread by area" are different
+	// strengths of claim about whether these two will collide.
+	spread := ""
+	if basis != "" && len(next) > 1 {
+		spread = " -- " + basis
+	}
 	ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
-		"%s; starting %d of %d queued", s, len(next), len(queued))
+		"%s; starting %d of %d queued%s", s, len(next), len(queued), spread)
 	if len(s.elsewhere) > 0 {
 		ui.Say(w, s.elsewhere[0], events.ActorOrion, ui.VerbWarn, residueHint)
 	}
@@ -577,6 +598,61 @@ func reportHeld(w io.Writer, held []HeldTicket) {
 	for _, r := range reasons {
 		ui.Say(w, "", events.ActorOrion, ui.VerbWarn, "%s: %s", strings.Join(keys[r], ", "), r)
 	}
+}
+
+// liveChecks pushes what the tickets awaiting CI are actually doing into the
+// display, so an ordinary watch names the checks instead of counting tickets.
+//
+// The count in the header answers "how many tickets are waiting"; it cannot
+// answer "is ubuntu done and windows still going", which on this project is
+// the question worth asking -- the Windows leg runs several times longer than
+// Linux (OR-292), so nine minutes of "1 in CI" is usually one platform.
+//
+// PUSHED, NEVER PULLED. Every check here came out of the `gh pr view` the
+// reconciler ALREADY made to decide the verdict; nothing extra is fetched, and
+// nothing at all happens on a redraw tick. That is the same rule
+// internal/cost/cost.go states about spend: a number in the header must not be
+// the most expensive thing on the screen.
+//
+// One line for the whole watch, not a row per ticket. The rows below already
+// belong to the tickets THIS process is working; a ticket awaiting CI is not
+// one of them, and giving it a row would mean inventing an elapsed for work
+// this process did not start -- the reason LiveCI is a count in the first
+// place. When more than one ticket is waiting their checks share the line, so
+// each name is prefixed with its key: two tickets both running "go (ubuntu)"
+// would otherwise render as two identical cells.
+//
+// Silence when there is nothing collected AND nothing in CI: that clears a
+// finished run's row. A batch reports its own checks from batchrun.go and its
+// members come back PENDING with no per-ticket rollup, so inCI is non-zero
+// there and this leaves the batch's line exactly as it found it.
+// toberetired: OR-334 removed the live region. liveChecks and checkRows sort
+// and format check rows for ui.LiveChecks, which is now a no-op -- the work
+// is done and discarded. The facts still reach the operator: collect prints
+// each verdict as it reads it.
+func liveChecks(inCI int, pending []collect.Result) {
+	rows := checkRows(pending)
+	if len(rows) == 0 && inCI > 0 {
+		return
+	}
+	ui.LiveChecks(rows)
+}
+
+// checkRows is the display's rows for the tickets awaiting CI, in key order so
+// a cell does not move between redraws.
+func checkRows(pending []collect.Result) []ui.Check {
+	pending = append([]collect.Result(nil), pending...)
+	sort.Slice(pending, func(i, j int) bool { return pending[i].Key < pending[j].Key })
+	var out []ui.Check
+	for _, r := range pending {
+		for _, c := range collect.UIChecks(r.Checks) {
+			if len(pending) > 1 {
+				c.Name = r.Key + " " + c.Name
+			}
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // slots is one tick's slot arithmetic: the cap, everything that took a slot,
@@ -698,7 +774,7 @@ func rehearse(w io.Writer, opts Options, queued []tracker.Issue) {
 	// head. "would start FCIA-7 (3 queued)" says a number; the point of
 	// rehearsing is to see whether the ORDER is the one you meant, and that
 	// cannot be checked against a count.
-	first := pick(queued, opts.MaxConcurrent)
+	first, basis := pick(queued, opts.MaxConcurrent)
 	ui.Say(w, strings.Join(first, ", "), events.ActorOrion, ui.VerbWaiting,
 		"would start them together, then work down this queue:")
 	starting := map[string]bool{}
@@ -714,6 +790,9 @@ func rehearse(w io.Writer, opts Options, queued []tracker.Issue) {
 	}
 	fmt.Fprintf(w, "          %s\n", ui.Dim(w, fmt.Sprintf(
 		"limits.max_concurrent_tickets %d: that many run at once.", opts.MaxConcurrent)))
+	if basis != "" && len(first) > 1 {
+		fmt.Fprintf(w, "          %s\n", ui.Dim(w, basis+"."))
+	}
 	if opts.MaxJobs > 0 {
 		n := opts.MaxJobs
 		if n > len(queued) {
@@ -728,51 +807,121 @@ func rehearse(w io.Writer, opts Options, queued []tracker.Issue) {
 	}
 }
 
-// pick chooses which n of the queued tickets to start together.
+// pick chooses which n of the queued tickets to start together, and says on
+// what grounds.
 //
 // Concurrency does not cause merge conflicts; picking n tickets that all edit
 // the same files does. On 2026-08-29 five queued tickets all touched the fix
 // loop, the activity logger and the notify path, and taking the top five by
 // priority produced a hand-resolved three-way conflict.
 //
-// Orion cannot know a ticket's file set before it is worked, so it spreads
-// across the coarsest thing it CAN see: the ticket's area -- its first Jira
-// component, or failing that its project. Tickets from different areas are
-// less likely to touch the same code than the next two on one component's
-// backlog, which is a weaker claim than "disjoint" and the honest one.
+// TWO GROUNDS, AND IT SAYS WHICH. Where planning declared a scope, that is
+// used: the paths a ticket said it expects to touch, judged by the same
+// independence check `orion fan` uses on the import graph (OR-260). Where a
+// ticket declares nothing, this falls back to the coarsest thing Orion can see
+// by itself -- the ticket's area, its first Jira component or failing that its
+// project. The fallback is a guess and always was: a component is not a file,
+// and tickets from different areas are only LESS LIKELY to touch the same
+// code, which is a weaker claim than "disjoint" and the honest one. Saying
+// which ground was used is what lets a reader tell a considered spread from a
+// coincidence.
 //
-// A reordering, not a filter. Once every area is represented the rest are
-// taken in the tracker's own priority order, so nothing is refused and the
-// backlog ranking still decides what gets worked -- it only stops deciding
-// what gets worked SIMULTANEOUSLY. With n == 1 this is exactly the old
-// behaviour: the head of the queue, no reordering at all.
-func pick(queued []tracker.Issue, n int) []string {
+// A reordering, not a filter. Once the spread is exhausted the rest are taken
+// in the tracker's own priority order, so nothing is refused and the backlog
+// ranking still decides what gets worked -- it only stops deciding what gets
+// worked SIMULTANEOUSLY. With n == 1 this is exactly the old behaviour: the
+// head of the queue, no reordering and nothing to report.
+func pick(queued []tracker.Issue, n int) (keys []string, basis string) {
 	if n <= 0 || len(queued) == 0 {
-		return nil
+		return nil, ""
 	}
 	var out []string
 	taken := make([]bool, len(queued))
+	spokenFor := make([]fanout.Scope, 0, n)
 	seen := map[string]bool{}
+	declared, guessed := 0, 0
+
 	for i, is := range queued {
 		if len(out) == n {
-			return out
+			break
 		}
-		a := area(is)
-		if seen[a] {
+		s := fanout.Scope{Key: is.Key, Paths: is.DeclaredScope()}
+		if s.Declared() {
+			if fanout.Independent(s, spokenFor).Serial {
+				continue
+			}
+			declared++
+		} else if seen[area(is)] {
+			// No declaration to judge, so the area heuristic decides -- and
+			// only for this ticket. A mixed queue gets the better answer for
+			// the tickets that carry one rather than the worse answer for all
+			// of them.
 			continue
+		} else {
+			guessed++
 		}
-		seen[a] = true
+		// The area is marked taken whichever ground admitted the ticket. A
+		// ticket admitted on its declared scope still OCCUPIES its component,
+		// and forgetting that would hand the next slot to the one ticket in
+		// that component which declared nothing -- losing the old guess
+		// exactly where it is the only thing left to go on.
+		seen[area(is)] = true
+		spokenFor = append(spokenFor, s)
 		taken[i] = true
 		out = append(out, is.Key)
 	}
-	// Fewer areas than slots: the spread cannot be known any better than this,
-	// so fall back to priority order rather than leaving a slot idle.
+	// Fewer distinct areas and scopes than slots: the spread cannot be known
+	// any better than this, so fall back to priority order rather than leaving
+	// a slot idle.
 	for i, is := range queued {
 		if len(out) == n {
 			break
 		}
 		if !taken[i] {
 			out = append(out, is.Key)
+		}
+	}
+	if n == 1 {
+		return out, ""
+	}
+	return out, pickBasis(declared, guessed)
+}
+
+// pickBasis names the ground the spread was decided on, in the words the
+// dispatch line prints.
+//
+// NEVER SILENT WHEN A SPREAD HAPPENED, the rule printPlanSelected states for
+// the roster and for the same reason: a spread that says nothing about how it
+// was reached is indistinguishable from no spread at all, and the difference
+// is exactly what OR-260 changed.
+func pickBasis(declared, guessed int) string {
+	switch {
+	case declared > 0 && guessed > 0:
+		return "spread by declared scope where there was one, by area otherwise"
+	case declared > 0:
+		return "spread by declared scope"
+	case guessed > 0:
+		return "spread by area: no ticket declared a scope"
+	}
+	return ""
+}
+
+// working lists the tickets whose work is already in flight, so the scope rule
+// can see the ground they have taken (OR-260).
+//
+// WORKING AND CI-WAIT BOTH COUNT. A ticket awaiting CI has a branch pushed and
+// not yet merged, which is precisely the state a colliding branch meets at
+// assembly time -- treating it as finished would admit the collision this is
+// meant to design out, one pass before the ejection.
+func working(all []tracker.Issue) []tracker.Issue {
+	var out []tracker.Issue
+	for _, i := range all {
+		for _, l := range i.Labels {
+			if strings.EqualFold(l, tracker.LabelWorking) ||
+				strings.EqualFold(l, tracker.LabelCIWait) {
+				out = append(out, i)
+				break
+			}
 		}
 	}
 	return out
@@ -820,6 +969,8 @@ func claimedElsewhere(claimed, mine []string) []string {
 // An unreadable history is not an error here. It means no median, the row
 // draws no bar, and the region says nothing it cannot support: the display is
 // an accessory to the run and must never be able to fail it.
+// toberetired: OR-334 removed the live region. This fed ui.LiveMedians, which
+// is now a no-op, so the cost history is read for a bar nobody draws.
 func medianFor(home string, projects []string) func(string) time.Duration {
 	return func(actor string) time.Duration {
 		rows, err := cost.ReadHistory(home)
@@ -840,6 +991,9 @@ func medianFor(home string, projects []string) func(string) time.Duration {
 // Package-level for the same reason `running` is: Listen installs the handler
 // before Run builds anything, and the handler's first message -- how to force
 // a quit -- is the one line that must not be erased by the next redraw.
+// toberetired (partly): with the region gone the writer this publishes is a
+// plain pass-through, so the indirection buys nothing. The signal handler
+// could take the watch's own writer directly.
 var liveOut atomic.Pointer[io.Writer]
 
 // out is where a message from outside the loop should go: the live writer if
@@ -860,8 +1014,28 @@ type pool struct {
 	wg   sync.WaitGroup
 }
 
+// poolBufferPerSlot is how many results a slot may have outstanding before a
+// send would block. Four is generous: a slot produces one result per ticket.
+const poolBufferPerSlot = 4
+
+// maxPoolBuffer bounds the buffer however large the configured cap is.
+//
+// n comes from limits.max_concurrent_tickets, which a person types into
+// orion.json. n*poolBufferPerSlot on a large enough n overflows int and asks
+// make() for a negative length, which panics -- and a config value reaching
+// an allocation unchecked is worth guarding even when the person who typed it
+// meant no harm (CodeQL go/allocation-size-overflow, OR-348).
+const maxPoolBuffer = 4096
+
 func newPool(n int) *pool {
-	return &pool{cap: n, live: map[string]bool{}, done: make(chan work.Result, n*4)}
+	if n < 1 {
+		n = 1
+	}
+	buf := maxPoolBuffer
+	if n <= maxPoolBuffer/poolBufferPerSlot {
+		buf = n * poolBufferPerSlot
+	}
+	return &pool{cap: n, live: map[string]bool{}, done: make(chan work.Result, buf)}
 }
 
 func (p *pool) len() int {
@@ -1007,6 +1181,9 @@ func (s *syncWriter) Write(b []byte) (int, error) {
 type Queue struct {
 	Ready []tracker.Issue
 	Held  []HeldTicket
+	// All is every ticket in scope carrying the queue label or any state
+	// label, in queue order: what the watch keeps a row for (OR-325).
+	All []tracker.Issue
 }
 
 // HeldTicket is one labelled ticket the queue will not claim, and the reason
@@ -1038,6 +1215,10 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 	if err != nil {
 		return Queue{}, err
 	}
+	all, err := j.Search(allJQL(keys, label), 50)
+	if err != nil {
+		return Queue{}, err
+	}
 	// Dependencies decide what is ELIGIBLE; Jira's Rank, already applied by
 	// the query, decides what goes first among those. Ordering the ready set
 	// topologically instead would silently overrule a backlog somebody
@@ -1062,12 +1243,18 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 		// Every eligible ticket, not a slice of them: the concurrency limit
 		// is the tick's arithmetic, and applying it twice would report a
 		// ticket as held for capacity that the tick then also counts.
-		Free:      len(candidates),
+		Free: len(candidates),
+		// What is already in flight, so a candidate is judged against the
+		// batch it would actually join (OR-260). Read off the all-labelled
+		// query rather than a second search: those tickets are excluded from
+		// the claim query by their working label, which is exactly why they
+		// would otherwise be invisible to the scope rule.
+		Working:   working(all),
 		Resolved:  resolvedLookup(j, candidates),
 		Scheduled: func(i tracker.Issue) string { return sched.HoldReason(i, label) },
 	})
 
-	q := Queue{}
+	q := Queue{All: all}
 	byKey := make(map[string]tracker.Issue, len(candidates))
 	for _, i := range candidates {
 		byKey[i.Key] = i
@@ -1139,6 +1326,41 @@ func queuedJQL(keys []string, label string, sched tracker.Schedules) string {
 // that would have been claimed but for their release. Empty when no project
 // in scope enforces the gate, which is how a project that does not use
 // versions avoids a second query it can have no answers to.
+// allJQL is every ticket Orion is responsible for in scope: the queue label
+// or any state label, not Done, in queue order (OR-325).
+func allJQL(keys []string, label string) string {
+	if label == "" {
+		label = tracker.QueueLabelDefault
+	}
+	return tracker.JQLAnd(
+		tracker.JQLIn("project", keys...),
+		tracker.JQLIn("labels", tracker.Managed(label)...),
+		tracker.JQLNotDone(),
+	) + " ORDER BY priority DESC, Rank ASC"
+}
+
+// queueRows maps tracker state to the stage word a row shows (OR-325).
+func queueRows(issues []tracker.Issue) []ui.QueueRow {
+	out := make([]ui.QueueRow, 0, len(issues))
+	for _, i := range issues {
+		stage := "queued"
+		for _, l := range i.Labels {
+			switch l {
+			case tracker.LabelWorking:
+				stage = "working"
+			case tracker.LabelCIWait:
+				stage = "ci-wait"
+			case tracker.LabelReady:
+				stage = "ready"
+			case tracker.LabelFailed:
+				stage = "failed"
+			}
+		}
+		out = append(out, ui.QueueRow{Key: i.Key, Stage: stage, Title: i.Summary})
+	}
+	return out
+}
+
 func heldJQL(keys []string, label string, sched tracker.Schedules) string {
 	if label == "" {
 		label = tracker.QueueLabelDefault

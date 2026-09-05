@@ -17,6 +17,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/orion-sdlc/orion/internal/testproc"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -75,7 +76,7 @@ func statusIssueStub(key, statusCategory string) map[string]any {
 func runStatus(t *testing.T, bin, jiraURL, workdir string, args ...string) (stdout string, exitCode int) {
 	t.Helper()
 	full := append([]string{"release", "status"}, args...)
-	cmd := exec.Command(bin, full...)
+	cmd := testproc.Command(t, bin, full...)
 	cmd.Dir = workdir
 	cmd.Env = append(os.Environ(),
 		"ORION_HOME="+t.TempDir(),

@@ -39,6 +39,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/done"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
+	"github.com/orion-sdlc/orion/internal/queue"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
@@ -92,6 +93,13 @@ func triageDone(res Result, key string, pr PR, cfg config.Config, branch string,
 			Msg: "triaged the finished run: done. " + v.Note})
 		ui.Say(w, key, events.ActorDoneTriage, ui.VerbOK,
 			"this looks genuinely done; going on to ask for approval")
+		// The third question, on the evidence just gathered (OR-158). Done
+		// and QA both read the change against the TICKET; this reads it
+		// against the confirmed PLAN, and a change can satisfy both of them
+		// and still not be what was agreed. It reports and returns nothing:
+		// whatever it finds, the ticket goes on to approval exactly as it
+		// would have.
+		reviewConformance(key, pr, ev.Diff, cfg, branch, opts, deps, ws, log, w)
 		if pr.Head != "" {
 			if err := markTriaged(ws.Dir, key, pr.Head); err != nil {
 				// Not fatal: the cost of losing the record is one repeated
@@ -142,7 +150,7 @@ func notDone(res Result, key string, pr PR, v done.Verdict, cfg config.Config,
 	report := v.Report()
 
 	if err := deps.Jira.SetLabels(key, []string{tracker.LabelFailed},
-		[]string{tracker.LabelCIWait}); err != nil {
+		tracker.PreFailure()); err != nil {
 		res.Err = err
 		ui.Warn(w, "%s: %s, but the ticket could not be relabelled: %v", key, v.Summary(), err)
 		return res
@@ -193,8 +201,10 @@ func gatherEvidence(key string, pr PR, cfg config.Config, branch string,
 	deps Deps, ws *workspace.Workspace) done.Evidence {
 
 	ev := done.Evidence{Key: key}
+	var declared []string
 	if issue, ok := issueFor(deps.Jira, key); ok {
 		ev.Summary, ev.Criteria = issue.Summary, issue.Description
+		declared = issue.DeclaredScope()
 	}
 	if evs, err := events.Read(events.Path(ws.Dir)); err == nil {
 		ev.Events = done.LastQARun(evs, key)
@@ -204,12 +214,47 @@ func gatherEvidence(key string, pr PR, cfg config.Config, branch string,
 	base, named := baseOf(pr, cfg)
 	if !named {
 		ev.Diff.Unreadable = "the pull request does not name a base branch"
-		return ev
+	} else {
+		ev.Diff = readDiff(dir, base, branch)
+		ev.Diff.Stranded = strandedTests(ws, branch, ev.Diff.Files)
+		ev.Rerun = rerunAtCountTwo(dir, base, branch, ev.Diff)
 	}
-	ev.Diff = readDiff(dir, base, branch)
-	ev.Diff.Stranded = strandedTests(ws, branch, ev.Diff.Files)
-	ev.Rerun = rerunAtCountTwo(dir, base, branch, ev.Diff)
+	// ON EVERY PATH, including the one that could not read a diff at all. The
+	// prediction was made whatever happened afterwards, and a population that
+	// silently excludes the runs whose diff would not fetch is a population
+	// selected by the thing being measured.
+	recordScope(ws.Dir, key, declared, ev.Diff)
 	return ev
+}
+
+// recordScope writes what planning predicted this ticket would touch beside
+// what it actually touched (OR-260).
+//
+// HERE because this is the one place both facts are in hand: the ticket's
+// description has just been read for its acceptance criteria, and the branch's
+// diff has just been read for the verdict. Nothing else in the system holds
+// both at once.
+//
+// BEST EFFORT, AND IT DECIDES NOTHING. A scope that turns out wrong is data,
+// not a failure -- an agent that finds the real fix in a fourth file is doing
+// its job. So a ticket that declared nothing is still recorded (how many
+// tickets carry a scope at all is the first thing anyone judging this will ask)
+// and a write that fails is dropped rather than allowed to affect a verdict.
+//
+// AN UNREADABLE DIFF IS RECORDED TOO, carrying the reason. Dropping the row
+// would make the ledger a sample of the runs whose diff happened to fetch,
+// which is a sample chosen by something that has nothing to do with whether
+// the prediction was any good. The reason travels with it so an empty Actual
+// is never mistaken for a change that touched nothing.
+func recordScope(dir, key string, declared []string, d done.Diff) {
+	if dir == "" {
+		return
+	}
+	s := queue.LoadScopes(dir)
+	s.Record(queue.Prediction{
+		Key: key, Declared: declared, Actual: d.Files, Unreadable: d.Unreadable,
+	}, time.Now().UTC())
+	_ = queue.SaveScopes(dir, s)
 }
 
 // issueFor fetches the ticket, for its acceptance criteria. Best effort: a
@@ -240,8 +285,10 @@ func readDiff(dir, base, branch string) done.Diff {
 	}
 	// Fetch first, for the reason upToDate does: the sandbox clone is shared
 	// and may be behind, and a diff against a stale remote-tracking ref
-	// describes a branch nobody is merging.
-	if err := gitQuiet(dir, "fetch", "--quiet", "origin"); err != nil {
+	// describes a branch nobody is merging. Through fetchOnce, so a pass that
+	// already fetched this checkout for the staleness gate does not fetch it
+	// again to answer a question about the same commit (OR-158).
+	if err := fetchOnce(dir); err != nil {
 		return done.Diff{Unreadable: "could not fetch the remote: " + err.Error()}
 	}
 	spec := "origin/" + base + "...origin/" + branch

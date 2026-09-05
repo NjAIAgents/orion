@@ -34,6 +34,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/orion-sdlc/orion/internal/fanout"
 	"github.com/orion-sdlc/orion/internal/tracker"
 )
 
@@ -80,6 +81,18 @@ type Facts struct {
 	Candidates []tracker.Issue
 	// Free is how many may be admitted this pass.
 	Free int
+
+	// Working are the tickets already in flight: claimed on an earlier pass
+	// and not yet landed, so they are not candidates and cannot be admitted
+	// again. They are here because their DECLARED SCOPE is still spoken for
+	// (OR-260). A batch forms across passes -- one ticket started last tick,
+	// another starting now -- so a rule that only compared this pass's
+	// admissions would miss the commonest collision there is.
+	//
+	// Empty means no evidence, not "nothing is running": a caller that cannot
+	// see what is in flight leaves this nil and the scope rule simply has less
+	// to work with, in the same direction every other unknown here resolves.
+	Working []tracker.Issue
 
 	// Resolved answers whether a blocker is finished, and whether it is
 	// known at all. Same contract as tracker.Ready: unknown does not block,
@@ -135,26 +148,65 @@ func Plan(f Facts) []Decision {
 		}
 	}
 
+	// The ground already spoken for: what is in flight, then what this pass
+	// admits as it admits it. Seeded before the loop so a candidate is judged
+	// against the whole batch it would join rather than only against its
+	// pass-mates.
+	spokenFor := make([]fanout.Scope, 0, len(f.Working)+len(f.Candidates))
+	for _, i := range f.Working {
+		if s := scopeOf(i); s.Declared() {
+			spokenFor = append(spokenFor, s)
+		}
+	}
+
 	admitted := 0
 	for _, i := range f.Candidates {
 		d := decide(f, i, obsolete)
 
-		// The concurrency limit is applied LAST, and only to tickets that
-		// were otherwise eligible. Ordering it before the rules would report
-		// a blocked ticket as "no free slot", which is true and useless: the
-		// slot was never its problem, and the next pass would say the same
-		// thing again with the blocker still unnamed.
+		// Two last gates, both of which depend on what the pass has already
+		// decided and so cannot live in decide.
+		//
+		// SCOPE BEFORE CAPACITY. A ticket refused for a slot it was never
+		// going to get would be reported as "no free slot", which is true and
+		// tells nobody that the ticket it collides with is the reason it will
+		// still be waiting next pass. Capacity is the reason a ticket waits;
+		// a collision is a reason a ticket waits AND a fact about the tree.
+		//
+		// The concurrency limit stays LAST, and applies only to tickets that
+		// were otherwise eligible. Ordering it before the rules would report a
+		// blocked ticket as "no free slot", and the next pass would say the
+		// same thing again with the blocker still unnamed.
 		if d.Verdict == Admit {
-			if admitted >= f.Free {
+			s := scopeOf(i)
+			switch v := fanout.Independent(s, spokenFor); {
+			case v.Serial:
+				d = Decision{Key: i.Key, Verdict: Hold, Rule: "scope", Reason: v.Reason}
+			case admitted >= f.Free:
 				d = Decision{Key: i.Key, Verdict: Hold, Rule: "capacity",
 					Reason: "no free slot this pass"}
-			} else {
+			default:
 				admitted++
+				// Only an ADMITTED ticket occupies ground. A held one is not
+				// being worked, so letting it reserve its scope would have one
+				// waiting ticket block another for no work in progress.
+				if s.Declared() {
+					spokenFor = append(spokenFor, s)
+				}
 			}
 		}
 		out = append(out, d)
 	}
 	return out
+}
+
+// scopeOf is the ticket's declared scope in the vocabulary the shared
+// independence check speaks (OR-260).
+//
+// ONE implementation of "can these be worked at once", in internal/fanout,
+// used by both axes. A second copy here is how the two would drift, and the
+// drift shows up as a branch ejected at assembly time nobody can explain.
+func scopeOf(i tracker.Issue) fanout.Scope {
+	return fanout.Scope{Key: i.Key, Paths: i.DeclaredScope()}
 }
 
 // decide applies the rules to one ticket, in refusal order.

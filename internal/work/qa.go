@@ -35,9 +35,9 @@ import (
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
-	"github.com/orion-sdlc/orion/internal/njagents"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/supervisor"
+	"github.com/orion-sdlc/orion/internal/toolkit"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -145,7 +145,9 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 	// It is also the right ORDER: nothing compiles until every author has
 	// stopped writing, which is what keeps ADR 0016's "builds are not
 	// isolated" hazard out of reach for a fanned stage.
-	runAuthoredSuite(job, cfg, log, w)
+	// The RESULT is kept, not discarded (OR-312). It goes into the prompt
+	// below so the session that forms the verdict has seen it.
+	suiteRes := runAuthoredSuite(job, cfg, log, w)
 
 	tools := qaTools(cfg, opts.Home)
 	// Which path it took, said out loud. A stage that silently degraded to
@@ -157,8 +159,9 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 		Msg:   "deriving test cases from the ticket, using " + tools.Path()})
 
 	res, err := deps.Supervise(job.WS, supervisor.Options{
-		Stage:  "qa",
-		Prompt: supervisor.QAPrompt(key, job.Summary, job.Description, cases, tools),
+		Stage: "qa",
+		Prompt: supervisor.QAPrompt(key, job.Summary, job.Description, cases, tools,
+			suiteEvidence(suiteRes)),
 		Model:  actors.Model(events.ActorQA),
 		Effort: actors.Effort(events.ActorQA),
 		// The implementer's allowance, not a smaller one. QA reads the
@@ -881,10 +884,10 @@ func qaTools(cfg config.Config, home string) supervisor.QATools {
 	if !cfg.Delegation.Enabled {
 		return t
 	}
-	inst := njagents.Discover(cfg.Delegation.NJAgentsDir, home)
+	inst := toolkit.Discover(home, cfg.Toolkit.Spec())
 	t.Skills = true
-	for _, s := range njagents.TestingSkills {
-		if !njagents.HasSkill(inst, s) {
+	for _, s := range toolkit.TestingSkills {
+		if !toolkit.HasSkill(inst, s) {
 			t.Skills = false
 			break
 		}

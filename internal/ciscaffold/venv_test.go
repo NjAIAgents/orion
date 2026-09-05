@@ -50,8 +50,12 @@ func TestEnsureVenvBuildsTheEnvironmentTheTestScriptLooksFor(t *testing.T) {
 	}
 	// scripts/test.sh tests exactly this path, in the main worktree, before
 	// it falls through to building one of its own.
-	if _, err := os.Stat(filepath.Join(dir, ".venv", "bin", "python")); err != nil {
-		t.Fatalf(".venv/bin/python is not where scripts/test.sh looks: %v", err)
+	//
+	// Through venvPython rather than a literal, because the layout differs by
+	// platform -- Scripts\python.exe on Windows -- and OR-334 taught the
+	// product code that while leaving this assertion behind (OR-341).
+	if _, err := os.Stat(venvPython(filepath.Join(dir, ".venv"))); err != nil {
+		t.Fatalf("the virtualenv's python is not where EnsureVenv puts it: %v", err)
 	}
 }
 

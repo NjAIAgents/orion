@@ -36,6 +36,7 @@ func runCollect(args []string) {
 		OpenPR:  openPR,
 		Fix:     fixRun,
 		Judge:   doneJudge,
+		Conform: conformReview,
 		Slack:   slackForApproval(),
 	})
 
@@ -234,7 +235,75 @@ func prStatus(dir, branch string) (collect.PR, error) {
 		pr.Verdict = collect.VerdictPassing
 		pr.Detail = fmt.Sprintf("%d check(s) passed", len(v.Rollup))
 	}
+	// A PASS IS GROUNDED IN THE RUNS, NOT THE ROLLUP (OR-327). Right after a
+	// push the rollup holds only the checks GitHub has registered so far:
+	// the fast Analyze jobs report SUCCESS inside a minute while the slow
+	// Go jobs do not yet exist as checks, so a rollup of two successes and
+	// nothing running read as "2 check(s) passed". A batch was declared
+	// green on that, approved, and landed on develop two minutes before its
+	// run had even been queued. The workflow runs for the head commit say
+	// whether anything is still to come.
+	if pr.Verdict == collect.VerdictPassing {
+		if why := runsUnfinished(dir, v.HeadOid); why != "" {
+			pr.Verdict = collect.VerdictPending
+			pr.Detail = why
+		}
+	}
 	return pr, nil
+}
+
+// runsUnfinished reports why a passing rollup cannot yet be trusted: no
+// workflow run exists for the commit, or one is still queued or running.
+// Empty when every run for the commit has completed.
+func runsUnfinished(dir, head string) string {
+	if head == "" {
+		return ""
+	}
+	cmd, cancel := ghCommand(dir, "run", "list", "--commit", head, "--limit", "20",
+		"--json", "status,conclusion,name")
+	defer cancel()
+	out, err := cmd.Output()
+	if err != nil {
+		// Unreadable is not "finished": the rollup alone cannot prove a pass.
+		return "the workflow runs for " + shortSHA(head) + " could not be read; not treating the rollup as complete"
+	}
+	var runs []struct {
+		Status     string `json:"status"`
+		Conclusion string `json:"conclusion"`
+		Name       string `json:"name"`
+	}
+	if err := json.Unmarshal(out, &runs); err != nil {
+		return "the workflow runs for " + shortSHA(head) + " could not be read; not treating the rollup as complete"
+	}
+	return unfinishedRuns(runs)
+}
+
+// unfinishedRuns is the decision, separated from gh so it can be tested.
+func unfinishedRuns(runs []struct {
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	Name       string `json:"name"`
+}) string {
+	if len(runs) == 0 {
+		return "no workflow run has been recorded for this commit yet"
+	}
+	var open []string
+	for _, r := range runs {
+		if !strings.EqualFold(r.Status, "completed") {
+			open = append(open, r.Name+" ("+strings.ToLower(r.Status)+")")
+		}
+	}
+	if len(open) > 0 {
+		return fmt.Sprintf("%d workflow run(s) not finished: %s", len(open), strings.Join(open, ", "))
+	}
+	return ""
+}
+
+func shortSHA(s string) string {
+	if len(s) > 7 {
+		return s[:7]
+	}
+	return s
 }
 
 // slackForApproval returns a client, or nil to disable the approval path.

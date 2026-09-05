@@ -175,6 +175,11 @@ func breakerPost(in Input, cfg config.Config, store *state.Store) Decision {
 		// to finish and looping look identical from here -- both are the same
 		// read of the same path -- so counting the wait meant the only legal
 		// way to run a nine-minute suite was to not wait for it (OR-207).
+		if isPoll(s, in) {
+			s.ConsecPolls++
+		} else {
+			s.ConsecPolls = 0
+		}
 		if (!isVerify || failed) && !isPoll(s, in) {
 			if s.Repeats[actor] == nil {
 				s.Repeats[actor] = map[string]int{}
@@ -279,6 +284,19 @@ func verdict(in Input, cfg config.Config, sess *state.Session) tripDecision {
 				"  Do not retry this call.", in.ToolName, sess.Repeats[actor][sig]),
 			"breaker/loop",
 			fmt.Sprintf("%s repeated %d times", in.ToolName, sess.Repeats[actor][sig]),
+		}
+
+	case cfg.Limits.MaxConsecutivePolls > 0 &&
+		sess.ConsecPolls >= cfg.Limits.MaxConsecutivePolls:
+		return tripDecision{
+			Block("breaker: WAITING WITH NO PROGRESS. %d polls in a row and nothing else.\n"+
+				"  This run is HEADLESS: a backgrounded command is never announced back to\n"+
+				"  you, and ScheduleWakeup does nothing. Nothing will arrive.\n"+
+				"  Run long commands in the FOREGROUND and wait for them there.\n"+
+				"  If you already have the result you need, say your verdict and stop.",
+				sess.ConsecPolls),
+			"breaker/no-progress",
+			fmt.Sprintf("%d consecutive polls", sess.ConsecPolls),
 		}
 
 	case cmd != "" && sess.CmdFailures[cmd] >= cfg.Limits.MaxSameCommandFailures:

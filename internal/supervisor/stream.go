@@ -376,7 +376,10 @@ func short(base, p string) string {
 			q = p
 		}
 		if rel, err := filepath.Rel(b, q); err == nil && !strings.HasPrefix(rel, "..") {
-			return rel
+			// Slash form on every platform: this string is display and event
+			// log, not a filesystem path, and a repo-relative path reads the
+			// same in a Jira comment whichever OS produced it (OR-342).
+			return filepath.ToSlash(rel)
 		}
 	}
 	return filepath.Base(p)

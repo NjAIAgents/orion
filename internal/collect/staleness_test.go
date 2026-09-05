@@ -31,29 +31,8 @@ func commit(t *testing.T, dir, file, msg string) {
 	gitRun(t, dir, "commit", "--allow-empty", "-m", msg)
 }
 
-// origin holds develop and a branch; clone is what collect would inspect.
-// The bare origin is returned too: a second clone must come from IT, because
-// git refuses a push to a branch checked out in a non-bare repository.
-func repos(t *testing.T) (origin, clone string) {
-	t.Helper()
-	origin = t.TempDir()
-	gitRun(t, origin, "init", "--quiet", "--bare", "--initial-branch=develop")
-
-	seed := t.TempDir()
-	gitRun(t, seed, "init", "--quiet", "--initial-branch=develop")
-	commit(t, seed, "", "base")
-	gitRun(t, seed, "remote", "add", "origin", origin)
-	gitRun(t, seed, "push", "--quiet", "-u", "origin", "develop")
-
-	// A feature branch cut from develop, as AddWorktree would.
-	gitRun(t, seed, "checkout", "--quiet", "-b", "orion/x-1")
-	commit(t, seed, "", "the ticket's work")
-	gitRun(t, seed, "push", "--quiet", "-u", "origin", "orion/x-1")
-
-	clone = filepath.Join(t.TempDir(), "repo")
-	gitRun(t, t.TempDir(), "clone", "--quiet", origin, clone)
-	return origin, clone
-}
+// repos, which builds the origin/clone pair these tests read, lives in
+// fixture_test.go: it is built once for the binary and copied (OR-292).
 
 func TestABranchCutFromTheCurrentTipIsUpToDate(t *testing.T) {
 	_, clone := repos(t)

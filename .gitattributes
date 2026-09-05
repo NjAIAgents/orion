@@ -1,0 +1,18 @@
+# Line endings are part of the content here, not a platform preference.
+#
+# Without this, git on Windows checks out text files with CRLF, and every
+# golden-file comparison fails on that leg alone -- nine of them in
+# internal/supervisor did, reporting "the prompt changed under an empty
+# toolkit config" when nothing about the prompt had changed (OR-340).
+#
+# Shell scripts are worse than a failed assertion: bash rejects a script whose
+# shebang line ends in CR, so a CRLF checkout of scripts/test.sh breaks the
+# Windows CI leg itself.
+* text=auto eol=lf
+
+# Binary, so git must never touch them.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary

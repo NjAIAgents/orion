@@ -21,11 +21,15 @@ type fixSpy struct {
 	summary string
 	denied  *PolicyDenial
 	sawAll  []string
+	// sawRef records the ref each call was told to read the log from
+	// (OR-336): "" means the ticket's own branch.
+	sawRef []string
 }
 
-func (f *fixSpy) fix(_ *workspace.Workspace, _, _, failure string, _ *events.Log) (bool, string, *PolicyDenial, error) {
+func (f *fixSpy) fix(_ *workspace.Workspace, _, _, failedOn, failure string, _ *events.Log) (bool, string, *PolicyDenial, error) {
 	f.calls++
 	f.sawAll = append(f.sawAll, failure)
+	f.sawRef = append(f.sawRef, failedOn)
 	return f.pushed, f.summary, f.denied, f.err
 }
 
@@ -49,10 +53,7 @@ func ciRepoWithCI(t *testing.T, ciBlock string) (home, wsDir string) {
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ws, err := workspace.New(workspace.NewOptions{Idea: "fcia"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := newWorkspace(t, "fcia")
 	cfg := `{"ci":{` + ciBlock + `},
 	         "vcs":{"work_branch":"develop","branch_prefix":"orion/"}}`
 	if err := os.WriteFile(filepath.Join(src, "orion.json"), []byte(cfg), 0o644); err != nil {

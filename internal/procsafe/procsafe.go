@@ -23,6 +23,7 @@ package procsafe
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -128,9 +129,40 @@ func WriteFile(path string, data []byte, perm os.FileMode) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp) // do not leave litter behind a failed publish
+	if err := moveIntoPlace(tmp, path); err != nil {
+		_ = os.Remove(tmp) // do not leave litter behind a failed write
 		return err
 	}
 	return nil
+}
+
+// moveIntoPlace moves the finished temp file onto the target path.
+//
+// On POSIX this is one os.Rename and it cannot fail for contention: the call
+// atomically replaces the target however many writers race for it. Windows
+// does not offer that guarantee. Its replace requires the target not be open,
+// and a competing writer's own rename holds it for an instant -- long enough
+// for the loser to get "Access is denied". Eight goroutines writing one path
+// produced exactly that on the Windows CI leg (OR-341).
+//
+// So: retry, briefly. The contention window is a single rename rather than a
+// whole write, so it is measured in microseconds, and a short bounded retry
+// gives back the serialisation POSIX provides for free. The last error is
+// returned unchanged once the budget is spent -- a genuine permission problem
+// must still read as one rather than as a timeout.
+func moveIntoPlace(tmp, path string) error {
+	const attempts = 20
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = os.Rename(tmp, path); err == nil {
+			return nil
+		}
+		// Only contention is worth waiting out. A missing source or a bad
+		// path does not become valid by trying again.
+		if !errors.Is(err, fs.ErrPermission) && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		time.Sleep(time.Duration(i+1) * time.Millisecond)
+	}
+	return err
 }

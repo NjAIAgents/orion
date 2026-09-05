@@ -27,12 +27,10 @@ package claim
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/procsafe"
@@ -182,21 +180,16 @@ func Dead(home, key string) (bool, *Record) {
 
 // alive reports whether a process with this pid exists.
 //
-// Signal 0 performs the permission and existence checks and delivers nothing,
-// which is the portable way to ask. A process owned by another user answers
-// "exists" via EPERM, and that is the right answer here: it exists, so this
-// must not steal its claim.
+// alive reports whether pid names a process that still exists.
+//
+// The implementation is per-platform (alive_unix.go, alive_windows.go)
+// because the question has no portable spelling: signal 0 is the POSIX way
+// to ask and Windows has no signals at all. Both answer the same way on the
+// case that matters -- a process this one may not touch still EXISTS, and a
+// claim held by it must never be stolen.
 func alive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	// Signal 0 performs the checks and delivers nothing. nil means the
-	// process exists and is signalable; EPERM means it exists and belongs to
-	// somebody else, which is still "exists" and still must not be stolen.
-	err = p.Signal(syscall.Signal(0))
-	return err == nil || errors.Is(err, os.ErrPermission)
+	return processExists(pid)
 }
