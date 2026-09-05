@@ -413,6 +413,44 @@ func TestPlanRosterUsesConfiguredActorNames(t *testing.T) {
 	}
 }
 
+// The database architect's planning step is not one of planStages, so the
+// only place a reader finds it is this line -- and it has to appear when the
+// idea itself named the database (OR-150, OR-154).
+func TestPlanAnnouncesTheDatabaseArchitectStepWhenTheIdeaSelectsIt(t *testing.T) {
+	home := planHome(t)
+	pr := &fakeProjects{projects: map[string]tracker.Project{
+		"ORPAY": {
+			ID: "10042", Key: "ORPAY", Name: "Orion Payments",
+			Description: "A payments ledger with a database behind it.",
+		},
+	}}
+
+	out, err := runPlanInto(t, pr, config.Config{}, planOptions{Key: "ORPAY", Home: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "--stage "+planDBAStage) {
+		t.Errorf("the output does not tell the operator to run the database stage:\n%s", out)
+	}
+}
+
+// The mirror case: an idea that never says "database" must not print the
+// database architect's step at all. It is not in the fixed chain, so a line
+// that appears regardless of the idea would be indistinguishable from one the
+// idea actually asked for -- the same failure mode OR-191 names for a roster
+// that varies without saying why.
+func TestPlanDoesNotAnnounceTheDatabaseArchitectStepWhenTheIdeaDoesNotSelectIt(t *testing.T) {
+	home := planHome(t)
+
+	out, err := runPlanInto(t, orpay(), config.Config{}, planOptions{Key: "ORPAY", Home: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "--stage "+planDBAStage) {
+		t.Errorf("the output announces the database stage though the idea never selected it:\n%s", out)
+	}
+}
+
 func TestPlanSurfacesAnUnknownProject(t *testing.T) {
 	home := planHome(t)
 	_, err := runPlanInto(t, orpay(), config.Config{}, planOptions{Key: "NOPE", Home: home})
