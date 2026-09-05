@@ -39,8 +39,17 @@ type Prediction struct {
 	// anyone judging this will ask.
 	Declared []string `json:"declared"`
 	// Actual are the files the branch changed against its base.
-	Actual []string  `json:"actual"`
-	At     time.Time `json:"at"`
+	Actual []string `json:"actual"`
+	// Unreadable is why the diff could not be read, empty when it could.
+	//
+	// The row is written either way -- a ledger that silently dropped the runs
+	// whose diff would not fetch would be a sample chosen by something with no
+	// bearing on whether the prediction was good. But an empty Actual then
+	// means TWO different things, "changed nothing" and "nobody could look",
+	// and Missed reports nothing rather than reporting every declared path as
+	// a miss on evidence that was never gathered.
+	Unreadable string    `json:"unreadable,omitempty"`
+	At         time.Time `json:"at"`
 }
 
 // Scopes is the durable history, newest last.
@@ -105,10 +114,24 @@ func (s *Scopes) Record(p Prediction, now time.Time) {
 // Directory grain is honoured on both sides: a declared internal/queue is not
 // a miss when the change landed in internal/queue/plan.go, and that file is
 // not extra either.
-func (p Prediction) Missed() []string { return notCovered(p.Declared, p.Actual) }
+//
+// A row whose diff was unreadable answers NEITHER. There is no evidence to
+// judge the prediction against, and reporting every declared path as a miss
+// would put a verdict on a run nobody looked at.
+func (p Prediction) Missed() []string {
+	if p.Unreadable != "" {
+		return nil
+	}
+	return notCovered(p.Declared, p.Actual)
+}
 
 // Extra is the other half: what was touched and never declared.
-func (p Prediction) Extra() []string { return notCovered(p.Actual, p.Declared) }
+func (p Prediction) Extra() []string {
+	if p.Unreadable != "" {
+		return nil
+	}
+	return notCovered(p.Actual, p.Declared)
+}
 
 // notCovered returns the entries of a that no entry of b shares ground with.
 //
