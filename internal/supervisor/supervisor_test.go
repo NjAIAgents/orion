@@ -23,12 +23,8 @@ func fakeClaude(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	canary := filepath.Join(dir, "was-launched")
-	bin := filepath.Join(dir, "claude")
-	if err := os.WriteFile(bin,
-		[]byte("#!/bin/sh\ntouch "+canary+"\necho '{}'\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeBinIn(t, dir, "claude",
+		"#!/bin/sh\ntouch "+shPath(canary)+"\necho '{}'\nexit 0\n")
 	return canary
 }
 
@@ -399,17 +395,12 @@ func TestSessionAndFinalOnGarbage(t *testing.T) {
 func TestRunFailsWhenClaudeExitsWithoutEmittingAResult(t *testing.T) {
 	w := ws(t, "")
 
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "claude")
 	// A well-formed init line, an assistant line, then exit 0 -- no result.
 	script := "#!/bin/sh\n" +
 		`echo '{"type":"system","subtype":"init","model":"claude-opus-5"}'` + "\n" +
 		`echo '{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"text","text":"working on it"}]}}'` + "\n" +
 		"exit 0\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeBin(t, "claude", script)
 
 	res, err := Run(w, Options{Stage: "intent", Prompt: "do a thing",
 		MaxMinutes: 1, MaxTurns: 1})
@@ -428,16 +419,11 @@ func TestRunFailsWhenClaudeExitsWithoutEmittingAResult(t *testing.T) {
 func TestRunSucceedsWhenClaudeEmitsAResult(t *testing.T) {
 	w := ws(t, "")
 
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "claude")
 	script := "#!/bin/sh\n" +
 		`echo '{"type":"system","subtype":"init","model":"claude-opus-5"}'` + "\n" +
 		`echo '{"type":"result","session_id":"abc","result":"done","total_cost_usd":0.1,"is_error":false}'` + "\n" +
 		"exit 0\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeBin(t, "claude", script)
 
 	res, err := Run(w, Options{Stage: "intent", Prompt: "do a thing",
 		MaxMinutes: 1, MaxTurns: 1})
@@ -455,16 +441,12 @@ func TestRunSucceedsWhenClaudeEmitsAResult(t *testing.T) {
 func fakeClaudeRecordingArgs(t *testing.T) (argsFile string) {
 	t.Helper()
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "claude")
 	argsFile = filepath.Join(dir, "args.txt")
 	script := "#!/bin/sh\n" +
-		`echo "$@" > ` + argsFile + "\n" +
+		`echo "$@" > ` + shPath(argsFile) + "\n" +
 		`echo '{"type":"result","session_id":"abc","result":"done","total_cost_usd":0.1,"is_error":false}'` + "\n" +
 		"exit 0\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeBinIn(t, dir, "claude", script)
 	return argsFile
 }
 

@@ -210,7 +210,12 @@ func VendorDirFor(orionHome, repoURL string) string {
 // directory a git repository.
 func repoLeaf(repoURL string) string {
 	s := strings.TrimSuffix(strings.TrimRight(strings.TrimSpace(repoURL), "/"), ".git")
-	if i := strings.LastIndexAny(s, "/:"); i >= 0 {
+	// Backslash counts as a separator too: a repo may be a LOCAL path, and
+	// on Windows that is C:\...\name. Splitting only on "/:" cut such a
+	// path at its drive colon, so the "leaf" was the entire remainder of
+	// the path -- which VendorDirFor then joined under vendor/ as a dozen
+	// nested directories, and the clone failed (OR-342).
+	if i := strings.LastIndexAny(s, `/:\`); i >= 0 {
 		s = s[i+1:]
 	}
 	if s = strings.TrimSpace(s); s == "" || s == "." || s == ".." {

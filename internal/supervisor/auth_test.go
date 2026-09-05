@@ -1,8 +1,6 @@
 package supervisor
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -80,15 +78,9 @@ func TestTheAgentTalkingAboutLoginsIsNotALoginProblem(t *testing.T) {
 func TestARunAgainstALoggedOutCLIReportsTheCauseAndDoesNotRetry(t *testing.T) {
 	w := ws(t, "")
 
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "claude")
-	script := "#!/bin/sh\n" +
-		"echo '" + expiredLoginResult + "'\n" +
-		"exit 1\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeBin(t, "claude", "#!/bin/sh\n"+
+		"echo '"+expiredLoginResult+"'\n"+
+		"exit 1\n")
 
 	res, err := Run(w, Options{Stage: "intent", Prompt: "do a thing",
 		MaxMinutes: 1, MaxTurns: 1})

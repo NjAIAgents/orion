@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -150,7 +151,7 @@ func Run(dir string, argv []string, timeout time.Duration) Result {
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 	setProcessGroup(cmd)
 
@@ -183,8 +184,19 @@ func Run(dir string, argv []string, timeout time.Duration) Result {
 	case <-ctx.Done():
 		killGroup(cmd)
 		// Collect the exit rather than abandoning the goroutine, so the
-		// output written before the kill is in the buffer when it is read.
-		<-done
+		// output written before the kill is in the buffer when it is read --
+		// but only for a bounded grace. Wait returns when the output PIPES
+		// close, not when the child exits, and on Windows a grandchild the
+		// kill could not reach inherits them: measured on the CI leg, a
+		// 300ms deadline waited out a grandchild's full 60 seconds here
+		// (OR-342). taskkill /T was tried first and does not reliably walk
+		// an msys2 process tree. Honouring Run's own deadline wins over a
+		// complete tail of output from a run being destroyed anyway; the
+		// buffer is locked, so a straggler writing during the read is safe.
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
 	}
 
 	res.Output = tail(buf.String(), maxOutput)
@@ -239,4 +251,26 @@ func shellish(argv []string) string {
 		out += a
 	}
 	return out
+}
+
+// lockedBuffer is a bytes.Buffer safe for one writer racing one reader.
+//
+// Needed by the abandoned-wait path in Run: when a kill cannot reach a
+// grandchild, Run stops waiting and reads the output while that survivor may
+// still be writing through the inherited pipe.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
