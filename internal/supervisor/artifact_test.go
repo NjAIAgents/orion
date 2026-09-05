@@ -24,12 +24,12 @@ func defaults(t *testing.T) config.Config {
 func TestStageArtifactIsOneFilePerStage(t *testing.T) {
 	cfg := defaults(t)
 	for _, tc := range []struct{ stage, want string }{
-		{"intent", filepath.Join("docs/intent", "thing.md")},
-		{"spec", filepath.Join("specs", "thing.spec.md")},
-		{"design", filepath.Join("specs", "thing.spec.md")},
-		{"plan", filepath.Join("plans", "thing.plan.md")},
-		{"SPEC", filepath.Join("specs", "thing.spec.md")},
-		{" Plan ", filepath.Join("plans", "thing.plan.md")},
+		{"intent", "docs/intent/thing.md"},
+		{"spec", "specs/thing.spec.md"},
+		{"design", "specs/thing.spec.md"},
+		{"plan", "plans/thing.plan.md"},
+		{"SPEC", "specs/thing.spec.md"},
+		{" Plan ", "plans/thing.plan.md"},
 	} {
 		if got := stageArtifact(cfg, tc.stage, "thing"); got != tc.want {
 			t.Errorf("stageArtifact(%q) = %q, want %q", tc.stage, got, tc.want)
@@ -66,9 +66,9 @@ func TestNoToolkitCommandCanChangeWhichArtifactAStageOwes(t *testing.T) {
 	}
 	cfg := config.Load(dir)
 	for _, tc := range []struct{ stage, want string }{
-		{"intent", filepath.Join("capture", "thing.md")},
-		{"spec", filepath.Join("design", "thing.spec.md")},
-		{"plan", filepath.Join("steps", "thing.plan.md")},
+		{"intent", "capture/thing.md"},
+		{"spec", "design/thing.spec.md"},
+		{"plan", "steps/thing.plan.md"},
 	} {
 		if got := stageArtifact(cfg, tc.stage, "thing"); got != tc.want {
 			t.Errorf("stageArtifact(%q) = %q, want %q", tc.stage, got, tc.want)
@@ -182,10 +182,10 @@ func TestFailureNamesTheArtifactTheStageAndTheCommand(t *testing.T) {
 		t.Fatal("a misconfigured stage must fail")
 	}
 	for _, want := range []string{
-		filepath.Join("specs", "thing.spec.md"), // the artifact
-		"spec stage",                            // the stage
-		"/skil-that-does-not-exist",             // the configured command
-		"toolkit.stages.spec",                   // where to correct it
+		"specs/thing.spec.md",       // the artifact
+		"spec stage",                // the stage
+		"/skil-that-does-not-exist", // the configured command
+		"toolkit.stages.spec",       // where to correct it
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("message must name %q, got:\n%v", want, err)
@@ -201,7 +201,7 @@ func TestBuiltInPromptsGetTheSameCheck(t *testing.T) {
 		t.Fatal("a built-in stage that wrote nothing must fail too")
 	}
 	for _, want := range []string{
-		filepath.Join("plans", "thing.plan.md"),
+		"plans/thing.plan.md",
 		"plan stage",
 		"built-in plan prompt",
 		"no toolkit.stages.plan",
@@ -299,7 +299,7 @@ func TestACustomPromptIsNotHeldToTheStageArtifact(t *testing.T) {
 // default paths, an arbitrary slug.
 func TestPlanStageArtifactPathForDefaultPaths(t *testing.T) {
 	cfg := defaults(t)
-	want := filepath.Join("plans", "foo.plan.md")
+	want := "plans/foo.plan.md"
 	if got := stageArtifact(cfg, "plan", "foo"); got != want {
 		t.Errorf("stageArtifact(plan, foo) = %q, want %q", got, want)
 	}
@@ -453,9 +453,9 @@ func TestArtifactCommittedThenGitRmedFails(t *testing.T) {
 func TestStageArtifactIsCaseAndWhitespaceInsensitive(t *testing.T) {
 	cfg := defaults(t)
 	for _, tc := range []struct{ stage, want string }{
-		{"SPEC", filepath.Join("specs", "thing.spec.md")},
-		{"Plan ", filepath.Join("plans", "thing.plan.md")},
-		{" INTENT ", filepath.Join("docs/intent", "thing.md")},
+		{"SPEC", "specs/thing.spec.md"},
+		{"Plan ", "plans/thing.plan.md"},
+		{" INTENT ", "docs/intent/thing.md"},
 	} {
 		if got := stageArtifact(cfg, tc.stage, "thing"); got != tc.want {
 			t.Errorf("stageArtifact(%q) = %q, want %q", tc.stage, got, tc.want)
