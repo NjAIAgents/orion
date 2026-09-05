@@ -55,6 +55,21 @@ const (
 	ReplyDiverges = "DIVERGES:"
 )
 
+// MaxDivergences is how many findings a reply may contribute.
+//
+// ConformPrompt already tells the model AT MOST THREE, and gives the reason:
+// past three it is listing differences rather than judging them, and none of
+// them will be read. That instruction is a request, not a guarantee -- the
+// one thing a prompt cannot do is bind the model that receives it -- so the
+// ceiling is enforced here as well. Stated in the prompt AND enforced in the
+// parser, both: dropping either leaves the contract in one place and the
+// behaviour in the other.
+//
+// The FIRST three are kept. A model asked for its most important findings
+// writes them first, and a cap that kept the tail would report the ones it
+// thought least of.
+const MaxDivergences = 3
+
 // Source is one confirmed plan artifact, as it was read.
 //
 // Path is carried beside the text because it is what goes into the audit
@@ -200,10 +215,22 @@ func Review(ev Evidence, ask Asker) Verdict {
 // DIVERGES WINS OVER CONFORMS when a reply contains both. A model that named
 // a specific departure and then wrote CONFORMS has still named one, and the
 // named part is what a person can check.
+//
+// CAPPED AT MaxDivergences, silently. The prompt asks for at most three and
+// says why; this is where that holds even when the model ignores it. Silent
+// because the alternative -- a note saying findings were dropped -- would
+// send a reader looking for a longer list that, by the reasoning behind the
+// cap, was not worth reading in the first place.
 func ParseReply(out string) ([]Divergence, bool) {
 	var found []Divergence
 	var conforms bool
 	for _, raw := range strings.Split(out, "\n") {
+		if len(found) >= MaxDivergences {
+			// Keep scanning would only add findings this drops. Stopping
+			// here also means a CONFORMS after the third divergence cannot
+			// flip anything, which is already the rule below.
+			break
+		}
 		line := strings.TrimSpace(raw)
 		// The decoration a model puts in front of a line -- a bullet, a bold
 		// marker -- must not hide the verdict behind it. Same rule
