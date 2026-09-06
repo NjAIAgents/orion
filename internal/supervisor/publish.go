@@ -1,7 +1,6 @@
 package supervisor
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,7 +46,12 @@ func publishIntent(t intentPublisher, ws *workspace.Workspace, cfg config.Config
 	if !strings.EqualFold(strings.TrimSpace(stage), "intent") {
 		return ""
 	}
-	key := trackerKey(ws.Task.Tracker)
+	// The IDEA, not the project. A Jira project has no comments -- only
+	// issues do -- so commenting with a project key is a 404 every time, and
+	// it was: "commenting on CLOUDLEN: 404 Issue does not exist". The idea is
+	// also the right destination on its own terms: it is where somebody
+	// looking at the discovery board would go to read what this became.
+	key := strings.TrimSpace(ws.Task.IdeaKey)
 	if key == "" {
 		return ""
 	}
@@ -60,25 +64,6 @@ func publishIntent(t intentPublisher, ws *workspace.Workspace, cfg config.Config
 		return fmt.Sprintf("could not publish the intent to %s: %v", key, err)
 	}
 	return "published the intent to " + key
-}
-
-// trackerKey reads the bound project key out of the task's tracker binding.
-//
-// The binding is stored as raw JSON on the task, so this decodes the one
-// field it needs rather than importing the whole binding shape. An absent or
-// malformed binding is not an error here: it means no tracker to publish to,
-// which is a supported way to run.
-func trackerKey(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var b struct {
-		Key string `json:"key"`
-	}
-	if err := json.Unmarshal(raw, &b); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(b.Key)
 }
 
 // maxIntentComment bounds what is posted.

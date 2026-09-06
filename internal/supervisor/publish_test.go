@@ -36,6 +36,9 @@ func intentWS(t *testing.T, body string) (*workspace.Workspace, config.Config) {
 
 	w.Task.Slug = "cloudlens"
 	w.Task.Tracker = json.RawMessage(`{"provider":"jira","key":"CLOUDLEN","name":"CloudLens"}`)
+	// The IDEA is the destination, not the project: a Jira project has no
+	// comments, so a project key 404s.
+	w.Task.IdeaKey = "PRIOR-6"
 
 	dir := filepath.Join(w.RepoDir(), cfg.Paths.Intent)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -61,8 +64,8 @@ func TestTheIntentIsPublishedToTheTrackerProject(t *testing.T) {
 	if p.calls != 1 {
 		t.Fatalf("commented %d times, want 1", p.calls)
 	}
-	if p.key != "CLOUDLEN" {
-		t.Errorf("posted to %q, want the bound project key", p.key)
+	if p.key != "PRIOR-6" {
+		t.Errorf("posted to %q, want the idea -- a project key has no comments", p.key)
 	}
 	if !strings.Contains(p.text, "Keep an eye on AWS cost") {
 		t.Errorf("the comment does not carry the intent:\n%s", p.text)
@@ -72,8 +75,8 @@ func TestTheIntentIsPublishedToTheTrackerProject(t *testing.T) {
 	if !strings.Contains(p.text, "edit it there, not here") {
 		t.Errorf("the comment does not name the artifact as authoritative:\n%s", p.text)
 	}
-	if !strings.Contains(msg, "CLOUDLEN") {
-		t.Errorf("the reported outcome does not name the project: %q", msg)
+	if !strings.Contains(msg, "PRIOR-6") {
+		t.Errorf("the reported outcome does not name the idea: %q", msg)
 	}
 }
 
@@ -104,8 +107,8 @@ func TestAFailedPublishIsReportedNotFatal(t *testing.T) {
 	if !strings.HasPrefix(msg, "could not") {
 		t.Errorf("a failed publish must be reported as such, got %q", msg)
 	}
-	if !strings.Contains(msg, "CLOUDLEN") {
-		t.Errorf("the failure does not name the project it could not reach: %q", msg)
+	if !strings.Contains(msg, "PRIOR-6") {
+		t.Errorf("the failure does not name the idea it could not reach: %q", msg)
 	}
 }
 
@@ -113,7 +116,7 @@ func TestAFailedPublishIsReportedNotFatal(t *testing.T) {
 // must not produce a warning about something nobody asked for.
 func TestNoTrackerBindingPublishesNothingQuietly(t *testing.T) {
 	w, cfg := intentWS(t, "# CloudLens\n\nbody\n")
-	w.Task.Tracker = nil
+	w.Task.IdeaKey = ""
 	p := &fakePublisher{}
 
 	if msg := publishIntent(p, w, cfg, "intent"); msg != "" {

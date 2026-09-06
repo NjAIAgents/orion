@@ -28,8 +28,13 @@ func TestTheIntentPromptTreatsAURLAsSomethingToRead(t *testing.T) {
 	for _, want := range []string{
 		"RESEARCH TARGET", // it is named as one
 		"read it before writing",
-		"Cite what you read",
+		"Cite whatever you do read",
 		"open question", // an unreachable page is a gap, not licence to invent
+		// And it must say the attempt will probably be refused. Orion denies
+		// WebFetch, curl and wget to every stage as an egress control, so a
+		// prompt that asks for research without saying so sends the agent to
+		// spend a minute discovering it three ways.
+		"EXPECT TO BE BLOCKED",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("the intent prompt no longer says %q:\n%s", want, p)
