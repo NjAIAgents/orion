@@ -38,6 +38,9 @@ type stageProgress struct {
 	mu     sync.Mutex
 	lines  int
 	lastAt time.Time
+
+	done chan struct{}
+	stop sync.Once
 }
 
 // maxProgressLines caps the transcript.
@@ -47,12 +50,52 @@ type stageProgress struct {
 // answers the only question that still matters by then: is it still going.
 const maxProgressLines = 200
 
-// heartbeatEvery is how often the fallback speaks. Long enough not to be
-// noise, short enough that silence never looks like death.
+// heartbeatEvery is how often the ticker speaks while nothing is happening.
+//
+// A long generation makes NO tool calls: the agent says "writing the plan
+// now" and then composes a thousand-line document in one turn. Nine minutes
+// of that is indistinguishable from a hang, and a hang is what it gets
+// treated as -- the run gets killed a minute before it would have landed.
+//
+// So the heartbeat is driven by a TIMER, not by activity. Driving it from the
+// activity callback was the first attempt and it cannot work: the callback is
+// exactly what silence means the absence of.
 const heartbeatEvery = 30 * time.Second
 
 func newStageProgress(out io.Writer) *stageProgress {
-	return &stageProgress{out: out, start: time.Now(), lastAt: time.Now()}
+	p := &stageProgress{out: out, start: time.Now(), lastAt: time.Now(), done: make(chan struct{})}
+	go p.tick()
+	return p
+}
+
+// tick says the run is alive while nothing is happening.
+//
+// Stops when Close is called. A goroutine per stage, and stages are
+// sequential, so there is one of these at a time.
+func (p *stageProgress) tick() {
+	t := time.NewTicker(heartbeatEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-p.done:
+			return
+		case now := <-t.C:
+			p.mu.Lock()
+			quiet := now.Sub(p.lastAt)
+			if quiet >= heartbeatEvery {
+				p.lastAt = now
+				fmt.Fprintf(p.out, "  %s\n", ui.Dim(p.out, fmt.Sprintf(
+					"still working -- %s elapsed, quiet %s",
+					now.Sub(p.start).Round(time.Second), quiet.Round(time.Second))))
+			}
+			p.mu.Unlock()
+		}
+	}
+}
+
+// Close stops the heartbeat. Safe to call more than once.
+func (p *stageProgress) Close() {
+	p.stop.Do(func() { close(p.done) })
 }
 
 // On is the supervisor callback.
@@ -65,14 +108,11 @@ func (p *stageProgress) On(a supervisor.Activity) {
 	defer p.mu.Unlock()
 
 	now := time.Now()
+	// Past the cap the ticker carries on alone: it is already saying the run
+	// is alive, which is the only question left once the transcript is this
+	// long.
 	if p.lines >= maxProgressLines {
-		// Past the cap: a heartbeat, and only when one is due.
-		if now.Sub(p.lastAt) < heartbeatEvery {
-			return
-		}
 		p.lastAt = now
-		fmt.Fprintf(p.out, "  %s\n", ui.Dim(p.out, fmt.Sprintf(
-			"still working -- %s elapsed", now.Sub(p.start).Round(time.Second))))
 		return
 	}
 

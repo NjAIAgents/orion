@@ -173,9 +173,11 @@ func runPlan(args []string) {
 		o.Run = func(ws *workspace.Workspace, stage string) (*supervisor.Result, error) {
 			// Narrated. A stage is minutes of silence otherwise, which reads
 			// as a hang and gets a working run killed halfway.
+			prog := newStageProgress(os.Stdout)
+			defer prog.Close()
 			return supervisor.Run(ws, supervisor.Options{
 				Stage:      stage,
-				OnActivity: newStageProgress(os.Stdout).On,
+				OnActivity: prog.On,
 			})
 		}
 	}

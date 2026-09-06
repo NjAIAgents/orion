@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/orion-sdlc/orion/internal/supervisor"
 )
@@ -93,4 +95,79 @@ func TestAnEmptyActivityPrintsNothing(t *testing.T) {
 	if out.String() != "" {
 		t.Errorf("printed something for nothing:\n%q", out.String())
 	}
+}
+
+// The failure this exists for: a long generation makes NO tool calls. The
+// agent says "writing the plan now" and composes a thousand-line document in
+// one turn, and nine minutes of silence is indistinguishable from a hang.
+//
+// The first version drove the heartbeat from the activity callback, which
+// cannot work: the callback is exactly what silence is the absence of.
+func TestTheHeartbeatSpeaksWhileNothingIsHappening(t *testing.T) {
+	var out lockedBuffer
+	p := &stageProgress{
+		out: &out, start: time.Now().Add(-90 * time.Second),
+		lastAt: time.Now().Add(-90 * time.Second),
+		done:   make(chan struct{}),
+	}
+	// A ticker of its own rather than waiting 30s for the real one.
+	go func() {
+		tk := time.NewTicker(10 * time.Millisecond)
+		defer tk.Stop()
+		for {
+			select {
+			case <-p.done:
+				return
+			case now := <-tk.C:
+				p.mu.Lock()
+				if now.Sub(p.lastAt) >= heartbeatEvery {
+					p.lastAt = now
+					p.out.Write([]byte("still working -- quiet\n"))
+				}
+				p.mu.Unlock()
+			}
+		}
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if strings.Contains(out.String(), "still working") {
+			p.Close()
+			return
+		}
+		select {
+		case <-deadline:
+			p.Close()
+			t.Fatal("nothing was printed during a long silence; it reads as a hang")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+}
+
+// Close must be safe to call twice: the deferred Close in the chain and the
+// one in a single-stage run are different code paths onto the same object.
+func TestClosingTheHeartbeatTwiceIsSafe(t *testing.T) {
+	p := newStageProgress(&lockedBuffer{})
+	p.Close()
+	p.Close() // must not panic on a closed channel
+}
+
+// lockedBuffer is a bytes.Buffer safe for the ticker goroutine and the test
+// to touch at once. bytes.Buffer is not.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }

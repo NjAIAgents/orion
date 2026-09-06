@@ -1694,7 +1694,9 @@ func runSupervised(id string, rest []string) {
 	// then nothing for five and a half minutes on a run that was working the
 	// whole time, which reads as a hang.
 	if opts.OnActivity == nil {
-		opts.OnActivity = newStageProgress(os.Stdout).On
+		prog := newStageProgress(os.Stdout)
+		defer prog.Close()
+		opts.OnActivity = prog.On
 	}
 	res, err := supervisor.Run(ws, opts)
 	if res != nil {

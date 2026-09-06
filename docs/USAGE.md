@@ -415,22 +415,35 @@ with no command declared runs Orion's own built-in prompt.
 }
 ```
 
-A team with its own skill repository points Orion at it without a Go change:
+A team with its own skill repository points Orion at it without a Go change.
+Stages left out keep Orion's built-in prompt, so a toolkit may fill some
+stages and leave the rest alone:
 
 ```jsonc
 {
   "toolkit": {
     "repo": "https://github.com/github/spec-kit.git",
     "stages": {
-      "intent": "/specify",
-      "spec": "/plan",
-      "plan": "/tasks",
-      "decompose": "/breakdown",
-      "review": "/analyze"
+      "spec": "/speckit.specify",
+      "plan": "/speckit.plan",
+      "decompose": "/speckit.tasks"
     }
   }
 }
 ```
+
+The command names are the ones the toolkit actually publishes, and spec-kit
+prefixes every one of its own with `speckit.` — `/speckit.specify`, not
+`/specify`. A command a stage cannot resolve is a stage that does something
+other than what you configured, so check the toolkit's own documentation
+rather than inferring a name from the stage it fills.
+
+> **spec-kit does not currently satisfy Orion's toolkit discovery.** Orion
+> looks for a `skills/` directory (`internal/toolkit.Validate`), and spec-kit
+> has none: it is a Python CLI whose `specify init` installs its commands into
+> a project's own `.claude/commands/`. A clone of it in `vendor/` is therefore
+> reported as not installed. The configuration above is the shape a toolkit
+> takes; running spec-kit specifically needs the discovery gap closed first.
 
 Orion clones a toolkit it manages into `<ORION_HOME>/vendor/<repo-name>` —
 `vendor/spec-kit` above, `vendor/nj-agents` for the default — so two toolkits
