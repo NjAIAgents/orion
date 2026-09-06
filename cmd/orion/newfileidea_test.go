@@ -14,11 +14,18 @@ import (
 type fakeFiler struct {
 	types   []tracker.IssueType
 	created []tracker.NewIssue
+	fields  []tracker.IdeaField
+	skip    []string
 	err     error
 }
 
 func (f *fakeFiler) IssueTypes(string) ([]tracker.IssueType, error) {
 	return f.types, nil
+}
+
+func (f *fakeFiler) SetIdeaFields(_, _, _ string, want []tracker.IdeaField) ([]string, error) {
+	f.fields = append(f.fields, want...)
+	return f.skip, nil
 }
 
 func (f *fakeFiler) CreateIssue(in tracker.NewIssue) (string, error) {
@@ -37,7 +44,7 @@ func discoveryTypes() []tracker.IssueType {
 func TestAnIdeaIsFiledAsTheProjectsIdeaType(t *testing.T) {
 	f := &fakeFiler{types: discoveryTypes()}
 
-	key, err := fileIdea(f, "PRIOR", "CloudLens", "the full answers")
+	key, err := fileIdea(f, "PRIOR", "CloudLens", "the full answers", "https://x/browse/CL")
 	if err != nil {
 		t.Fatalf("fileIdea: %v", err)
 	}
@@ -203,5 +210,63 @@ func TestAFailedIdeaFilingDoesNotFailTheRun(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "PRIOR") {
 		t.Errorf("the warning does not name the project it could not file into:\n%s", out.String())
+	}
+}
+
+// The link to the created project goes in Documents, so someone reading the
+// idea can reach the work.
+func TestTheProjectLinkIsPutInDocuments(t *testing.T) {
+	f := &fakeFiler{types: discoveryTypes()}
+
+	if _, err := fileIdea(f, "PRIOR", "CloudLens",
+		"Replace the vendor tool. More detail.", "https://x/browse/CLOUDLEN"); err != nil {
+		t.Fatalf("fileIdea: %v", err)
+	}
+
+	byName := map[string]string{}
+	for _, fl := range f.fields {
+		byName[fl.Name] = fl.Value
+	}
+	if got := byName["Documents"]; got != "https://x/browse/CLOUDLEN" {
+		t.Errorf("Documents = %q, want the project link", got)
+	}
+	if got := byName["Idea short description"]; got != "Replace the vendor tool." {
+		t.Errorf("short description = %q, want the opening sentence", got)
+	}
+}
+
+// `orion new` makes no model call and has read no URL. A theme or a roadmap
+// horizon is a judgement about a product, and the intent stage fills those
+// AFTER researching. Guessing here would put a confident wrong answer where a
+// blank was honest.
+func TestFilingDoesNotGuessTheJudgementFields(t *testing.T) {
+	f := &fakeFiler{types: discoveryTypes()}
+
+	if _, err := fileIdea(f, "PRIOR", "CloudLens", "some idea", ""); err != nil {
+		t.Fatalf("fileIdea: %v", err)
+	}
+	for _, fl := range f.fields {
+		switch fl.Name {
+		case "Theme", "Roadmap", "State", "MoSCoW", "Customer segments":
+			t.Errorf("%s was guessed at filing time: %q", fl.Name, fl.Value)
+		}
+	}
+}
+
+// A field that could not be set is reported, and the idea still counts as
+// filed: losing the record to a rejected optional field would be trading the
+// idea for its trimmings.
+func TestASkippedFieldIsReportedButTheIdeaStands(t *testing.T) {
+	f := &fakeFiler{types: discoveryTypes(), skip: []string{`Theme="Nope" (not one of its options)`}}
+
+	key, err := fileIdea(f, "PRIOR", "CloudLens", "some idea", "")
+	if key == "" {
+		t.Fatal("the idea key was lost because a field was skipped")
+	}
+	if err == nil {
+		t.Fatal("a skipped field was not reported at all")
+	}
+	if !strings.Contains(err.Error(), "Theme") {
+		t.Errorf("the report does not name the skipped field: %v", err)
 	}
 }

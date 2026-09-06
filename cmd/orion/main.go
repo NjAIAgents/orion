@@ -235,6 +235,8 @@ func main() {
 		runConfig(os.Args[2:])
 	case "init":
 		runInit(os.Args[2:])
+	case "idea":
+		runIdea(os.Args[2:])
 	case "answer":
 		mustArg(os.Args, 2, "orion answer <id>")
 		runAnswer(os.Args[2])

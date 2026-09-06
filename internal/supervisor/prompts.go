@@ -129,6 +129,19 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"",
 			"Record only what was actually said, or what a source named in the idea",
 			"actually says. Do not write code or design a solution.",
+			"",
+			"FINALLY, IF THE TRACKER HOLDS AN IDEA FOR THIS WORK, fill in the fields it",
+			"left blank -- a discovery board where every idea is an empty form is a board",
+			"nobody reads. Set them with:",
+			"",
+			quote("orion idea set <IDEA-KEY> --field \"Name\" --value \"Value\""),
+			"",
+			"`orion idea fields <IDEA-KEY>` lists what that project actually has and what",
+			"each option field will accept. USE IT FIRST and choose only from what it",
+			"prints: these are custom fields whose options differ per project, and a value",
+			"it does not offer is refused. Set only what the idea and your research",
+			"support -- a horizon nobody stated is a guess, and a guess in a roadmap field",
+			"is read later as a decision.",
 		), nil
 
 	case "spec", "design":

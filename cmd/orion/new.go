@@ -257,12 +257,21 @@ func newRun(t tracker.Tracker, opts newOptions) error {
 	// be.
 	if source.Key == "" && opts.Filer != nil {
 		if project := ideasProject(opts.Home, r, out, isTerminal(os.Stdin)); project != "" {
-			key, err := fileIdea(opts.Filer, project, ideaSummary(name), description)
-			if err != nil {
+			link := ""
+			if opts.Site != "" {
+				link = strings.TrimRight(opts.Site, "/") + "/browse/" + b.Key
+			}
+			key, err := fileIdea(opts.Filer, project, ideaSummary(name), description, link)
+			switch {
+			case key == "":
 				ui.Warn(out, "could not file the idea in %s: %v", project, err)
 				fmt.Fprintf(out, "  The project was created; only the idea copy is missing.\n")
-			} else {
+			default:
 				ui.Ok(out, "idea", "%s  %s/browse/%s", key, opts.Site, key)
+				// The idea landed; err here is only about its extra fields.
+				if err != nil {
+					ui.Warn(out, "%v", err)
+				}
 			}
 		}
 	}
