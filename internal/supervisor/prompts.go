@@ -114,7 +114,21 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"Never delete a question to unblock the chain. Mark it answered in place, with",
 			"`[x]`, with ~~strikethrough~~, or with an inline \"Answer: ...\".",
 			"",
-			"Record only what was actually said. Do not write code or design a solution.",
+			"A URL IN THE IDEA IS A RESEARCH TARGET. When the idea names a product, a",
+			"document or a page, read it before writing anything -- an idea given as",
+			"\"something like <product>\" is stating a requirement by reference, and the",
+			"reference is where the requirement actually lives. Fetch it, and record what",
+			"it tells you about what is being asked for: what the thing does, the",
+			"capabilities a replacement would be measured against, the vocabulary its",
+			"users already have.",
+			"",
+			"Cite what you read, and mark plainly which lines came from the page rather",
+			"than from the originator. If it cannot be fetched, say so and make it an",
+			"open question -- an unreachable reference is a gap in the idea, not a",
+			"licence to imagine what was behind it.",
+			"",
+			"Record only what was actually said, or what a source named in the idea",
+			"actually says. Do not write code or design a solution.",
 		), nil
 
 	case "spec", "design":

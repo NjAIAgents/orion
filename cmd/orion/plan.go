@@ -32,6 +32,7 @@ package main
 // leaving a directory tree behind.
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -44,6 +45,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/dbaplan"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -72,10 +74,44 @@ type planStage struct {
 // -- a name not in it is refused there by name, so a typo here surfaces as
 // "unknown stage" on the first dispatch rather than as silence.
 var planStages = []planStage{
+	// Intent comes FIRST because every stage after it reads what it wrote.
+	//
+	// It was missing from this chain, and the chain began at spec -- which
+	// opens by reading docs/intent/<slug>.md, a file nothing had ever
+	// created. FOUND ON A REAL PROJECT: the spec stage looked for the intent,
+	// did not find it, correctly refused to invent a product from the name
+	// alone, and committed 26KB explaining why. The answers it needed were
+	// sitting in the tracker's project description, because `orion new` puts
+	// them there and no stage brought them into the repository.
+	//
+	// The stage itself was already built -- supervisor's prompt for it, the
+	// discovery gate that reads its open questions, `orion answer` that walks
+	// them. Only its place in the chain was missing.
+	{"intent", events.ActorPM, "what is being built and why, captured from the idea"},
 	{"spec", events.ActorArchitect, "requirements and design spec"},
 	{"plan", events.ActorArchitect, "implementation plan: files, order of work, tests, risks"},
 	{"scaffold", events.ActorDevOps, "repository skeleton on the OpenSSF baseline"},
 	{"decompose", events.ActorPM, "the Epic, Story and Task tree in the tracker"},
+}
+
+// nextPlanStage returns the stage that follows the one given, and whether
+// there is one.
+//
+// Reads planStages rather than repeating the order, for the reason declared
+// above it: an order written out twice is an order that eventually disagrees
+// with itself. Unknown stage names -- the work stages, which are not part of
+// the planning chain -- return false and get no suggestion, which is correct:
+// this only knows about the planning chain.
+func nextPlanStage(stage string) (planStage, bool) {
+	for i, s := range planStages {
+		if strings.EqualFold(s.Stage, stage) {
+			if i+1 < len(planStages) {
+				return planStages[i+1], true
+			}
+			return planStage{}, false
+		}
+	}
+	return planStage{}, false
 }
 
 type planOptions struct {
@@ -83,6 +119,11 @@ type planOptions struct {
 	DryRun bool
 	Home   string
 	Out    io.Writer
+	// Run and Confirm drive the stage chain. Both nil means announce only --
+	// which is what a non-interactive caller gets, and what every existing
+	// test of this command already exercises.
+	Run     stageRunner
+	Confirm confirmer
 }
 
 // projectReader is the slice of tracker.Tracker this command needs.
@@ -107,12 +148,22 @@ func runPlan(args []string) {
 	j, err := tracker.NewJiraFromEnv()
 	exitOn(err)
 
-	exitOn(planRun(j, config.Load(rootOrCwd()), planOptions{
+	o := planOptions{
 		Key:    key,
 		DryRun: hasFlag(args[1:], "--dry-run"),
 		Home:   home,
 		Out:    os.Stdout,
-	}))
+	}
+	// A dry run spends nothing and dispatches nothing, so it must not offer
+	// to. Off a terminal there is nobody to answer the pauses.
+	if !o.DryRun && isTerminal(os.Stdin) {
+		r := bufio.NewReader(os.Stdin)
+		o.Confirm = func(prompt string) bool { return askYesNo(r, os.Stdout, prompt) }
+		o.Run = func(ws *workspace.Workspace, stage string) (*supervisor.Result, error) {
+			return supervisor.Run(ws, supervisor.Options{Stage: stage})
+		}
+	}
+	exitOn(planRun(j, config.Load(rootOrCwd()), o))
 }
 
 // planRun is the whole command, with the tracker and the destination injected
@@ -179,6 +230,24 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 		fmt.Fprintf(out, "  run it: orion plan %s\n", p.Key)
 		return nil
 	}
+	// Run the chain when there is someone to pause for. Without a terminal
+	// -- a script, CI, a pipe -- there is nobody to answer the confirmations
+	// this chain is built around, so it announces the first command and stops
+	// exactly as it always did.
+	if opts.Run != nil && opts.Confirm != nil {
+		if !opts.Confirm(fmt.Sprintf("Run all %d stages, pausing after each?", len(planStages))) {
+			fmt.Fprintf(out, "\nnext: orion run %s --stage %s\n", ws.ID, planStages[0].Stage)
+			return nil
+		}
+		done := runPlanChain(out, ws, opts.Run, opts.Confirm)
+		if done == len(planStages) {
+			fmt.Fprintf(out, "\n%s\n", ui.Dim(out,
+				"all planning stages are done; the tracker holds the work tree"))
+			fmt.Fprintf(out, "next: orion watch %s\n", strings.ToUpper(opts.Key))
+		}
+		return nil
+	}
+
 	fmt.Fprintf(out, "next: orion run %s --stage %s\n", ws.ID, planStages[0].Stage)
 	return nil
 }

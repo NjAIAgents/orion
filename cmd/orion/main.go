@@ -1694,6 +1694,21 @@ func runSupervised(id string, rest []string) {
 			fmt.Printf("resume     %s (orion run %s --stage %s)\n",
 				res.ResumeAt.Local().Format("15:04 MST"), ws.ID, opts.Stage)
 		}
+		// Where to go next. Every other command in the chain ends with one
+		// -- `orion new` names `orion plan`, `orion plan` names the first
+		// `orion run` -- and the run itself ending in silence left the
+		// operator to work out the order from the roster they saw once.
+		//
+		// Only on success, and only while a next stage exists. A failed
+		// stage's next step is to read the log, which the line above already
+		// names; suggesting the following stage there would be advice to
+		// build on something that did not finish.
+		if res.ExitCode == 0 && res.ResumeAt.IsZero() {
+			if next, ok := nextPlanStage(opts.Stage); ok {
+				fmt.Printf("\nnext: orion run %s --stage %s  (%s)\n",
+					ws.ID, next.Stage, next.What)
+			}
+		}
 	}
 	exitOn(err)
 }

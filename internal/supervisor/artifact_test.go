@@ -474,3 +474,75 @@ func TestEmptyStageNameOwesNoArtifact(t *testing.T) {
 		t.Errorf("an empty stage name must be skipped, got: %v", err)
 	}
 }
+
+// commit stages and commits one path, so a test can reach the states that
+// only exist after a commit.
+func commit(t *testing.T, repo, rel string) {
+	t.Helper()
+	for _, args := range [][]string{{"add", rel}, {"commit", "-qm", "artifact"}} {
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+// A stage that declares itself BLOCKED in its own artifact must not report
+// success.
+//
+// FOUND IN PRACTICE, on the CloudLens project. The spec stage could not find
+// the intent it was to design from, correctly refused to invent one, and
+// committed a 26KB document whose first lines read "Status: BLOCKED -- not an
+// approved design." Orion printed "exit 0 / reason completed". The artifact
+// check passed it because the file was present, non-empty and tracked -- all
+// true, and none of them the question. The next stage would have planned from
+// a document that says it is not a design.
+func TestAnArtifactThatDeclaresItselfBlockedIsNotSuccess(t *testing.T) {
+	cfg := defaults(t)
+
+	// The real spec's own wording, plus the forms a different agent would
+	// reasonably use. The marker has to be found in the opening lines, which
+	// is where a refusal is stated.
+	for _, body := range []string{
+		"# CloudLens — Spec\n\n**Status: BLOCKED — not an approved design.**\n\nbody\n",
+		"# Spec\n\nSTATUS: BLOCKED\n\nmore\n",
+		"---\nstatus: blocked\n---\n\n# Spec\n",
+		"# Spec\n\n## Verdict\n\nBLOCKED: the source intent does not exist.\n",
+	} {
+		t.Run(strings.SplitN(body, "\n", 2)[0], func(t *testing.T) {
+			repo := gitRepo(t)
+			rel := writeSpec(t, repo, body)
+			commit(t, repo, rel)
+
+			err := checkStageArtifact(repo, cfg, "spec", "thing")
+			if err == nil {
+				t.Fatal("an artifact declaring itself BLOCKED was reported as success")
+			}
+			if !strings.Contains(err.Error(), "BLOCKED") {
+				t.Errorf("the message must say the stage blocked itself, got: %v", err)
+			}
+		})
+	}
+}
+
+// The marker is only honoured near the TOP of the document. A spec that
+// merely discusses blocking -- a risks section naming what would block a
+// later stage -- is a finished spec and must pass.
+func TestDiscussingBlockingDeepInTheDocumentIsStillSuccess(t *testing.T) {
+	cfg := defaults(t)
+	repo := gitRepo(t)
+
+	var b strings.Builder
+	b.WriteString("# Spec\n\n## Requirements\n\n")
+	for i := 0; i < 60; i++ {
+		b.WriteString("A real requirement, stated plainly.\n")
+	}
+	b.WriteString("\n## Risks\n\nStatus: BLOCKED would be the outcome if the vendor API is withdrawn.\n")
+
+	rel := writeSpec(t, repo, b.String())
+	commit(t, repo, rel)
+
+	if err := checkStageArtifact(repo, cfg, "spec", "thing"); err != nil {
+		t.Errorf("a finished spec discussing blockage was failed: %v", err)
+	}
+}

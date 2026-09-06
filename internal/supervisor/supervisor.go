@@ -425,6 +425,12 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 			})
 			return last, err
 		}
+		// The artifact is real and committed, so it can be published where
+		// the person who asked for it will actually see it. AFTER the check,
+		// never before: publishing a missing or self-blocked artifact would
+		// put a document in the tracker saying the work could not be done,
+		// as though it were the work.
+		sayPublish(publishIntent(trackerForPublish(), ws, cfg, opts.Stage))
 	}
 	// Notify on failure, not only on the quota and timeout paths that
 	// already did. A supervisor that stays silent when a stage fails is one

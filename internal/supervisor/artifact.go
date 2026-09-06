@@ -103,7 +103,62 @@ func checkStageArtifact(repoDir string, cfg config.Config, stage, slug string) e
 			"the file is there but git does not track it, so it was never committed (%s).",
 			strings.TrimSpace(firstLine(string(out)))))
 	}
+
+	// The stage may have refused, and said so in the only place it can.
+	//
+	// Present, non-empty and tracked are all true of a document whose subject
+	// is why it could not be written -- so all three pass and the run reports
+	// success. FOUND ON A REAL PROJECT: the spec stage could not find the
+	// intent it was to design from, correctly declined to invent one, and
+	// committed 26KB beginning "Status: BLOCKED -- not an approved design."
+	// Orion printed "exit 0 / reason completed", and the next stage would
+	// have planned from a document that says it is not a design.
+	//
+	// An agent that refuses well is doing the right thing. Failing to HEAR it
+	// is the defect.
+	if why := declaredBlocked(string(body)); why != "" {
+		return artifactError(cfg, stage, rel, why)
+	}
 	return nil
+}
+
+// blockedHeadLines is how far into a document a self-declared block is
+// believed.
+//
+// A refusal is stated at the top -- in a status line, in front matter, or in
+// a verdict section -- because it is the document's whole point. Deeper down,
+// the same word is ordinary prose: a risks section naming what would block a
+// later stage is a FINISHED spec, and failing it would punish thoroughness.
+const blockedHeadLines = 40
+
+// declaredBlocked reports why an artifact says it is not a real deliverable,
+// or "" when it does not say so.
+//
+// Matched on a marker plus position rather than on the bare word, for the
+// reason above. Deliberately narrow: a missed refusal costs one stage that
+// should not have run, while a false positive fails work that is finished,
+// and the second is the one that gets a check deleted.
+func declaredBlocked(body string) string {
+	lines := strings.Split(body, "\n")
+	if len(lines) > blockedHeadLines {
+		lines = lines[:blockedHeadLines]
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Markdown emphasis and list markers surround the real text.
+		bare := strings.ToLower(strings.Trim(trimmed, "*_#>-` \t"))
+		switch {
+		case strings.HasPrefix(bare, "status:") && strings.Contains(bare, "blocked"),
+			strings.HasPrefix(bare, "blocked:"),
+			strings.HasPrefix(bare, "blocked ") && strings.Contains(bare, "--"):
+			return "the stage declared itself BLOCKED in its own artifact: " +
+				strings.TrimSpace(trimmed) + "\n" +
+				"  It ran, and it refused -- which is the right answer to an input it\n" +
+				"  could not work from. Read the artifact for what it needs, supply that,\n" +
+				"  and run the stage again. Nothing after this stage should run yet."
+		}
+	}
+	return ""
 }
 
 // artifactError words the failure so the orion.json line that caused it is
