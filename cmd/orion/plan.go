@@ -60,10 +60,14 @@ type planStage struct {
 
 // planStages is the chain, in order.
 //
-// The four stages are the ones docs/decisions/0006 names as running after the
-// interactive phase: "one ambiguous premise there propagates into spec, plan,
-// scaffold and the tracker tree". Intent is absent because 0006 puts it in
-// `orion new`, where a human is present to be asked.
+// docs/decisions/0006 names spec, plan, scaffold and the tracker tree as the
+// stages running after the interactive phase: "one ambiguous premise there
+// propagates into spec, plan, scaffold and the tracker tree". It puts intent
+// in `orion new`, where a human is present to be asked -- but `orion new`
+// only ever wrote those answers to the tracker, never to the repository the
+// stages read, so the first of them designed from a file nobody had written.
+// Intent runs here instead, as the stage that turns what was said into the
+// artifact the rest of the chain reads.
 //
 // Declared here rather than inside the announcement so that the dispatch a
 // later ticket adds iterates this same slice. A roster that is written out by
@@ -160,7 +164,12 @@ func runPlan(args []string) {
 		r := bufio.NewReader(os.Stdin)
 		o.Confirm = func(prompt string) bool { return askYesNo(r, os.Stdout, prompt) }
 		o.Run = func(ws *workspace.Workspace, stage string) (*supervisor.Result, error) {
-			return supervisor.Run(ws, supervisor.Options{Stage: stage})
+			// Narrated. A stage is minutes of silence otherwise, which reads
+			// as a hang and gets a working run killed halfway.
+			return supervisor.Run(ws, supervisor.Options{
+				Stage:      stage,
+				OnActivity: newStageProgress(os.Stdout).On,
+			})
 		}
 	}
 	exitOn(planRun(j, config.Load(rootOrCwd()), o))

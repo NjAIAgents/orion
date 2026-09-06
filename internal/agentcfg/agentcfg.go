@@ -135,10 +135,20 @@ func For(orionHome string, cfg config.Config, stage, actor string) (*Run, error)
 		return &Run{
 			Inherited: true,
 			OptIn:     "platform:" + runtime.GOOS,
+			// Worded for whoever is READING it, which is whoever runs Orion
+			// and not whoever wrote it. "Not capability-curated" names an
+			// internal design goal, and a ticket number is a reference the
+			// reader cannot follow; between them they said that something
+			// was wrong without saying what it meant for the run in front of
+			// them. What matters to them is the blast radius and whether the
+			// result will reproduce elsewhere.
 			Warnings: []string{
-				"this run inherited YOUR Claude Code configuration -- plugins, MCP servers and " +
-					"subagents included -- because a curated config directory cannot authenticate " +
-					"on " + runtime.GOOS + ". The run is not capability-curated. See OR-239.",
+				"this agent is running with YOUR Claude Code setup -- your plugins, MCP " +
+					"servers and subagents -- rather than the small, fixed toolset Orion " +
+					"prefers, because that isolated setup cannot sign in on " + runtime.GOOS + ".\n" +
+					"  It will work. Two things to know: the agent can reach anything your " +
+					"own Claude Code can reach, and a run on another machine may behave " +
+					"differently because its tools differ.",
 			},
 		}, nil
 	}

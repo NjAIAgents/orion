@@ -1687,6 +1687,13 @@ func runSupervised(id string, rest []string) {
 		exitOn(runDatabaseStage(ws, opts))
 		return
 	}
+	// Narrated, unless the caller already set its own. A stage is minutes of
+	// silence otherwise: `orion run --stage spec` printed one warning and
+	// then nothing for five and a half minutes on a run that was working the
+	// whole time, which reads as a hang.
+	if opts.OnActivity == nil {
+		opts.OnActivity = newStageProgress(os.Stdout).On
+	}
 	res, err := supervisor.Run(ws, opts)
 	if res != nil {
 		fmt.Printf("\nstage      %s\nexit       %d\nreason     %s\nattempts   %d\nduration   %s\nlog        %s\n",
