@@ -128,6 +128,9 @@ type planOptions struct {
 	// test of this command already exercises.
 	Run     stageRunner
 	Confirm confirmer
+	// Ask reads one free-text answer. Nil means no terminal, so nothing that
+	// needs typing is offered.
+	Ask func(prompt string) string
 }
 
 // projectReader is the slice of tracker.Tracker this command needs.
@@ -163,6 +166,10 @@ func runPlan(args []string) {
 	if !o.DryRun && isTerminal(os.Stdin) {
 		r := bufio.NewReader(os.Stdin)
 		o.Confirm = func(prompt string) bool { return askYesNo(r, os.Stdout, prompt) }
+		o.Ask = func(prompt string) string {
+			answer, _ := ask(r, os.Stdout, prompt)
+			return answer
+		}
 		o.Run = func(ws *workspace.Workspace, stage string) (*supervisor.Result, error) {
 			// Narrated. A stage is minutes of silence otherwise, which reads
 			// as a hang and gets a working run killed halfway.
@@ -248,8 +255,21 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 			fmt.Fprintf(out, "\nnext: orion run %s --stage %s\n", ws.ID, planStages[0].Stage)
 			return nil
 		}
+		// Where their own copy should go, asked once, acted on at the end.
+		// Only when nothing has been recorded already, so a resumed chain
+		// does not ask again.
+		if opts.Ask != nil && strings.TrimSpace(ws.Task.CheckoutPath) == "" {
+			if p := askCheckoutPath(out, opts.Ask); p != "" {
+				ws.Task.CheckoutPath = p
+				if err := ws.SaveTask(); err != nil {
+					ui.Warn(out, "could not record where to clone: %v", err)
+				}
+			}
+		}
+
 		done := runPlanChain(out, ws, opts.Run, opts.Confirm)
 		if done == len(planStages) {
+			cloneAfterChain(out, ws)
 			fmt.Fprintf(out, "\n%s\n", ui.Dim(out,
 				"all planning stages are done; the tracker holds the work tree"))
 			fmt.Fprintf(out, "next: orion watch %s\n", strings.ToUpper(opts.Key))

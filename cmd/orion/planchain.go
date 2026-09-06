@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -34,6 +35,50 @@ type stageRunner func(ws *workspace.Workspace, stage string) (*supervisor.Result
 
 // confirmer asks a yes/no question. Injected for the same reason.
 type confirmer func(prompt string) bool
+
+// askCheckoutPath asks where the operator wants their own clone.
+//
+// Asked BEFORE the chain rather than after it, while they are already
+// answering questions: a prompt at the end arrives when the interesting part
+// is over and the terminal has scrolled, and the answer is only recorded here
+// anyway -- the clone itself happens once there is something to clone.
+//
+// Blank is a complete answer. The sandbox is a legitimate place to leave a
+// project, and `orion clone` exists for anyone who changes their mind.
+func askCheckoutPath(out io.Writer, ask func(string) string) string {
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, ui.Heading(out, "Your copy"))
+	fmt.Fprintln(out, "Orion works in its own sandbox, which keeps a bad run out of your files.")
+	fmt.Fprintln(out, "It can also put an ordinary clone wherever you keep your code.")
+	fmt.Fprintln(out)
+	answer := strings.TrimSpace(ask("Where? (e.g. ~/code/thing -- blank to stay in the sandbox)"))
+	if answer == "" {
+		return ""
+	}
+	p, err := expandPath(answer)
+	if err != nil {
+		ui.Warn(out, "%v -- staying in the sandbox", err)
+		return ""
+	}
+	return p
+}
+
+// cloneAfterChain makes the copy the operator asked for, once the stages have
+// committed something worth copying.
+//
+// Best effort and last: the planning work is done and committed by now, so a
+// failed clone costs a convenience rather than the run. It says what went
+// wrong and names the command to retry with.
+func cloneAfterChain(out io.Writer, ws *workspace.Workspace) {
+	dest := strings.TrimSpace(ws.Task.CheckoutPath)
+	if dest == "" {
+		return
+	}
+	if err := cloneWorkspace(os.Stdout, ws, dest); err != nil {
+		ui.Warn(out, "%v", err)
+		fmt.Fprintf(out, "  Retry when you like: orion clone %s %s\n", ws.ID, dest)
+	}
+}
 
 // runPlanChain runs the planning stages in order, pausing after each.
 //
