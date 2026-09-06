@@ -81,7 +81,7 @@ jobs:
       fail-fast: true
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        # macOS runs on PROMOTION; Linux and Windows run on every pull
+        # Linux runs on PROMOTION; macOS and Windows run on every pull
         # request. The split is by what BREAKS, not by what is cheap.
         #
         # Windows is where the platform bugs actually are. OR-334 through
@@ -93,19 +93,18 @@ jobs:
         # than on develop afterwards. It is the slowest leg by 5-6x (OR-292)
         # and it is worth the wait.
         #
-        # macOS has produced no platform-specific defect. Its failures this
-        # month were a kill-timing flake and a toolchain-pin problem, both
-        # environmental. It is 1.6-2.6x Linux -- measured 174s, 285s and
-        # 314s against Linux's 108-114s -- and that is paid on EVERY attempt
-        # of a fix loop, not once per branch: over 200 runs, a quarter of
-        # branches were built more than once and the worst four times
-        # (OR-348).
+        # macOS stays on pull requests because it is the platform this is
+        # DEVELOPED on. A break there is felt immediately and by everyone
+        # working on the repo, so finding it after a merge is worse than the
+        # minutes it costs: measured 174-285s against Linux's 108s (OR-348).
+        # That is the slower choice per attempt, made deliberately.
         #
-        # So Linux answers "did this change break anything" fast, Windows
-        # answers "did it break the platform that keeps breaking", and macOS
-        # answers before anything lands rather than before every attempt. A
-        # push to develop or main runs all three, and orion/batch proves a
-        # merged set before it lands.
+        # Linux is the one that can wait. It is the cheapest leg, but cheap
+        # is not the question -- it is also the platform least likely to
+        # surface something the other two would not, since a POSIX
+        # assumption that holds on macOS almost always holds there too. It
+        # still runs on every push to develop and main, so nothing reaches a
+        # release tag without a Linux verdict.
         #
         # Done as a matrix EXCLUDE rather than a job-level `if`: matrix.os is
         # not in scope for a job-level condition -- the matrix expands after
@@ -116,12 +115,13 @@ jobs:
         # The sentinel on the false branch has to be a platform that does not
         # exist in the matrix, so the entry is inert off a pull request.
         #
-        # develop's branch protection must NOT require go (macos-latest):
+        # develop's branch protection must NOT require go (ubuntu-latest):
         # an excluded job never reports, and a required check that never
-        # reports blocks the merge forever. main keeps requiring all three,
-        # because a promotion is a push and every leg runs there.
+        # reports blocks the merge forever. It must require go (macos-latest)
+        # instead. main keeps requiring all three, because a promotion is a
+        # push and every leg runs there.
         exclude:
-          - os: ${{ github.event_name == 'pull_request' && 'macos-latest' || 'no-macos-exclude' }}
+          - os: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'no-ubuntu-exclude' }}
     steps:
       - uses: actions/checkout@v4
       # 'stable' rather than a pin. Pinning to 1.22 broke the macOS leg:
