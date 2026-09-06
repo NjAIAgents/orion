@@ -46,6 +46,40 @@ func TestGateProductionDeploy(t *testing.T) {
 		"npm run build",
 		"git status",
 		"echo 'deploying to production tomorrow'", // no deploy verb executed
+
+		// SEARCHING for the word is not doing the thing. Every one of these
+		// was blocked in practice, and the first is how it was found: a grep
+		// for the gate's own message could not be run while working ON the
+		// gate, which is exactly when it is needed. A tool that only reads
+		// cannot deploy anything.
+		`grep -rn "production deploy blocked" internal/`,
+		`rg "prod deploy" --files-with-matches`,
+		`find . -name "*prod-deploy*"`,
+		`ls scripts/deploy-prod/`,
+		`git log --grep "deploy to prod"`,
+		`git diff HEAD~1 -- deploy/production.yaml`,
+		`head -50 scripts/deploy-production.sh`,
+		`wc -l deploy/prod.tf`,
+		`sed -n 1,40p deploy-prod.sh`,
+	}
+
+	// The inert list must not become a way THROUGH the gate. A read verb that
+	// feeds something which executes is still blocked, because segments are
+	// split on the pipe and the executing half is judged on its own.
+	stillBlocked := []string{
+		`grep -l prod deploy.sh | xargs ./deploy.sh production`,
+		`cat deploy.sh && ./deploy.sh production`,
+		`ls scripts/ ; kubectl apply -f k8s/production/`,
+		`find . -name "*.tf" && terraform apply -var-file=prod.tfvars`,
+		// git's WRITE subcommands are not on the read-only list.
+		`git log --oneline && npm run deploy:prod`,
+	}
+	for _, c := range stillBlocked {
+		t.Run("still-blocks/"+c, func(t *testing.T) {
+			if d := Gate(bash(c), cfg); !d.Blocked() {
+				t.Fatalf("%q reached a real deploy through an inert prefix", c)
+			}
+		})
 	}
 	for _, c := range allowed {
 		t.Run("allows/"+c, func(t *testing.T) {

@@ -105,17 +105,42 @@ func splitShellSegments(s string) []string {
 	})
 }
 
-// isInertCommand reports whether a segment merely prints or comments. These
-// cannot deploy anything, and blocking them makes the gate look stupid, which
-// is how a gate gets disabled.
+// isInertCommand reports whether a segment merely prints, reads or searches.
+// These cannot deploy anything, and blocking them makes the gate look stupid,
+// which is how a gate gets disabled.
+//
+// SEARCHING FOR THE WORD IS NOT DOING THE THING. The list below covers read
+// and search tools as well as printers, because the deploy vocabulary is
+// matched anywhere in a segment: `grep -rn "production deploy blocked"` has
+// both a prod word and a deploy verb in its ARGUMENT and was blocked. So was
+// every attempt to grep for the gate's own message while working on the gate,
+// which is exactly when it is needed.
+//
+// Safe because none of these executes what it finds. A pipeline that feeds
+// one into something that does -- `grep ... | sh` -- is split on the pipe
+// first, so the `sh` segment is still judged on its own.
 func isInertCommand(seg string) bool {
 	fields := strings.Fields(seg)
 	if len(fields) == 0 {
 		return true
 	}
 	switch strings.TrimPrefix(fields[0], "\\") {
-	case "echo", "printf", "cat", "true", "false", ":", "#":
+	case "echo", "printf", "cat", "true", "false", ":", "#",
+		// Search and read. They report what a file says; they do not run it.
+		"grep", "egrep", "fgrep", "rg", "ag", "ack",
+		"find", "fd", "ls", "tree", "stat", "file",
+		"head", "tail", "less", "more", "wc", "sed", "awk", "cut", "sort", "uniq",
+		"diff", "cmp", "jq", "yq", "basename", "dirname", "realpath", "readlink":
 		return true
+	}
+	// `git log --grep "deploy to prod"` and `git diff -- deploy/prod.yaml`
+	// read history and working tree. Only the read-only subcommands: `git
+	// push` is judged elsewhere, and this must not become a hole for it.
+	if strings.TrimPrefix(fields[0], "\\") == "git" && len(fields) > 1 {
+		switch fields[1] {
+		case "log", "diff", "show", "status", "grep", "blame", "ls-files", "cat-file":
+			return true
+		}
 	}
 	return strings.HasPrefix(fields[0], "#")
 }
