@@ -281,6 +281,34 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 	return nil
 }
 
+// ideaKeyFromDescription reads the provenance marker `orion new` writes.
+//
+// Only the FIRST line, and only when it is the whole line: a description that
+// mentions another ticket in passing is not a statement about where this
+// project came from, and treating it as one would point a stage at the wrong
+// idea.
+func ideaKeyFromDescription(desc string) string {
+	first := strings.TrimSpace(desc)
+	if i := strings.IndexByte(first, '\n'); i >= 0 {
+		first = strings.TrimSpace(first[:i])
+	}
+	rest, ok := strings.CutPrefix(first, "From ")
+	if !ok {
+		return ""
+	}
+	// "From PRIOR-3 (https://...)" -- the key is the first field. A bare
+	// "From " with nothing after it has no fields at all.
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ""
+	}
+	key := fields[0]
+	if !looksLikeIdeaKey(key) {
+		return ""
+	}
+	return strings.ToUpper(key)
+}
+
 // planWorkspace provisions the workspace, or -- on a dry run -- reports the
 // one it would have provisioned.
 //
@@ -327,6 +355,11 @@ func planWorkspace(out io.Writer, p tracker.Project, slug string, opts planOptio
 	}
 	ws.Task.Tracker = raw
 	ws.Task.Stage = planStages[0].Stage
+	// The discovery idea this came from, if the description says. `orion new`
+	// writes "From PRIOR-3" at the top for an idea given by key and for one
+	// it filed from an interview, so a stage can be TOLD which idea to fill
+	// in rather than reading orion's own help output looking for a key.
+	ws.Task.IdeaKey = ideaKeyFromDescription(p.Description)
 
 	// The project channel follows the workspace, which is now born here rather
 	// than in `orion new` (docs/decisions/0013). Failure is reported and never

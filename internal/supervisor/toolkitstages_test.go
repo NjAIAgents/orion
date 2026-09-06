@@ -112,10 +112,16 @@ func TestDecomposeKeepsTheRoutingContractUnderAConfiguredCommand(t *testing.T) {
 // artifact is the handoff and the next stage reads files, not conversation.
 func TestOrionStillNamesTheArtifactUnderAConfiguredCommand(t *testing.T) {
 	for _, c := range []struct{ stage, artifact string }{
-		{"intent", "docs/intent/<slug>.md"},
+		// The RESOLVED path, like the decompose case beside it. The
+		// placeholder form was the defect: an agent told to write
+		// docs/intent/<slug>.md, and never told the slug, writes a
+		// descriptive name of its own.
+		{"intent", "docs/intent/thing.md"},
 		{"decompose", "plans/thing.plan.md"},
 	} {
-		p, err := stagePrompt(ws(t, ""), c.stage, tk(c.stage, "/theirs"))
+		w := ws(t, "")
+		w.Task.Slug = "thing"
+		p, err := stagePrompt(w, c.stage, tk(c.stage, "/theirs"))
 		if err != nil {
 			t.Fatalf("%s: %v", c.stage, err)
 		}

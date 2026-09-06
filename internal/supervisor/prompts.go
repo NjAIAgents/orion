@@ -62,8 +62,40 @@ func command(tk config.Toolkit, stage, builtin string) string {
 	return builtin
 }
 
+// ideaFieldsNote asks for the tracker's idea to be filled in, but only when
+// there IS one and Orion can name it.
+//
+// Naming it is the whole point. The first version said "IF THE TRACKER HOLDS
+// AN IDEA FOR THIS WORK" and left the agent to find out: it spent ninety
+// seconds reading `orion --help`, `orion ls`, `orion status` and grepping the
+// workspace for a key that was recorded in task.json all along. An instruction
+// that sends an agent hunting for its own input is a worse instruction than
+// none.
+func ideaFieldsNote(ws *workspace.Workspace) string {
+	key := strings.TrimSpace(ws.Task.IdeaKey)
+	if key == "" {
+		return ""
+	}
+	return join(
+		"",
+		"FINALLY, FILL IN THE TRACKER'S IDEA FOR THIS WORK, which is "+key+".",
+		"A discovery board where every idea is an empty form is a board nobody reads.",
+		"",
+		quote("orion idea fields "+key+"        # what this project accepts\n"+
+			"orion idea set "+key+" --field \"Theme\" --value \"...\""),
+		"",
+		"Read the fields first and choose only from what it prints: these are custom",
+		"fields whose options differ per project, and a value it does not offer is",
+		"refused. Set only what the idea and your research support -- a horizon nobody",
+		"stated is a guess, and a guess in a roadmap field is read later as a decision.",
+	)
+}
+
 func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string, error) {
 	idea := ws.Task.Idea
+	// The exact artifact path, so the prompt and the check that reads it
+	// cannot disagree about the filename.
+	intentPath := config.Load(ws.RepoDir()).IntentPath(ws.Task.Slug)
 
 	// Four stages name the plan file: the one that writes it, and the three
 	// that read it. The path comes from config rather than a literal so a
@@ -79,9 +111,15 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"Capture the intent behind this idea, in the originator's words:",
 			quote(idea),
 			"",
-			"Use the "+command(tk, "intent", "/capture-intent")+" skill. It writes docs/intent/<slug>.md with a fixed",
-			"shape and proposes the commit; the path is part of its contract, so do not",
-			"relocate the file. "+command(tk, "decompose", "/pm-plan")+" later points at this capture as grounding.",
+			"Use the "+command(tk, "intent", "/capture-intent")+" skill, and write EXACTLY this file:",
+			"",
+			quote(intentPath),
+			"",
+			"THAT PATH, character for character. Not a descriptive name of your own --",
+			"Orion reads this exact file to hand your work to the next stage, and a",
+			"well-named file beside it is a stage that produced nothing. Commit it.",
+			"",
+			command(tk, "decompose", "/pm-plan")+" later points at this capture as grounding.",
 			"",
 			"You are the product manager here, and that one file is everything you leave",
 			"behind: what is being built, why it matters, and how success will be",
@@ -130,18 +168,7 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"Record only what was actually said, or what a source named in the idea",
 			"actually says. Do not write code or design a solution.",
 			"",
-			"FINALLY, IF THE TRACKER HOLDS AN IDEA FOR THIS WORK, fill in the fields it",
-			"left blank -- a discovery board where every idea is an empty form is a board",
-			"nobody reads. Set them with:",
-			"",
-			quote("orion idea set <IDEA-KEY> --field \"Name\" --value \"Value\""),
-			"",
-			"`orion idea fields <IDEA-KEY>` lists what that project actually has and what",
-			"each option field will accept. USE IT FIRST and choose only from what it",
-			"prints: these are custom fields whose options differ per project, and a value",
-			"it does not offer is refused. Set only what the idea and your research",
-			"support -- a horizon nobody stated is a guess, and a guess in a roadmap field",
-			"is read later as a decision.",
+			ideaFieldsNote(ws),
 		), nil
 
 	case "spec", "design":

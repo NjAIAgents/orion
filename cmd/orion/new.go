@@ -80,6 +80,14 @@ type newOptions struct {
 	// remembered.
 	Filer ideaFiler
 	Home  string
+	// Describer records the idea's key on the project it created, so a later
+	// stage is told which idea belongs to this work.
+	Describer projectDescriber
+}
+
+// projectDescriber updates a project's description.
+type projectDescriber interface {
+	UpdateProjectDescription(key, description string) error
 }
 
 func runNew(idea string, rest []string) {
@@ -107,14 +115,15 @@ func runNew(idea string, rest []string) {
 	exitOn(err)
 
 	exitOn(newRun(j, newOptions{
-		Idea:    idea,
-		Site:    j.BaseURL,
-		In:      os.Stdin,
-		Out:     os.Stdout,
-		Confirm: confirm,
-		Ideas:   j,
-		Filer:   j,
-		Home:    workspace.Home(),
+		Idea:      idea,
+		Site:      j.BaseURL,
+		In:        os.Stdin,
+		Out:       os.Stdout,
+		Confirm:   confirm,
+		Ideas:     j,
+		Filer:     j,
+		Describer: j,
+		Home:      workspace.Home(),
 	}))
 }
 
@@ -268,6 +277,15 @@ func newRun(t tracker.Tracker, opts newOptions) error {
 				fmt.Fprintf(out, "  The project was created; only the idea copy is missing.\n")
 			default:
 				ui.Ok(out, "idea", "%s  %s/browse/%s", key, opts.Site, key)
+				// The same provenance marker a keyed idea already carries in
+				// its description, so `orion plan` can tell a stage WHICH
+				// idea to fill in rather than leaving it to hunt for one.
+				if opts.Describer != nil {
+					if err := opts.Describer.UpdateProjectDescription(b.Key,
+						"From "+key+"\n\n"+description); err != nil {
+						ui.Warn(out, "could not record %s on the project: %v", key, err)
+					}
+				}
 				// The idea landed; err here is only about its extra fields.
 				if err != nil {
 					ui.Warn(out, "%v", err)

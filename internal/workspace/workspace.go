@@ -61,6 +61,14 @@ type Task struct {
 	// pointed at and treats as read-only. This is the opposite direction: the
 	// sandbox is the origin, and this is the copy made from it.
 	CheckoutPath string `json:"checkout_path,omitempty"`
+	// IdeaKey is the discovery idea this project came from, when there is
+	// one -- either the key `orion new` was given, or the idea it filed from
+	// an interview.
+	//
+	// Recorded so a stage can be TOLD it. Without it the intent stage was
+	// asked to fill in "the tracker's idea for this work" and spent ninety
+	// seconds reading orion's own help output looking for a key.
+	IdeaKey string `json:"idea_key,omitempty"`
 	// ResumeAt is set when a run stopped on a provider quota wall. It is a
 	// record, not a schedule: nothing sleeps on it, and the user or a cron
 	// decides when to actually come back.

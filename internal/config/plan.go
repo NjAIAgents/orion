@@ -26,6 +26,20 @@ func (c Config) PlanPath(slug string) string {
 	return path.Join(c.Paths.Plans, slug+PlanExt)
 }
 
+// IntentPath is the repo-relative path of one task's intent artifact.
+//
+// Here for the same reason PlanPath is, and after the same failure. The
+// intent stage's prompt said "writes docs/intent/<slug>.md" without ever
+// saying what the slug WAS, so an agent invented a descriptive filename --
+// docs/intent/cloudhealth-replacement-aws-cost-tool.md -- while the artifact
+// check looked for docs/intent/cloudlens.md and reported that the stage had
+// written nothing. It had written a good file at a name nobody would read.
+//
+// One definition, so the prompt states the path the check demands.
+func (c Config) IntentPath(slug string) string {
+	return path.Join(c.Paths.Intent, slug+".md")
+}
+
 // Where a recommendation lives before and after somebody confirms it,
 // relative to the repository root. internal/decide owns the MEANING of the
 // two states and re-exports these; the strings live here because this
