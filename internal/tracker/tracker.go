@@ -417,6 +417,27 @@ func (j *Jira) CreateProject(key, name, description, leadAccountID string) (Bind
 	}, nil
 }
 
+// UpdateProjectDescription replaces a project's description.
+//
+// The description is what `orion plan` designs from -- it carries the answers
+// given to `orion new`, verbatim -- so being able to correct it without
+// recreating the project matters. Jira has no delete-without-admin, which
+// makes "make a new one" the wrong answer to a typo.
+func (j *Jira) UpdateProjectDescription(key, description string) error {
+	code, body, err := j.do("PUT", "/rest/api/3/project/"+key,
+		map[string]any{"description": description})
+	if err != nil {
+		return err
+	}
+	if code == 403 {
+		return ErrNoPermission
+	}
+	if code >= 400 {
+		return fmt.Errorf("updating project %s: %d %s", key, code, snippet(body))
+	}
+	return nil
+}
+
 // ErrNoPermission is returned when creation is refused for authorization
 // reasons, so the caller can degrade to binding rather than abort.
 var ErrNoPermission = errors.New("account lacks permission to create a Jira project")
