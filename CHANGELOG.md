@@ -6,6 +6,21 @@ now refuses to do**.
 
 ## Unreleased
 
+### Changed
+
+- **spec-kit is installed per project, and its command names now resolve.** A new
+  workspace's `orion.json` named `/speckit.specify` and `/speckit.plan` with a dot,
+  which is spec-kit's README prose; its Claude integration installs `speckit-specify`
+  and `speckit-plan` with a hyphen, so no stage command ever resolved and every new
+  project silently ran the built-in prompts. The names are corrected everywhere Orion
+  writes or reads them. A raw clone of spec-kit is not an install and is no longer
+  treated as one: `specify init --here --integration claude` inside the workspace
+  repository is, and `orion doctor` now grades a toolkit installed there instead of
+  warning that a run cannot reach it. The decisions behind this — spec-kit's commands
+  run inside Orion's stages while its workflow engine, extension hooks and bundles are
+  declined; installation is per project; a spec is a living document — are ADRs 0021,
+  0022 and 0023. The chain steps that use them land under OR-355.
+
 ## v0.8.11
 
 ### Added

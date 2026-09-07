@@ -15,7 +15,11 @@ it against this rule first — anything that wants to drive sequencing itself
 cannot be adopted wholesale, even if its underlying ideas are worth having
 natively.
 
-Full rationale and the worked example (superpowers' `/execute-plan`
-declined for exactly this reason): `docs/decisions/0001-precedence-rule-orion-owns-orchestration.md` and `docs/decisions/0002-superpowers-declined-as-dependency.md`.
+Full rationale and the two worked examples (superpowers' `/execute-plan`
+declined for exactly this reason; spec-kit's workflow engine and prompt-level
+extension hooks declined for the same reason, its commands adopted inside
+stages): `docs/decisions/0001-precedence-rule-orion-owns-orchestration.md`,
+`docs/decisions/0002-superpowers-declined-as-dependency.md` and
+`docs/decisions/0021-spec-kit-inside-stages.md`.
 
 See `docs/decisions/` for the rest of this repo's architecture decisions.

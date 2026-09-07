@@ -4,6 +4,9 @@
 - Date: 2026-09-06
 - Load-bearing: yes — `internal/toolkit.Validate` rejects a clone with no
   `skills/` directory, and `VendorDirFor` puts every clone under `ORION_HOME`.
+- Amended by: [0022](0022-per-project-toolkit-install-via-specify-init.md)
+  — vendoring stays global for a skills repository; spec-kit is installed
+  per project by `specify init`, not cloned.
 - Related: [0019](0019-toolkit-agnostic-nj-agents-is-the-default.md) (this
   records two things 0019 assumed without stating, both found by trying to
   adopt the toolkit 0019 named as its example)
