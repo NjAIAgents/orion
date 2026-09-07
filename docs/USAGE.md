@@ -156,6 +156,25 @@ orion run <id> --stage pr          # /pr-describe, PR into develop
 orion status <id>
 ```
 
+**`orion plan <KEY>` runs the planning chain itself**, pausing after each step
+so you can read what one wrote before paying for the next. **It resumes.** A
+chain that stopped -- a gate that blocked, a stage that failed, a Ctrl-C, a
+declined prompt -- is continued by running the same command again: every step
+derives whether its work is already there from its own artifact (a committed
+spec, a recorded remote, a completed run), prints `= done` for those, and
+picks up at the first that is not. Nothing is re-spent for a step that is
+done. To rebuild on purpose -- you edited the spec by hand and want the plan,
+the tasks and the tree regenerated from it -- name the step to start from:
+
+```bash
+orion plan <KEY>                   # resume: skips what is done
+orion plan <KEY> --from spec       # re-run spec and everything after it, done or not
+orion plan <KEY> --dry-run         # say which steps are done and which would run
+```
+
+A different project whose name slugifies to the same workspace still refuses,
+naming the owner ([decisions/0012](decisions/0012-one-workspace-per-tracker-project.md)).
+
 ### Why the questions are asked now
 
 Every stage after `new` runs through `claude -p` and **cannot ask you

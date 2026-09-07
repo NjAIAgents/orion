@@ -104,14 +104,28 @@ func cloneDone(ws *workspace.Workspace) bool {
 // a stopped chain got to. A stage that fails, blocks, or is declined ends the
 // chain: everything after it reads what it wrote.
 func runPlanChain(out io.Writer, ws *workspace.Workspace, run stageRunner, ask confirmer) int {
+	return runPlanChainFrom(out, ws, run, ask, "")
+}
+
+// runPlanChainFrom is runPlanChain with a step to re-run from: that step and
+// every one after it run whether or not they are done. Steps before it keep
+// the normal rule. from is a step name already validated by planFromIndex;
+// an unknown one here is treated as no --from, never as "from the start".
+func runPlanChainFrom(out io.Writer, ws *workspace.Workspace, run stageRunner, ask confirmer, from string) int {
+	fromIdx, err := planFromIndex(from)
+	if err != nil {
+		fromIdx = -1
+	}
 	done := 0
 	for i, s := range planStages {
+		forced := fromIdx >= 0 && i >= fromIdx
 		// A step whose work is already there is reported and skipped, not
 		// asked about: the question "continue to spec?" has no answer when
 		// the spec is committed and passes its gate. This is what makes a
 		// re-run of `orion plan` a resume rather than a repeat -- and it
 		// counts as done, so a chain that skips everything still ends.
-		if s.Done != nil && s.Done(ws) {
+		// Unless --from reaches it: then the operator has said to redo it.
+		if !forced && s.Done != nil && s.Done(ws) {
 			fmt.Fprintf(out, "\n  %s\n", ui.Dim(out, fmt.Sprintf("= done  %d/%d  %s", i+1, len(planStages), s.Stage)))
 			done++
 			continue

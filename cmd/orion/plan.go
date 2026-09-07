@@ -142,6 +142,25 @@ var planStages = []planStage{
 		Frame: cloneStep, Done: cloneDone},
 }
 
+// planFromIndex resolves --from to an index into planStages, or -1 when
+// nothing was asked for. An unknown name is an error that lists the steps,
+// because the alternative -- treating it as "from the start" -- would make
+// a typo re-run the whole chain at full cost.
+func planFromIndex(from string) (int, error) {
+	from = strings.TrimSpace(from)
+	if from == "" {
+		return -1, nil
+	}
+	names := make([]string, 0, len(planStages))
+	for i, s := range planStages {
+		if strings.EqualFold(s.Stage, from) {
+			return i, nil
+		}
+		names = append(names, s.Stage)
+	}
+	return -1, fmt.Errorf("--from %q is not a step of the chain.\n  Steps: %s", from, strings.Join(names, ", "))
+}
+
 // stageDone is the Done predicate for a supervised stage: the artifact gate
 // and the run record, read by supervisor.StageDone. One closure per entry
 // rather than a switch in the chain, so the slice stays the only list.
@@ -182,6 +201,11 @@ type planOptions struct {
 	// Org is the GitHub organisation for the remote step, from --org.
 	// Recorded on the task when given, so a resume needs no flag.
 	Org string
+	// From names a step to re-run from, regardless of whether it and the
+	// steps after it are done. Done derived from artifacts is right by
+	// default and wrong when the operator has edited the spec and wants
+	// everything downstream rebuilt from it.
+	From string
 	// Run and Confirm drive the stage chain. Both nil means announce only --
 	// which is what a non-interactive caller gets, and what every existing
 	// test of this command already exercises.
@@ -220,6 +244,7 @@ func runPlan(args []string) {
 		Home:   home,
 		Out:    os.Stdout,
 		Org:    argFlag(args[1:], "--org", ""),
+		From:   argFlag(args[1:], "--from", ""),
 	}
 	// A dry run spends nothing and dispatches nothing, so it must not offer
 	// to. Off a terminal there is nobody to answer the pauses.
@@ -250,6 +275,11 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 	out := opts.Out
 	if opts.Key == "" {
 		return fmt.Errorf("orion plan needs a tracker project key, e.g. orion plan ORPAY")
+	}
+	// A wrong --from fails here, before the tracker is read or anything is
+	// provisioned: a typo is cheapest to find at the prompt.
+	if _, err := planFromIndex(opts.From); err != nil {
+		return err
 	}
 
 	// 1. The handoff artifact.
@@ -338,7 +368,7 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 			}
 		}
 
-		done := runPlanChain(out, ws, opts.Run, opts.Confirm)
+		done := runPlanChainFrom(out, ws, opts.Run, opts.Confirm, opts.From)
 		if done == len(planStages) {
 			fmt.Fprintf(out, "\n%s\n", ui.Dim(out,
 				"all planning stages are done; the tracker holds the work tree"))
@@ -390,6 +420,23 @@ func ideaKeyFromDescription(desc string) string {
 // projects whose names happen to slugify alike.
 func planWorkspace(out io.Writer, p tracker.Project, slug string, opts planOptions) (*workspace.Workspace, error) {
 	if existing, err := workspace.Open(slug); err == nil && existing.ID == slug {
+		// THE SAME PROJECT RESUMES. docs/decisions/0012 refused a second run
+		// because it would plan again into a half-finished workspace; with
+		// each step now deriving whether it is done from its own artifact,
+		// a re-run skips what is there and picks up where the last one
+		// stopped. A DIFFERENT project whose name slugified alike still
+		// refuses, naming the owner: that is a name clash, and 0012's
+		// reason for it holds unchanged. A missing binding refuses too --
+		// "probably the same project" is not a basis for writing into it.
+		if planBoundTo(existing) == p.Key {
+			fmt.Fprintln(out, ui.Heading(out, "Workspace"))
+			fmt.Fprintf(out, "  id           %s  %s\n", existing.ID, ui.Dim(out, "(resumed)"))
+			fmt.Fprintf(out, "  path         %s\n", existing.Dir)
+			fmt.Fprintf(out, "  repo         %s\n", existing.RepoDir())
+			printPlanProgress(out, existing, opts.From)
+			fmt.Fprintln(out)
+			return existing, nil
+		}
 		return nil, fmt.Errorf("workspace %s already exists for %s.\n"+
 			"  A tracker project gets ONE workspace, so this will not create a second.\n"+
 			"  Continue in it:      orion run %s --stage %s\n"+
@@ -449,6 +496,35 @@ func planWorkspace(out io.Writer, p tracker.Project, slug string, opts planOptio
 	fmt.Fprintf(out, "  sandbox      %s\n", ws.SandboxMode())
 	fmt.Fprintln(out)
 	return ws, nil
+}
+
+// planBoundTo is the tracker key the workspace records, or "" when it
+// records none.
+func planBoundTo(ws *workspace.Workspace) string {
+	var b tracker.Binding
+	if len(ws.Task.Tracker) > 0 && json.Unmarshal(ws.Task.Tracker, &b) == nil {
+		return b.Key
+	}
+	return ""
+}
+
+// printPlanProgress says where a resumed chain is: which steps are done and
+// will be skipped, and which will run -- including any --from forces. This
+// is what a dry run of a resumable workspace reports, and what a real run
+// shows before asking to continue, so "resumed" is never a word without a
+// position behind it.
+func printPlanProgress(out io.Writer, ws *workspace.Workspace, from string) {
+	fromIdx, _ := planFromIndex(from)
+	for i, s := range planStages {
+		state := "would run"
+		switch {
+		case fromIdx >= 0 && i >= fromIdx:
+			state = "would run (--from " + from + ")"
+		case s.Done != nil && s.Done(ws):
+			state = "done"
+		}
+		fmt.Fprintf(out, "  %d/%d %-10s %s\n", i+1, len(planStages), s.Stage, ui.Dim(out, state))
+	}
 }
 
 // planExistingOwner names the project the existing workspace is bound to,

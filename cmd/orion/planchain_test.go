@@ -522,3 +522,45 @@ func TestAFailedCloneDoesNotFailTheChain(t *testing.T) {
 		t.Errorf("the retry command is not named:\n%s", out.String())
 	}
 }
+
+// --from re-runs the named step and everything after it, done or not;
+// steps before it keep the normal rule.
+func TestFromRerunsTheNamedStepAndEverythingAfterIt(t *testing.T) {
+	var out bytes.Buffer
+	var ran []string
+	always := func(*workspace.Workspace) bool { return true }
+	withPlanStages(t, []planStage{
+		{Stage: "intent", Actor: "pm", What: "intent", Done: always},
+		{Stage: "spec", Actor: "architect", What: "spec", Done: always},
+		{Stage: "plan", Actor: "architect", What: "plan", Done: always},
+	})
+
+	done := runPlanChainFrom(&out, chainWS(t), okRun(&ran), yes, "spec")
+
+	if done != 3 {
+		t.Fatalf("completed %d of 3:\n%s", done, out.String())
+	}
+	if strings.Join(ran, ",") != "spec,plan" {
+		t.Errorf("ran %v; --from spec must re-run spec and plan and skip the done intent", ran)
+	}
+}
+
+// An unknown --from name is an error that lists the steps, never "from the
+// start" -- a typo must not re-run the whole chain at full cost.
+func TestPlanFromIndexRejectsAnUnknownStepAndListsThem(t *testing.T) {
+	if i, err := planFromIndex(""); err != nil || i != -1 {
+		t.Errorf("empty --from = %d, %v; want -1, nil", i, err)
+	}
+	if i, err := planFromIndex(" Spec "); err != nil || i < 0 || planStages[i].Stage != "spec" {
+		t.Errorf("--from ' Spec ' = %d, %v; want the spec index", i, err)
+	}
+	_, err := planFromIndex("bogus")
+	if err == nil {
+		t.Fatal("bogus was accepted")
+	}
+	for _, s := range planStages {
+		if !strings.Contains(err.Error(), s.Stage) {
+			t.Errorf("the error does not list %q: %v", s.Stage, err)
+		}
+	}
+}
