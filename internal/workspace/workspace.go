@@ -80,9 +80,14 @@ type Task struct {
 	// the run reports into.
 	Slack *SlackChannel `json:"slack,omitempty"`
 	// Remote and Tracker are filled by the provision stage.
-	Remote  string          `json:"remote,omitempty"`
-	Tracker json.RawMessage `json:"tracker,omitempty"`
-	Runs    []RunRec        `json:"runs,omitempty"`
+	Remote string `json:"remote,omitempty"`
+	// RemoteOrg is the GitHub organisation the remote is created under, when
+	// one was asked for. Recorded so a resumed `orion plan` creates the same
+	// remote without being told --org again: the org is a property of this
+	// project's repository, not of the command that happened to run first.
+	RemoteOrg string          `json:"remote_org,omitempty"`
+	Tracker   json.RawMessage `json:"tracker,omitempty"`
+	Runs      []RunRec        `json:"runs,omitempty"`
 }
 
 // SlackChannel is a project's channel.

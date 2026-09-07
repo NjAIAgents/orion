@@ -160,7 +160,7 @@ func TestPlanAnnouncesEveryStageAndItsCostShapeBeforeDispatch(t *testing.T) {
 		}
 	}
 	// The shape, not just the list: how many runs, and that it does not loop.
-	if !strings.Contains(out, fmt.Sprint(len(planStages))) || !strings.Contains(out, "no fix loop") {
+	if !strings.Contains(out, fmt.Sprint(supervisedStages())) || !strings.Contains(out, "no fix loop") {
 		t.Errorf("cost shape does not state the fleet size and loop shape:\n%s", out)
 	}
 	// The number is the user's own limit, never the provider's.
@@ -348,7 +348,7 @@ func TestPlanEstimatesTheChainFromRecordedRuns(t *testing.T) {
 	if !strings.Contains(out, "$2.00 per run") {
 		t.Errorf("the per-run estimate is not the measured mean:\n%s", out)
 	}
-	want := fmt.Sprintf("$%.2f for the chain", 2.0*float64(len(planStages)))
+	want := fmt.Sprintf("$%.2f for the chain", 2.0*float64(supervisedStages()))
 	if !strings.Contains(out, want) {
 		t.Errorf("the chain total %q is missing; the fleet size is what multiplies the cost:\n%s",
 			want, out)

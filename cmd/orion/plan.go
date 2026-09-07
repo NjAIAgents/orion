@@ -124,6 +124,16 @@ var planStages = []planStage{
 	{Stage: "spec", Actor: events.ActorArchitect, What: "requirements and design spec", Done: stageDone("spec")},
 	{Stage: "plan", Actor: events.ActorArchitect, What: "implementation plan: files, order of work, tests, risks", Done: stageDone("plan")},
 	{Stage: "scaffold", Actor: events.ActorDevOps, What: "repository skeleton on the OpenSSF baseline", Done: stageDone("scaffold")},
+	// The remote comes AFTER scaffold and BEFORE decompose. After scaffold,
+	// because creating a repository on GitHub is outward and irreversible
+	// enough to want every gate before it passed first -- a chain stopped
+	// at the discovery gate has created nothing anybody has to delete.
+	// Before decompose, because the tickets name branches and a repository
+	// to push to, and `orion watch` needs the remote to open pull requests
+	// against. It used to be `orion provision`, a separate command typed
+	// after the chain; the chain runs it now (docs/decisions/0022).
+	{Stage: "remote", Actor: events.ActorOrion, What: "the GitHub repository: create it, push main and develop, protect both",
+		Frame: remoteStep, Done: remoteDone},
 	{Stage: "decompose", Actor: events.ActorPM, What: "the Epic, Story and Task tree in the tracker", Done: stageDone("decompose")},
 }
 
@@ -164,6 +174,9 @@ type planOptions struct {
 	DryRun bool
 	Home   string
 	Out    io.Writer
+	// Org is the GitHub organisation for the remote step, from --org.
+	// Recorded on the task when given, so a resume needs no flag.
+	Org string
 	// Run and Confirm drive the stage chain. Both nil means announce only --
 	// which is what a non-interactive caller gets, and what every existing
 	// test of this command already exercises.
@@ -201,6 +214,7 @@ func runPlan(args []string) {
 		DryRun: hasFlag(args[1:], "--dry-run"),
 		Home:   home,
 		Out:    os.Stdout,
+		Org:    argFlag(args[1:], "--org", ""),
 	}
 	// A dry run spends nothing and dispatches nothing, so it must not offer
 	// to. Off a terminal there is nobody to answer the pauses.
@@ -261,6 +275,15 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 	ws, err := planWorkspace(out, p, slug, opts)
 	if err != nil {
 		return err
+	}
+
+	// Where the remote goes, recorded once so the remote step and every
+	// resume after it agree. A dry run has no task to write to.
+	if opts.Org != "" && !opts.DryRun && ws.Task.RemoteOrg != opts.Org {
+		ws.Task.RemoteOrg = opts.Org
+		if err := ws.SaveTask(); err != nil {
+			return err
+		}
 	}
 
 	// 4. What would be dispatched, and what it costs, before it is.

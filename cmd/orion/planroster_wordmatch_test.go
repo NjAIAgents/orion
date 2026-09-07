@@ -34,6 +34,9 @@ func TestPlanRosterAllNumbersIdeaSelectsOnlyStageActors(t *testing.T) {
 
 	stageActors := map[string]bool{}
 	for _, s := range planStages {
+		if s.Frame != nil {
+			continue
+		}
 		stageActors[s.Actor] = true
 	}
 	for id, a := range got {
@@ -53,6 +56,9 @@ func TestPlanRosterAllPunctuationIdeaSelectsOnlyStageActors(t *testing.T) {
 
 	stageActors := map[string]bool{}
 	for _, s := range planStages {
+		if s.Frame != nil {
+			continue
+		}
 		stageActors[s.Actor] = true
 	}
 	if len(got) != len(stageActors) {

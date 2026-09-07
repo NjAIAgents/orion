@@ -1827,17 +1827,7 @@ func runProvision(id string, rest []string) {
 
 	// 1. Remote repository and branch model.
 	if !hasFlag(rest, "--skip-repo") {
-		res, err := provision.Remote(provision.Options{
-			Dir:           ws.RepoDir(),
-			Name:          ws.Task.Slug,
-			Description:   truncateStr(ws.Task.Idea, 200),
-			DefaultBranch: cfg.VCS.DefaultBranch,
-			WorkBranch:    cfg.VCS.WorkBranch,
-			Private:       true,
-			Org:           argFlag(rest, "--org", ""),
-			Confirm:       confirm,
-			Out:           os.Stdout,
-		})
+		res, err := provision.Remote(remoteOptions(ws, cfg, confirm, os.Stdout, argFlag(rest, "--org", "")))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "orion: repository provisioning failed: %v\n", err)
 		} else {

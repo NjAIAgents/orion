@@ -31,6 +31,9 @@ func rosterOf(t *testing.T, idea string) map[string]planActor {
 func TestPlanRosterCarriesEveryStageActorWhateverTheIdeaSays(t *testing.T) {
 	got := rosterOf(t, "")
 	for _, s := range planStages {
+		if s.Frame != nil {
+			continue // the narrator runs it; not a participant
+		}
 		a, ok := got[s.Actor]
 		if !ok {
 			t.Fatalf("%s runs the %s stage but is not on the roster", s.Actor, s.Stage)
@@ -190,6 +193,9 @@ func TestPlanRosterOnAnEmptyIdeaHasOnlyTheStageActors(t *testing.T) {
 
 	stageActors := map[string]bool{}
 	for _, s := range planStages {
+		if s.Frame != nil {
+			continue
+		}
 		stageActors[s.Actor] = true
 	}
 	if len(got) != len(stageActors) {

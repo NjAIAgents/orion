@@ -5,15 +5,46 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/provision"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
-func chainWS() *workspace.Workspace { return &workspace.Workspace{ID: "cloudlens"} }
+// chainWS is a workspace the chain can write to: the remote step records
+// the URL it made in task.json, so the directory has to exist.
+func chainWS(t *testing.T) *workspace.Workspace {
+	t.Helper()
+	w := &workspace.Workspace{ID: "cloudlens", Dir: t.TempDir()}
+	w.Task.Slug = "cloudlens"
+	if err := os.MkdirAll(w.MetaDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+// fakeRemote stands in for provision.Remote so no test creates a repository
+// on GitHub. It honours Confirm the way the real one does -- a declined
+// confirmation is an error -- so the chain's handling of a refusal is what
+// is under test, not a stub that always says yes.
+func fakeRemote(t *testing.T) *int {
+	t.Helper()
+	calls := 0
+	orig := remoteFn
+	remoteFn = func(opts provision.Options) (*provision.Result, error) {
+		calls++
+		if opts.Confirm != nil && !opts.Confirm("create?") {
+			return nil, fmt.Errorf("cancelled: no remote created")
+		}
+		return &provision.Result{RemoteURL: "git@github.com:test/" + opts.Name + ".git"}, nil
+	}
+	t.Cleanup(func() { remoteFn = orig })
+	return &calls
+}
 
 // okRun is a stage that succeeds, recording the order it was asked for.
 func okRun(order *[]string) stageRunner {
@@ -26,20 +57,23 @@ func okRun(order *[]string) stageRunner {
 func yes(string) bool { return true }
 
 func TestTheChainRunsEveryStageInRosterOrder(t *testing.T) {
+	fakeRemote(t)
 	var order []string
 	var out bytes.Buffer
 
-	done := runPlanChain(&out, chainWS(), okRun(&order), yes)
+	done := runPlanChain(&out, chainWS(t), okRun(&order), yes)
 
 	if done != len(planStages) {
 		t.Fatalf("completed %d of %d stages:\n%s", done, len(planStages), out.String())
 	}
 	want := make([]string, 0, len(planStages))
 	for _, s := range planStages {
-		want = append(want, s.Stage)
+		if s.Frame == nil {
+			want = append(want, s.Stage)
+		}
 	}
 	if strings.Join(order, ",") != strings.Join(want, ",") {
-		t.Errorf("ran %v, want the roster order %v", order, want)
+		t.Errorf("ran %v, want the supervised stages in roster order %v", order, want)
 	}
 }
 
@@ -47,6 +81,7 @@ func TestTheChainRunsEveryStageInRosterOrder(t *testing.T) {
 // stage designs from, so the operator reads it before paying for the one that
 // consumes it.
 func TestDecliningTheNextStageStopsTheChain(t *testing.T) {
+	fakeRemote(t)
 	var order []string
 	var out bytes.Buffer
 
@@ -54,7 +89,7 @@ func TestDecliningTheNextStageStopsTheChain(t *testing.T) {
 	asked := 0
 	ask := func(string) bool { asked++; return asked < 2 }
 
-	done := runPlanChain(&out, chainWS(), okRun(&order), ask)
+	done := runPlanChain(&out, chainWS(t), okRun(&order), ask)
 
 	if done != 2 {
 		t.Fatalf("completed %d stages, want 2:\n%s", done, out.String())
@@ -75,6 +110,7 @@ func TestDecliningTheNextStageStopsTheChain(t *testing.T) {
 // refused, and said so in its artifact. Every stage after it would have
 // designed from a document that says it is not a design.
 func TestAStageThatFailsStopsTheChainAndNamesTheFix(t *testing.T) {
+	fakeRemote(t)
 	var ran []string
 	var out bytes.Buffer
 
@@ -87,7 +123,7 @@ func TestAStageThatFailsStopsTheChainAndNamesTheFix(t *testing.T) {
 		return &supervisor.Result{ExitCode: 0, Duration: time.Second}, nil
 	}
 
-	done := runPlanChain(&out, chainWS(), run, yes)
+	done := runPlanChain(&out, chainWS(t), run, yes)
 
 	// intent runs and succeeds; spec blocks. So exactly one stage completed,
 	// and nothing after spec ran at all.
@@ -109,14 +145,24 @@ func TestAStageThatFailsStopsTheChainAndNamesTheFix(t *testing.T) {
 // The first stage is not asked about: the operator confirmed the chain and
 // its cost immediately before, and nothing has happened since.
 func TestTheFirstStageIsNotAskedAboutTwice(t *testing.T) {
+	fakeRemote(t)
 	var order []string
 	var out bytes.Buffer
 	asked := 0
 
-	runPlanChain(&out, chainWS(), okRun(&order), func(string) bool { asked++; return true })
+	// Only the chain's own "Continue to ...?" prompts: a frame step may ask
+	// its own question before an outward action (the remote confirms before
+	// creating a repository), and that is a second, deliberate confirmation,
+	// not the chain asking twice.
+	runPlanChain(&out, chainWS(t), okRun(&order), func(q string) bool {
+		if strings.HasPrefix(q, "Continue to") {
+			asked++
+		}
+		return true
+	})
 
 	if want := len(planStages) - 1; asked != want {
-		t.Errorf("asked %d times, want %d -- one per stage AFTER the first", asked, want)
+		t.Errorf("asked %d times, want %d -- one per step AFTER the first", asked, want)
 	}
 }
 
@@ -193,7 +239,7 @@ func TestAFrameStepRunsWithoutAStageRunner(t *testing.T) {
 		{Stage: "spec", Actor: "architect", What: "spec"},
 	})
 
-	done := runPlanChain(&out, chainWS(), okRun(&ran), yes)
+	done := runPlanChain(&out, chainWS(t), okRun(&ran), yes)
 
 	if done != 3 {
 		t.Fatalf("completed %d of 3 steps:\n%s", done, out.String())
@@ -222,7 +268,7 @@ func TestADoneStepIsSkippedAndNotAskedAbout(t *testing.T) {
 	})
 	ask := func(q string) bool { asked = append(asked, q); return true }
 
-	done := runPlanChain(&out, chainWS(), okRun(&ran), ask)
+	done := runPlanChain(&out, chainWS(t), okRun(&ran), ask)
 
 	if done != 3 {
 		t.Fatalf("completed %d of 3 steps; done steps count so a resumed chain can finish:\n%s", done, out.String())
@@ -254,7 +300,7 @@ func TestAFailingFrameStepStopsTheChainAndNamesTheResume(t *testing.T) {
 		{Stage: "spec", Actor: "architect", What: "spec"},
 	})
 
-	done := runPlanChain(&out, chainWS(), okRun(&ran), yes)
+	done := runPlanChain(&out, chainWS(t), okRun(&ran), yes)
 
 	if done != 1 {
 		t.Fatalf("completed %d steps, want 1 before the frame step failed:\n%s", done, out.String())
@@ -302,7 +348,7 @@ func TestDecliningBeforeAFrameStepNamesOrionPlanAsTheResume(t *testing.T) {
 	})
 	no := func(string) bool { return false }
 
-	done := runPlanChain(&out, chainWS(), okRun(&ran), no)
+	done := runPlanChain(&out, chainWS(t), okRun(&ran), no)
 
 	if done != 1 {
 		t.Fatalf("completed %d steps, want 1:\n%s", done, out.String())
@@ -332,5 +378,79 @@ func TestAFreshWorkspaceIsDoneAtNoStep(t *testing.T) {
 		if s.Done != nil && s.Done(w) {
 			t.Errorf("the %s stage reports done on a fresh workspace", s.Stage)
 		}
+	}
+}
+
+// The remote step is done when the task records a remote, so a resumed
+// chain never tries to create the repository twice.
+func TestTheRemoteStepIsDoneOnceTheTaskRecordsARemote(t *testing.T) {
+	calls := fakeRemote(t)
+	w := chainWS(t)
+	w.Task.Remote = "git@github.com:test/cloudlens.git"
+	var out bytes.Buffer
+	var ran []string
+
+	runPlanChain(&out, w, okRun(&ran), yes)
+
+	if *calls != 0 {
+		t.Errorf("the remote was created %d times although the task already records one", *calls)
+	}
+	if !strings.Contains(out.String(), "= done") || !strings.Contains(out.String(), "remote") {
+		t.Errorf("the remote step is not reported as done:\n%s", out.String())
+	}
+}
+
+// Declining to create the repository stops the chain before decompose --
+// tickets that name a repository nobody agreed to create are worse than no
+// tickets -- and the refusal is the operator's own answer, not a failure.
+func TestDecliningTheRemoteStopsTheChainBeforeDecompose(t *testing.T) {
+	fakeRemote(t)
+	w := chainWS(t)
+	var out bytes.Buffer
+	var ran []string
+	ask := func(q string) bool { return !strings.Contains(q, "create?") }
+
+	done := runPlanChain(&out, w, okRun(&ran), ask)
+
+	for _, stage := range ran {
+		if stage == "decompose" {
+			t.Fatalf("decompose ran after the remote was declined: %v", ran)
+		}
+	}
+	if w.Task.Remote != "" {
+		t.Errorf("a declined remote was recorded: %q", w.Task.Remote)
+	}
+	if !strings.Contains(out.String(), "cancelled") || !strings.Contains(out.String(), "orion plan") {
+		t.Errorf("the stop must show the refusal and name the resume:\n%s", out.String())
+	}
+	if done == len(planStages) {
+		t.Error("the chain reported itself complete after a declined step")
+	}
+}
+
+// On success the URL is recorded in task.json, which is what the next
+// resume's Done reads and what `orion watch` pushes to.
+func TestTheRemoteStepRecordsTheURLItMade(t *testing.T) {
+	calls := fakeRemote(t)
+	w := chainWS(t)
+	var out bytes.Buffer
+	var ran []string
+
+	done := runPlanChain(&out, w, okRun(&ran), yes)
+
+	if done != len(planStages) {
+		t.Fatalf("completed %d of %d steps:\n%s", done, len(planStages), out.String())
+	}
+	if *calls != 1 {
+		t.Errorf("the remote was created %d times, want exactly once", *calls)
+	}
+	if !strings.Contains(w.Task.Remote, "cloudlens") {
+		t.Errorf("the remote URL was not recorded on the task: %q", w.Task.Remote)
+	}
+	if _, err := os.Stat(w.TaskPath()); err != nil {
+		t.Errorf("task.json was not written after the remote step: %v", err)
+	}
+	if !remoteDone(w) {
+		t.Error("remoteDone is false right after the remote was recorded")
 	}
 }
