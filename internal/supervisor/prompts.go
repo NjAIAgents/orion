@@ -120,15 +120,15 @@ func useCommandNote(tk config.Toolkit, stage string) string {
 // Orion still owns the sequencing: this is one stage running two of its
 // toolkit's commands in the order that toolkit itself defines (plan hands off
 // to tasks), not config expressing an order between Orion's stages.
-func taskListNote(tk config.Toolkit) string {
-	if strings.TrimSpace(tk.Stage("plan")) == "" {
+func taskListNote(tk config.Toolkit, tasks string) string {
+	if strings.TrimSpace(tk.Stage("plan")) == "" || tasks == "" {
 		return ""
 	}
 	return join(
 		"",
 		"THEN LEAVE A TASK LIST. If the command above produces a plan but no task",
 		"list -- spec-kit's /speckit-plan is exactly this, and hands off to",
-		"/speckit-tasks -- run that handoff too, so specs/<nnn-slug>/tasks.md",
+		"/speckit-tasks -- run that handoff too, so "+tasks,
 		"exists. The decompose stage reads that file to create the tracker tree;",
 		"without it the chain has a plan and nothing to decompose.",
 	)
@@ -146,7 +146,19 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 	// the shield's plan gate, which reads the same setting through the same
 	// helper. A build prompt pointing at a file the plan stage never wrote
 	// is the same silent break as a gate looking in the wrong directory.
-	plan := config.Load(ws.RepoDir()).PlanPath(ws.Task.Slug)
+	//
+	// The spec and plan paths come from the SAME functions the artifact
+	// gate checks, so a delegated stage is told the feature-directory layout
+	// and checked there, and a built-in one is told the classic path and
+	// checked there (artifact.go, docs/decisions/0022).
+	cfg := config.Load(ws.RepoDir())
+	// The toolkit block handed in is the authority, not the one on disk:
+	// Run passes the same block it loaded, and a caller building a prompt
+	// for a given configuration must get paths that match it.
+	cfg.Toolkit = tk
+	spec := specArtifact(cfg, ws.Task.Slug)
+	plan := planArtifact(cfg, ws.Task.Slug)
+	tasks := tasksArtifact(cfg, ws.Task.Slug)
 
 	switch strings.ToLower(stage) {
 	case "intent":
@@ -230,12 +242,12 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"Flag areas of concern explicitly, especially anywhere two policies contradict and",
 			"you cannot satisfy both. A flagged concern is more useful than a confident guess.",
 			"",
-			"Write specs/"+ws.Task.Slug+".spec.md and commit it. No implementation.",
+			"Write "+spec+" and commit it. No implementation.",
 		), nil
 
 	case "plan":
 		return join(
-			"Read docs/intent/"+ws.Task.Slug+".md and specs/"+ws.Task.Slug+".spec.md.",
+			"Read docs/intent/"+ws.Task.Slug+".md and "+spec+".",
 			"",
 			useCommandNote(tk, "plan"),
 			"Produce an implementation plan naming: the files that change, the order of work,",
@@ -246,7 +258,7 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"from the plan alone.",
 			"",
 			"Write "+plan+" and commit it. Do not implement yet.",
-			taskListNote(tk),
+			taskListNote(tk, tasks),
 		), nil
 
 	case "ticket":
@@ -264,7 +276,7 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"layer in the OpenSSF OSPS Baseline and delegates the stack layout to the",
 			"ecosystem's own generator rather than inventing one.",
 			"",
-			"Read docs/intent/"+ws.Task.Slug+".md and specs/"+ws.Task.Slug+".spec.md first",
+			"Read docs/intent/"+ws.Task.Slug+".md and "+spec+" first",
 			"so the stack choice follows the design rather than a default.",
 			"",
 			"Work on a branch cut from develop. Do not commit to develop or main directly;",

@@ -140,3 +140,41 @@ func TestOrionStillNamesTheArtifactUnderAConfiguredCommand(t *testing.T) {
 		}
 	}
 }
+
+// A delegated spec or plan stage is told the feature-directory layout its
+// command writes -- and never the classic path, which is the contradiction
+// that sent a real run to write one file while the gate checked another.
+func TestADelegatedStageIsToldTheFeatureDirectoryLayout(t *testing.T) {
+	w := ws(t, `{"toolkit":{"stages":{"spec":"/speckit-specify","plan":"/speckit-plan"}}}`)
+	w.Task.Slug = "thing"
+
+	spec, err := stagePrompt(w, "spec", config.Load(w.RepoDir()).Toolkit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(spec, "specs/001-thing/spec.md") || strings.Contains(spec, ".spec.md") {
+		t.Errorf("the delegated spec prompt does not name specs/001-thing/spec.md, or still names the classic path:\n%s", spec)
+	}
+
+	plan, err := stagePrompt(w, "plan", config.Load(w.RepoDir()).Toolkit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"specs/001-thing/spec.md", "specs/001-thing/plan.md", "specs/001-thing/tasks.md"} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("the delegated plan prompt does not name %s:\n%s", want, plan)
+		}
+	}
+	if strings.Contains(plan, ".plan.md") {
+		t.Errorf("the delegated plan prompt still names the classic path:\n%s", plan)
+	}
+
+	// scaffold reads the spec from the same place.
+	scaffold, err := stagePrompt(w, "scaffold", config.Load(w.RepoDir()).Toolkit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(scaffold, "specs/001-thing/spec.md") {
+		t.Errorf("scaffold reads the spec from somewhere else than the spec stage wrote it:\n%s", scaffold)
+	}
+}

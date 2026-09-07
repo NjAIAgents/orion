@@ -81,7 +81,7 @@ func TestNotificationSentOnArtifactFailure(t *testing.T) {
 	if blocked == nil {
 		t.Fatalf("no notify.Blocked event named the missing artifact, got: %+v", *events)
 	}
-	for _, want := range []string{"specs/thing.spec.md", "spec", "/wrong-skill-name"} {
+	for _, want := range []string{"specs/001-thing/spec.md", "spec", "/wrong-skill-name"} {
 		if !strings.Contains(blocked.Title, want) && !strings.Contains(blocked.Body, want) {
 			t.Errorf("notification must name %q, got title=%q body=%q", want, blocked.Title, blocked.Body)
 		}

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -50,11 +51,66 @@ func stageArtifact(cfg config.Config, stage, slug string) string {
 	case "intent":
 		return filepath.ToSlash(filepath.Join(cfg.Paths.Intent, slug+".md"))
 	case "spec", "design":
-		return filepath.ToSlash(filepath.Join(cfg.Paths.Specs, slug+".spec.md"))
+		return specArtifact(cfg, slug)
 	case "plan":
-		return filepath.ToSlash(filepath.Join(cfg.Paths.Plans, slug+".plan.md"))
+		return planArtifact(cfg, slug)
 	}
 	return ""
+}
+
+// TWO LAYOUTS, BOTH ORION'S. A built-in spec or plan stage writes one file
+// under cfg.Paths. A DELEGATED one -- toolkit.stages names a command for it
+// -- writes into the feature directory spec-kit's commands use:
+// <FeatureDir>/spec.md, <FeatureDir>/plan.md and, from the plan stage's
+// handoff to /speckit-tasks, <FeatureDir>/tasks.md. The configured command
+// selects between these two layouts and can name no other path: the prompt
+// tells the command where to write and this gate checks the same place,
+// which is the whole property (docs/decisions/0022).
+//
+// FOUND ON A REAL PROJECT: the spec prompt said "use /speckit-specify" and
+// then "write specs/<slug>.spec.md"; the gate checked the second and the
+// command wrote neither, so the run reported success and the plan stage read
+// nothing.
+
+// SpecArtifact is specArtifact for callers outside the package -- `orion
+// answer` lists the spec's markers from the same path the gate reads.
+func SpecArtifact(cfg config.Config, slug string) string { return specArtifact(cfg, slug) }
+
+func specArtifact(cfg config.Config, slug string) string {
+	if cfg.Toolkit.Stage("spec") != "" {
+		return path.Join(cfg.FeatureDir(slug), "spec.md")
+	}
+	return filepath.ToSlash(filepath.Join(cfg.Paths.Specs, slug+".spec.md"))
+}
+
+func planArtifact(cfg config.Config, slug string) string {
+	if cfg.Toolkit.Stage("plan") != "" {
+		return path.Join(cfg.FeatureDir(slug), "plan.md")
+	}
+	return filepath.ToSlash(filepath.Join(cfg.Paths.Plans, slug+".plan.md"))
+}
+
+// tasksArtifact is the task list a delegated plan stage also owes, or ""
+// when the plan is built in: Orion's own plan prompt writes no separate
+// task list, and the decompose stage reads the plan itself.
+func tasksArtifact(cfg config.Config, slug string) string {
+	if cfg.Toolkit.Stage("plan") != "" {
+		return path.Join(cfg.FeatureDir(slug), "tasks.md")
+	}
+	return ""
+}
+
+// stageArtifactsAlso are the further files a stage owes beyond its primary
+// one -- today only the delegated plan's tasks.md. Checked with the same
+// rules: a plan whose task list never landed has a plan and nothing to
+// decompose from, which is the failure taskListNote exists to prevent.
+func stageArtifactsAlso(cfg config.Config, stage, slug string) []string {
+	if strings.EqualFold(strings.TrimSpace(stage), "plan") {
+		if t := tasksArtifact(cfg, slug); t != "" {
+			return []string{t}
+		}
+	}
+	return nil
 }
 
 // checkStageArtifact reports whether a finished stage left the artifact it
@@ -76,7 +132,16 @@ func checkStageArtifact(repoDir string, cfg config.Config, stage, slug string) e
 	if rel == "" {
 		return nil
 	}
+	for _, r := range append([]string{rel}, stageArtifactsAlso(cfg, stage, slug)...) {
+		if err := checkArtifactFile(repoDir, cfg, stage, r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
+// checkArtifactFile applies the gate's rules to one file a stage owes.
+func checkArtifactFile(repoDir string, cfg config.Config, stage, rel string) error {
 	info, err := os.Stat(filepath.Join(repoDir, rel))
 	switch {
 	case err != nil:

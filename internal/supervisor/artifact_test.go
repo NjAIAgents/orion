@@ -55,8 +55,11 @@ func TestStagesThatProduceNoFileAreSkipped(t *testing.T) {
 }
 
 // The artifact directories follow cfg.Paths -- a project's own chain layout,
-// which is Orion's setting -- while nothing a TOOLKIT declares can move them.
-func TestNoToolkitCommandCanChangeWhichArtifactAStageOwes(t *testing.T) {
+// which is Orion's setting -- and a TOOLKIT command selects only between the
+// two layouts Orion owns: a delegated spec or plan stage owes the feature
+// directory (<paths.specs>/001-<slug>/spec.md, plan.md), a built-in one owes
+// the classic file. It can name no other path, and it cannot move intent.
+func TestAToolkitCommandSelectsBetweenTheTwoLayoutsOrionOwns(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "orion.json"), []byte(`{
 	  "paths": {"intent": "capture", "specs": "design", "plans": "steps"},
@@ -67,12 +70,59 @@ func TestNoToolkitCommandCanChangeWhichArtifactAStageOwes(t *testing.T) {
 	cfg := config.Load(dir)
 	for _, tc := range []struct{ stage, want string }{
 		{"intent", "capture/thing.md"},
-		{"spec", "design/thing.spec.md"},
-		{"plan", "steps/thing.plan.md"},
+		{"spec", "design/001-thing/spec.md"},
+		{"plan", "design/001-thing/plan.md"},
 	} {
 		if got := stageArtifact(cfg, tc.stage, "thing"); got != tc.want {
 			t.Errorf("stageArtifact(%q) = %q, want %q", tc.stage, got, tc.want)
 		}
+	}
+	// Delegating only the spec leaves the plan on the classic path.
+	if err := os.WriteFile(filepath.Join(dir, "orion.json"), []byte(`{
+	  "paths": {"intent": "capture", "specs": "design", "plans": "steps"},
+	  "toolkit": {"stages": {"spec": "/some-other-skill"}}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg = config.Load(dir)
+	if got := stageArtifact(cfg, "plan", "thing"); got != "steps/thing.plan.md" {
+		t.Errorf("an undelegated plan moved to %q", got)
+	}
+}
+
+// A delegated plan owes its task list too: spec-kit's plan hands off to
+// tasks, and decompose reads tasks.md. A plan with no task list is a plan
+// and nothing to decompose from.
+func TestADelegatedPlanOwesItsTaskListAsWell(t *testing.T) {
+	repo := gitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "orion.json"), []byte(`{
+	  "toolkit": {"stages": {"plan": "/speckit-plan"}}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, repo, "orion.json")
+	cfg := config.Load(repo)
+
+	dir := filepath.Join(repo, "specs", "001-thing")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plan.md"), []byte("# Plan\n\nreal\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, repo, "specs/001-thing/plan.md")
+
+	err := checkStageArtifact(repo, cfg, "plan", "thing")
+	if err == nil || !strings.Contains(err.Error(), "tasks.md") {
+		t.Fatalf("a delegated plan without tasks.md passed, or the error does not name it: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "tasks.md"), []byte("- [ ] T001 do the thing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, repo, "specs/001-thing/tasks.md")
+	if err := checkStageArtifact(repo, cfg, "plan", "thing"); err != nil {
+		t.Errorf("a delegated plan with both files failed: %v", err)
 	}
 }
 
@@ -182,7 +232,7 @@ func TestFailureNamesTheArtifactTheStageAndTheCommand(t *testing.T) {
 		t.Fatal("a misconfigured stage must fail")
 	}
 	for _, want := range []string{
-		"specs/thing.spec.md",       // the artifact
+		"specs/001-thing/spec.md",   // the artifact
 		"spec stage",                // the stage
 		"/skil-that-does-not-exist", // the configured command
 		"toolkit.stages.spec",       // where to correct it
@@ -252,7 +302,7 @@ func TestRunFailsAStageWhoseCommandLeftNoArtifact(t *testing.T) {
 	if err == nil {
 		t.Fatal("a stage that left no artifact must fail the run")
 	}
-	for _, want := range []string{"specs/thing.spec.md", "spec stage", "/wrong-skill-name"} {
+	for _, want := range []string{"specs/001-thing/spec.md", "spec stage", "/wrong-skill-name"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("message must name %q, got:\n%v", want, err)
 		}
@@ -270,8 +320,8 @@ func TestRunFailsAStageWhoseCommandLeftNoArtifact(t *testing.T) {
 func TestRunPassesAStageThatCommittedItsArtifact(t *testing.T) {
 	w := gitWorkspace(t, `{"toolkit": {"stages": {"spec": "/some-skill"}}}`)
 	claudeWriting(t, w.RepoDir(),
-		"mkdir -p specs && printf '# Spec\\n\\nreal content\\n' > specs/thing.spec.md && "+
-			"git add specs/thing.spec.md && git commit -qm spec")
+		"mkdir -p specs/001-thing && printf '# Spec\\n\\nreal content\\n' > specs/001-thing/spec.md && "+
+			"git add specs/001-thing/spec.md && git commit -qm spec")
 
 	res, err := Run(w, Options{Stage: "spec", MaxMinutes: 1, MaxTurns: 1})
 	if err != nil {
