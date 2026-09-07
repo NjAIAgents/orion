@@ -11,7 +11,7 @@ import (
 //
 // intent, scaffold and decompose named their command inline because each had
 // a built-in one to name. spec and plan had none, so their prompts mentioned
-// no command at all -- and a project declaring "spec": "/speckit.specify"
+// no command at all -- and a project declaring "spec": "/speckit-specify"
 // got a prompt that never said so. The config loaded, `orion doctor` reported
 // the toolkit healthy, and the stage ran Orion's own prompt regardless: three
 // green signals and the configuration having no effect.
@@ -19,13 +19,13 @@ func TestSpecAndPlanUseTheirConfiguredCommand(t *testing.T) {
 	w := ws(t, `{}`)
 	w.Task.Slug = "thing"
 	tk := config.Toolkit{Stages: map[string]string{
-		"spec": "/speckit.specify",
-		"plan": "/speckit.plan",
+		"spec": "/speckit-specify",
+		"plan": "/speckit-plan",
 	}}
 
 	for stage, want := range map[string]string{
-		"spec": "/speckit.specify",
-		"plan": "/speckit.plan",
+		"spec": "/speckit-specify",
+		"plan": "/speckit-plan",
 	} {
 		p, err := stagePrompt(w, stage, tk)
 		if err != nil {
@@ -55,8 +55,8 @@ func TestWithNoToolkitTheseStagesNameNoCommand(t *testing.T) {
 	}
 }
 
-// /speckit.plan writes plan.md, research.md, data-model.md and contracts --
-// NOT tasks.md, which is /speckit.tasks' job and which `orion decompose`
+// /speckit-plan writes plan.md, research.md, data-model.md and contracts --
+// NOT tasks.md, which is /speckit-tasks' job and which `orion decompose`
 // reads from specs/<nnn>/tasks.md.
 //
 // Configuring the plan stage without asking for that handoff leaves the chain
@@ -67,12 +67,12 @@ func TestAConfiguredPlanStageIsAskedForTheTaskList(t *testing.T) {
 	w.Task.Slug = "thing"
 
 	p, err := stagePrompt(w, "plan", config.Toolkit{
-		Stages: map[string]string{"plan": "/speckit.plan"},
+		Stages: map[string]string{"plan": "/speckit-plan"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"tasks.md", "/speckit.tasks", "decompose"} {
+	for _, want := range []string{"tasks.md", "/speckit-tasks", "decompose"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("the configured plan prompt never mentions %q:\n%s", want, p)
 		}

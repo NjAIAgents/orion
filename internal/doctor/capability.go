@@ -140,8 +140,18 @@ func checkToolkitReachable(tk config.Toolkit) *check {
 	if spec.IsDefault() || agentcfg.CurationAuthenticates() {
 		return nil
 	}
-	if toolkit.Discover(workspace.Home(), spec) == nil {
+	inst := toolkit.Discover(workspace.Home(), spec)
+	if inst == nil {
 		return nil // the install check already says it is absent
+	}
+	// Installed INSIDE a project is reachable: the agent runs in that
+	// repository, and Claude Code reads .claude/ from the working directory.
+	// This is what `specify init --here` produces, and it is the supported
+	// way to install spec-kit -- so warning about it would tell someone their
+	// working setup is broken.
+	if strings.Contains(inst.Root, string(filepath.Separator)+"projects"+string(filepath.Separator)) ||
+		hasLocalClaudeDir(inst.Root) {
+		return nil
 	}
 	return &check{"toolkit reach", warn,
 		"a run on " + runtime.GOOS + " cannot use " + toolkitName(spec),
@@ -151,6 +161,18 @@ func checkToolkitReachable(tk config.Toolkit) *check {
 			"Claude Code setup instead -- which holds whatever you installed.\n" +
 			"Install its commands where your own CLI finds them, or a stage that\n" +
 			"names one will report that it does not exist."}
+}
+
+// hasLocalClaudeDir reports whether a toolkit was installed into a project's
+// own .claude directory, which the agent reads directly from its working
+// directory rather than through Orion's linking.
+func hasLocalClaudeDir(root string) bool {
+	for _, d := range []string{"skills", "commands"} {
+		if st, err := os.Stat(filepath.Join(root, ".claude", d)); err == nil && st.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 func checkNJAgents(tk config.Toolkit, autoFix bool) check {

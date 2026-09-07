@@ -356,8 +356,13 @@ var commandDirs = []struct {
 }{
 	{"skills", func(n string) string { return filepath.Join(n, "SKILL.md") }},
 	{filepath.Join("templates", "commands"), func(n string) string { return n + ".md" }},
-	// Where spec-kit's own installer puts them, for a toolkit.dir pointed at
-	// a project that ran `specify init`.
+	// Where an installer puts them inside a project, for a toolkit.dir
+	// pointed at one that has been initialised. spec-kit's Claude
+	// integration writes .claude/skills/<name>/SKILL.md -- the same shape
+	// nj-agents ships, which is why `specify init` is the right way to
+	// install it and a raw clone is not. Other integrations write
+	// .claude/commands/<name>.md, so both are read.
+	{filepath.Join(".claude", "skills"), func(n string) string { return filepath.Join(n, "SKILL.md") }},
 	{filepath.Join(".claude", "commands"), func(n string) string { return n + ".md" }},
 }
 

@@ -73,11 +73,29 @@ plausible-looking command name is worse than no example, because a stage
 whose command does not resolve falls back to the built-in prompt and reports
 success.
 
+## Postscript, 2026-09-07
+
+The first real run under this decision found that **cloning spec-kit was the
+wrong way to install it**. `uv tool install specify-cli --from
+git+https://github.com/github/spec-kit.git`, then `specify init --here
+--integration claude` inside the workspace, writes
+`.claude/skills/speckit-*/SKILL.md` — the same layout nj-agents ships, and the
+one `Validate` wanted all along. The raw clone's `templates/commands/` are
+inputs to that installer, not skills.
+
+So the discovery widening recorded above is still correct and no longer the
+point: a toolkit installed the way its own documentation says produces the
+skills layout. Two things the run established that the documentation did not:
+the Claude integration installs `speckit-specify` with a HYPHEN while the
+README's prose writes `/speckit.specify` with a dot, and `specify init` is
+per-project, which cuts against the global vendor model this ADR chose.
+
 ## Consequences
 
-- spec-kit cannot currently be adopted, and the gap is discovery, not
-  configuration. `toolkit.stages` works; `Validate` is what rejects it. The
-  work to close it is tracked rather than improvised.
+- spec-kit IS adoptable, through its own installer rather than a clone. See
+  the postscript: `specify init --here --integration claude` writes the skills
+  layout, and `orion doctor` grades it when `toolkit.dir` points at that
+  repository.
 - A project running Orion today runs nj-agents, whatever its `orion.json`
   says, unless that file names commands the discovered toolkit really has.
 - `orion doctor` reports which toolkit resolved and how. That output is the

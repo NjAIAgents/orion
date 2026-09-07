@@ -97,7 +97,7 @@ func ideaFieldsNote(ws *workspace.Workspace) string {
 // Only spec and plan need this helper: intent, scaffold and decompose name
 // their command inline because they have always had a built-in one to name.
 // These two had no built-in skill, so their prompts named nothing -- and a
-// project that configured "spec": "/speckit.specify" got a prompt that never
+// project that configured "spec": "/speckit-specify" got a prompt that never
 // mentioned it. The config loaded, `orion doctor` reported the toolkit
 // healthy, and the stage ran Orion's own prompt regardless.
 func useCommandNote(tk config.Toolkit, stage string) string {
@@ -111,9 +111,9 @@ func useCommandNote(tk config.Toolkit, stage string) string {
 // taskListNote asks the plan stage to leave the task list the decompose stage
 // reads.
 //
-// Only under a toolkit that produces one. `/speckit.plan` writes plan.md,
+// Only under a toolkit that produces one. `/speckit-plan` writes plan.md,
 // research.md, data-model.md and contracts -- NOT tasks.md, which is
-// /speckit.tasks' job, and which `orion decompose` reads from
+// /speckit-tasks' job, and which `orion decompose` reads from
 // specs/<nnn>/tasks.md. Configuring the plan stage without this leaves the
 // chain with a plan and nothing to decompose from.
 //
@@ -127,8 +127,8 @@ func taskListNote(tk config.Toolkit) string {
 	return join(
 		"",
 		"THEN LEAVE A TASK LIST. If the command above produces a plan but no task",
-		"list -- spec-kit's /speckit.plan is exactly this, and hands off to",
-		"/speckit.tasks -- run that handoff too, so specs/<nnn-slug>/tasks.md",
+		"list -- spec-kit's /speckit-plan is exactly this, and hands off to",
+		"/speckit-tasks -- run that handoff too, so specs/<nnn-slug>/tasks.md",
 		"exists. The decompose stage reads that file to create the tracker tree;",
 		"without it the chain has a plan and nothing to decompose.",
 	)

@@ -424,26 +424,34 @@ stages and leave the rest alone:
   "toolkit": {
     "repo": "https://github.com/github/spec-kit.git",
     "stages": {
-      "spec": "/speckit.specify",
-      "plan": "/speckit.plan",
-      "decompose": "/speckit.tasks"
+      "spec": "/speckit-specify",
+      "plan": "/speckit-plan",
+      "decompose": "/speckit-tasks"
     }
   }
 }
 ```
 
-The command names are the ones the toolkit actually publishes, and spec-kit
-prefixes every one of its own with `speckit.` — `/speckit.specify`, not
-`/specify`. A command a stage cannot resolve is a stage that does something
-other than what you configured, so check the toolkit's own documentation
-rather than inferring a name from the stage it fills.
+The command names are the ones the toolkit actually publishes, and they are
+not always what its documentation prose calls them. spec-kit's README writes
+`/speckit.specify`, while its Claude integration installs the skill as
+`speckit-specify` — a hyphen, not a dot. A command a stage cannot resolve is a
+stage that does something other than what you configured, so read what the
+installer actually put on disk rather than inferring a name.
 
-> **spec-kit does not currently satisfy Orion's toolkit discovery.** Orion
-> looks for a `skills/` directory (`internal/toolkit.Validate`), and spec-kit
-> has none: it is a Python CLI whose `specify init` installs its commands into
-> a project's own `.claude/commands/`. A clone of it in `vendor/` is therefore
-> reported as not installed. The configuration above is the shape a toolkit
-> takes; running spec-kit specifically needs the discovery gap closed first.
+**Installing spec-kit.** Cloning the repository is not enough: it is a Python
+CLI, and its commands live in `templates/commands/` as inputs to its own
+installer rather than as skills. Install the tool, then run its init inside
+the workspace repository:
+
+```bash
+uv tool install specify-cli --from git+https://github.com/github/spec-kit.git
+cd <workspace>/repo && specify init --here --integration claude
+```
+
+That writes `.claude/skills/speckit-*/SKILL.md`, which is the layout Orion and
+Claude Code both read. Point `toolkit.dir` at that repository if you want
+`orion doctor` to grade it.
 
 Orion clones a toolkit it manages into `<ORION_HOME>/vendor/<repo-name>` —
 `vendor/spec-kit` above, `vendor/nj-agents` for the default — so two toolkits
@@ -466,7 +474,7 @@ so the rule holds by shape rather than by prose.
 
 ### Creating the tracker tree from a spec-kit task list
 
-If your `plan` stage runs spec-kit's `/speckit.tasks`, the artifact it leaves
+If your `plan` stage runs spec-kit's `/speckit-tasks`, the artifact it leaves
 behind — `specs/<nnn-feature>/tasks.md` — is a phased task list with `[P]`
 parallel markers, `[USn]` story groups and exact file paths. `orion decompose`
 turns that into the tracker tree itself, without a skill in the middle:

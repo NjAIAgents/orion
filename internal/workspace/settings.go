@@ -232,8 +232,8 @@ const defaultProjectConfig = `{
   "toolkit": {
     "repo": "https://github.com/github/spec-kit.git",
     "stages": {
-      "spec": "/speckit.specify",
-      "plan": "/speckit.plan"
+      "spec": "/speckit-specify",
+      "plan": "/speckit-plan"
     }
   },
   "autonomy": {
