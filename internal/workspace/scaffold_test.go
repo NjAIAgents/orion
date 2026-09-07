@@ -121,3 +121,48 @@ func TestAnExistingConfigIsNotOverwritten(t *testing.T) {
 		t.Errorf("the scaffold ignored the project's own intent path: %v", err)
 	}
 }
+
+// A new project declares the toolkit it runs, rather than inheriting the
+// built-in prompts by silence.
+//
+// It did not, and that was invisible: a project with no toolkit block runs
+// Orion's own prompts, which looks identical to a project whose configured
+// commands failed to resolve. The combination this repository intends --
+// spec-kit for the artifacts, nj-agents for the rest -- had therefore never
+// run, while every ticket that built the capability read as Done.
+func TestANewProjectDeclaresItsToolkit(t *testing.T) {
+	repo := scaffoldRepo(t)
+	cfg := config.Load(repo)
+
+	if cfg.Toolkit.Repo == "" {
+		t.Fatal("a new project declares no toolkit, so it silently uses the built-in prompts")
+	}
+	for stage, want := range map[string]string{
+		"spec": "/speckit.specify",
+		"plan": "/speckit.plan",
+	} {
+		if got := cfg.Toolkit.Stage(stage); got != want {
+			t.Errorf("%s stage = %q, want %q", stage, got, want)
+		}
+	}
+
+	// TWO STAGES STAY NATIVE, each for its own reason.
+	//
+	// Intent, because spec-kit has no equivalent: /speckit.specify IS its
+	// front door and takes a feature description directly. Orion's intent
+	// stage is what produces one from a raw idea, and /speckit.clarify
+	// clarifies a spec that already exists rather than interrogating an idea.
+	if got := cfg.Toolkit.Stage("intent"); got != "" {
+		t.Errorf("intent stage = %q, want the built-in prompt", got)
+	}
+	// Decompose, because OR-302 decided it. /pm-plan did two jobs --
+	// decompose a plan into a tree, and create that tree in a tracker -- and
+	// /speckit.tasks replaces only the first. Creation stays native: Orion
+	// already owns the tracker client, the transitions, the label state
+	// machine and the routing vocabulary, so what is delegated is the typing
+	// rather than the contract. Pointing decompose at /speckit.tasks would
+	// hand spec-kit the stage whose whole point is that Orion runs it.
+	if got := cfg.Toolkit.Stage("decompose"); got != "" {
+		t.Errorf("decompose stage = %q, want Orion's native creation (OR-302)", got)
+	}
+}

@@ -91,6 +91,49 @@ func ideaFieldsNote(ws *workspace.Workspace) string {
 	)
 }
 
+// useCommandNote tells the stage which command to run, when its project
+// configured one.
+//
+// Only spec and plan need this helper: intent, scaffold and decompose name
+// their command inline because they have always had a built-in one to name.
+// These two had no built-in skill, so their prompts named nothing -- and a
+// project that configured "spec": "/speckit.specify" got a prompt that never
+// mentioned it. The config loaded, `orion doctor` reported the toolkit
+// healthy, and the stage ran Orion's own prompt regardless.
+func useCommandNote(tk config.Toolkit, stage string) string {
+	c := strings.TrimSpace(tk.Stage(stage))
+	if c == "" {
+		return ""
+	}
+	return "Use " + c + " for this stage.\n"
+}
+
+// taskListNote asks the plan stage to leave the task list the decompose stage
+// reads.
+//
+// Only under a toolkit that produces one. `/speckit.plan` writes plan.md,
+// research.md, data-model.md and contracts -- NOT tasks.md, which is
+// /speckit.tasks' job, and which `orion decompose` reads from
+// specs/<nnn>/tasks.md. Configuring the plan stage without this leaves the
+// chain with a plan and nothing to decompose from.
+//
+// Orion still owns the sequencing: this is one stage running two of its
+// toolkit's commands in the order that toolkit itself defines (plan hands off
+// to tasks), not config expressing an order between Orion's stages.
+func taskListNote(tk config.Toolkit) string {
+	if strings.TrimSpace(tk.Stage("plan")) == "" {
+		return ""
+	}
+	return join(
+		"",
+		"THEN LEAVE A TASK LIST. If the command above produces a plan but no task",
+		"list -- spec-kit's /speckit.plan is exactly this, and hands off to",
+		"/speckit.tasks -- run that handoff too, so specs/<nnn-slug>/tasks.md",
+		"exists. The decompose stage reads that file to create the tracker tree;",
+		"without it the chain has a plan and nothing to decompose.",
+	)
+}
+
 func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string, error) {
 	idea := ws.Task.Idea
 	// The exact artifact path, so the prompt and the check that reads it
@@ -180,6 +223,7 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 		return join(
 			"Read docs/intent/"+ws.Task.Slug+".md.",
 			"",
+			useCommandNote(tk, "spec"),
 			"Produce a requirements and design spec. Apply every skill available to you so the",
 			"design conforms to the security, UX and API standards in force.",
 			"",
@@ -193,6 +237,7 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 		return join(
 			"Read docs/intent/"+ws.Task.Slug+".md and specs/"+ws.Task.Slug+".spec.md.",
 			"",
+			useCommandNote(tk, "plan"),
 			"Produce an implementation plan naming: the files that change, the order of work,",
 			"the tests that prove it, and the risks. Interrogate your own plan: what could this",
 			"break, which step is riskiest, what did you reject and why.",
@@ -201,6 +246,7 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"from the plan alone.",
 			"",
 			"Write "+plan+" and commit it. Do not implement yet.",
+			taskListNote(tk),
 		), nil
 
 	case "ticket":

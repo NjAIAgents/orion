@@ -169,7 +169,11 @@ func For(orionHome string, cfg config.Config, stage, actor string) (*Run, error)
 		r.Warnings = append(r.Warnings,
 			"nj-agents was not found, so this run has no delegated skills; check: orion doctor")
 	} else {
-		r.Skills = linkAll(filepath.Join(inst.Root, "skills"), filepath.Join(dir, "skills"), r)
+		// From wherever this toolkit keeps its commands, not from a fixed
+		// <root>/skills. A toolkit laid out otherwise -- spec-kit keeps
+		// them in templates/commands -- would otherwise pass `orion doctor`
+		// and then hand the agent an empty directory.
+		r.Skills = linkAll(toolkit.CommandsDir(inst), filepath.Join(dir, "skills"), r)
 		r.Agents = linkAll(filepath.Join(inst.Root, "agents"), filepath.Join(dir, "agents"), r)
 	}
 	linkCredentials(dir, r)

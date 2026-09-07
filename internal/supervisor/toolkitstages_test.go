@@ -60,9 +60,18 @@ func TestConfiguredCommandAcceptsEitherStageSpelling(t *testing.T) {
 	if !strings.Contains(p, "/theirs") {
 		t.Errorf("the intent prompt ignored its configured command:\n%s", p)
 	}
-	if strings.Contains(q, "/their-spec") {
-		t.Errorf("the spec prompt names no command, so nothing should have been "+
-			"substituted into it:\n%s", q)
+	// The alias resolving is the point: "design" was configured under the
+	// key "spec", and the command reaches the prompt.
+	//
+	// This assertion used to be its inverse -- the spec prompt named no
+	// command, so nothing could be substituted -- which documented a gap as
+	// though it were a design. spec and plan were the two stages that never
+	// read their configured command, which is why a project declaring
+	// "spec": "/speckit.specify" ran Orion's own prompt while `orion doctor`
+	// reported the toolkit healthy.
+	if !strings.Contains(q, "/their-spec") {
+		t.Errorf("the design spelling did not resolve to the spec stage's "+
+			"configured command:\n%s", q)
 	}
 }
 

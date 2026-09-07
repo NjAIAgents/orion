@@ -229,6 +229,13 @@ const defaultProjectConfig = `{
     "state": ".orion/state",
     "protected": [".github/workflows/**", "orion.json", "managed-settings.json"]
   },
+  "toolkit": {
+    "repo": "https://github.com/github/spec-kit.git",
+    "stages": {
+      "spec": "/speckit.specify",
+      "plan": "/speckit.plan"
+    }
+  },
   "autonomy": {
     "dev": "gated_write",
     "staging": "gated_write",

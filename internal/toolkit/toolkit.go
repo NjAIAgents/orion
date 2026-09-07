@@ -361,6 +361,20 @@ var commandDirs = []struct {
 	{filepath.Join(".claude", "commands"), func(n string) string { return n + ".md" }},
 }
 
+// CommandsDir is the directory a toolkit's commands actually live in --
+// skills/ for nj-agents, templates/commands/ for spec-kit -- or "" when it
+// has none.
+//
+// Exported because the agent config links that directory into the curated
+// run directory, and linking a hardcoded <root>/skills means a toolkit laid
+// out otherwise resolves in `orion doctor` and then hands the agent nothing.
+func CommandsDir(inst *Install) string {
+	if inst == nil {
+		return ""
+	}
+	return skillPath(inst.Root, "")
+}
+
 // skillPath resolves one command to a file, or "" when the toolkit has no
 // such command. An empty name asks only whether the layout exists at all.
 func skillPath(root, name string) string {
