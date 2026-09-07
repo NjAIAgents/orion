@@ -56,6 +56,35 @@ type planStage struct {
 	Stage string // the --stage name supervisor.Run already understands
 	Actor string // who does it, for the roster announcement
 	What  string // one line, for a reader deciding whether to let it run
+
+	// Frame, when set, runs this step in Orion's own process -- no claude
+	// run, no budget checkpoint, no cost line. It is for the deterministic
+	// work between stages (installing the toolkit, creating the remote,
+	// creating the tracker tree, cloning) that used to be a separate command
+	// the operator had to remember, in the right order, after the chain.
+	// Held in the same slice as the stages so the roster, the cost shape
+	// and the dispatch loop all read one list and none can omit a step the
+	// others know about. Actor is events.ActorOrion for these, so the roster
+	// says who does it without listing Orion as a participant on a model.
+	Frame func(out io.Writer, ws *workspace.Workspace, ask confirmer) error
+	// Done, when set, reports that this step's work is already there, so a
+	// resumed chain prints it as done and moves on without asking. Derived
+	// from the step's own artifact wherever there is one -- a flag can say
+	// done about a file that was never committed; the file cannot.
+	Done func(ws *workspace.Workspace) bool
+}
+
+// supervisedStages counts the steps that spend: one claude run each. Frame
+// steps are in the chain and not in this number, which is why the cost
+// shape reads it rather than len(planStages).
+func supervisedStages() int {
+	n := 0
+	for _, s := range planStages {
+		if s.Frame == nil {
+			n++
+		}
+	}
+	return n
 }
 
 // planStages is the chain, in order.
@@ -91,11 +120,11 @@ var planStages = []planStage{
 	// The stage itself was already built -- supervisor's prompt for it, the
 	// discovery gate that reads its open questions, `orion answer` that walks
 	// them. Only its place in the chain was missing.
-	{"intent", events.ActorPM, "what is being built and why, captured from the idea"},
-	{"spec", events.ActorArchitect, "requirements and design spec"},
-	{"plan", events.ActorArchitect, "implementation plan: files, order of work, tests, risks"},
-	{"scaffold", events.ActorDevOps, "repository skeleton on the OpenSSF baseline"},
-	{"decompose", events.ActorPM, "the Epic, Story and Task tree in the tracker"},
+	{Stage: "intent", Actor: events.ActorPM, What: "what is being built and why, captured from the idea"},
+	{Stage: "spec", Actor: events.ActorArchitect, What: "requirements and design spec"},
+	{Stage: "plan", Actor: events.ActorArchitect, What: "implementation plan: files, order of work, tests, risks"},
+	{Stage: "scaffold", Actor: events.ActorDevOps, What: "repository skeleton on the OpenSSF baseline"},
+	{Stage: "decompose", Actor: events.ActorPM, What: "the Epic, Story and Task tree in the tracker"},
 }
 
 // nextPlanStage returns the stage that follows the one given, and whether
@@ -109,8 +138,13 @@ var planStages = []planStage{
 func nextPlanStage(stage string) (planStage, bool) {
 	for i, s := range planStages {
 		if strings.EqualFold(s.Stage, stage) {
-			if i+1 < len(planStages) {
-				return planStages[i+1], true
+			// The next SUPERVISED step. A frame step is not something
+			// `orion run --stage` can run, so suggesting it would name a
+			// command that refuses; the chain itself runs frame steps.
+			for _, next := range planStages[i+1:] {
+				if next.Frame == nil {
+					return next, true
+				}
 			}
 			return planStage{}, false
 		}
@@ -517,12 +551,16 @@ func printPlanCostShape(out io.Writer, cfg config.Config, home string) (budget.S
 	st := ledger.Status(lim)
 	est := ledger.Estimate()
 
+	// Frame steps are in the chain and not in this number: they run in
+	// Orion's own process and spend nothing, and a cost line that counted
+	// them would estimate a run that never happens.
+	supervised := supervisedStages()
 	fmt.Fprintln(out, ui.Heading(out, "Cost shape"))
 	fmt.Fprintf(out, "  shape        %d sequential stages, one supervised claude run each; no fix loop\n",
-		len(planStages))
+		supervised)
 	if est.CostUSD > 0 {
 		fmt.Fprintf(out, "  estimate     $%.2f per run (mean of %d runs in the last 7 days) -- about $%.2f for the chain\n",
-			est.CostUSD, st.Runs, est.CostUSD*float64(len(planStages)))
+			est.CostUSD, st.Runs, est.CostUSD*float64(supervised))
 	} else {
 		fmt.Fprintf(out, "  estimate     %s\n", ui.Dim(out,
 			"no run history in the window, so there is nothing to estimate from"))

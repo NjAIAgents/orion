@@ -65,6 +65,13 @@ type planActor struct {
 func planRoster(idea string) []planActor {
 	stages := map[string][]string{}
 	for _, s := range planStages {
+		// A frame step runs in Orion's own process. Its actor is the
+		// narrator, not a participant, so it is announced in the chain and
+		// never rostered here -- the same rule the Model()=="" check below
+		// applies to an idea that happens to say "orion".
+		if s.Frame != nil {
+			continue
+		}
 		stages[s.Actor] = append(stages[s.Actor], s.Stage)
 	}
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -433,5 +434,30 @@ func spend(t *testing.T, home string, usd float64) {
 		}
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The cost shape counts the steps that SPEND. A frame step runs in Orion's
+// own process; counting it would estimate a claude run that never happens.
+func TestPlanCostShapeCountsOnlySupervisedSteps(t *testing.T) {
+	orig := planStages
+	t.Cleanup(func() { planStages = orig })
+	planStages = []planStage{
+		{Stage: "intent", Actor: events.ActorPM, What: "intent"},
+		{Stage: "remote", Actor: events.ActorOrion, What: "the remote",
+			Frame: func(io.Writer, *workspace.Workspace, confirmer) error { return nil }},
+		{Stage: "spec", Actor: events.ActorArchitect, What: "spec"},
+	}
+	home := planHome(t)
+	out, err := runPlanInto(t, orpay(), config.Config{}, planOptions{Key: "ORPAY", Home: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "2 sequential stages") {
+		t.Errorf("cost shape should count the 2 supervised steps, not all 3:\n%s", out)
+	}
+	// The frame step is still announced in the roster, by the narrator.
+	if !strings.Contains(out, "remote") || !strings.Contains(out, "the remote") {
+		t.Errorf("the frame step is missing from the roster announcement:\n%s", out)
 	}
 }

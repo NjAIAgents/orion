@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"regexp"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
 // rosterOf indexes a roster by actor, so a test asserts on WHO is on the run
@@ -380,5 +382,33 @@ func TestPlanRosterWhitespaceOnlyDesignationDoesNotMakeActorSelectable(t *testin
 	got2 := rosterOf(t, "run qa on this")
 	if a, ok := got2[events.ActorQA]; !ok || !a.FromIdea {
 		t.Errorf("qa is not selectable by its own identifier when its designation is whitespace-only: %v", got2)
+	}
+}
+
+// A frame step is announced in the chain -- the operator sees every step in
+// order -- and its actor, the narrator, is never rostered as a participant:
+// it runs on no model and there is nothing to dispatch.
+func TestPlanRosterAnnouncesAFrameStepWithoutRosteringTheNarrator(t *testing.T) {
+	t.Cleanup(actors.Reset)
+	orig := planStages
+	t.Cleanup(func() { planStages = orig })
+	planStages = []planStage{
+		{Stage: "intent", Actor: events.ActorPM, What: "intent"},
+		{Stage: "remote", Actor: events.ActorOrion, What: "create the remote",
+			Frame: func(io.Writer, *workspace.Workspace, confirmer) error { return nil }},
+	}
+
+	if a, ok := rosterOf(t, "")[events.ActorOrion]; ok {
+		t.Errorf("the narrator is rostered as a participant for running a frame step: %q", a.Signal)
+	}
+
+	var buf bytes.Buffer
+	printPlanRoster(&buf, "payments-api", "")
+	got := buf.String()
+	if !strings.Contains(got, "remote") || !strings.Contains(got, "create the remote") {
+		t.Errorf("the frame step is not announced in the chain:\n%s", got)
+	}
+	if !strings.Contains(got, "(none)") {
+		t.Errorf("a frame step runs on no model and should say so:\n%s", got)
 	}
 }
