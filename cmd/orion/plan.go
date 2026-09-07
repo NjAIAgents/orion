@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -45,6 +46,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/dbaplan"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/provision"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
@@ -107,7 +109,16 @@ func supervisedStages() int {
 // -- a name not in it is refused there by name, so a typo here surfaces as
 // "unknown stage" on the first dispatch rather than as silence.
 var planStages = []planStage{
-	// Intent comes FIRST because every stage after it reads what it wrote.
+	// The toolkit comes before everything, and spends nothing: spec-kit is
+	// installed into the repository once, by `specify init`, from templates
+	// bundled in its CLI, so that the first stage delegating to it finds
+	// its commands where Claude Code reads them (docs/decisions/0022). A
+	// project whose stages name no spec-kit command has nothing to install
+	// and the step reports done.
+	{Stage: "toolkit", Actor: events.ActorOrion, What: "spec-kit installed into the repository, once",
+		Frame: toolkitStep, Done: toolkitDone},
+	// Intent comes first among the STAGES because every stage after it
+	// reads what it wrote.
 	//
 	// It was missing from this chain, and the chain began at spec -- which
 	// opens by reading docs/intent/<slug>.md, a file nothing had ever
@@ -140,6 +151,30 @@ var planStages = []planStage{
 	// so a resume can retry a clone that failed.
 	{Stage: "clone", Actor: events.ActorOrion, What: "your own copy of the repository, where you asked for it",
 		Frame: cloneStep, Done: cloneDone},
+}
+
+// toolkitStep installs spec-kit into the workspace repository, once.
+func toolkitStep(out io.Writer, ws *workspace.Workspace, _ confirmer) error {
+	did, err := provision.InitSpecKit(ws.RepoDir())
+	if err != nil {
+		return err
+	}
+	if did {
+		ui.Ok(out, "installed", "spec-kit into %s", ws.RepoDir())
+	} else {
+		fmt.Fprintf(out, "  %s\n", ui.Dim(out, "spec-kit is already installed"))
+	}
+	return nil
+}
+
+// toolkitDone: nothing to do for a project that delegates nothing to
+// spec-kit; otherwise done when the installer's own directory is there.
+func toolkitDone(ws *workspace.Workspace) bool {
+	if !config.Load(ws.RepoDir()).Toolkit.DelegatesTo("speckit") {
+		return true
+	}
+	st, err := os.Stat(filepath.Join(ws.RepoDir(), provision.SpecKitDir))
+	return err == nil && st.IsDir()
 }
 
 // planFromIndex resolves --from to an index into planStages, or -1 when

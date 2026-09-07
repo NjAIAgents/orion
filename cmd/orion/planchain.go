@@ -117,6 +117,11 @@ func runPlanChainFrom(out io.Writer, ws *workspace.Workspace, run stageRunner, a
 		fromIdx = -1
 	}
 	done := 0
+	// Whether anything has run yet. The first step that actually runs is
+	// not asked about -- the operator confirmed the chain immediately
+	// before -- and that is decided by what ran, not by position, because
+	// a resumed chain skips any number of done steps first.
+	started := false
 	for i, s := range planStages {
 		forced := fromIdx >= 0 && i >= fromIdx
 		// A step whose work is already there is reported and skipped, not
@@ -134,7 +139,7 @@ func runPlanChainFrom(out io.Writer, ws *workspace.Workspace, run stageRunner, a
 		// The first stage is not asked about. The operator just confirmed the
 		// whole chain and its cost to get here; asking again before anything
 		// has happened is a prompt with no new information in it.
-		if i > 0 {
+		if started {
 			fmt.Fprintln(out)
 			if !ask(fmt.Sprintf("Continue to %d/%d %s -- %s?",
 				i+1, len(planStages), s.Stage, s.What)) {
@@ -159,6 +164,7 @@ func runPlanChainFrom(out io.Writer, ws *workspace.Workspace, run stageRunner, a
 		// no budget checkpoint. It stops the chain the way a failed stage
 		// does, naming itself, because everything after it needs what it
 		// makes -- a tracker tree needs a remote to point at.
+		started = true
 		if s.Frame != nil {
 			if err := s.Frame(out, ws, ask); err != nil {
 				fmt.Fprintln(out)

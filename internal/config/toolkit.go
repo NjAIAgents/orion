@@ -78,6 +78,19 @@ func (t Toolkit) Stage(name string) string {
 	return t.Stages[canonicalStages[strings.ToLower(strings.TrimSpace(name))]]
 }
 
+// DelegatesTo reports whether any stage of this project runs a command whose
+// name contains substr -- "speckit" is the one caller today: it decides
+// whether spec-kit has to be installed and graded at all. A project that
+// names no such command has nothing to install and nothing to check.
+func (t Toolkit) DelegatesTo(substr string) bool {
+	for _, cmd := range t.Stages {
+		if strings.Contains(cmd, substr) {
+			return true
+		}
+	}
+	return false
+}
+
 // KnownStage reports whether name is a stage Orion runs, in either spelling.
 //
 // The same set parseToolkit validates a toolkit block against, exported so a

@@ -975,6 +975,13 @@ func childEnv(ws *workspace.Workspace, ac *agentcfg.Run, actor string) []string 
 	}
 	out = ac.Env(out)
 	out = append(out, "ORION_WORKSPACE="+ws.ID, "ORION_WORKSPACE_DIR="+ws.Dir)
+	// Which feature spec-kit's commands work in. Its own resolution reads
+	// this first and otherwise invents a name from the description -- a
+	// second name for the same work (docs/decisions/0009, 0022). Exported
+	// to every run, delegated or not: a stage that never reads it costs
+	// nothing, and a conditional would be a second place that has to know
+	// which stages are delegated.
+	out = append(out, "SPECIFY_FEATURE_DIRECTORY="+config.Load(ws.RepoDir()).FeatureDir(ws.Task.Slug))
 	if actor != "" {
 		// Which role this run IS, so a command the run calls back into Orion
 		// with can attribute what it spends to the same actor rather than

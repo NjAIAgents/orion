@@ -90,19 +90,19 @@ func TestDecliningTheNextStageStopsTheChain(t *testing.T) {
 	asked := 0
 	ask := func(string) bool { asked++; return asked < 2 }
 
-	done := runPlanChain(&out, chainWS(t), okRun(&order), ask)
+	runPlanChain(&out, chainWS(t), okRun(&order), ask)
 
-	if done != 2 {
-		t.Fatalf("completed %d stages, want 2:\n%s", done, out.String())
-	}
-	if len(order) != 2 {
-		t.Errorf("ran %v; a declined stage must not run", order)
+	// intent runs unasked (first to run), spec on the first yes, plan is
+	// declined. Named rather than counted, because done frame steps ahead
+	// of intent are skipped and would shift any index.
+	if strings.Join(order, ",") != "intent,spec" {
+		t.Errorf("ran %v; want intent then spec, and the declined plan must not run", order)
 	}
 	if !strings.Contains(out.String(), "at your request") {
 		t.Errorf("a declined chain must say it stopped deliberately:\n%s", out.String())
 	}
 	// Naming the stage it stopped BEFORE is what makes it resumable.
-	if !strings.Contains(out.String(), "--stage "+planStages[2].Stage) {
+	if !strings.Contains(out.String(), "--stage plan") {
 		t.Errorf("output does not name the resume command:\n%s", out.String())
 	}
 }
@@ -126,10 +126,17 @@ func TestAStageThatFailsStopsTheChainAndNamesTheFix(t *testing.T) {
 
 	done := runPlanChain(&out, chainWS(t), run, yes)
 
-	// intent runs and succeeds; spec blocks. So exactly one stage completed,
-	// and nothing after spec ran at all.
-	if done != 1 {
-		t.Fatalf("completed %d stages, want 1 (intent) before spec blocked:\n%s", done, out.String())
+	// intent runs and succeeds; spec blocks. So everything before spec
+	// completed -- intent, plus any done frame step ahead of it -- and
+	// nothing after spec ran at all.
+	specAt := -1
+	for i, s := range planStages {
+		if s.Stage == "spec" {
+			specAt = i
+		}
+	}
+	if done != specAt {
+		t.Fatalf("completed %d steps, want %d (everything before spec) before spec blocked:\n%s", done, specAt, out.String())
 	}
 	if strings.Join(ran, ",") != "intent,spec" {
 		t.Errorf("ran %v; nothing may run after a blocked stage", ran)
@@ -162,17 +169,18 @@ func TestTheFirstStageIsNotAskedAboutTwice(t *testing.T) {
 		return true
 	})
 
-	// One per step after the first that is NOT already done: a done step is
-	// skipped, not asked about (the clone is done when no copy was asked for).
+	// One per step that runs, except the first that runs: a done step is
+	// skipped, not asked about (the toolkit is done when nothing delegates
+	// to spec-kit; the clone when no copy was asked for), wherever it sits.
 	w := chainWS(t)
-	want := 0
-	for _, s := range planStages[1:] {
+	runs := 0
+	for _, s := range planStages {
 		if s.Done == nil || !s.Done(w) {
-			want++
+			runs++
 		}
 	}
-	if asked != want {
-		t.Errorf("asked %d times, want %d -- one per not-done step AFTER the first", asked, want)
+	if want := runs - 1; asked != want {
+		t.Errorf("asked %d times, want %d -- one per step that runs, after the first", asked, want)
 	}
 }
 
@@ -203,9 +211,15 @@ func TestTheChainStartsWithIntent(t *testing.T) {
 	if len(planStages) == 0 {
 		t.Fatal("the planning chain is empty")
 	}
-	if planStages[0].Stage != "intent" {
-		t.Errorf("the chain starts with %q; every later stage reads what intent writes",
-			planStages[0].Stage)
+	first := ""
+	for _, s := range planStages {
+		if s.Frame == nil {
+			first = s.Stage
+			break
+		}
+	}
+	if first != "intent" {
+		t.Errorf("the first supervised stage is %q; every later stage reads what intent writes", first)
 	}
 	// And spec must come after it, not before.
 	intentAt, specAt := -1, -1
@@ -562,5 +576,31 @@ func TestPlanFromIndexRejectsAnUnknownStepAndListsThem(t *testing.T) {
 		if !strings.Contains(err.Error(), s.Stage) {
 			t.Errorf("the error does not list %q: %v", s.Stage, err)
 		}
+	}
+}
+
+// The toolkit step has nothing to do for a project that delegates nothing to
+// spec-kit -- the chain tests' workspaces are such projects -- and is done
+// for a spec-kit project once .specify/ is there.
+func TestTheToolkitStepIsDoneWhenNothingDelegatesToSpecKitOrItIsInstalled(t *testing.T) {
+	w := chainWS(t)
+	if !toolkitDone(w) {
+		t.Error("a project with no spec-kit stages is not reported done")
+	}
+	if err := os.MkdirAll(w.RepoDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.RepoDir(), "orion.json"),
+		[]byte(`{"toolkit":{"stages":{"spec":"/speckit-specify"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if toolkitDone(w) {
+		t.Error("a spec-kit project with no .specify/ is reported done")
+	}
+	if err := os.MkdirAll(filepath.Join(w.RepoDir(), ".specify"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !toolkitDone(w) {
+		t.Error("a spec-kit project with .specify/ is not reported done")
 	}
 }

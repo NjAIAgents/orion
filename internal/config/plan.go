@@ -40,6 +40,28 @@ func (c Config) IntentPath(slug string) string {
 	return path.Join(c.Paths.Intent, slug+".md")
 }
 
+// FeatureDir is the repo-relative directory a project's feature artifacts
+// live in under spec-kit: spec.md, plan.md, tasks.md and the rest of what
+// its commands write.
+//
+// ONE SPELLING. The prompt that tells the agent where to write, the artifact
+// gate that checks it wrote there, the discovery gate that reads the spec's
+// open questions, the environment that tells spec-kit's own scripts which
+// feature is active, and the decompose step that reads tasks.md all need
+// this path; four spellings of it is how the spec gate came to look in the
+// wrong place while the prompt named the right one.
+//
+// 001 is pinned: the chain plans one feature per tracker project, and the
+// slug is the one canonical name (docs/decisions/0009). spec-kit would
+// otherwise derive its own short name from the description and number it
+// itself -- a second name for the same work, recorded in a gitignored file
+// (docs/decisions/0022). A second feature on an existing project needs a
+// counter and an entry point; both are out of scope
+// (docs/decisions/0023).
+func (c Config) FeatureDir(slug string) string {
+	return path.Join(c.Paths.Specs, "001-"+slug)
+}
+
 // Where a recommendation lives before and after somebody confirms it,
 // relative to the repository root. internal/decide owns the MEANING of the
 // two states and re-exports these; the strings live here because this

@@ -24,11 +24,16 @@ nowhere a reader configuring a toolkit would find it, and the stale clone
 under `vendor/spec-kit` kept making `orion doctor` grade a directory no
 stage could run.
 
-Two facts about running that installer decide where it runs. Stages deny
-egress: `internal/workspace/settings.go` denies `WebFetch`, `curl` and
-`wget` to every supervised run, and the sandbox restricts the network
-further. `specify init` downloads its templates. So it cannot run inside a
-stage; it can only run in Orion's own process, before the first stage.
+Where that installer runs is decided by what it is, not by the network:
+`specify init --help` states that "project files are scaffolded from assets
+bundled inside the specify-cli package, so initialization does not need
+network access". It is provisioning -- deterministic, no model, the same
+class of work as creating the remote -- and it has to have happened before
+the first stage that delegates to spec-kit reads the commands it writes. So
+it runs in Orion's own process as a frame step of the chain, not inside a
+stage. (An earlier draft of this record said the installer downloads and
+that egress denial forced the placement; the placement is right and that
+reason was wrong.)
 
 One fact about spec-kit's own resolution decides what Orion must tell it.
 `/speckit-specify` derives a two-to-four-word name from the description and
@@ -44,9 +49,13 @@ directory spec-kit made up — recorded in a file that is not committed.
 
 **`orion plan` installs spec-kit into the workspace repository as a frame
 step, before any stage, and skips when it is already there.** The step runs
-`specify init --here --integration claude`, then `specify preset add --dev
-.specify/presets/orion` for the preset [0021](0021-spec-kit-inside-stages.md)
-adopts, and commits what they wrote. `.specify/` present means done; a
+`specify init --here --force --non-interactive --integration claude` --
+non-interactive because a chain has nobody at the installer's prompt, force
+because a provisioned workspace is never an empty directory -- then `specify
+preset add --dev .specify/presets/orion` for the preset
+[0021](0021-spec-kit-inside-stages.md) adopts, and commits what they wrote.
+A project whose stages name no spec-kit command has nothing to install and
+the step reports done. `.specify/` present means done; a
 resumed chain never re-initialises. `specify` absent is an error naming the
 install line (`uv tool install specify-cli --from
 git+https://github.com/github/spec-kit.git`), raised before anything spends.
