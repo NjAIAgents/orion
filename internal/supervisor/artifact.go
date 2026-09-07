@@ -131,6 +131,25 @@ func checkStageArtifact(repoDir string, cfg config.Config, stage, slug string) e
 // later stage is a FINISHED spec, and failing it would punish thoroughness.
 const blockedHeadLines = 40
 
+// statusIsBlocked reports whether a "Status: ..." line says the status is
+// blocked, rather than merely mentioning the word.
+//
+// Only the first word of the value, because that is the status: everything
+// after it is elaboration. A spec that wrote "Status: DRAFT -- unapproved,
+// and blocked" was failed by the earlier substring test, discarding a
+// complete document that had self-reviewed and corrected three of its own
+// errors -- because it described its approval state accurately.
+func statusIsBlocked(bare string) bool {
+	value := strings.TrimSpace(strings.TrimPrefix(bare, "status:"))
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ' ' || r == '-' || r == '\u2014' || r == ':' || r == ','
+	})
+	if len(fields) == 0 {
+		return false
+	}
+	return fields[0] == "blocked"
+}
+
 // declaredBlocked reports why an artifact says it is not a real deliverable,
 // or "" when it does not say so.
 //
@@ -148,7 +167,13 @@ func declaredBlocked(body string) string {
 		// Markdown emphasis and list markers surround the real text.
 		bare := strings.ToLower(strings.Trim(trimmed, "*_#>-` \t"))
 		switch {
-		case strings.HasPrefix(bare, "status:") && strings.Contains(bare, "blocked"),
+		// The status IS blocked, not merely a status line that mentions
+		// blocking. "Status: BLOCKED -- not an approved design" is a stage
+		// refusing to work; "Status: DRAFT -- unapproved, and blocked" is a
+		// finished document describing its own approval state, and failing
+		// it discards a complete artifact. The difference is the first word
+		// after the colon.
+		case strings.HasPrefix(bare, "status:") && statusIsBlocked(bare),
 			strings.HasPrefix(bare, "blocked:"),
 			strings.HasPrefix(bare, "blocked ") && strings.Contains(bare, "--"):
 			return "the stage declared itself BLOCKED in its own artifact: " +

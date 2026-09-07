@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/orion-sdlc/orion/internal/agentcfg"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/toolkit"
 )
@@ -180,5 +181,70 @@ func TestCheckNJAgentsIncompleteInstallReportedAsFailedWithLocation(t *testing.T
 	}
 	if !strings.Contains(c.detail, "incomplete at") {
 		t.Errorf("detail = %q, want it to say the checkout is incomplete", c.detail)
+	}
+}
+
+// Installed and reachable are different questions, and doctor answered only
+// the first.
+//
+// FOUND ON A REAL RUN. `orion doctor` reported [OK] toolkit spec-kit from the
+// vendor clone while the spec stage, which named /speckit.specify, could not
+// invoke it -- and had to work that out for itself, writing in its own
+// artifact that the command "is not installed on this machine". Orion links a
+// toolkit's commands into a curated config directory, and on darwin that
+// directory cannot authenticate (OR-239), so the agent inherits the
+// operator's own configuration instead.
+func TestAForeignToolkitIsFlaggedWhenARunCannotReachIt(t *testing.T) {
+	isolate(t)
+	tk := config.Toolkit{
+		Repo:   "https://github.com/acme/house-skills.git",
+		Dir:    foreignToolkit(t, "their-review"),
+		Stages: map[string]string{"review": "/their-review"},
+	}
+
+	c := checkToolkitReachable(tk)
+
+	if agentcfg.CurationAuthenticates() {
+		if c != nil {
+			t.Errorf("nothing to report where curation works, got %+v", c)
+		}
+		return
+	}
+	if c == nil {
+		t.Fatal("a toolkit a run cannot reach was reported as fine")
+	}
+	if c.grade != warn {
+		t.Errorf("grade = %v, want warn", c.grade)
+	}
+	// The message has to say what to DO, not only that something is wrong.
+	if !strings.Contains(c.fix, "Install its commands") {
+		t.Errorf("the fix does not say how to make it reachable: %q", c.fix)
+	}
+}
+
+// The DEFAULT toolkit is reached through the operator's own ~/.claude/skills
+// either way, which is what the install check already resolves. A permanent
+// warning about it would be noise on every machine.
+func TestTheDefaultToolkitIsNotFlaggedAsUnreachable(t *testing.T) {
+	isolate(t)
+	tk := config.Toolkit{Dir: foreignToolkit(t, "pre-push-review")}
+
+	if c := checkToolkitReachable(tk); c != nil {
+		t.Errorf("the default toolkit was flagged: %+v", c)
+	}
+}
+
+// An absent toolkit is the install check's business. Two checks reporting the
+// same absence at different severities gives one question two answers.
+func TestAnAbsentToolkitIsNotFlaggedTwice(t *testing.T) {
+	isolate(t)
+	tk := config.Toolkit{
+		Repo:   "https://github.com/acme/nothing-here.git",
+		Dir:    t.TempDir(), // exists, but is not a toolkit
+		Stages: map[string]string{"review": "/theirs"},
+	}
+
+	if c := checkToolkitReachable(tk); c != nil {
+		t.Errorf("an absent toolkit was flagged as unreachable too: %+v", c)
 	}
 }

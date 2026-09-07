@@ -546,3 +546,59 @@ func TestDiscussingBlockingDeepInTheDocumentIsStillSuccess(t *testing.T) {
 		t.Errorf("a finished spec discussing blockage was failed: %v", err)
 	}
 }
+
+// A document describing its own APPROVAL state is not a stage refusing to
+// work.
+//
+// FOUND ON A REAL RUN. A spec stage wrote a complete document, self-reviewed
+// it, found and fixed three of its own errors, secret-scanned it and
+// committed it -- and was failed because its first line read "Status: DRAFT
+// -- unapproved, and blocked." The subject of that sentence is approval. The
+// earlier substring test could not tell it from "Status: BLOCKED -- not an
+// approved design", which is a stage that produced nothing, so it discarded
+// eight minutes of finished work.
+func TestADraftDescribingItsApprovalStateIsNotABlockedStage(t *testing.T) {
+	cfg := defaults(t)
+
+	for _, body := range []string{
+		"# Spec\n\n**Status: DRAFT — unapproved, and blocked.**\n\nreal content\n",
+		"# Spec\n\nStatus: draft (approval blocked on review)\n\nreal content\n",
+		"# Spec\n\nStatus: complete -- nothing blocked\n\nreal content\n",
+	} {
+		t.Run(strings.SplitN(body, "\n", 3)[2], func(t *testing.T) {
+			repo := gitRepo(t)
+			rel := writeSpec(t, repo, body)
+			commit(t, repo, rel)
+
+			if err := checkStageArtifact(repo, cfg, "spec", "thing"); err != nil {
+				t.Errorf("a finished document was failed for describing itself: %v", err)
+			}
+		})
+	}
+}
+
+// And the real case still fails: the STATUS is blocked, which is a stage
+// saying it could not do the work.
+func TestAStatusOfBlockedStillFails(t *testing.T) {
+	cfg := defaults(t)
+
+	for _, body := range []string{
+		"# Spec\n\n**Status: BLOCKED — not an approved design.**\n\nbody\n",
+		"# Spec\n\nSTATUS: BLOCKED\n\nbody\n",
+		"# Spec\n\nstatus: blocked, pending the intent document\n\nbody\n",
+	} {
+		t.Run(strings.SplitN(body, "\n", 3)[2], func(t *testing.T) {
+			repo := gitRepo(t)
+			rel := writeSpec(t, repo, body)
+			commit(t, repo, rel)
+
+			err := checkStageArtifact(repo, cfg, "spec", "thing")
+			if err == nil {
+				t.Fatal("a stage whose status is BLOCKED was reported as success")
+			}
+			if !strings.Contains(err.Error(), "BLOCKED") {
+				t.Errorf("the message does not say the stage blocked itself: %v", err)
+			}
+		})
+	}
+}

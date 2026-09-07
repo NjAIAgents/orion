@@ -75,6 +75,13 @@ func Run(w io.Writer, path string, autoFix bool) int {
 		checkSlackAudience(workspace.FindBySource(rootOr(path))),
 	}
 
+	// Reported only when it has something to say: on a platform where
+	// curation works, or under the default toolkit, there is no second
+	// question to ask and a permanent "reachable: yes" is noise.
+	if c := checkToolkitReachable(config.Load(rootOr(path)).Toolkit); c != nil {
+		checks = append(checks, *c)
+	}
+
 	fmt.Fprintf(w, "orion doctor  (%s/%s)\n\n", runtime.GOOS, runtime.GOARCH)
 	failed := 0
 	warned := 0

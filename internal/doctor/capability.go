@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/adopt"
+	"github.com/orion-sdlc/orion/internal/agentcfg"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/creds"
 	"github.com/orion-sdlc/orion/internal/slack"
@@ -111,6 +113,46 @@ func checkGHScopes() check {
 // What it requires comes from the project's OWN toolkit block, not from
 // nj-agents' catalogue: a project delegating to its own skill repository
 // would otherwise fail this check for six skills it never invokes.
+// checkToolkitReachable reports whether a RUN can use the toolkit that is on
+// disk, which is a different question from whether it is installed.
+//
+// Orion links a toolkit's commands into a curated config directory. Where
+// curation cannot authenticate -- darwin (OR-239) -- the agent inherits the
+// operator's own configuration instead, which holds whatever they installed
+// and not what the clone holds.
+//
+// A spec-kit clone therefore passed the install check while the stage that
+// named /speckit.specify could not invoke it, and had to discover that for
+// itself: "not installed on this machine... I wrote this spec to the stage's
+// contract rather than reproducing spec-kit's template shape from memory and
+// passing it off as spec-kit output." That is the right behaviour from the
+// agent and a wrong answer from doctor.
+//
+// Its own check rather than a grade on the install one: whether a toolkit is
+// COMPLETE and whether a run can REACH it are different axes, and folding the
+// second into the first makes the answer depend on the platform the test runs
+// on.
+//
+// Nothing for the default toolkit, which is reached through the operator's
+// own ~/.claude/skills either way -- that is what the install check resolves.
+func checkToolkitReachable(tk config.Toolkit) *check {
+	spec := tk.Spec()
+	if spec.IsDefault() || agentcfg.CurationAuthenticates() {
+		return nil
+	}
+	if toolkit.Discover(workspace.Home(), spec) == nil {
+		return nil // the install check already says it is absent
+	}
+	return &check{"toolkit reach", warn,
+		"a run on " + runtime.GOOS + " cannot use " + toolkitName(spec),
+		"The clone is there, but an agent does not see it. Orion links a\n" +
+			"toolkit's commands into a curated config directory, and that\n" +
+			"directory cannot authenticate here (OR-239), so a run inherits YOUR\n" +
+			"Claude Code setup instead -- which holds whatever you installed.\n" +
+			"Install its commands where your own CLI finds them, or a stage that\n" +
+			"names one will report that it does not exist."}
+}
+
 func checkNJAgents(tk config.Toolkit, autoFix bool) check {
 	home := workspace.Home()
 	spec := tk.Spec()
@@ -155,6 +197,7 @@ func checkNJAgents(tk config.Toolkit, autoFix bool) check {
 	if len(inst.Warnings) > 0 {
 		return check{name, warn, detail, strings.Join(inst.Warnings, "\n")}
 	}
+
 	return check{name, ok, detail, ""}
 }
 
