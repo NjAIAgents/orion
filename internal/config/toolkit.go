@@ -78,6 +78,17 @@ func (t Toolkit) Stage(name string) string {
 	return t.Stages[canonicalStages[strings.ToLower(strings.TrimSpace(name))]]
 }
 
+// KnownStage reports whether name is a stage Orion runs, in either spelling.
+//
+// The same set parseToolkit validates a toolkit block against, exported so a
+// caller deciding something ON a stage name -- is this stage's work done? --
+// can refuse a name that is not one, rather than answering from whatever
+// record happens to carry it.
+func KnownStage(name string) bool {
+	_, ok := canonicalStages[strings.ToLower(strings.TrimSpace(name))]
+	return ok
+}
+
 // Spec hands the block to the toolkit package, which resolves what a toolkit
 // must ship from it. A copy rather than a shared type because that package
 // cannot import config -- config imports it for RepoURL -- and one conversion

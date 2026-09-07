@@ -120,11 +120,18 @@ var planStages = []planStage{
 	// The stage itself was already built -- supervisor's prompt for it, the
 	// discovery gate that reads its open questions, `orion answer` that walks
 	// them. Only its place in the chain was missing.
-	{Stage: "intent", Actor: events.ActorPM, What: "what is being built and why, captured from the idea"},
-	{Stage: "spec", Actor: events.ActorArchitect, What: "requirements and design spec"},
-	{Stage: "plan", Actor: events.ActorArchitect, What: "implementation plan: files, order of work, tests, risks"},
-	{Stage: "scaffold", Actor: events.ActorDevOps, What: "repository skeleton on the OpenSSF baseline"},
-	{Stage: "decompose", Actor: events.ActorPM, What: "the Epic, Story and Task tree in the tracker"},
+	{Stage: "intent", Actor: events.ActorPM, What: "what is being built and why, captured from the idea", Done: stageDone("intent")},
+	{Stage: "spec", Actor: events.ActorArchitect, What: "requirements and design spec", Done: stageDone("spec")},
+	{Stage: "plan", Actor: events.ActorArchitect, What: "implementation plan: files, order of work, tests, risks", Done: stageDone("plan")},
+	{Stage: "scaffold", Actor: events.ActorDevOps, What: "repository skeleton on the OpenSSF baseline", Done: stageDone("scaffold")},
+	{Stage: "decompose", Actor: events.ActorPM, What: "the Epic, Story and Task tree in the tracker", Done: stageDone("decompose")},
+}
+
+// stageDone is the Done predicate for a supervised stage: the artifact gate
+// and the run record, read by supervisor.StageDone. One closure per entry
+// rather than a switch in the chain, so the slice stays the only list.
+func stageDone(stage string) func(*workspace.Workspace) bool {
+	return func(ws *workspace.Workspace) bool { return supervisor.StageDone(ws, stage) }
 }
 
 // nextPlanStage returns the stage that follows the one given, and whether

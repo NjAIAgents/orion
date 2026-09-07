@@ -311,3 +311,26 @@ func TestDecliningBeforeAFrameStepNamesOrionPlanAsTheResume(t *testing.T) {
 		t.Errorf("the resume line must be `orion plan`, never `orion run --stage remote`:\n%s", out.String())
 	}
 }
+
+// Every supervised stage knows when it is done, so a resumed chain never
+// re-runs one whose artifact is already there. An entry without Done would
+// be re-run on every resume -- silently, and at a stage's cost.
+func TestEverySupervisedStageHasADonePredicate(t *testing.T) {
+	for _, s := range planStages {
+		if s.Frame == nil && s.Done == nil {
+			t.Errorf("the %s stage has no Done predicate, so a resume would always re-run it", s.Stage)
+		}
+	}
+}
+
+// Test-time proof the wiring reaches StageDone: a workspace with no runs and
+// no artifacts is done at no step, so a fresh chain runs everything.
+func TestAFreshWorkspaceIsDoneAtNoStep(t *testing.T) {
+	w := &workspace.Workspace{ID: "fresh", Dir: t.TempDir()}
+	w.Task.Slug = "thing"
+	for _, s := range planStages {
+		if s.Done != nil && s.Done(w) {
+			t.Errorf("the %s stage reports done on a fresh workspace", s.Stage)
+		}
+	}
+}

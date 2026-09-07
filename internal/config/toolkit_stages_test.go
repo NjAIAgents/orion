@@ -91,3 +91,19 @@ func TestCollisionErrorNamesBothSpellingsSorted(t *testing.T) {
 		t.Fatalf("sanity: sort.Strings ordering assumption is wrong: %v", got)
 	}
 }
+
+// KnownStage is the same set parseToolkit accepts, in either spelling, and
+// nothing else -- a caller asking "is this stage done" must get no for a
+// name that is not a stage.
+func TestKnownStageAcceptsBothSpellingsAndNothingElse(t *testing.T) {
+	for _, name := range []string{"intent", "spec", "design", "plan", "build", "implement", "verify", "test", "pr", "ship", " Scaffold ", "DECOMPOSE"} {
+		if !KnownStage(name) {
+			t.Errorf("KnownStage(%q) = false", name)
+		}
+	}
+	for _, name := range []string{"", "bogus", "deploy", "specify"} {
+		if KnownStage(name) {
+			t.Errorf("KnownStage(%q) = true", name)
+		}
+	}
+}
