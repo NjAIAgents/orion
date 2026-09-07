@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,7 +43,7 @@ func runClone(args []string) {
 }
 
 // cloneWorkspace clones a workspace's repository to dest.
-func cloneWorkspace(out *os.File, ws *workspace.Workspace, dest string) error {
+func cloneWorkspace(out io.Writer, ws *workspace.Workspace, dest string) error {
 	dest, err := expandPath(dest)
 	if err != nil {
 		return err

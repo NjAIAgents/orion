@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -161,8 +162,17 @@ func TestTheFirstStageIsNotAskedAboutTwice(t *testing.T) {
 		return true
 	})
 
-	if want := len(planStages) - 1; asked != want {
-		t.Errorf("asked %d times, want %d -- one per step AFTER the first", asked, want)
+	// One per step after the first that is NOT already done: a done step is
+	// skipped, not asked about (the clone is done when no copy was asked for).
+	w := chainWS(t)
+	want := 0
+	for _, s := range planStages[1:] {
+		if s.Done == nil || !s.Done(w) {
+			want++
+		}
+	}
+	if asked != want {
+		t.Errorf("asked %d times, want %d -- one per not-done step AFTER the first", asked, want)
 	}
 }
 
@@ -370,12 +380,15 @@ func TestEverySupervisedStageHasADonePredicate(t *testing.T) {
 }
 
 // Test-time proof the wiring reaches StageDone: a workspace with no runs and
-// no artifacts is done at no step, so a fresh chain runs everything.
-func TestAFreshWorkspaceIsDoneAtNoStep(t *testing.T) {
+// no artifacts is done at no SUPERVISED stage, so a fresh chain runs every
+// one of them. (A frame step may be done on a fresh workspace -- the clone
+// is, when no copy was asked for -- which is the step saying it has nothing
+// to do, not a stage skipping work.)
+func TestAFreshWorkspaceIsDoneAtNoSupervisedStage(t *testing.T) {
 	w := &workspace.Workspace{ID: "fresh", Dir: t.TempDir()}
 	w.Task.Slug = "thing"
 	for _, s := range planStages {
-		if s.Done != nil && s.Done(w) {
+		if s.Frame == nil && s.Done != nil && s.Done(w) {
 			t.Errorf("the %s stage reports done on a fresh workspace", s.Stage)
 		}
 	}
@@ -452,5 +465,60 @@ func TestTheRemoteStepRecordsTheURLItMade(t *testing.T) {
 	}
 	if !remoteDone(w) {
 		t.Error("remoteDone is false right after the remote was recorded")
+	}
+}
+
+// No copy asked for is a complete answer, so the clone step is done before
+// it starts and the chain still ends.
+func TestTheCloneStepIsDoneWhenNoCopyWasAskedFor(t *testing.T) {
+	fakeRemote(t)
+	w := chainWS(t)
+	var out bytes.Buffer
+	var ran []string
+
+	done := runPlanChain(&out, w, okRun(&ran), yes)
+
+	if done != len(planStages) {
+		t.Fatalf("completed %d of %d steps:\n%s", done, len(planStages), out.String())
+	}
+	if !strings.Contains(out.String(), "= done") || !strings.Contains(out.String(), "clone") {
+		t.Errorf("the clone step is not reported as done:\n%s", out.String())
+	}
+}
+
+// A copy that already exists is done: cloneWorkspace refuses to clone onto
+// an existing directory, so a resume must not try.
+func TestTheCloneStepIsDoneWhenTheCopyAlreadyExists(t *testing.T) {
+	w := chainWS(t)
+	dest := filepath.Join(t.TempDir(), "mine")
+	if err := os.MkdirAll(filepath.Join(dest, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.Task.CheckoutPath = dest
+	if !cloneDone(w) {
+		t.Error("a destination that is already a repository is not reported done")
+	}
+	w.Task.CheckoutPath = filepath.Join(t.TempDir(), "not-yet")
+	if cloneDone(w) {
+		t.Error("a destination that does not exist is reported done")
+	}
+}
+
+// The clone is best effort: a copy that cannot be made costs a convenience,
+// not the run. The chain still ends, and the retry is named.
+func TestAFailedCloneDoesNotFailTheChain(t *testing.T) {
+	fakeRemote(t)
+	w := chainWS(t) // its repo dir has no .git, so the clone refuses
+	w.Task.CheckoutPath = filepath.Join(t.TempDir(), "mine")
+	var out bytes.Buffer
+	var ran []string
+
+	done := runPlanChain(&out, w, okRun(&ran), yes)
+
+	if done != len(planStages) {
+		t.Fatalf("a failed clone stopped the chain at %d of %d:\n%s", done, len(planStages), out.String())
+	}
+	if !strings.Contains(out.String(), "orion clone") {
+		t.Errorf("the retry command is not named:\n%s", out.String())
 	}
 }

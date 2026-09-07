@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -65,21 +66,36 @@ func askCheckoutPath(out io.Writer, ask func(string) string) string {
 	return p
 }
 
-// cloneAfterChain makes the copy the operator asked for, once the stages have
-// committed something worth copying.
+// cloneStep makes the copy the operator asked for, as the last step of the
+// chain, once the stages have committed something worth copying.
 //
-// Best effort and last: the planning work is done and committed by now, so a
-// failed clone costs a convenience rather than the run. It says what went
-// wrong and names the command to retry with.
-func cloneAfterChain(out io.Writer, ws *workspace.Workspace) {
+// Best effort: the planning work is done and committed by now, so a failed
+// clone costs a convenience rather than the run. It says what went wrong and
+// names the command to retry with, and returns nil so the chain still ends.
+// A step of the chain rather than a call after it, so that a resume can see
+// it: a re-run after a failed clone retries the clone.
+func cloneStep(out io.Writer, ws *workspace.Workspace, _ confirmer) error {
 	dest := strings.TrimSpace(ws.Task.CheckoutPath)
-	if dest == "" {
-		return
-	}
-	if err := cloneWorkspace(os.Stdout, ws, dest); err != nil {
+	if err := cloneWorkspace(out, ws, dest); err != nil {
 		ui.Warn(out, "%v", err)
 		fmt.Fprintf(out, "  Retry when you like: orion clone %s %s\n", ws.ID, dest)
 	}
+	return nil
+}
+
+// cloneDone: nothing to do when no copy was asked for, and done when the
+// copy is already a repository -- cloneWorkspace refuses an existing
+// directory, so a resume that ran it again would only report that.
+func cloneDone(ws *workspace.Workspace) bool {
+	dest := strings.TrimSpace(ws.Task.CheckoutPath)
+	if dest == "" {
+		return true
+	}
+	if p, err := expandPath(dest); err == nil {
+		dest = p
+	}
+	_, err := os.Stat(filepath.Join(dest, ".git"))
+	return err == nil
 }
 
 // runPlanChain runs the planning stages in order, pausing after each.

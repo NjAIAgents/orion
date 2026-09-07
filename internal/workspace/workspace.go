@@ -433,7 +433,19 @@ func (w *Workspace) SaveTask() error {
 	// Orion metadata: the idea, tracker binding and Slack channel. The
 	// 0700 tree already protects it; matching modes keeps the line clear
 	// between what is Orion's and what is the repository's.
-	return os.WriteFile(w.TaskPath(), b, PrivateFileMode)
+	//
+	// WRITTEN BESIDE, THEN RENAMED OVER. The chain saves this file after
+	// every step, and a kill mid-write used to leave a truncated task.json
+	// that Open reports as corrupt -- losing the slug, the tracker binding
+	// and the Slack channel, the one set of facts a resume cannot re-derive
+	// from the repository. A rename is atomic on every platform Go supports,
+	// so the previous file stays readable until the new one is whole.
+	tmp := w.TaskPath() + ".tmp"
+	_ = os.Remove(tmp) // a stale one from an earlier kill is not an error
+	if err := os.WriteFile(tmp, b, PrivateFileMode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, w.TaskPath())
 }
 
 // IDs lists provisioned workspace ids. Separated from List so a caller that

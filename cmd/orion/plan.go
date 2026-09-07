@@ -135,6 +135,11 @@ var planStages = []planStage{
 	{Stage: "remote", Actor: events.ActorOrion, What: "the GitHub repository: create it, push main and develop, protect both",
 		Frame: remoteStep, Done: remoteDone},
 	{Stage: "decompose", Actor: events.ActorPM, What: "the Epic, Story and Task tree in the tracker", Done: stageDone("decompose")},
+	// Last, and best effort: the operator's own copy, once there is
+	// something committed worth copying. In the chain rather than after it
+	// so a resume can retry a clone that failed.
+	{Stage: "clone", Actor: events.ActorOrion, What: "your own copy of the repository, where you asked for it",
+		Frame: cloneStep, Done: cloneDone},
 }
 
 // stageDone is the Done predicate for a supervised stage: the artifact gate
@@ -335,7 +340,6 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 
 		done := runPlanChain(out, ws, opts.Run, opts.Confirm)
 		if done == len(planStages) {
-			cloneAfterChain(out, ws)
 			fmt.Fprintf(out, "\n%s\n", ui.Dim(out,
 				"all planning stages are done; the tracker holds the work tree"))
 			fmt.Fprintf(out, "next: orion watch %s\n", strings.ToUpper(opts.Key))
