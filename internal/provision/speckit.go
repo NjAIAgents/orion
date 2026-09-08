@@ -10,12 +10,28 @@ package provision
 // remote. Once is enough: a resumed chain finds .specify/ and moves on.
 
 import (
+	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 )
+
+// orionPreset is the preset Orion installs into every spec-kit project
+// (docs/decisions/0021): a wrap of /speckit-specify that removes its
+// best-guess rule, its marker cap and its interactive clarification loop,
+// and a spec template with the Open questions section the discovery gate
+// reads. Embedded so a workspace never needs the network or a clone to get
+// it; materialised to a temporary directory for `specify preset add --dev`,
+// which copies it into the project's own .specify/presets/orion/.
+//
+//go:embed presets/orion
+var orionPreset embed.FS
+
+// PresetID is the preset's id, and the directory spec-kit records it under.
+const PresetID = "orion"
 
 // SpecKitInstall is how the `specify` CLI is installed on a machine that
 // lacks it. Named in every message that finds it missing, so the fix is on
@@ -36,7 +52,9 @@ const SpecKitDir = ".specify"
 // has no default. --force is required to initialise a directory that is not
 // empty, which a provisioned workspace never is.
 func InitSpecKit(dir string) (bool, error) {
-	if st, err := os.Stat(filepath.Join(dir, SpecKitDir)); err == nil && st.IsDir() {
+	needInit := !isDir(filepath.Join(dir, SpecKitDir))
+	needPreset := !exists(filepath.Join(dir, SpecKitDir, "presets", PresetID, "preset.yml"))
+	if !needInit && !needPreset {
 		return false, nil
 	}
 	bin, err := exec.LookPath("specify")
@@ -45,14 +63,34 @@ func InitSpecKit(dir string) (bool, error) {
 			"  Install it:  %s\n"+
 			"  Then re-run: orion plan", SpecKitInstall)
 	}
-	cmd := exec.Command(bin, "init", "--here", "--force", "--non-interactive", "--integration", "claude")
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return false, fmt.Errorf("specify init failed in %s: %v\n%s", dir, err, strings.TrimSpace(string(out)))
+	if needInit {
+		if out, err := specify(bin, dir, "init", "--here", "--force", "--non-interactive", "--integration", "claude"); err != nil {
+			return false, fmt.Errorf("specify init failed in %s: %v\n%s", dir, err, out)
+		}
+		if !isDir(filepath.Join(dir, SpecKitDir)) {
+			return false, fmt.Errorf("specify init exited 0 but left no %s/ in %s", SpecKitDir, dir)
+		}
 	}
-	if st, err := os.Stat(filepath.Join(dir, SpecKitDir)); err != nil || !st.IsDir() {
-		return false, fmt.Errorf("specify init exited 0 but left no %s/ in %s", SpecKitDir, dir)
+	// The preset, after init and whether or not init just ran: an existing
+	// project initialised by hand gets it too. From a temporary copy of the
+	// embedded files, because `preset add --dev` copies from the path it is
+	// given into the project, and copying the project's own directory onto
+	// itself is not a thing to ask an installer to do.
+	if needPreset {
+		tmp, err := os.MkdirTemp("", "orion-preset-")
+		if err != nil {
+			return needInit, err
+		}
+		defer os.RemoveAll(tmp)
+		if err := materialise(orionPreset, "presets/"+PresetID, tmp); err != nil {
+			return needInit, fmt.Errorf("writing the %s preset: %w", PresetID, err)
+		}
+		if out, err := specify(bin, dir, "preset", "add", "--dev", tmp); err != nil {
+			return needInit, fmt.Errorf("specify preset add failed in %s: %v\n%s", dir, err, out)
+		}
+		if !exists(filepath.Join(dir, SpecKitDir, "presets", PresetID, "preset.yml")) {
+			return needInit, fmt.Errorf("specify preset add exited 0 but %s/presets/%s/ is not there", SpecKitDir, PresetID)
+		}
 	}
 
 	// Committed, because the handoff between stages is tracked files and
@@ -72,4 +110,42 @@ func InitSpecKit(dir string) (bool, error) {
 		return true, fmt.Errorf("committing what specify init wrote: %s", out)
 	}
 	return true, nil
+}
+
+// specify runs one specify command in dir and returns its combined output.
+func specify(bin, dir string, args ...string) (string, error) {
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// materialise copies an embedded directory tree to dst.
+func materialise(src fs.FS, root, dst string) error {
+	return fs.WalkDir(src, root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, filepath.FromSlash(p))
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		b, err := fs.ReadFile(src, p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, b, 0o644)
+	})
+}
+
+func isDir(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.IsDir()
+}
+
+func exists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }

@@ -103,8 +103,8 @@ network is used for this; there is no "latest release" comparison.
 - `001-` is pinned for the chain's feature. A second feature on an existing
   project needs a counter and an entry point; both are out of scope here
   and recorded in [0023](0023-living-spec-project-vs-feature.md).
-- Where `specify preset add --dev` records the preset — in the project's
-  `.specify/` or in a user-level directory — was not verified before this
-  record. If it is user-level, the step still runs per workspace and must
-  stay idempotent; the code (OR-382) verifies and this record is corrected
-  if the wording above is wrong.
+- `specify preset add --dev <path>` copies the preset into the project's own
+  `.specify/presets/orion/` and recomposes the installed skill in place;
+  nothing is written under `~/.specify`. Verified on 1.0.5.dev0 (OR-382), so
+  "per project" above is exact, and the preset's presence there is what the
+  toolkit step checks before deciding it has nothing to do.

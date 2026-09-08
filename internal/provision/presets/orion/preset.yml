@@ -1,0 +1,30 @@
+schema_version: "1.0"
+
+preset:
+  id: "orion"
+  name: "Orion"
+  version: "1.0.0"
+  description: "Headless spec-kit under Orion: every uncertainty is a marker Orion's gate reads; no best-guess, no cap, no interactive clarification"
+  author: "orion"
+  repository: "https://github.com/orion-sdlc/orion"
+  license: "MIT"
+
+requires:
+  speckit_version: ">=0.14.4"
+
+provides:
+  templates:
+    - type: "command"
+      name: "speckit.specify"
+      file: "commands/speckit.specify.md"
+      description: "Wrap /speckit-specify: surface every uncertainty as a marker, never guess, never ask -- Orion's discovery gate is the human"
+      strategy: "wrap"
+    - type: "template"
+      name: "spec-template"
+      file: "templates/spec-template.md"
+      description: "spec-kit's spec template with an Open questions section Orion's discovery gate reads"
+
+tags:
+  - "orion"
+  - "headless"
+  - "discovery"
