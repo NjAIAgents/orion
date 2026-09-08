@@ -132,6 +132,10 @@ var planStages = []planStage{
 	// discovery gate that reads its open questions, `orion answer` that walks
 	// them. Only its place in the chain was missing.
 	{Stage: "intent", Actor: events.ActorPM, What: "what is being built and why, captured from the idea", Done: stageDone("intent")},
+	// Between intent and spec: spec-kit's every later command reads the
+	// constitution, and it is seeded from the intent's constraints, so it
+	// can be written no earlier and is wanted no later.
+	{Stage: "constitution", Actor: events.ActorArchitect, What: "project principles for spec-kit, seeded from orion.json gates and the intent", Done: stageDone("constitution")},
 	{Stage: "spec", Actor: events.ActorArchitect, What: "requirements and design spec", Done: stageDone("spec")},
 	{Stage: "plan", Actor: events.ActorArchitect, What: "implementation plan: files, order of work, tests, risks", Done: stageDone("plan")},
 	{Stage: "scaffold", Actor: events.ActorDevOps, What: "repository skeleton on the OpenSSF baseline", Done: stageDone("scaffold")},

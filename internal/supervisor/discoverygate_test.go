@@ -141,3 +141,20 @@ func TestTheSpecStageIsNotBlockedByItsOwnMarkers(t *testing.T) {
 		t.Fatal("the agent was never launched")
 	}
 }
+
+// The constitution is seeded from the intent, so an open intent question
+// blocks it like every other stage that reads the intent.
+func TestTheConstitutionStageIsBlockedByAnOpenIntentQuestion(t *testing.T) {
+	w := ws(t, "")
+	w.Task.Slug = "thing"
+	writeIntentCapture(t, w, "# Intent\n\n## Open questions\n- Which region ships first?\n")
+	canary := fakeClaude(t)
+
+	_, err := Run(w, Options{Stage: "constitution", Prompt: "do a thing", MaxMinutes: 1, MaxTurns: 1})
+	if err == nil || !strings.Contains(err.Error(), "discovery gate") {
+		t.Fatalf("constitution was not blocked: %v", err)
+	}
+	if _, statErr := os.Stat(canary); statErr == nil {
+		t.Fatal("the agent was launched despite an open intent question")
+	}
+}

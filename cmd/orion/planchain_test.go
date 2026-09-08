@@ -92,17 +92,17 @@ func TestDecliningTheNextStageStopsTheChain(t *testing.T) {
 
 	runPlanChain(&out, chainWS(t), okRun(&order), ask)
 
-	// intent runs unasked (first to run), spec on the first yes, plan is
-	// declined. Named rather than counted, because done frame steps ahead
+	// intent runs unasked (first to run), constitution on the first yes,
+	// spec is declined. Named rather than counted, because done frame steps ahead
 	// of intent are skipped and would shift any index.
-	if strings.Join(order, ",") != "intent,spec" {
-		t.Errorf("ran %v; want intent then spec, and the declined plan must not run", order)
+	if strings.Join(order, ",") != "intent,constitution" {
+		t.Errorf("ran %v; want intent then constitution, and the declined spec must not run", order)
 	}
 	if !strings.Contains(out.String(), "at your request") {
 		t.Errorf("a declined chain must say it stopped deliberately:\n%s", out.String())
 	}
 	// Naming the stage it stopped BEFORE is what makes it resumable.
-	if !strings.Contains(out.String(), "--stage plan") {
+	if !strings.Contains(out.String(), "--stage spec") {
 		t.Errorf("output does not name the resume command:\n%s", out.String())
 	}
 }
@@ -126,8 +126,8 @@ func TestAStageThatFailsStopsTheChainAndNamesTheFix(t *testing.T) {
 
 	done := runPlanChain(&out, chainWS(t), run, yes)
 
-	// intent runs and succeeds; spec blocks. So everything before spec
-	// completed -- intent, plus any done frame step ahead of it -- and
+	// intent and constitution run and succeed; spec blocks. So everything
+	// before spec completed, plus any done frame step ahead of it, and
 	// nothing after spec ran at all.
 	specAt := -1
 	for i, s := range planStages {
@@ -138,7 +138,7 @@ func TestAStageThatFailsStopsTheChainAndNamesTheFix(t *testing.T) {
 	if done != specAt {
 		t.Fatalf("completed %d steps, want %d (everything before spec) before spec blocked:\n%s", done, specAt, out.String())
 	}
-	if strings.Join(ran, ",") != "intent,spec" {
+	if strings.Join(ran, ",") != "intent,constitution,spec" {
 		t.Errorf("ran %v; nothing may run after a blocked stage", ran)
 	}
 	// The underlying error names the fix; the chain must not bury it.
@@ -602,5 +602,24 @@ func TestTheToolkitStepIsDoneWhenNothingDelegatesToSpecKitOrItIsInstalled(t *tes
 	}
 	if !toolkitDone(w) {
 		t.Error("a spec-kit project with .specify/ is not reported done")
+	}
+}
+
+// The constitution sits between intent and spec: seeded from the intent's
+// constraints, read by every spec-kit command from spec onward.
+func TestTheConstitutionSitsBetweenIntentAndSpec(t *testing.T) {
+	at := map[string]int{}
+	for i, s := range planStages {
+		at[s.Stage] = i
+	}
+	c, ok := at["constitution"]
+	if !ok {
+		t.Fatal("the chain has no constitution stage")
+	}
+	if !(at["intent"] < c && c < at["spec"]) {
+		t.Errorf("order intent=%d constitution=%d spec=%d; want intent < constitution < spec", at["intent"], c, at["spec"])
+	}
+	if planStages[c].Done == nil || planStages[c].Frame != nil {
+		t.Error("constitution must be a supervised stage with a Done predicate")
 	}
 }
