@@ -65,6 +65,9 @@ func criticalRows(output string) []string {
 	output = strings.NewReplacer(`\n`, "\n", `\"`, `"`, `\\`, `\`).Replace(output)
 	idCol, sevCol, locCol, sumCol := 0, 2, 3, 4
 	var rows []string
+	// The report reaches the stream twice -- as the assistant's text and
+	// again in the CLI's final result event -- so a row is kept once by id.
+	seen := map[string]bool{}
 	for _, line := range strings.Split(output, "\n") {
 		t := strings.TrimSpace(line)
 		if !strings.HasPrefix(t, "|") {
@@ -96,9 +99,14 @@ func criticalRows(output string) []string {
 			}
 			return ""
 		}
+		id := strings.Trim(get(idCol), "*` ")
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
 		summary := clipTo(get(sumCol), 200)
 		loc := clipTo(strings.ReplaceAll(get(locCol), "`", ""), 90)
-		rows = append(rows, strings.TrimSpace(strings.Trim(get(idCol), "*` ")+"  "+loc+"  "+summary))
+		rows = append(rows, strings.TrimSpace(id+"  "+loc+"  "+summary))
 		if len(rows) == maxCriticalRows {
 			break
 		}

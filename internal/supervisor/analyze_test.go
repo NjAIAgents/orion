@@ -136,3 +136,13 @@ func TestCriticalRowsReadAJSONEscapedBoldReport(t *testing.T) {
 		t.Errorf("the gate's message lacks the row: %v", err)
 	}
 }
+
+// The report is in the stream twice (assistant text, then the result
+// event); a finding is listed once.
+func TestCriticalRowsAreListedOnce(t *testing.T) {
+	row := `| K1 | Constitution | CRITICAL | plan.md:1 | Same finding. | Fix |`
+	out := row + "\n...\n" + row + "\nCritical Issues Count: 1\n"
+	if rows := criticalRows(out); len(rows) != 1 {
+		t.Errorf("rows = %v, want one", rows)
+	}
+}
