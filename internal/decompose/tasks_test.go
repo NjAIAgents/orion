@@ -453,9 +453,9 @@ func TestATaskCarriesItsExitCondition(t *testing.T) {
 func TestAStoryCarriesItsAcceptanceCriteria(t *testing.T) {
 	src := "# Tasks: Thing\n\n## Phase 3: User Story 1 — Do the thing (Priority: P1)\n\n" +
 		"**Goal**: the thing is done\n\n" +
-		"**Acceptance criteria** (from spec.md US1 scenarios 1-2):\n" +
+		"**Acceptance criteria** (from spec.md US1 scenarios 1-2):\n\n" +
 		"1. **Given** no thing, **When** asked, **Then** refused.\n" +
-		"2. **Given** a thing, **When** asked, **Then** shown.\n\n" +
+		"2. **Given** a thing, **When** asked,\n   **Then** shown.\n\n" +
 		"- [ ] T001 [US1] Write a.go\n\n" +
 		"## Phase 4: User Story 2 — Another thing (Priority: P2)\n\n" +
 		"- [ ] T002 [US2] Write b.go\n"
@@ -472,7 +472,10 @@ func TestAStoryCarriesItsAcceptanceCriteria(t *testing.T) {
 	})
 
 	with := byID["US1"]
-	if len(with.Criteria) != 2 || !strings.Contains(with.Criteria[0], "Then** refused") {
+	// The heading is followed by a blank line before the items, as real
+	// output writes it, and a criterion may wrap onto the next line.
+	if len(with.Criteria) != 2 || !strings.Contains(with.Criteria[0], "Then** refused") ||
+		!strings.Contains(with.Criteria[1], "**When** asked, **Then** shown") {
 		t.Fatalf("criteria = %#v", with.Criteria)
 	}
 	if !strings.Contains(with.Body, "Acceptance criteria:\n  - **Given** no thing") {
@@ -515,5 +518,50 @@ func TestAHumanTaskIsMarkedAsSuch(t *testing.T) {
 	}
 	if byID["T002"].Human {
 		t.Error("an ordinary task was marked human")
+	}
+}
+
+// The shape real output writes: the criteria heading, a BLANK LINE, the
+// numbered items, then the tasks. Closing the block on the blank read no
+// criteria at all; leaving it open let the first task line -- which also
+// starts with "- " -- be absorbed as a criterion.
+func TestACriteriaBlockSurvivesABlankLineAndReleasesTheTasks(t *testing.T) {
+	src := "# Tasks: Thing\n\n## Phase 3: User Story 1 — Do the thing (Priority: P1)\n\n" +
+		"**Goal**: the thing is done\n\n" +
+		"**Acceptance criteria** (from spec.md US1 scenarios 1-2):\n\n" +
+		"1. **Given** no thing, **When** asked, **Then** refused.\n" +
+		"2. **Given** a thing, **When** asked,\n   **Then** shown.\n\n" +
+		"- [ ] T001 [US1] Write a.go\n" +
+		"  Done when: `go test ./...` passes.\n" +
+		"- [ ] T002 [US1] Write b.go\n" +
+		"  Done when: b.go exists.\n"
+	tree, err := Parse(src, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var story *Item
+	var tasks int
+	_ = tree.Walk(func(it, _ *Item) error {
+		if it.Kind == KindStory {
+			story = it
+		}
+		if it.Kind == KindTask {
+			tasks++
+		}
+		return nil
+	})
+	if story == nil {
+		t.Fatal("no story")
+	}
+	if len(story.Criteria) != 2 {
+		t.Errorf("criteria = %#v, want 2 (a blank line after the heading does not close the block)", story.Criteria)
+	}
+	if tasks != 2 {
+		t.Errorf("%d tasks parsed, want 2 -- a task line is not a criterion, however it starts", tasks)
+	}
+	for _, c := range story.Criteria {
+		if strings.Contains(c, "Write a.go") {
+			t.Errorf("a task was absorbed as a criterion: %q", c)
+		}
 	}
 }

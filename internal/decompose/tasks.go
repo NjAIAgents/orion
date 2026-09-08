@@ -304,15 +304,38 @@ func Parse(text, source string) (*Tree, error) {
 			inCriteria = true
 			continue
 		}
+		// A TASK LINE ENDS THE BLOCK, and is never a criterion. Both open
+		// with "- ", so a criteria block still open when the phase's first
+		// task arrived absorbed it -- three tasks silently lost, each the
+		// first after a block (FOUND ON A REAL PROJECT).
+		if inCriteria && taskLine.MatchString(line) {
+			inCriteria = false
+		}
 		if inCriteria {
+			// A BLANK LINE DOES NOT CLOSE THE BLOCK. Real output writes the
+			// heading, then a blank line, then the numbered criteria -- so
+			// closing on the first blank read none of them at all (FOUND ON
+			// A REAL PROJECT: six blocks written, zero parsed). What closes
+			// it is the next thing that is plainly not a criterion: a task
+			// line, a heading, or ordinary prose. Blank lines inside are
+			// skipped, and a blank line before the first item is expected.
 			if strings.TrimSpace(line) == "" {
-				inCriteria = false
 				continue
 			}
 			if m := criteriaItem.FindStringSubmatch(line); m != nil {
 				if c := strings.TrimSpace(m[1]); c != "" {
 					storyCriteria[phaseStoryN] = append(storyCriteria[phaseStoryN], c)
 				}
+				continue
+			}
+			// A continuation of the criterion above it: indented, and not a
+			// line that belongs to something else. A task line and its
+			// "Done when:" are both indented too, and folding one of those
+			// into a criterion swallows the task with it.
+			n := len(storyCriteria[phaseStoryN])
+			isTask := taskLine.MatchString(line) || doneWhenLine.MatchString(line)
+			if n > 0 && !isTask && (strings.HasPrefix(line, "   ") || strings.HasPrefix(line, "\t")) {
+				storyCriteria[phaseStoryN][n-1] += " " + strings.TrimSpace(line)
 				continue
 			}
 			inCriteria = false
