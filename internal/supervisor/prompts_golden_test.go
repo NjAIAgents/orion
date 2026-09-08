@@ -22,7 +22,7 @@ var updateGolden = flag.Bool("update", false, "rewrite the stage-prompt snapshot
 // on purpose: it errors by design, because inventing a task from the
 // workspace idea would be the agent working on something nobody asked for.
 var goldenStages = []string{
-	"intent", "spec", "plan", "scaffold", "decompose",
+	"intent", "constitution", "spec", "plan", "scaffold", "decompose",
 	"build", "verify", "review", "pr",
 }
 

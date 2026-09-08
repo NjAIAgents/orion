@@ -652,3 +652,62 @@ func TestAStatusOfBlockedStillFails(t *testing.T) {
 		})
 	}
 }
+
+func commitConstitution(t *testing.T, repo, body string) {
+	t.Helper()
+	dir := filepath.Join(repo, ".specify", "memory")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "constitution.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, repo)
+}
+
+func commitAll(t *testing.T, repo string) {
+	t.Helper()
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-qm", "artifact"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+// The constitution's template is slots; a committed file still holding one
+// is not a constitution, and the failure names the slots left.
+func TestAConstitutionStillHoldingTemplateSlotsFails(t *testing.T) {
+	repo := gitRepo(t)
+	cfg := defaults(t)
+	commitConstitution(t, repo, "# [PROJECT_NAME] Constitution\n\n## Core Principles\n\n### [PRINCIPLE_1_NAME]\nDo the thing.\n")
+	err := checkStageArtifact(repo, cfg, "constitution", "thing")
+	if err == nil {
+		t.Fatal("a constitution with template slots passed")
+	}
+	for _, want := range []string{"[PROJECT_NAME]", "[PRINCIPLE_1_NAME]", ".specify/memory/constitution.md"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message must name %q, got:\n%v", want, err)
+		}
+	}
+}
+
+func TestAFinishedConstitutionPasses(t *testing.T) {
+	repo := gitRepo(t)
+	commitConstitution(t, repo, "# Thing Constitution\n\n## Core Principles\n\n### I. Plan first\nA plan is approved before any edit (gates.require_plan_before_edit).\n\n"+
+		"Open point: [NEEDS CLARIFICATION: retention period] -- the discovery gate's, not this check's.\n")
+	if err := checkStageArtifact(repo, defaults(t), "constitution", "thing"); err != nil {
+		t.Fatalf("a finished constitution failed: %v", err)
+	}
+}
+
+// The slot check is the constitution's alone: a spec mentioning a bracketed
+// identifier in prose is finished work.
+func TestTheSlotCheckDoesNotReachOtherStages(t *testing.T) {
+	repo := gitRepo(t)
+	cfg := defaults(t)
+	writeSpec(t, repo, "# Spec\n\nSet [FEATURE_FLAG] to on.\n")
+	commitAll(t, repo)
+	if err := checkStageArtifact(repo, cfg, "spec", "thing"); err != nil {
+		t.Fatalf("the spec was held to the constitution's slot check: %v", err)
+	}
+}

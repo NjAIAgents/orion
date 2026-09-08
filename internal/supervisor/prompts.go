@@ -108,6 +108,31 @@ func useCommandNote(tk config.Toolkit, stage string) string {
 	return "Use " + c + " for this stage.\n"
 }
 
+// gatesNote lists what orion.json has already decided, for the constitution
+// to record: the branch model, and each gate that is on, named by its key so
+// a reader can find the setting the principle came from.
+func gatesNote(cfg config.Config) string {
+	lines := []string{
+		"- Branch model: feature branches are cut from " + cfg.VCS.WorkBranch + " and merge",
+		"  back by reviewed pull request; " + cfg.VCS.DefaultBranch + " is the release branch.",
+		"  Both are protected; nothing pushes to either directly (orion.json vcs).",
+	}
+	g := cfg.Gates
+	if g.RequirePlanBeforeEdit {
+		lines = append(lines, "- A plan is written and approved before any edit (gates.require_plan_before_edit).")
+	}
+	if g.ProtectTestsDuringFix {
+		lines = append(lines, "- Tests are not edited while fixing the code they cover (gates.protect_tests_during_fix).")
+	}
+	if g.ProductionRequiresAuth {
+		lines = append(lines, "- A production change needs explicit authorisation (gates.production_requires_authorization).")
+	}
+	if g.BlockDirectPushToDefaultBranch {
+		lines = append(lines, "- No direct push to the default branch (gates.block_direct_push_to_default_branch).")
+	}
+	return join(lines...)
+}
+
 // taskListNote asks the plan stage to leave the task list the decompose stage
 // reads.
 //
@@ -229,6 +254,37 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"actually says. Do not write code or design a solution.",
 			"",
 			ideaFieldsNote(ws),
+		), nil
+
+	case "constitution":
+		// Project-level, not per feature (docs/decisions/0023): one
+		// .specify/memory/constitution.md that every spec-kit command reads.
+		// Seeded from what orion.json and the intent already decided, so the
+		// stage records decisions rather than inventing principles.
+		return join(
+			"Read "+intentPath+".",
+			"",
+			"Use "+command(tk, "constitution", "/speckit-constitution")+" to write the project",
+			"constitution: the principles every later stage -- spec, plan, tasks and the",
+			"implementation -- is held to. Write EXACTLY this file, which is where",
+			"spec-kit's other commands read it:",
+			"",
+			quote(constitutionArtifact),
+			"",
+			"SEED IT FROM WHAT IS ALREADY DECIDED, and say in the text where each rule",
+			"comes from, rather than inventing principles the project never chose:",
+			"",
+			gatesNote(cfg),
+			"",
+			"Add the constraints the intent records -- compliance, platform, performance,",
+			"budget, anything stated as a limit -- as principles or under an Additional",
+			"Constraints section. What the intent leaves open stays open; do not settle",
+			"it here.",
+			"",
+			"REPLACE EVERY TEMPLATE PLACEHOLDER. spec-kit's template ships as",
+			"`# [PROJECT_NAME] Constitution` full of `[ALL_CAPS]` slots, and Orion's gate",
+			"fails the stage naming any slot still in the file. Fewer principles, fully",
+			"written, beat five slots half-filled. Commit the file.",
 		), nil
 
 	case "spec", "design":
@@ -409,7 +465,7 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 
 	default:
 		return "", fmt.Errorf(
-			"unknown stage %q (want: intent, spec, plan, scaffold, decompose, build, verify, review, pr)", stage)
+			"unknown stage %q (want: intent, constitution, spec, plan, scaffold, decompose, build, verify, review, pr)", stage)
 	}
 }
 

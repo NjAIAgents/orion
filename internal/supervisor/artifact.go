@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/config"
@@ -46,8 +47,14 @@ import (
 // read by people, git and the tracker more than by the filesystem, and the
 // one filesystem caller joins it under the repo dir with filepath.Join,
 // which absorbs the slashes on Windows (OR-342).
+// constitutionArtifact is where spec-kit's every command reads the project
+// constitution from: one file per project, not per feature (docs/decisions/0023).
+const constitutionArtifact = ".specify/memory/constitution.md"
+
 func stageArtifact(cfg config.Config, stage, slug string) string {
 	switch strings.ToLower(strings.TrimSpace(stage)) {
+	case "constitution":
+		return constitutionArtifact
 	case "intent":
 		return filepath.ToSlash(filepath.Join(cfg.Paths.Intent, slug+".md"))
 	case "spec", "design":
@@ -184,7 +191,37 @@ func checkArtifactFile(repoDir string, cfg config.Config, stage, rel string) err
 	if why := declaredBlocked(string(body)); why != "" {
 		return artifactError(cfg, stage, rel, why)
 	}
+
+	// The constitution's template ships as slots -- `# [PROJECT_NAME]
+	// Constitution`, `[PRINCIPLE_1_NAME]` -- and a command that exits 0
+	// leaving them has produced the same silent non-artifact the empty-file
+	// rule catches. Constitution only: other templates use bracketed forms
+	// in finished prose, and [NEEDS CLARIFICATION: ...] is a marker the
+	// discovery gate owns, which this pattern does not match.
+	if strings.EqualFold(strings.TrimSpace(stage), "constitution") {
+		if left := placeholdersLeft(string(body)); len(left) > 0 {
+			return artifactError(cfg, stage, rel,
+				"the template's placeholders are still in it: "+strings.Join(left, ", ")+".")
+		}
+	}
 	return nil
+}
+
+// placeholderRe is spec-kit's placeholder form, [ALL_CAPS_IDENTIFIER]: no
+// spaces, no colon, so a clarification marker is not one.
+var placeholderRe = regexp.MustCompile(`\[[A-Z][A-Z0-9_]+\]`)
+
+// placeholdersLeft lists each distinct placeholder in body, in order.
+func placeholdersLeft(body string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range placeholderRe.FindAllString(body, -1) {
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // blockedHeadLines is how far into a document a self-declared block is

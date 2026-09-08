@@ -48,20 +48,21 @@ type Toolkit struct {
 // cannot be dispatched is a typo, and a typo silently ignored is a stage
 // nobody notices is unconfigured.
 var canonicalStages = map[string]string{
-	"intent":    "intent",
-	"spec":      "spec",
-	"design":    "spec",
-	"plan":      "plan",
-	"ticket":    "ticket",
-	"scaffold":  "scaffold",
-	"decompose": "decompose",
-	"build":     "build",
-	"implement": "build",
-	"verify":    "verify",
-	"test":      "verify",
-	"review":    "review",
-	"pr":        "pr",
-	"ship":      "pr",
+	"intent":       "intent",
+	"constitution": "constitution",
+	"spec":         "spec",
+	"design":       "spec",
+	"plan":         "plan",
+	"ticket":       "ticket",
+	"scaffold":     "scaffold",
+	"decompose":    "decompose",
+	"build":        "build",
+	"implement":    "build",
+	"verify":       "verify",
+	"test":         "verify",
+	"review":       "review",
+	"pr":           "pr",
+	"ship":         "pr",
 }
 
 // orderingKeys are the spellings that would express sequence. Rejected by

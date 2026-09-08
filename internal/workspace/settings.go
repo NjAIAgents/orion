@@ -232,6 +232,7 @@ const defaultProjectConfig = `{
   "toolkit": {
     "repo": "https://github.com/github/spec-kit.git",
     "stages": {
+      "constitution": "/speckit-constitution",
       "spec": "/speckit-specify",
       "plan": "/speckit-plan"
     }

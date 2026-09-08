@@ -138,8 +138,9 @@ func TestANewProjectDeclaresItsToolkit(t *testing.T) {
 		t.Fatal("a new project declares no toolkit, so it silently uses the built-in prompts")
 	}
 	for stage, want := range map[string]string{
-		"spec": "/speckit-specify",
-		"plan": "/speckit-plan",
+		"constitution": "/speckit-constitution",
+		"spec":         "/speckit-specify",
+		"plan":         "/speckit-plan",
 	} {
 		if got := cfg.Toolkit.Stage(stage); got != want {
 			t.Errorf("%s stage = %q, want %q", stage, got, want)
