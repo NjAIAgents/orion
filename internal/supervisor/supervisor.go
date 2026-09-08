@@ -242,6 +242,17 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 			return &Result{ExitCode: 0, Reason: "stopped at the discovery gate"},
 				fmt.Errorf("%s", a.GateMessage(ws.ID))
 		}
+		// And the spec, for the stages that read it: spec-kit writes its
+		// undecided points as [NEEDS CLARIFICATION] markers, the same
+		// statement as an open bullet in a different spelling, and a plan
+		// built on one inherits the guess (docs/decisions/0021).
+		if stageNeedsSpec(opts.Stage) {
+			specPath := filepath.Join(ws.RepoDir(), filepath.FromSlash(specArtifact(cfgEarly, ws.Task.Slug)))
+			if a := discovery.AssessSpec(specPath); a.Found && a.Open > 0 {
+				return &Result{ExitCode: 0, Reason: "stopped at the discovery gate"},
+					fmt.Errorf("%s", a.GateMessage(ws.ID))
+			}
+		}
 	}
 
 	// Budget checkpoint BEFORE spending, not after. Checking afterwards
@@ -452,7 +463,18 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 // governing artifacts and re-litigating intent would block finished work.
 func stageNeedsIntent(stage string) bool {
 	switch strings.ToLower(stage) {
-	case "spec", "design", "plan", "scaffold", "decompose":
+	case "constitution", "spec", "design", "plan", "analyze", "scaffold", "decompose":
+		return true
+	}
+	return false
+}
+
+// stageNeedsSpec reports whether a stage designs from the spec, so an
+// undecided point in it blocks the stage the way an open intent question
+// does. The spec stage itself is excluded: it is the one writing the file.
+func stageNeedsSpec(stage string) bool {
+	switch strings.ToLower(stage) {
+	case "plan", "analyze", "scaffold", "decompose":
 		return true
 	}
 	return false

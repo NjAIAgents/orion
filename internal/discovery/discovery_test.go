@@ -310,3 +310,48 @@ func TestGateMessageNamesTheQuestionsAndTheWayOut(t *testing.T) {
 		t.Error("the message must say how to mark something answered")
 	}
 }
+
+// spec-kit's [NEEDS CLARIFICATION] marker is an open question in a different
+// spelling. AssessSpec counts both forms; a marker inside fenced code is an
+// example, not a question.
+func TestAssessSpecCountsMarkersAndOpenBullets(t *testing.T) {
+	a := AssessSpec(write(t, "# Spec\n\n"+
+		"- **FR-003**: retain data for [NEEDS CLARIFICATION: retention period not specified]\n"+
+		"- **FR-004**: auth via [NEEDS CLARIFICATION: SSO or password?]\n\n"+
+		"```\n- **FR-006**: [NEEDS CLARIFICATION: this is the template's example]\n```\n\n"+
+		"## Open questions\n- Which region ships first?\n- [x] Do adjusters need access?\n"))
+	if !a.Found {
+		t.Fatal("file should be found")
+	}
+	if a.Open != 3 {
+		t.Errorf("Open = %d, want 3 (two markers and one unanswered bullet; the fenced one is an example)", a.Open)
+	}
+	if a.Ready() {
+		t.Error("a spec with markers must block")
+	}
+	joined := ""
+	for _, q := range a.Questions {
+		joined += q.Text + "|"
+	}
+	for _, want := range []string{"retention period", "SSO or password", "Which region"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("questions %q do not carry %q", joined, want)
+		}
+	}
+}
+
+func TestAssessSpecWithNothingOpenIsReady(t *testing.T) {
+	a := AssessSpec(write(t, "# Spec\n\n- **FR-001**: System MUST do the thing.\n\n## Open questions\n- None\n"))
+	if !a.Ready() {
+		t.Errorf("a spec with no markers and no open bullets must be ready: %+v", a)
+	}
+}
+
+// Assess, the intent reader, keeps ignoring markers: an intent does not use
+// them, and a stray mention in prose must not block.
+func TestAssessDoesNotCountMarkers(t *testing.T) {
+	a := Assess(write(t, "# Intent\n\nspec-kit marks gaps as [NEEDS CLARIFICATION: x].\n\n## Open questions\n- None\n"))
+	if !a.Ready() {
+		t.Errorf("the intent reader counted a marker: %+v", a)
+	}
+}

@@ -53,11 +53,25 @@ var answeredRe = regexp.MustCompile(`(?i)(^\s*[-*]?\s*\[x\]|~~|(^|\s)answer\s*:)
 // bulletRe matches a list item, with or without a checkbox.
 var bulletRe = regexp.MustCompile(`^\s*[-*+]\s+(.*)$`)
 
+// markerRe matches spec-kit's own way of saying "undecided":
+// [NEEDS CLARIFICATION: the question]. The same statement as an open bullet,
+// in a different spelling, and it used to walk straight through this gate.
+var markerRe = regexp.MustCompile(`(?i)\[NEEDS CLARIFICATION:?\s*([^\]]*)\]`)
+
 // Assess reads a captured intent and counts what is still open.
 //
 // A missing file is not an error: it means intent has not run yet, which the
 // caller reports differently from "ran and left questions".
-func Assess(path string) Assessment {
+func Assess(path string) Assessment { return assess(path, false) }
+
+// AssessSpec reads a specification and counts what is still open: the
+// bullets under Open questions, as Assess does, plus every
+// [NEEDS CLARIFICATION: ...] marker anywhere in the document outside fenced
+// code. A marker is answered only by removing it -- it sits in the sentence
+// it qualifies, and the answer belongs in that sentence.
+func AssessSpec(path string) Assessment { return assess(path, true) }
+
+func assess(path string, markers bool) Assessment {
 	a := Assessment{Path: path}
 	f, err := os.Open(path)
 	if err != nil {
@@ -69,8 +83,26 @@ func Assess(path string) Assessment {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	inSection := false
+	inFence := false
 	for sc.Scan() {
 		line := sc.Text()
+
+		if markers {
+			if strings.HasPrefix(strings.TrimSpace(line), "```") {
+				inFence = !inFence
+				continue
+			}
+			if !inFence {
+				for _, m := range markerRe.FindAllStringSubmatch(line, -1) {
+					text := strings.TrimSpace(m[1])
+					if text == "" {
+						text = "an unstated clarification"
+					}
+					a.Questions = append(a.Questions, Question{Text: text})
+					a.Open++
+				}
+			}
+		}
 
 		if headingRe.MatchString(strings.TrimSpace(line)) {
 			inSection = true

@@ -40,8 +40,14 @@ func StageDone(ws *workspace.Workspace, stage string) bool {
 		if checkStageArtifact(ws.RepoDir(), cfg, stage, ws.Task.Slug) != nil {
 			return false
 		}
-		if strings.EqualFold(strings.TrimSpace(stage), "intent") {
+		switch strings.ToLower(strings.TrimSpace(stage)) {
+		case "intent":
 			return discovery.Assess(filepath.Join(ws.RepoDir(), filepath.FromSlash(rel))).Ready()
+		case "spec", "design":
+			// The same rule the next stage's gate applies: a spec with a
+			// marker left in it is not done, or the resume would skip it
+			// only to stop at plan.
+			return discovery.AssessSpec(filepath.Join(ws.RepoDir(), filepath.FromSlash(rel))).Ready()
 		}
 		return true
 	}

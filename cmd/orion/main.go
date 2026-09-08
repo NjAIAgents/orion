@@ -1606,8 +1606,18 @@ func runAnswer(id string) {
 		fmt.Printf("run: orion run %s --stage intent\n", ws.ID)
 		os.Exit(1)
 	}
-	if a.Open == 0 {
-		fmt.Printf("no open questions in %s\n", path)
+	// The spec's own undecided points, once there is a spec: spec-kit
+	// writes them as [NEEDS CLARIFICATION] markers, and the plan stage's
+	// gate reads them the same way it reads the intent's questions.
+	specPath := filepath.Join(ws.RepoDir(), filepath.FromSlash(supervisor.SpecArtifact(cfg, ws.Task.Slug)))
+	s := discovery.AssessSpec(specPath)
+
+	if a.Open == 0 && (!s.Found || s.Open == 0) {
+		fmt.Printf("no open questions in %s", path)
+		if s.Found {
+			fmt.Printf(" or %s", specPath)
+		}
+		fmt.Println()
 		return
 	}
 
@@ -1615,18 +1625,28 @@ func runAnswer(id string) {
 	// belong in the committed artifact where every later stage reads them;
 	// capturing them in a terminal session would put them somewhere no
 	// stage can see.
-	fmt.Printf("%d open question(s) in %s\n\n", a.Open, path)
-	for _, q := range a.Questions {
-		if q.Answered {
+	for _, x := range []discovery.Assessment{a, s} {
+		if !x.Found || x.Open == 0 {
 			continue
 		}
-		fmt.Printf("  - %s\n", q.Text)
+		fmt.Printf("%d open question(s) in %s\n\n", x.Open, x.Path)
+		for _, q := range x.Questions {
+			if q.Answered {
+				continue
+			}
+			fmt.Printf("  - %s\n", q.Text)
+		}
+		fmt.Println()
+	}
+	fmt.Println("Answer them in the file itself, so every later stage reads the answer:")
+	fmt.Printf("  $EDITOR %s\n", path)
+	if s.Found && s.Open > 0 {
+		fmt.Printf("  $EDITOR %s\n", specPath)
 	}
 	fmt.Println()
-	fmt.Println("Answer them in the file itself, so every later stage reads the answer:")
-	fmt.Printf("  $EDITOR %s\n\n", path)
-	fmt.Println("Mark each one with [x], ~~strikethrough~~, or an inline \"Answer: ...\".")
-	fmt.Printf("Then: orion run %s --stage spec\n", ws.ID)
+	fmt.Println("Mark a question with [x], ~~strikethrough~~, or an inline \"Answer: ...\";")
+	fmt.Println("answer a [NEEDS CLARIFICATION] marker by replacing it with the decision.")
+	fmt.Printf("Then: orion plan %s\n", planKeyOf(ws))
 	os.Exit(1)
 }
 
