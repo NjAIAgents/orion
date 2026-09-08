@@ -117,3 +117,22 @@ func TestAnalyzeBlockNamesTheRealPlanKey(t *testing.T) {
 		t.Error("a placeholder reached the operator")
 	}
 }
+
+// The captured output is stream-json: the report's lines are \n escapes in
+// one string, and this run wrote the severity in bold. Both must still
+// yield the row.
+func TestCriticalRowsReadAJSONEscapedBoldReport(t *testing.T) {
+	out := `{"type":"assistant","message":{"content":[{"type":"text","text":"## Report\n\n| ID | Category | Severity | Location(s) | Summary | Recommendation |\n|---|---|---|---|---|---|\n| C1 | Constitution | **CRITICAL** | ` + "`plan.md:369`; `tasks.md:46`" + ` | Interim storage fixed before the residency decision. | Make T004 reuse-only |\n\n- Critical Issues Count: 1\n"}]}}`
+	rows := criticalRows(out)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %v", rows)
+	}
+	for _, want := range []string{"C1  plan.md:369; tasks.md:46  Interim storage fixed"} {
+		if !strings.Contains(rows[0], want) {
+			t.Errorf("row %q lacks %q", rows[0], want)
+		}
+	}
+	if err := analyzeGate(out); err == nil || !strings.Contains(err.Error(), "C1  plan.md") {
+		t.Errorf("the gate's message lacks the row: %v", err)
+	}
+}

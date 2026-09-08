@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -227,5 +228,33 @@ func TestOffATerminalTheTranscriptIsUnchanged(t *testing.T) {
 	}
 	if !strings.HasSuffix(out.String(), "Read spec.md\n") {
 		t.Errorf("want the plain transcript line, got:\n%q", out.String())
+	}
+}
+
+// While the live line is up, a message another package sends to the console
+// lands on its own line -- the live line is cleared first and redrawn after
+// -- and the console is handed back on Close.
+func TestConsoleMessagesDoNotLandInsideTheLiveLine(t *testing.T) {
+	var out, console lockedBuffer
+	ui.SetConsole(&console)
+	t.Cleanup(func() { ui.SetConsole(nil) })
+
+	p := newStageProgressTTY(&out, true)
+	p.On(supervisor.Activity{Kind: "tool", Tool: "Read", Detail: "spec.md"})
+	before := len(out.String())
+	fmt.Fprint(ui.Console(), "orion: a warning")
+	after := len(out.String())
+	p.Close()
+
+	got := console.String()
+	if !strings.HasPrefix(got, clearLine+"orion: a warning\n") {
+		t.Errorf("the console message was not put on its own line:\n%q", got)
+	}
+	// The live line is redrawn on its own stream after the message.
+	if after <= before || !strings.HasSuffix(out.String()[:after], "Read spec.md") {
+		t.Errorf("the live line was not redrawn after the message:\n%q", out.String())
+	}
+	if ui.Console() != io.Writer(&console) {
+		t.Error("the console writer was not restored on Close")
 	}
 }

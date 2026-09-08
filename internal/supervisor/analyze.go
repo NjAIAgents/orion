@@ -59,6 +59,10 @@ const maxCriticalRows = 10
 // how many things. Columns are taken from the table's own header when it
 // has one, and from spec-kit's documented order otherwise.
 func criticalRows(output string) []string {
+	// The captured output is the CLI's stream-json, so the report's lines
+	// arrive as \n escapes inside one JSON string; unescape before reading
+	// it as lines. Harmless on already-plain text.
+	output = strings.NewReplacer(`\n`, "\n", `\"`, `"`, `\\`, `\`).Replace(output)
 	idCol, sevCol, locCol, sumCol := 0, 2, 3, 4
 	var rows []string
 	for _, line := range strings.Split(output, "\n") {
@@ -83,7 +87,7 @@ func criticalRows(output string) []string {
 			}
 			continue
 		}
-		if sevCol >= len(cells) || !strings.EqualFold(cells[sevCol], "CRITICAL") {
+		if sevCol >= len(cells) || !strings.EqualFold(strings.Trim(cells[sevCol], "*` "), "CRITICAL") {
 			continue
 		}
 		get := func(i int) string {
@@ -92,14 +96,19 @@ func criticalRows(output string) []string {
 			}
 			return ""
 		}
-		summary := get(sumCol)
-		if len(summary) > 200 {
-			summary = summary[:197] + "..."
-		}
-		rows = append(rows, strings.TrimSpace(get(idCol)+"  "+get(locCol)+"  "+summary))
+		summary := clipTo(get(sumCol), 200)
+		loc := clipTo(strings.ReplaceAll(get(locCol), "`", ""), 90)
+		rows = append(rows, strings.TrimSpace(strings.Trim(get(idCol), "*` ")+"  "+loc+"  "+summary))
 		if len(rows) == maxCriticalRows {
 			break
 		}
 	}
 	return rows
+}
+
+func clipTo(s string, n int) string {
+	if len(s) > n {
+		return s[:n-3] + "..."
+	}
+	return s
 }

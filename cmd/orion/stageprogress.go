@@ -55,6 +55,13 @@ type stageProgress struct {
 
 	done chan struct{}
 	stop sync.Once
+
+	// prevConsole and consoleWas restore the console writer on Close: while
+	// the live line is up, every message another package sends to the
+	// terminal goes through this progress so the line is cleared first and
+	// redrawn after, instead of being written into the middle of it.
+	prevConsole io.Writer
+	consoleWas  bool
 }
 
 // spinEvery is how often the live line is redrawn on a terminal.
@@ -92,11 +99,33 @@ func newStageProgress(out io.Writer) *stageProgress {
 func newStageProgressTTY(out io.Writer, tty bool) *stageProgress {
 	p := &stageProgress{out: out, start: time.Now(), lastAt: time.Now(), tty: tty, done: make(chan struct{})}
 	if tty {
+		p.consoleWas, p.prevConsole = ui.ConsoleEngaged(), ui.Console()
+		ui.SetConsole(consoleThrough{p})
 		p.live, p.liveAt = "starting", p.start
 		p.redraw()
 	}
 	go p.tick()
 	return p
+}
+
+// consoleThrough is the console writer while a live line is up: clear the
+// line, write the message on its own line, put the live line back.
+type consoleThrough struct{ p *stageProgress }
+
+func (c consoleThrough) Write(b []byte) (int, error) {
+	c.p.mu.Lock()
+	defer c.p.mu.Unlock()
+	if c.p.live != "" {
+		fmt.Fprint(c.p.prevConsole, clearLine)
+	}
+	n, err := c.p.prevConsole.Write(b)
+	if len(b) > 0 && b[len(b)-1] != '\n' {
+		fmt.Fprintln(c.p.prevConsole)
+	}
+	if c.p.live != "" {
+		c.p.redraw()
+	}
+	return n, err
 }
 
 // tick says the run is alive while nothing is happening.
@@ -146,6 +175,13 @@ func (p *stageProgress) Close() {
 		defer p.mu.Unlock()
 		if p.tty && p.live != "" {
 			p.commit()
+		}
+		if p.tty {
+			if p.consoleWas {
+				ui.SetConsole(p.prevConsole)
+			} else {
+				ui.SetConsole(nil)
+			}
 		}
 	})
 }
