@@ -43,7 +43,7 @@ func TestStagesThatProduceNoFileAreSkipped(t *testing.T) {
 	cfg := defaults(t)
 	for _, stage := range []string{
 		"verify", "test", "review", "pr", "ship",
-		"build", "implement", "scaffold", "decompose", "ticket", "",
+		"build", "implement", "decompose", "ticket", "",
 	} {
 		if got := stageArtifact(cfg, stage, "thing"); got != "" {
 			t.Errorf("stage %q must owe no artifact, got %q", stage, got)
@@ -709,5 +709,26 @@ func TestTheSlotCheckDoesNotReachOtherStages(t *testing.T) {
 	commitAll(t, repo)
 	if err := checkStageArtifact(repo, cfg, "spec", "thing"); err != nil {
 		t.Fatalf("the spec was held to the constitution's slot check: %v", err)
+	}
+}
+
+// The scaffold stage owes its README: a run refused every write exits 0
+// with nothing committed, and without an owed artifact that is
+// indistinguishable from a repository laid out.
+func TestScaffoldOwesItsReadme(t *testing.T) {
+	if got := stageArtifact(defaults(t), "scaffold", "thing"); got != "README.md" {
+		t.Errorf("scaffold owes %q, want README.md", got)
+	}
+	w := gitWorkspace(t, `{}`)
+	claudeWriting(t, w.RepoDir(), "true")
+	_, err := Run(w, Options{Stage: "scaffold", MaxMinutes: 1, MaxTurns: 1})
+	if err == nil || !strings.Contains(err.Error(), "README.md") {
+		t.Fatalf("a scaffold that wrote nothing must fail naming README.md: %v", err)
+	}
+
+	w2 := gitWorkspace(t, `{}`)
+	claudeWriting(t, w2.RepoDir(), "printf '# Thing\\n\\nreal\\n' > README.md && git add README.md && git commit -qm readme")
+	if _, err := Run(w2, Options{Stage: "scaffold", MaxMinutes: 1, MaxTurns: 1}); err != nil {
+		t.Fatalf("a scaffold that committed its README failed: %v", err)
 	}
 }

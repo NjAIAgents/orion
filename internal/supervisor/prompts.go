@@ -369,6 +369,10 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"",
 			"Work on a branch cut from develop. Do not commit to develop or main directly;",
 			"the gate will refuse it and the refusal is correct.",
+			"",
+			"COMMIT README.md. It is the artifact this stage owes: Orion checks that it",
+			"is there, not empty and tracked, and fails the stage otherwise. If something",
+			"stops you laying out the repository, say so there rather than exiting quietly.",
 		), nil
 
 	case "decompose":

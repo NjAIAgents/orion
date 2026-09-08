@@ -61,6 +61,13 @@ func stageArtifact(cfg config.Config, stage, slug string) string {
 		return specArtifact(cfg, slug)
 	case "plan":
 		return planArtifact(cfg, slug)
+	case "scaffold":
+		// The one file a scaffold always leaves and a refusal never does.
+		// FOUND ON A REAL PROJECT: the stage was refused every write by the
+		// shield, committed nothing, exited 0, and the chain reported it
+		// done -- because this switch had no case for the one stage whose
+		// whole job is writing files.
+		return "README.md"
 	}
 	return ""
 }

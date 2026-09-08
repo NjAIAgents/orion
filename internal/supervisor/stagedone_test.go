@@ -78,30 +78,30 @@ func TestStageDoneWithoutAnArtifactReadsTheLastRun(t *testing.T) {
 	w := &workspace.Workspace{ID: "x", Dir: t.TempDir()}
 	w.Task.Slug = "thing"
 
-	if StageDone(w, "scaffold") {
-		t.Error("scaffold is done with no run recorded")
+	if StageDone(w, "decompose") {
+		t.Error("decompose is done with no run recorded")
 	}
 
-	w.Task.Runs = []workspace.RunRec{{Stage: "scaffold", ExitCode: 1, Reason: "claude exited 1"}}
-	if StageDone(w, "scaffold") {
-		t.Error("scaffold is done after only a failed run")
+	w.Task.Runs = []workspace.RunRec{{Stage: "decompose", ExitCode: 1, Reason: "claude exited 1"}}
+	if StageDone(w, "decompose") {
+		t.Error("decompose is done after only a failed run")
 	}
 
-	w.Task.Runs = append(w.Task.Runs, workspace.RunRec{Stage: "scaffold", ExitCode: 0, Reason: "completed"})
-	if !StageDone(w, "scaffold") {
-		t.Error("scaffold is not done after a completed run")
+	w.Task.Runs = append(w.Task.Runs, workspace.RunRec{Stage: "decompose", ExitCode: 0, Reason: "completed"})
+	if !StageDone(w, "decompose") {
+		t.Error("decompose is not done after a completed run")
 	}
 
 	// A later failed run un-does it: the last word wins.
-	w.Task.Runs = append(w.Task.Runs, workspace.RunRec{Stage: "scaffold", ExitCode: 0, Reason: "breaker tripped: too many edits"})
-	if StageDone(w, "scaffold") {
-		t.Error("scaffold is done although its last run tripped a breaker")
+	w.Task.Runs = append(w.Task.Runs, workspace.RunRec{Stage: "decompose", ExitCode: 0, Reason: "breaker tripped: too many edits"})
+	if StageDone(w, "decompose") {
+		t.Error("decompose is done although its last run tripped a breaker")
 	}
 
 	// Another stage's run says nothing about this one.
-	w.Task.Runs = []workspace.RunRec{{Stage: "decompose", ExitCode: 0, Reason: "completed"}}
-	if StageDone(w, "scaffold") {
-		t.Error("scaffold is done on the strength of decompose's run")
+	w.Task.Runs = []workspace.RunRec{{Stage: "review", ExitCode: 0, Reason: "completed"}}
+	if StageDone(w, "decompose") {
+		t.Error("decompose is done on the strength of review's run")
 	}
 }
 
