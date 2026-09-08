@@ -6,6 +6,36 @@ now refuses to do**.
 
 ## Unreleased
 
+### Added
+
+- **`orion plan KEY` is one resumable chain, and spec-kit runs inside it.** The
+  chain is now toolkit → intent → constitution → spec → plan → analyze → scaffold →
+  remote → decompose → release → clone, and it ends at `next: orion watch KEY` with
+  nothing left to type. Three steps are new: `constitution` writes
+  `.specify/memory/constitution.md` through `/speckit-constitution`, seeded from
+  orion.json's gates and branch model and the intent's constraints, and fails while a
+  template slot is left; `analyze` runs `/speckit-analyze` read-only and Orion reads
+  its `Critical Issues Count` itself — above zero, or missing, blocks the chain;
+  `release` (`--release vX.Y.Z`, opt-in) creates the version and attaches every
+  ticket in the tree. `remote` and `clone` moved into the chain from their own
+  commands. `decompose` creates the tree natively when the plan stage left a
+  `tasks.md`, stamping the `ORION` queue label on stories and epic-level tasks — the
+  levels `orion watch` claims once each — and falls back to `/pm-plan` otherwise.
+- **A second `orion plan KEY` resumes.** Every step derives whether it is done from
+  its own artifact and is skipped with `= done`; a killed chain picks up at the first
+  unfinished step. `--from <step>` re-runs from a step on purpose, which is also how
+  a re-plan works: edit the spec, `--from spec`. task.json is written atomically.
+- **The discovery gate reads spec-kit's own markers.** A `[NEEDS CLARIFICATION: …]`
+  anywhere in the spec blocks plan, analyze, scaffold and decompose until a person
+  replaces it with the decision; `orion answer` lists them beside the intent's
+  questions. The `orion` preset Orion installs into every spec-kit project makes
+  `/speckit-specify` write every uncertainty as a marker — no best guess, no cap, no
+  interactive questionnaire a headless run cannot answer.
+- **`orion doctor` checks spec-kit's version.** It resolves every `toolkit.stages`
+  command to a file on disk and fails naming the stage when one is missing; it reads
+  `specify version --features --json` and prompts `uv tool upgrade specify-cli` when a
+  required feature is absent.
+
 ### Changed
 
 - **spec-kit is installed per project, and its command names now resolve.** A new
