@@ -469,3 +469,41 @@ func TestAMarkerWithoutABulletStandsAlone(t *testing.T) {
 		t.Errorf("Open = %d, want 1", got)
 	}
 }
+
+// An answer that names no value is refused: it becomes the requirement's
+// text and ticks the box, so every later stage reads it as settled. Real
+// examples, from a real project.
+func TestAnswerRefusesAnAnswerThatNamesNoValue(t *testing.T) {
+	p := write(t, "## Open questions\n- Which cost basis is the bill?\n")
+	q := Assess(p).Questions[0]
+
+	for _, hedge := range []string{
+		"same as cloudhealth", "whaever broadcom cloudhealth does",
+		"again check broadcom cloudhealth", "not decided yet",
+		"TBD", "unknown", "N/A", "same", "yes",
+		"check what the finance team uses",
+	} {
+		if err := Answer(p, q, hedge); err == nil {
+			t.Errorf("%q was accepted as an answer", hedge)
+		}
+	}
+	// Still open: nothing was written.
+	if got := Assess(p).Open; got != 1 {
+		t.Errorf("Open = %d after refusals, want 1", got)
+	}
+
+	// And real answers are not refused, including ones that mention another
+	// system or open with a word a hedge also uses.
+	for _, real := range []string{
+		"Unblended cost per linked account per month, as Cost Explorer reports it, including tax and credits.",
+		"Twelve, all under one AWS Organization.",
+		"eu-west-1 only.",
+		"Yes: read-only access on the management account, granted on request.",
+		"Check-in happens weekly, and the figure is the month-end total.",
+	} {
+		p2 := write(t, "## Open questions\n- A question?\n")
+		if err := Answer(p2, Assess(p2).Questions[0], real); err != nil {
+			t.Errorf("a real answer was refused: %q\n  %v", real, err)
+		}
+	}
+}

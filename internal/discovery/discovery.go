@@ -323,6 +323,14 @@ func Answer(path string, q Question, text string) error {
 	if text == "" {
 		return errors.New("an empty answer answers nothing")
 	}
+	if why := hedged(text); why != "" {
+		return fmt.Errorf("%s\n  That is where to look, not what was decided -- and a ticked box "+
+			"tells every later stage the question is settled. FOUND ON A REAL PROJECT: "+
+			"\"same as cloudhealth\" became a requirement's definition of the figure it "+
+			"reconciles against, and three stages designed from it.\n"+
+			"  Say the value, or leave it open: an open question stops the chain, which is "+
+			"cheaper than a wrong one carried into the plan, the tasks and the tracker.", why)
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -391,4 +399,55 @@ func m1(m []string) string {
 		return ""
 	}
 	return m[1]
+}
+
+// hedges are the shapes an answer takes when it names no value.
+//
+// Each is a real answer given on a real project, and each was written into
+// the requirement it answered and ticked as settled. They fall into three
+// kinds: a deferral ("not decided yet"), a redirection ("check what X
+// does"), and a bare acknowledgement ("same", "yes") that carries no value
+// at all.
+var hedges = []struct{ pattern, why string }{
+	{`^(tbd|tba|n/?a|none|unknown|not sure|dunno|\?+)\.?$`, "%q names no value."},
+	{`^(same|yes|no|ok|okay|maybe|later)\.?$`, "%q is an acknowledgement, not an answer."},
+	{`(?i)^.{0,40}\b(tbd|to be decided|not decided|undecided|not known|no idea|figure (it )?out later|decide later|revisit)\b`,
+		"%q defers the decision rather than making it."},
+	{`(?i)\b(same as|whatever|whaever|as per|copy) (what )?\w+( does)?\b`,
+		"%q points at another system instead of stating the value."},
+	// A whole answer that is only an instruction to go and look. The verb
+	// may be preceded by a filler word ("again check ..."), and must be the
+	// verb rather than the start of another word -- "Check-in happens
+	// weekly" is an answer.
+	{`(?i)^(again |also |maybe |just |please |first )*(check|see|look at|review|ask|confirm|verify)( |$)[^.]{0,60}$`,
+		"%q says where to look, not what was found."},
+}
+
+var hedgeRes = func() []*regexp.Regexp {
+	out := make([]*regexp.Regexp, len(hedges))
+	for i, h := range hedges {
+		out[i] = regexp.MustCompile(h.pattern)
+	}
+	return out
+}()
+
+// hedged reports why an answer does not answer, or "" when it does.
+//
+// DELIBERATELY NARROW. A false positive refuses a real answer and sends a
+// person back to the prompt, so every pattern here matches a WHOLE answer or
+// its opening clause -- never a phrase inside a longer one. "Unblended cost
+// per account, as Cost Explorer reports it" mentions another system and is
+// an answer; "same as cloudhealth" is not.
+func hedged(text string) string {
+	t := strings.TrimSpace(strings.ToLower(text))
+	// A long answer has said something, whatever words it opens with.
+	if len(t) > 160 {
+		return ""
+	}
+	for i, h := range hedges {
+		if hedgeRes[i].MatchString(t) {
+			return fmt.Sprintf(h.why, text)
+		}
+	}
+	return ""
 }

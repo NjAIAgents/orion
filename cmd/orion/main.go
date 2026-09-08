@@ -1717,7 +1717,19 @@ func answerInteractively(out io.Writer, in *bufio.Reader, as []discovery.Assessm
 				}
 			}
 			if err := discovery.Answer(x.Path, *next, ans); err != nil {
-				fmt.Fprintf(out, "  could not write that answer: %v\n", err)
+				// A refused answer is asked again, not skipped: the person
+				// is here now, and "that names no value" is information
+				// they can act on immediately.
+				fmt.Fprintf(out, "  %s\n\n", err)
+				if again, ok := ask(in, out, "  Answer it, or press enter to leave it open:"); ok && strings.TrimSpace(again) != "" {
+					if err := discovery.Answer(x.Path, *next, again); err == nil {
+						if len(written) == 0 || written[len(written)-1] != x.Path {
+							written = append(written, x.Path)
+						}
+						continue
+					}
+					fmt.Fprintf(out, "  still not an answer; left open.\n")
+				}
 				skipped[next.Text] = true
 				continue
 			}
