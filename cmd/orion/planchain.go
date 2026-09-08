@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -166,17 +167,28 @@ func runPlanChainFrom(out io.Writer, ws *workspace.Workspace, run stageRunner, a
 		// makes -- a tracker tree needs a remote to point at.
 		started = true
 		if s.Frame != nil {
-			if err := s.Frame(out, ws, ask); err != nil {
+			err := s.Frame(out, ws, ask)
+			// A fallback step that found nothing to work from hands the
+			// stage to the supervised runner below, which is what it would
+			// have been before the native route existed.
+			if errors.Is(err, errNotApplicable) && s.Fallback {
+				err = nil
+				s.Frame = nil
+			}
+			if s.Frame == nil {
+				// fall through to the stage runner
+			} else if err != nil {
 				fmt.Fprintln(out)
 				ui.Fail(out, "%v", err)
 				fmt.Fprintf(out, "\n  %s\n", ui.Dim(out, fmt.Sprintf(
 					"stopped at %d of %d steps, at %s", i+1, len(planStages), s.Stage)))
 				fmt.Fprintf(out, "  resume: orion plan %s\n", planKeyOf(ws))
 				return done
+			} else {
+				done++
+				ui.Ok(out, "done", "%s", s.Stage)
+				continue
 			}
-			done++
-			ui.Ok(out, "done", "%s", s.Stage)
-			continue
 		}
 
 		res, err := run(ws, s.Stage)

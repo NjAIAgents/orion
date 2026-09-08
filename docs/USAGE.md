@@ -530,11 +530,22 @@ the tree's identity label (`orion-spec-<feature>`), links what is there and
 creates only the rest — so a run that failed halfway is resumed by running the
 same command again, and it reports the item it stopped at.
 
-**This is opt-in and Jira-only for now.** The `decompose` STAGE still runs
-whatever your toolkit block names (`/pm-plan` by default), on any tracker, and
-that path is unchanged — a project with no spec-kit output decomposes exactly as
-it did before. The tracker-neutral seam that would let this reach Linear, Notion
-and GitHub Issues is tracked as OR-303.
+**`orion plan` runs this for you.** When the plan stage left
+`<FeatureDir>/tasks.md`, the chain's `decompose` step creates the tree natively
+— the same code as the command above — and stamps the queue label (`ORION` by
+default, `tracker.queue_label` in orion.json) on every story and every
+epic-level task, so `orion watch` can claim each exactly once. Not on the epic,
+which would make the whole project one claim; not on a story's sub-tasks, which
+the story works itself. With no tasks.md the `decompose` STAGE runs whatever
+your toolkit block names (`/pm-plan` by default), on any tracker, exactly as
+before. `orion plan KEY --release v1.0.0` adds a step after decompose that
+creates the version and attaches every ticket in the tree to it, so
+`orion release status` never reports the tree as orphans; without the flag the
+step is skipped.
+
+**Jira-only for now.** The tracker-neutral seam that would let the native route
+reach Linear, Notion and GitHub Issues is tracked as OR-303; the `/pm-plan`
+fallback works on any tracker.
 
 ---
 

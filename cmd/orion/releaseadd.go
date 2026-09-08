@@ -264,13 +264,42 @@ func runReleaseAdd(args []string) {
 
 	j, err := tracker.NewJiraFromEnv()
 	exitOn(err)
-	w := os.Stdout
+	if err := attachToVersion(j, os.Stdout, key, name, keys, force); err != nil {
+		if errors.Is(err, errReported) {
+			os.Exit(1)
+		}
+		exitOn(err)
+	}
+}
+
+// releaseAPI is the slice of the tracker attaching a tree to a version
+// needs. An interface so the chain's release step can be tested against a
+// fake; *tracker.Jira satisfies it.
+type releaseAPI interface {
+	FindVersion(projectKey, name string) (tracker.Version, bool, error)
+	ListVersions(projectKey string) ([]tracker.Version, error)
+	GetIssue(key string) (*tracker.Issue, error)
+	SetFixVersion(key, versionID string) error
+	CreateVersion(projectKey, name, description string) (tracker.Version, bool, error)
+}
+
+// errReported is returned when the failure has already been printed in the
+// operator's own words -- the caller exits without adding "orion: " on top.
+var errReported = errors.New("release: not applied; see above")
+
+// attachToVersion attaches keys to the version named `name` on project key,
+// idempotently: the body `orion release add` always had, callable from the
+// chain's release step as well. Every refusal is printed here and returned
+// as errReported; a transport failure is returned as itself.
+func attachToVersion(j releaseAPI, w io.Writer, key, name string, keys []string, force bool) error {
 
 	// The SAME lookup `create` and `close` use, deliberately: internal/tracker
 	// owns version resolution and its case-exact matching, and a second path to
 	// fixVersion is how two answers to one question drift apart.
 	v, found, err := j.FindVersion(key, name)
-	exitOn(err)
+	if err != nil {
+		return err
+	}
 	if !found {
 		ui.Fail(w, "%s has no version named %s", key, name)
 		// Name what DOES exist. "not found" alone leaves the operator guessing
@@ -282,7 +311,7 @@ func runReleaseAdd(args []string) {
 			}
 			ui.Warn(w, "%s has: %s", key, strings.Join(names, ", "))
 		}
-		os.Exit(1)
+		return errReported
 	}
 	// A released milestone records what SHIPPED. Adding to it rewrites a
 	// history that is already public -- in the changelog, in the release notes,
@@ -293,7 +322,7 @@ func runReleaseAdd(args []string) {
 			"rewrite history that has shipped", v.Name, key)
 		ui.Warn(w, "attach it to the next milestone, or pass --force if it really did ship in %s",
 			v.Name)
-		os.Exit(1)
+		return errReported
 	}
 
 	// RESOLVE EVERY KEY BEFORE WRITING ANY. One key per request rather than one
@@ -306,7 +335,9 @@ func runReleaseAdd(args []string) {
 		if errors.Is(err, tracker.ErrIssueNotFound) {
 			continue
 		}
-		exitOn(err)
+		if err != nil {
+			return err
+		}
 		current[k] = is.FixVersions
 	}
 
@@ -337,7 +368,7 @@ func runReleaseAdd(args []string) {
 			"moving one rewrites a history that is already public.", len(plan.Shipped))
 		fmt.Fprintf(w, "          %s\n", ui.Dim(w,
 			"If the milestone is genuinely wrong, re-run with --force."))
-		os.Exit(1)
+		return errReported
 	}
 
 	if plan.writes() == 0 {
@@ -346,9 +377,9 @@ func runReleaseAdd(args []string) {
 		ui.Ok(w, "unchanged", "%d ticket(s) already on %s; nothing to write",
 			len(plan.Already), v.Name)
 		if len(plan.Missing) > 0 {
-			os.Exit(1)
+			return errReported
 		}
-		return
+		return nil
 	}
 
 	// --force was given, so the refusals proceed as ordinary moves. Merged
@@ -385,7 +416,7 @@ func runReleaseAdd(args []string) {
 		// Partial application is safe to leave: the command is idempotent, so
 		// the fix is to re-run it once the cause is dealt with.
 		ui.Fail(w, "%d ticket(s) could not be updated: %s", len(failed), strings.Join(failed, ", "))
-		os.Exit(1)
+		return errReported
 	}
 	if len(plan.Missing) > 0 {
 		// The writes succeeded, but a key naming no ticket means the range was
@@ -393,6 +424,7 @@ func runReleaseAdd(args []string) {
 		// keep passing over a typo.
 		ui.Fail(w, "%d key(s) name no ticket: %s",
 			len(plan.Missing), strings.Join(plan.Missing, ", "))
-		os.Exit(1)
+		return errReported
 	}
+	return nil
 }

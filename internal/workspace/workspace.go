@@ -87,7 +87,13 @@ type Task struct {
 	// project's repository, not of the command that happened to run first.
 	RemoteOrg string          `json:"remote_org,omitempty"`
 	Tracker   json.RawMessage `json:"tracker,omitempty"`
-	Runs      []RunRec        `json:"runs,omitempty"`
+	// ReleaseVersion is the tracker version --release asked the tree to be
+	// attached to; Released is the version it was attached to, once the
+	// release step has run. Both on the task so a resume needs no flag and
+	// knows whether the step is done.
+	ReleaseVersion string   `json:"release_version,omitempty"`
+	Released       string   `json:"released,omitempty"`
+	Runs           []RunRec `json:"runs,omitempty"`
 }
 
 // SlackChannel is a project's channel.

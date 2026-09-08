@@ -69,6 +69,11 @@ type planStage struct {
 	// others know about. Actor is events.ActorOrion for these, so the roster
 	// says who does it without listing Orion as a participant on a model.
 	Frame func(out io.Writer, ws *workspace.Workspace, ask confirmer) error
+	// Fallback marks a frame step that may decline -- errNotApplicable --
+	// when the artifact it works from is absent, in which case the
+	// supervised stage of the same name runs instead. Counted as a stage
+	// that may spend, and reachable by `orion run --stage`.
+	Fallback bool
 	// Done, when set, reports that this step's work is already there, so a
 	// resumed chain prints it as done and moves on without asking. Derived
 	// from the step's own artifact wherever there is one -- a flag can say
@@ -82,7 +87,7 @@ type planStage struct {
 func supervisedStages() int {
 	n := 0
 	for _, s := range planStages {
-		if s.Frame == nil {
+		if s.Frame == nil || s.Fallback {
 			n++
 		}
 	}
@@ -153,7 +158,17 @@ var planStages = []planStage{
 	// after the chain; the chain runs it now (docs/decisions/0022).
 	{Stage: "remote", Actor: events.ActorOrion, What: "the GitHub repository: create it, push main and develop, protect both",
 		Frame: remoteStep, Done: remoteDone},
-	{Stage: "decompose", Actor: events.ActorPM, What: "the Epic, Story and Task tree in the tracker", Done: stageDone("decompose")},
+	// Native when the plan stage left a tasks.md -- Orion creates the tree
+	// itself, stamping the queue label so `orion watch` can claim it -- and
+	// the supervised /pm-plan stage otherwise. One entry with both, because
+	// which one runs is a property of the artifact, not of the roster.
+	{Stage: "decompose", Actor: events.ActorPM, What: "the Epic, Story and Task tree in the tracker",
+		Frame: decomposeStep, Fallback: true, Done: decomposeDone},
+	// Opt-in, and free when opted into: the version every ticket in the
+	// tree is attached to, so `orion release status` never reports the
+	// tree as orphans. Skipped, and done, without --release.
+	{Stage: "release", Actor: events.ActorOrion, What: "the tracker version the tree is attached to (--release vX.Y.Z)",
+		Frame: releaseStep, Done: releaseDone},
 	// Last, and best effort: the operator's own copy, once there is
 	// something committed worth copying. In the chain rather than after it
 	// so a resume can retry a clone that failed.
@@ -226,7 +241,7 @@ func nextPlanStage(stage string) (planStage, bool) {
 			// `orion run --stage` can run, so suggesting it would name a
 			// command that refuses; the chain itself runs frame steps.
 			for _, next := range planStages[i+1:] {
-				if next.Frame == nil {
+				if next.Frame == nil || next.Fallback {
 					return next, true
 				}
 			}
@@ -249,6 +264,9 @@ type planOptions struct {
 	// default and wrong when the operator has edited the spec and wants
 	// everything downstream rebuilt from it.
 	From string
+	// Release is the tracker version to attach the tree to, from --release.
+	// Recorded on the task when given, so a resume needs no flag.
+	Release string
 	// Run and Confirm drive the stage chain. Both nil means announce only --
 	// which is what a non-interactive caller gets, and what every existing
 	// test of this command already exercises.
@@ -282,12 +300,13 @@ func runPlan(args []string) {
 	exitOn(err)
 
 	o := planOptions{
-		Key:    key,
-		DryRun: hasFlag(args[1:], "--dry-run"),
-		Home:   home,
-		Out:    os.Stdout,
-		Org:    argFlag(args[1:], "--org", ""),
-		From:   argFlag(args[1:], "--from", ""),
+		Key:     key,
+		DryRun:  hasFlag(args[1:], "--dry-run"),
+		Home:    home,
+		Out:     os.Stdout,
+		Org:     argFlag(args[1:], "--org", ""),
+		From:    argFlag(args[1:], "--from", ""),
+		Release: argFlag(args[1:], "--release", ""),
 	}
 	// A dry run spends nothing and dispatches nothing, so it must not offer
 	// to. Off a terminal there is nobody to answer the pauses.
@@ -359,6 +378,12 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 	// resume after it agree. A dry run has no task to write to.
 	if opts.Org != "" && !opts.DryRun && ws.Task.RemoteOrg != opts.Org {
 		ws.Task.RemoteOrg = opts.Org
+		if err := ws.SaveTask(); err != nil {
+			return err
+		}
+	}
+	if opts.Release != "" && !opts.DryRun && ws.Task.ReleaseVersion != opts.Release {
+		ws.Task.ReleaseVersion = opts.Release
 		if err := ws.SaveTask(); err != nil {
 			return err
 		}

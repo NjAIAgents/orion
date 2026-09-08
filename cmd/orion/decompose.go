@@ -3,25 +3,42 @@ package main
 // `orion decompose <KEY> [tasks.md]` creates a tracker tree from a
 // /speckit.tasks task list.
 //
-// OPT-IN, and it stays opt-in. The decompose stage prompt still names
-// /pm-plan (or whatever the project's toolkit block configures), so a
-// project with no spec-kit output decomposes exactly as it did before, on
-// any tracker. This command is the native route for the projects that DO
-// have a tasks.md, and the tracker seam it would need to reach Linear,
-// Notion and GitHub has not landed yet -- so it is Jira-only, says so, and
-// is invoked by a person rather than by a stage.
+// The same code `orion plan` runs as its decompose step when the feature
+// directory holds a tasks.md (plandecompose.go), here for a person to run
+// by hand against any task list. The decompose STAGE prompt still names
+// /pm-plan (or whatever the project's toolkit block configures), and the
+// chain falls back to it when there is no tasks.md, so a project with no
+// spec-kit output decomposes as it always did, on any tracker. The tracker
+// seam this would need to reach Linear, Notion and GitHub has not landed
+// (OR-303), so the native route is Jira-only and says so.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/decompose"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
 )
+
+// decomposeBackend opens the tracker the tree is created in. A variable so
+// the chain's tests can stand in a fake and create nothing real.
+var decomposeBackend = func() (decompose.Backend, error) {
+	jira, err := tracker.NewJiraFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	return decompose.NewJiraBackend(jira), nil
+}
+
+// errDeclined is the answer "no" to the one confirmation: nothing was
+// created, and the caller decides whether that is a stop or a shrug.
+var errDeclined = errors.New("not confirmed, so nothing was created")
 
 func runDecompose(args []string) {
 	pos := positional(args)
@@ -40,53 +57,93 @@ func runDecompose(args []string) {
 		path = found
 	}
 
-	text, err := os.ReadFile(path)
-	exitOn(err)
-
-	tree, err := decompose.Parse(string(text), path)
-	exitOn(err)
-
-	jira, err := tracker.NewJiraFromEnv()
-	exitOn(err)
-
-	backend := decompose.NewJiraBackend(jira)
-	plan, err := decompose.Build(tree, backend, project)
-	exitOn(err)
-
-	decompose.Preview(os.Stdout, plan)
-
-	if plan.NewCount() == 0 {
-		fmt.Println()
-		ui.Ok(os.Stdout, "nothing to do", "every item is already in %s", project)
+	ask := func(prompt string) bool { return confirmCreate(os.Stdout, prompt) }
+	err := decomposeTree(os.Stdout, ".", project, path, ask)
+	if errors.Is(err, errDeclined) {
+		ui.Warn(os.Stdout, "%v", err)
 		return
 	}
+	if errors.Is(err, errTreeStopped) {
+		os.Exit(1)
+	}
+	exitOn(err)
+}
 
-	fmt.Printf("\n  %s\n", ui.Dim(os.Stdout,
+// errTreeStopped is a partial failure already reported in full -- what was
+// created, what was not, where it stopped -- so the caller exits without
+// repeating it.
+var errTreeStopped = errors.New("the tree stopped partway; see above")
+
+// decomposeTree reads one task list and creates its tree in project,
+// after one confirmation for the whole of it. root is the repository the
+// queue label is configured in.
+//
+// One body for two callers: `orion decompose` and the chain's decompose
+// step. The stop-and-report on a partial failure is the same on both --
+// what exists now, what does not, and that a re-run links the first and
+// creates only the second -- because the boundary is the property, not the
+// command that hit it.
+func decomposeTree(out io.Writer, root, project, path string, ask confirmer) error {
+	text, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	tree, err := decompose.Parse(string(text), path)
+	if err != nil {
+		return err
+	}
+	// The queue label, so the tree is claimable the moment it exists:
+	// stories and epic-level tasks, per Tree.Queue's rule. From the
+	// project's own config, which is where `orion watch` reads it too.
+	queue := strings.TrimSpace(config.Load(root).Tracker.QueueLabel)
+	if queue == "" {
+		queue = tracker.QueueLabelDefault
+	}
+	tree.Queue(queue)
+
+	backend, err := decomposeBackend()
+	if err != nil {
+		return err
+	}
+	plan, err := decompose.Build(tree, backend, project)
+	if err != nil {
+		return err
+	}
+
+	decompose.Preview(out, plan)
+
+	if plan.NewCount() == 0 {
+		fmt.Fprintln(out)
+		ui.Ok(out, "nothing to do", "every item is already in %s", project)
+		return nil
+	}
+
+	fmt.Fprintf(out, "\n  %s\n", ui.Dim(out,
 		"Issues in a shared tracker are seen by other people and cannot be cleanly\n"+
 			"  withdrawn, so this asks once for the whole tree and creates nothing without\n"+
 			"  an answer."))
 
-	if !confirmCreate(os.Stdout, fmt.Sprintf("Create %d items in %s?", plan.NewCount(), project)) {
-		ui.Warn(os.Stdout, "not confirmed, so nothing was created")
-		return
+	if !ask(fmt.Sprintf("Create %d items in %s?", plan.NewCount(), project)) {
+		return errDeclined
 	}
 
 	res, applyErr := decompose.Apply(plan, backend)
 	for _, k := range res.Created {
-		ui.Ok(os.Stdout, "created", "%s", k)
+		ui.Ok(out, "created", "%s", k)
 	}
 	if applyErr != nil {
 		// The boundary, stated: what exists now, and what does not. A re-run
 		// searches by the identity label, finds exactly the items above, and
 		// makes only the rest.
-		ui.Fail(os.Stdout, "%v", applyErr)
-		fmt.Printf("\n  %d created, %d already there, and the tree stops at %q.\n",
+		ui.Fail(out, "%v", applyErr)
+		fmt.Fprintf(out, "\n  %d created, %d already there, and the tree stops at %q.\n",
 			len(res.Created), len(res.Linked), res.FailedAt)
-		fmt.Printf("  Re-run the same command once the cause is fixed: it links what is above\n" +
+		fmt.Fprintf(out, "  Re-run the same command once the cause is fixed: it links what is above\n"+
 			"  and creates only what is missing.\n")
-		os.Exit(1)
+		return fmt.Errorf("%w: %v", errTreeStopped, applyErr)
 	}
-	fmt.Printf("\n  %d created, %d already there.\n", len(res.Created), len(res.Linked))
+	fmt.Fprintf(out, "\n  %d created, %d already there.\n", len(res.Created), len(res.Linked))
+	return nil
 }
 
 // stdinIsTTY answers "is anybody there".

@@ -69,7 +69,8 @@ func TestTheChainRunsEveryStageInRosterOrder(t *testing.T) {
 	}
 	want := make([]string, 0, len(planStages))
 	for _, s := range planStages {
-		if s.Frame == nil {
+		// A fallback step with nothing to work from runs supervised.
+		if s.Frame == nil || s.Fallback {
 			want = append(want, s.Stage)
 		}
 	}
