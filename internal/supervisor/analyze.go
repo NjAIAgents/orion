@@ -44,7 +44,8 @@ func analyzeGate(output string) error {
 	if n > 0 {
 		msg := fmt.Sprintf("analyze: %d critical issue(s) in the spec, plan or tasks", n)
 		if rows := criticalRows(output); len(rows) > 0 {
-			msg += ":\n    " + strings.Join(rows, "\n    ")
+			msg += ", each with what the report says would fix it:\n\n    " +
+				strings.Join(rows, "\n\n    ")
 		}
 		return errors.New(msg)
 	}
@@ -54,16 +55,19 @@ func analyzeGate(output string) error {
 // maxCriticalRows bounds what a block prints; the log has the rest.
 const maxCriticalRows = 10
 
-// criticalRows lists the CRITICAL rows of the report's findings table as
-// "ID  location  summary", so the block says what to fix rather than only
-// how many things. Columns are taken from the table's own header when it
-// has one, and from spec-kit's documented order otherwise.
+// criticalRows lists the CRITICAL rows of the report's findings table as a
+// block per finding: the id and where it is, WHAT is wrong, and the
+// report's own recommendation of what to do about it. The recommendation is
+// the half that makes the block actionable -- a reader who has only the
+// summary knows something is broken and still has to open a nine-minute log
+// to learn what would fix it. Columns come from the table's own header when
+// it has one, and from spec-kit's documented order otherwise.
 func criticalRows(output string) []string {
 	// The captured output is the CLI's stream-json, so the report's lines
 	// arrive as \n escapes inside one JSON string; unescape before reading
 	// it as lines. Harmless on already-plain text.
 	output = strings.NewReplacer(`\n`, "\n", `\"`, `"`, `\\`, `\`).Replace(output)
-	idCol, sevCol, locCol, sumCol := 0, 2, 3, 4
+	idCol, sevCol, locCol, sumCol, recCol := 0, 2, 3, 4, 5
 	var rows []string
 	// The report reaches the stream twice -- as the assistant's text and
 	// again in the CLI's final result event -- so a row is kept once by id.
@@ -86,6 +90,8 @@ func criticalRows(output string) []string {
 					locCol = i
 				case "summary":
 					sumCol = i
+				case "recommendation", "fix", "action":
+					recCol = i
 				}
 			}
 			continue
@@ -104,9 +110,19 @@ func criticalRows(output string) []string {
 			continue
 		}
 		seen[id] = true
-		summary := clipTo(get(sumCol), 200)
-		loc := clipTo(strings.ReplaceAll(get(locCol), "`", ""), 90)
-		rows = append(rows, strings.TrimSpace(id+"  "+loc+"  "+summary))
+		clean := func(i int) string { return strings.TrimSpace(strings.ReplaceAll(get(i), "`", "")) }
+		row := id
+		if loc := clipTo(clean(locCol), 120); loc != "" {
+			row += "  " + loc
+		}
+		if sum := clipTo(clean(sumCol), 400); sum != "" {
+			row += "\n      " + sum
+		}
+		// What to do about it, in the report's own words.
+		if rec := clipTo(clean(recCol), 400); rec != "" {
+			row += "\n      fix: " + rec
+		}
+		rows = append(rows, row)
 		if len(rows) == maxCriticalRows {
 			break
 		}
@@ -114,9 +130,15 @@ func criticalRows(output string) []string {
 	return rows
 }
 
+// clipTo shortens at a word boundary, so a clipped sentence ends on a word
+// rather than mid-syllable.
 func clipTo(s string, n int) string {
-	if len(s) > n {
-		return s[:n-3] + "..."
+	if len(s) <= n {
+		return s
 	}
-	return s
+	cut := s[:n-1]
+	if i := strings.LastIndexAny(cut, " ,;"); i > n/2 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, " ,;") + "…"
 }

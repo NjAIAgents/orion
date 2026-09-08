@@ -449,7 +449,9 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 				if key == "" {
 					key = ws.ID
 				}
-				return last, fmt.Errorf("%w\n  log: %s\n  Fix the spec, plan or tasks it names, then: orion plan %s --from analyze", err, last.LogPath, key)
+				return last, fmt.Errorf("%w\n\n  Each finding names the file and line to change and the fix the report proposes.\n"+
+					"  The full report, with the HIGH and MEDIUM findings too, is in the log:\n    %s\n"+
+					"  When the artefacts are edited and committed:  orion plan %s --from analyze", err, last.LogPath, key)
 			}
 		}
 		// The artifact is real and committed, so it can be published where

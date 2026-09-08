@@ -93,7 +93,11 @@ func TestAnalyzeGateNamesTheCriticalFindings(t *testing.T) {
 	if err == nil {
 		t.Fatal("two criticals must block")
 	}
-	for _, want := range []string{"2 critical", "K1  tasks.md:36-55  Phase 1 lands on develop", "K2  plan.md:15  A test assumption"} {
+	for _, want := range []string{
+		"2 critical",
+		"K1  tasks.md:36-55\n      Phase 1 lands on develop with no PR path.\n      fix: Move T013 first",
+		"K2  plan.md:15\n      A test assumption adopted as a decision.\n      fix: Label it",
+	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("message lacks %q:\n%v", want, err)
 		}
@@ -127,12 +131,12 @@ func TestCriticalRowsReadAJSONEscapedBoldReport(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("rows = %v", rows)
 	}
-	for _, want := range []string{"C1  plan.md:369; tasks.md:46  Interim storage fixed"} {
+	for _, want := range []string{"C1  plan.md:369; tasks.md:46", "Interim storage fixed before the residency decision.", "fix: Make T004 reuse-only"} {
 		if !strings.Contains(rows[0], want) {
 			t.Errorf("row %q lacks %q", rows[0], want)
 		}
 	}
-	if err := analyzeGate(out); err == nil || !strings.Contains(err.Error(), "C1  plan.md") {
+	if err := analyzeGate(out); err == nil || !strings.Contains(err.Error(), "fix: Make T004 reuse-only") {
 		t.Errorf("the gate's message lacks the row: %v", err)
 	}
 }
@@ -144,5 +148,21 @@ func TestCriticalRowsAreListedOnce(t *testing.T) {
 	out := row + "\n...\n" + row + "\nCritical Issues Count: 1\n"
 	if rows := criticalRows(out); len(rows) != 1 {
 		t.Errorf("rows = %v, want one", rows)
+	}
+}
+
+// A clipped summary ends on a word, not mid-syllable.
+func TestALongSummaryIsClippedAtAWordBoundary(t *testing.T) {
+	long := strings.Repeat("residency ", 60)
+	rows := criticalRows("| ID | Category | Severity | Location(s) | Summary | Recommendation |\n" +
+		"| C1 | X | CRITICAL | plan.md:1 | " + long + " | Do the thing |\n")
+	if len(rows) != 1 {
+		t.Fatalf("rows = %v", rows)
+	}
+	if !strings.Contains(rows[0], "residency…") {
+		t.Errorf("want a clip on a word boundary:\n%s", rows[0])
+	}
+	if !strings.Contains(rows[0], "fix: Do the thing") {
+		t.Errorf("the recommendation was dropped:\n%s", rows[0])
 	}
 }
