@@ -623,3 +623,22 @@ func TestTheConstitutionSitsBetweenIntentAndSpec(t *testing.T) {
 		t.Error("constitution must be a supervised stage with a Done predicate")
 	}
 }
+
+// analyze sits between plan and scaffold: it checks what plan wrote before
+// anything is built from it, and owes no file of its own.
+func TestAnalyzeSitsBetweenPlanAndScaffold(t *testing.T) {
+	at := map[string]int{}
+	for i, s := range planStages {
+		at[s.Stage] = i
+	}
+	a, ok := at["analyze"]
+	if !ok {
+		t.Fatal("the chain has no analyze stage")
+	}
+	if !(at["plan"] < a && a < at["scaffold"]) {
+		t.Errorf("order plan=%d analyze=%d scaffold=%d; want plan < analyze < scaffold", at["plan"], a, at["scaffold"])
+	}
+	if planStages[a].Done == nil || planStages[a].Frame != nil {
+		t.Error("analyze must be a supervised stage with a Done predicate")
+	}
+}

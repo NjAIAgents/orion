@@ -138,6 +138,10 @@ var planStages = []planStage{
 	{Stage: "constitution", Actor: events.ActorArchitect, What: "project principles for spec-kit, seeded from orion.json gates and the intent", Done: stageDone("constitution")},
 	{Stage: "spec", Actor: events.ActorArchitect, What: "requirements and design spec", Done: stageDone("spec")},
 	{Stage: "plan", Actor: events.ActorArchitect, What: "implementation plan: files, order of work, tests, risks", Done: stageDone("plan")},
+	// After plan and before anything is built from it: a read-only check
+	// that spec, plan and tasks agree with each other and the constitution.
+	// It owes no file, so its Done is the recorded verdict of its last run.
+	{Stage: "analyze", Actor: events.ActorArchitect, What: "read-only consistency check of spec, plan and tasks; blocks on critical issues", Done: stageDone("analyze")},
 	{Stage: "scaffold", Actor: events.ActorDevOps, What: "repository skeleton on the OpenSSF baseline", Done: stageDone("scaffold")},
 	// The remote comes AFTER scaffold and BEFORE decompose. After scaffold,
 	// because creating a repository on GitHub is outward and irreversible
