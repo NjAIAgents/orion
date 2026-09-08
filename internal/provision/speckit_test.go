@@ -19,8 +19,9 @@ func fakeSpecify(t *testing.T) string {
 	fakebin.Install(t, dir, "specify", "#!/bin/sh\n"+
 		"echo \"$@\" >> "+fakebin.ShPath(log)+"\n"+
 		"case \"$1\" in init) mkdir -p .specify/memory .claude/skills/speckit-specify; echo x > .claude/skills/speckit-specify/SKILL.md;; "+
-		"preset) case \"$2\" in add) mkdir -p .specify/presets/orion .claude/skills/speckit-specify && cp \"$4\"/preset.yml .specify/presets/orion/preset.yml && "+
-		"cat \"$4\"/commands/speckit.specify.md > .claude/skills/speckit-specify/SKILL.md;; remove) rm -rf .specify/presets/orion;; esac;; esac\n"+
+		"preset) case \"$2\" in add) mkdir -p .specify/presets/orion .claude/skills/speckit-specify .claude/skills/speckit-tasks && cp \"$4\"/preset.yml .specify/presets/orion/preset.yml && "+
+		"cat \"$4\"/commands/speckit.specify.md > .claude/skills/speckit-specify/SKILL.md && "+
+		"cat \"$4\"/commands/speckit.tasks.md > .claude/skills/speckit-tasks/SKILL.md;; remove) rm -rf .specify/presets/orion;; esac;; esac\n"+
 		"exit 0\n")
 	return log
 }
@@ -176,5 +177,33 @@ func TestInitSpecKitReappliesThePresetWhenTheSkillLostTheWrap(t *testing.T) {
 	}
 	if did, err := InitSpecKit(repo); err != nil || did {
 		t.Errorf("an applied preset was touched: did=%v err=%v", did, err)
+	}
+}
+
+// A project provisioned before the preset grew a wrap is not up to date:
+// the check covers every skill the preset wraps, not the first one.
+func TestInitSpecKitReappliesWhenOnlySomeWrapsAreComposed(t *testing.T) {
+	log := fakeSpecify(t)
+	repo := repoAt(t, true)
+	if _, err := InitSpecKit(repo); err != nil {
+		t.Fatal(err)
+	}
+	// The state an older Orion left: specify wrapped, tasks not.
+	if err := os.WriteFile(filepath.Join(repo, ".claude", "skills", "speckit-tasks", "SKILL.md"),
+		[]byte("# spec-kit's own tasks skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if PresetApplied(repo) {
+		t.Fatal("a project missing the tasks wrap reports the preset applied")
+	}
+	if err := os.Truncate(log, 0); err != nil {
+		t.Fatal(err)
+	}
+	did, err := InitSpecKit(repo)
+	if err != nil || !did {
+		t.Fatalf("did=%v err=%v", did, err)
+	}
+	if !PresetApplied(repo) {
+		t.Error("the re-apply did not compose every wrap")
 	}
 }

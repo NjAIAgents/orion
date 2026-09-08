@@ -51,18 +51,30 @@ const SpecKitTag = "v1.0.4"
 // verb.
 const SpecKitReinstall = "uv tool install --reinstall specify-cli --from git+https://github.com/github/spec-kit.git@" + SpecKitTag
 
-// wrapMarker is the first heading of the orion preset's wrap, and the one
-// thing that proves the installed speckit-specify skill was composed with
-// it. The preset's registration under .specify/presets/ is not that proof:
+// wrapMarker is the first heading of every wrap the orion preset carries,
+// and the one thing that proves an installed skill was composed with it.
+// The preset's registration under .specify/presets/ is not that proof:
 // spec-kit recomposes skills on its own paths, and the registration
 // outlives the composition.
 const wrapMarker = "## Orion runs this headless"
 
-// PresetApplied reports whether the installed specify skill carries the
-// orion wrap -- the chain's toolkit step is not done until it does.
+// wrappedSkills are the skills the preset wraps. EVERY ONE of them has to
+// carry the marker, not just the first: the preset gained its tasks wrap
+// after some projects were already provisioned, and a check that looked at
+// speckit-specify alone reported those projects up to date while the
+// command whose output Orion parses was still spec-kit's own (OR-411).
+var wrappedSkills = []string{"speckit-specify", "speckit-tasks"}
+
+// PresetApplied reports whether every skill the preset wraps carries the
+// wrap -- the chain's toolkit step is not done until they all do.
 func PresetApplied(dir string) bool {
-	b, err := os.ReadFile(filepath.Join(dir, ".claude", "skills", "speckit-specify", "SKILL.md"))
-	return err == nil && strings.Contains(string(b), wrapMarker)
+	for _, name := range wrappedSkills {
+		b, err := os.ReadFile(filepath.Join(dir, ".claude", "skills", name, "SKILL.md"))
+		if err != nil || !strings.Contains(string(b), wrapMarker) {
+			return false
+		}
+	}
+	return true
 }
 
 // SpecKitDir is the directory spec-kit keeps its own state in, and the

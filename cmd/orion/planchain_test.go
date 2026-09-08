@@ -607,12 +607,16 @@ func TestTheToolkitStepIsDoneWhenNothingDelegatesToSpecKitOrItIsInstalled(t *tes
 	if toolkitDone(w) {
 		t.Error("a spec-kit project whose specify skill lacks the orion wrap is reported done")
 	}
-	skill := filepath.Join(w.RepoDir(), ".claude", "skills", "speckit-specify")
-	if err := os.MkdirAll(skill, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("## Orion runs this headless\n"), 0o644); err != nil {
-		t.Fatal(err)
+	// Every skill the preset wraps, not just the first: a project with only
+	// some of them composed is out of date, and the step re-applies.
+	for _, name := range []string{"speckit-specify", "speckit-tasks"} {
+		skill := filepath.Join(w.RepoDir(), ".claude", "skills", name)
+		if err := os.MkdirAll(skill, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("## Orion runs this headless\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if !toolkitDone(w) {
 		t.Error("a spec-kit project with .specify/ and the composed skill is not reported done")
