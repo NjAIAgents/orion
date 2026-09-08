@@ -393,8 +393,9 @@ func TestAnswerRoundTripsThroughAssess(t *testing.T) {
 func TestAnswerReplacesAMarkerInPlace(t *testing.T) {
 	p := write(t, "# Spec\n\n- **FR-003**: retain data for [NEEDS CLARIFICATION: retention period not specified] after close.\n\n## Open questions\n- retention period not specified\n")
 	s := AssessSpec(p)
-	if s.Open != 2 {
-		t.Fatalf("Open = %d, want 2 (marker and bullet)", s.Open)
+	// Same text in the body and under Open questions: one question.
+	if s.Open != 1 {
+		t.Fatalf("Open = %d, want 1 (the marker and the bullet ask the same thing)", s.Open)
 	}
 	if err := Answer(p, s.Questions[0], "13 months"); err != nil {
 		t.Fatal(err)
@@ -403,8 +404,8 @@ func TestAnswerReplacesAMarkerInPlace(t *testing.T) {
 	if !strings.Contains(string(b), "retain data for 13 months after close.") {
 		t.Errorf("marker not replaced:\n%s", b)
 	}
-	if got := AssessSpec(p).Open; got != 1 {
-		t.Errorf("Open = %d after the marker was answered, want 1 (the bullet)", got)
+	if got := AssessSpec(p).Open; got != 0 {
+		t.Errorf("Open = %d after answering, want 0 (bullet ticked, marker replaced)", got)
 	}
 }
 
@@ -417,5 +418,54 @@ func TestAnswerRefusesAnEmptyAnswerAndAMovedLine(t *testing.T) {
 	q.Line = 9
 	if err := Answer(p, q, "x"); err == nil {
 		t.Error("a line past the end was accepted")
+	}
+}
+
+// A marker in the body and a bullet under Open questions that carry the
+// same identifier are one question, answered once, in both places.
+func TestAssessSpecMergesAMarkerAndItsBulletByID(t *testing.T) {
+	p := write(t, "# Spec\n\n- **FR-002**: accounts in scope [NEEDS CLARIFICATION: OQ-02 — How many accounts? Stand-in: 12.]\n\n"+
+		"Prose about `[NEEDS CLARIFICATION]` markers does not count.\n\n"+
+		"## Open questions\n\n- [ ] OQ-02 — How many accounts? *Stand-in: 12.* (FR-002)\n- [ ] OQ-09 — Case-fold tags? *No stand-in.*\n")
+	s := AssessSpec(p)
+	if s.Open != 2 {
+		t.Fatalf("Open = %d, want 2 (OQ-02 once, OQ-09 once, the prose marker never): %+v", s.Open, s.Questions)
+	}
+	var oq2 Question
+	for _, q := range s.Questions {
+		if q.ID == "OQ-02" {
+			oq2 = q
+		}
+		if strings.HasPrefix(q.Text, "[ ]") {
+			t.Errorf("the checkbox leaked into the question text: %q", q.Text)
+		}
+	}
+	if oq2.Line == 0 || len(oq2.Markers) != 1 {
+		t.Fatalf("OQ-02 should be the bullet carrying its marker's line: %+v", oq2)
+	}
+	if err := Answer(p, oq2, "12, one Organization"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	got := string(b)
+	if !strings.Contains(got, "accounts in scope 12, one Organization\n") {
+		t.Errorf("the body marker was not replaced:\n%s", got)
+	}
+	if !strings.Contains(got, "- [x] OQ-02 — How many accounts? *Stand-in: 12.* (FR-002)\n  Answer: 12, one Organization\n") {
+		t.Errorf("the bullet was not ticked and answered in place:\n%s", got)
+	}
+	if strings.Contains(got, "[x] [ ]") {
+		t.Error("a second checkbox was inserted")
+	}
+	if got := AssessSpec(p).Open; got != 1 {
+		t.Errorf("Open = %d after answering OQ-02, want 1", got)
+	}
+}
+
+// A marker with no bullet is still a question, on its own.
+func TestAMarkerWithoutABulletStandsAlone(t *testing.T) {
+	p := write(t, "# Spec\n\nRetain for [NEEDS CLARIFICATION: how long?].\n\n## Open questions\n- None\n")
+	if got := AssessSpec(p).Open; got != 1 {
+		t.Errorf("Open = %d, want 1", got)
 	}
 }

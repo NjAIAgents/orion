@@ -33,6 +33,24 @@ type Question struct {
 	// rewrites, so a caller answering several must re-assess between
 	// writes -- a bullet answer inserts a line and shifts the rest.
 	Line int
+	// ID is the identifier the text opens with (OQ-12, Q3), if any: what
+	// ties a bullet under Open questions to the marker in the body that
+	// asks the same thing, so the two are one question and one answer.
+	ID string
+	// Markers are the lines carrying a marker for this same question,
+	// when the question is a bullet. Answered together with it.
+	Markers []int
+}
+
+// idRe is the identifier a question may open with. Letters, an optional
+// dash, digits: OQ-12, Q3, NC-7.
+var idRe = regexp.MustCompile(`^([A-Za-z]{1,4}-?\d+)\b`)
+
+func questionID(text string) string {
+	if m := idRe.FindStringSubmatch(strings.TrimSpace(text)); m != nil {
+		return strings.ToUpper(m[1])
+	}
+	return ""
 }
 
 // Assessment is what a captured intent looks like.
@@ -41,6 +59,9 @@ type Assessment struct {
 	Found     bool
 	Questions []Question
 	Open      int
+
+	markerLines map[int]bool
+	bulletLines map[int]bool
 }
 
 // Ready reports whether the chain may proceed past intent.
@@ -78,7 +99,7 @@ func Assess(path string) Assessment { return assess(path, false) }
 func AssessSpec(path string) Assessment { return assess(path, true) }
 
 func assess(path string, markers bool) Assessment {
-	a := Assessment{Path: path}
+	a := Assessment{Path: path, markerLines: map[int]bool{}, bulletLines: map[int]bool{}}
 	f, err := os.Open(path)
 	if err != nil {
 		return a
@@ -103,10 +124,15 @@ func assess(path string, markers bool) Assessment {
 			if !inFence {
 				for _, m := range markerRe.FindAllStringSubmatch(line, -1) {
 					text := strings.TrimSpace(m[1])
+					// A bare [NEEDS CLARIFICATION] with nothing after the
+					// label is prose ABOUT markers -- a checklist line, an
+					// instruction -- not a question. spec-kit's own
+					// convention always carries the question inside.
 					if text == "" {
-						text = "an unstated clarification"
+						continue
 					}
-					a.Questions = append(a.Questions, Question{Text: text, Line: n})
+					a.Questions = append(a.Questions, Question{Text: text, Line: n, ID: questionID(text)})
+					a.markerLines[n] = true
 					a.Open++
 				}
 			}
@@ -140,13 +166,84 @@ func assess(path string, markers bool) Assessment {
 		if isNone(text) {
 			continue
 		}
-		q := Question{Text: text, Answered: answeredRe.MatchString(line), Line: n}
+		// A checkbox bullet: the box is state, not question text.
+		if strings.HasPrefix(text, "[ ]") {
+			text = strings.TrimSpace(text[3:])
+		} else if len(text) > 3 && strings.HasPrefix(strings.ToLower(text), "[x]") {
+			text = strings.TrimSpace(text[3:])
+		}
+		q := Question{Text: text, Answered: answeredRe.MatchString(line), Line: n, ID: questionID(text)}
+		a.bulletLines[n] = true
 		if !q.Answered {
 			a.Open++
 		}
 		a.Questions = append(a.Questions, q)
 	}
+	if markers {
+		a.merge()
+	}
 	return a
+}
+
+// merge folds a marker and a bullet that ask the same question -- same
+// identifier, or the same text -- into one: the bullet, which is where a
+// person answers, carrying the marker's line so the answer reaches both.
+// A marker with no bullet stays a question of its own, answered only by
+// removal. Open is recounted from what survives.
+func (a *Assessment) merge() {
+	var bullets []*Question
+	byKey := map[string]*Question{}
+	for i := range a.Questions {
+		q := &a.Questions[i]
+		if len(q.Markers) == 0 && q.Line > 0 && !isMarkerQuestion(a, q) {
+			bullets = append(bullets, q)
+			byKey[keyOf(*q)] = q
+		}
+	}
+	if len(bullets) == 0 {
+		return
+	}
+	var kept []Question
+	for _, q := range a.Questions {
+		if isMarkerQuestion(a, &q) {
+			if b, ok := byKey[keyOf(q)]; ok {
+				b.Markers = append(b.Markers, q.Line)
+				continue
+			}
+		}
+		kept = append(kept, q)
+	}
+	// The pointers above addressed a.Questions; rebuild from bullets'
+	// updated copies.
+	out := make([]Question, 0, len(kept))
+	for _, q := range kept {
+		if b, ok := byKey[keyOf(q)]; ok && b.Line == q.Line {
+			out = append(out, *b)
+		} else {
+			out = append(out, q)
+		}
+	}
+	a.Questions = out
+	a.Open = 0
+	for _, q := range a.Questions {
+		if !q.Answered {
+			a.Open++
+		}
+	}
+}
+
+// isMarkerQuestion tells a marker-born question from a bullet-born one by
+// where it sits: bullets live under the Open questions heading, markers
+// anywhere else. Recorded during the scan rather than inferred.
+func isMarkerQuestion(a *Assessment, q *Question) bool {
+	return a.markerLines[q.Line] && !a.bulletLines[q.Line]
+}
+
+func keyOf(q Question) string {
+	if q.ID != "" {
+		return "id:" + q.ID
+	}
+	return "text:" + strings.ToLower(strings.TrimSpace(q.Text))
 }
 
 func isNone(s string) bool {
@@ -239,22 +336,38 @@ func Answer(path string, q Question, text string) error {
 
 	// A marker on this line whose text is the question: replace that span.
 	for _, m := range markerRe.FindAllStringSubmatchIndex(line, -1) {
-		got := strings.TrimSpace(line[m[2]:m[3]])
-		if got == "" {
-			got = "an unstated clarification"
-		}
-		if got == q.Text {
+		if strings.TrimSpace(line[m[2]:m[3]]) == q.Text {
 			lines[i] = line[:m[0]] + text + line[m[1]:]
 			return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
 		}
 	}
 
-	// Otherwise a bullet under Open questions.
+	// Otherwise a bullet under Open questions. Its body markers first: a
+	// same-line edit shifts nothing, and the Answer line inserted below
+	// would move every line after the bullet.
+	for _, ml := range q.Markers {
+		if ml < 1 || ml > len(lines) {
+			continue
+		}
+		l := lines[ml-1]
+		for _, m := range markerRe.FindAllStringSubmatchIndex(l, -1) {
+			if questionID(l[m[2]:m[3]]) == q.ID && q.ID != "" || strings.TrimSpace(l[m[2]:m[3]]) == q.Text {
+				l = l[:m[0]] + text + l[m[1]:]
+				break
+			}
+		}
+		lines[ml-1] = l
+	}
 	m := bulletRe.FindStringSubmatch(line)
-	if m == nil || strings.TrimSpace(m[1]) != q.Text && !strings.HasPrefix(strings.TrimSpace(m[1]), q.Text) {
+	body := strings.TrimSpace(m1(m))
+	body = strings.TrimSpace(strings.TrimPrefix(body, "[ ]"))
+	if m == nil || body != q.Text && !strings.HasPrefix(body, q.Text) {
 		return fmt.Errorf("line %d of %s is no longer the question %q", q.Line, path, q.Text)
 	}
-	if !strings.HasPrefix(strings.TrimSpace(m[1]), "[x]") {
+	switch {
+	case strings.Contains(line, "[ ]"):
+		lines[i] = strings.Replace(line, "[ ]", "[x]", 1)
+	case !strings.HasPrefix(strings.ToLower(strings.TrimSpace(m[1])), "[x]"):
 		k := strings.IndexAny(line, "-*+")
 		lines[i] = line[:k+1] + " [x]" + line[k+1:]
 	}
@@ -271,4 +384,11 @@ func Answer(path string, q Question, text string) error {
 	indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))] + "  "
 	lines = append(lines[:j], append([]string{indent + "Answer: " + text}, lines[j:]...)...)
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+}
+
+func m1(m []string) string {
+	if len(m) < 2 {
+		return ""
+	}
+	return m[1]
 }

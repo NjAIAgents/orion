@@ -1678,7 +1678,7 @@ func answerInteractively(out io.Writer, in *bufio.Reader, as []discovery.Assessm
 		if !x.Found || x.Open == 0 {
 			continue
 		}
-		fmt.Fprintf(out, "%d open question(s) in %s\n  (answer on one line; - skips, ? records \"unknown, design for it\")\n\n", x.Open, x.Path)
+		fmt.Fprintf(out, "%d open question(s) in %s\n  (answer on one line; - skips, ? records \"unknown, design for it\", = accepts the stand-in)\n\n", x.Open, x.Path)
 		skipped := map[string]bool{}
 		asked := 0
 		for {
@@ -1710,6 +1710,11 @@ func answerInteractively(out io.Writer, in *bufio.Reader, as []discovery.Assessm
 				continue
 			case "?":
 				ans = "Unknown at this stage; design for it as a parameter to confirm, and flag anything that depends on it."
+			case "=":
+				ans = standIn(next.Text)
+				if ans == "" {
+					ans = "Unknown at this stage; design for it as a parameter to confirm, and flag anything that depends on it."
+				}
 			}
 			if err := discovery.Answer(x.Path, *next, ans); err != nil {
 				fmt.Fprintf(out, "  could not write that answer: %v\n", err)
@@ -1722,6 +1727,25 @@ func answerInteractively(out io.Writer, in *bufio.Reader, as []discovery.Assessm
 		}
 	}
 	return written
+}
+
+// standIn is the answer a question already proposes for itself -- spec-kit
+// carries the intent's assumptions as "Stand-in: ..." -- or "" when it
+// proposes none.
+func standIn(text string) string {
+	i := strings.Index(strings.ToLower(text), "stand-in:")
+	if i < 0 {
+		return ""
+	}
+	s := strings.TrimSpace(text[i+len("stand-in:"):])
+	// Up to the end of that sentence: a trailing "(FR-012)" or a following
+	// sentence about the assessment is commentary, not the value.
+	for _, stop := range []string{"* ", "*", " (", ". "} {
+		if k := strings.Index(s, stop); k > 0 {
+			s = s[:k]
+		}
+	}
+	return strings.TrimSpace(strings.TrimRight(s, ".*"))
 }
 
 // commitAnswers commits the answered files, so the handoff to the next stage

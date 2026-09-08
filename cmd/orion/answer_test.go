@@ -55,3 +55,25 @@ func TestAnswerInteractivelyStopsWhenInputEnds(t *testing.T) {
 		t.Errorf("Open = %d; a line without a newline is exhausted input, not an answer", got)
 	}
 }
+
+// '=' takes the question's own stand-in as the answer; without one it
+// records unknown rather than an empty answer.
+func TestAnswerInteractivelyAcceptsTheStandIn(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "intent.md")
+	if err := os.WriteFile(p, []byte("## Open questions\n- [ ] OQ-01 — End date? *Stand-in: licence ends 2027-03-31; live by 2027-02-28.* (FR-005)\n- [ ] OQ-06 — Cost basis? *No stand-in.*\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	answerInteractively(&out, bufio.NewReader(strings.NewReader("=\n=\n")), []discovery.Assessment{discovery.Assess(p)})
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), "Answer: licence ends 2027-03-31; live by 2027-02-28\n") {
+		t.Errorf("stand-in not taken:\n%s", b)
+	}
+	if !strings.Contains(string(b), "OQ-06 — Cost basis? *No stand-in.*\n  Answer: Unknown at this stage") {
+		t.Errorf("a question with no stand-in should record unknown:\n%s", b)
+	}
+	if got := discovery.Assess(p).Open; got != 0 {
+		t.Errorf("Open = %d, want 0", got)
+	}
+}
