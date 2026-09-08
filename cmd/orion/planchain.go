@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +11,6 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/supervisor"
-	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
@@ -219,9 +217,8 @@ func runPlanChainFrom(out io.Writer, ws *workspace.Workspace, run stageRunner, a
 // which cannot run a frame step. Falls back to the workspace id when the
 // binding is absent, so the line is never blank.
 func planKeyOf(ws *workspace.Workspace) string {
-	var b tracker.Binding
-	if len(ws.Task.Tracker) > 0 && json.Unmarshal(ws.Task.Tracker, &b) == nil && b.Key != "" {
-		return b.Key
+	if k := ws.Task.TrackerKey(); k != "" {
+		return k
 	}
 	return ws.ID
 }

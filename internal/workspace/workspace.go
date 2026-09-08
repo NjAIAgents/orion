@@ -96,6 +96,19 @@ type Task struct {
 	Runs           []RunRec `json:"runs,omitempty"`
 }
 
+// TrackerKey is the tracker project this task is bound to, or "" when it
+// is not. Read from the raw binding so packages below tracker can name the
+// key in a message -- `orion plan KEY` is how a stopped chain resumes.
+func (t Task) TrackerKey() string {
+	var b struct {
+		Key string `json:"key"`
+	}
+	if len(t.Tracker) > 0 && json.Unmarshal(t.Tracker, &b) == nil {
+		return strings.ToUpper(strings.TrimSpace(b.Key))
+	}
+	return ""
+}
+
 // SlackChannel is a project's channel.
 type SlackChannel struct {
 	ID     string `json:"id"`

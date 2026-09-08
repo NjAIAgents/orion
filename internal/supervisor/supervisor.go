@@ -445,7 +445,11 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 					Title: fmt.Sprintf("orion: analyze blocked %s", ws.ID),
 					Body:  err.Error() + "\nlog: " + last.LogPath,
 				})
-				return last, fmt.Errorf("%w\n  log: %s\n  Fix the spec, plan or tasks it names, then: orion plan <KEY> --from analyze", err, last.LogPath)
+				key := ws.Task.TrackerKey()
+				if key == "" {
+					key = ws.ID
+				}
+				return last, fmt.Errorf("%w\n  log: %s\n  Fix the spec, plan or tasks it names, then: orion plan %s --from analyze", err, last.LogPath, key)
 			}
 		}
 		// The artifact is real and committed, so it can be published where

@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -75,5 +76,44 @@ func TestRunFailsAnalyzeThatStatesNoCount(t *testing.T) {
 	_, err := Run(w, Options{Stage: "analyze", MaxMinutes: 1, MaxTurns: 1})
 	if err == nil || !strings.Contains(err.Error(), "Critical Issues Count") {
 		t.Fatalf("a report without the count must fail naming the line: %v", err)
+	}
+}
+
+// The block says what to fix: the CRITICAL rows of the findings table, by
+// id, location and summary; a HIGH row stays in the log.
+func TestAnalyzeGateNamesTheCriticalFindings(t *testing.T) {
+	report := "## Specification Analysis Report\n\n" +
+		"| ID | Category | Severity | Location(s) | Summary | Recommendation |\n" +
+		"|----|----------|----------|-------------|---------|----------------|\n" +
+		"| K1 | Constitution | CRITICAL | tasks.md:36-55 | Phase 1 lands on develop with no PR path. | Move T013 first |\n" +
+		"| H1 | Ambiguity | HIGH | spec.md:120 | Two similar requirements. | Merge |\n" +
+		"| K2 | Constitution | CRITICAL | plan.md:15 | A test assumption adopted as a decision. | Label it |\n\n" +
+		"**Metrics:**\n- Critical Issues Count: 2\n"
+	err := analyzeGate(report)
+	if err == nil {
+		t.Fatal("two criticals must block")
+	}
+	for _, want := range []string{"2 critical", "K1  tasks.md:36-55  Phase 1 lands on develop", "K2  plan.md:15  A test assumption"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message lacks %q:\n%v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "H1") {
+		t.Errorf("a HIGH row leaked into the block:\n%v", err)
+	}
+}
+
+// The recovery line names the tracker key the workspace is bound to, or
+// the workspace id when there is none -- never a placeholder.
+func TestAnalyzeBlockNamesTheRealPlanKey(t *testing.T) {
+	w := gitWorkspace(t, `{"toolkit": {"stages": {"analyze": "/speckit-analyze"}}}`)
+	w.Task.Tracker = json.RawMessage(`{"provider":"jira","key":"OR"}`)
+	claudeWriting(t, w.RepoDir(), "echo 'Critical Issues Count: 1'")
+	_, err := Run(w, Options{Stage: "analyze", MaxMinutes: 1, MaxTurns: 1})
+	if err == nil || !strings.Contains(err.Error(), "orion plan OR --from analyze") {
+		t.Errorf("want the bound key in the recovery line, got: %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "<KEY>") {
+		t.Error("a placeholder reached the operator")
 	}
 }

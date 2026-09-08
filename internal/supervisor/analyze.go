@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // criticalRe finds the one line the analyze prompt asks for: "Critical
@@ -33,14 +34,72 @@ func analyzeVerdict(output string) (int, error) {
 }
 
 // analyzeGate is the stage's pass/fail: nil for zero critical issues, an
-// error naming the count otherwise. Fail closed: a missing verdict fails.
+// error naming the count and the findings otherwise. Fail closed: a
+// missing verdict fails.
 func analyzeGate(output string) error {
 	n, err := analyzeVerdict(output)
 	if err != nil {
 		return err
 	}
 	if n > 0 {
-		return fmt.Errorf("analyze: %d critical issue(s) in the spec, plan or tasks", n)
+		msg := fmt.Sprintf("analyze: %d critical issue(s) in the spec, plan or tasks", n)
+		if rows := criticalRows(output); len(rows) > 0 {
+			msg += ":\n    " + strings.Join(rows, "\n    ")
+		}
+		return errors.New(msg)
 	}
 	return nil
+}
+
+// maxCriticalRows bounds what a block prints; the log has the rest.
+const maxCriticalRows = 10
+
+// criticalRows lists the CRITICAL rows of the report's findings table as
+// "ID  location  summary", so the block says what to fix rather than only
+// how many things. Columns are taken from the table's own header when it
+// has one, and from spec-kit's documented order otherwise.
+func criticalRows(output string) []string {
+	idCol, sevCol, locCol, sumCol := 0, 2, 3, 4
+	var rows []string
+	for _, line := range strings.Split(output, "\n") {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "|") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(t, "|"), "|")
+		for i := range cells {
+			cells[i] = strings.TrimSpace(cells[i])
+		}
+		if len(cells) > 2 && strings.EqualFold(cells[0], "ID") {
+			for i, c := range cells {
+				switch strings.ToLower(c) {
+				case "severity":
+					sevCol = i
+				case "location(s)", "location":
+					locCol = i
+				case "summary":
+					sumCol = i
+				}
+			}
+			continue
+		}
+		if sevCol >= len(cells) || !strings.EqualFold(cells[sevCol], "CRITICAL") {
+			continue
+		}
+		get := func(i int) string {
+			if i < len(cells) {
+				return cells[i]
+			}
+			return ""
+		}
+		summary := get(sumCol)
+		if len(summary) > 200 {
+			summary = summary[:197] + "..."
+		}
+		rows = append(rows, strings.TrimSpace(get(idCol)+"  "+get(locCol)+"  "+summary))
+		if len(rows) == maxCriticalRows {
+			break
+		}
+	}
+	return rows
 }
