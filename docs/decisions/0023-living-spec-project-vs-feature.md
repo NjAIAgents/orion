@@ -76,6 +76,19 @@ and [0021](0021-spec-kit-inside-stages.md) keeps that a report.
   only new ones are created.
 - Because the constitution is project-level, a change to it re-gates every
   feature's next plan and analyze run; that is the point of having one.
-- Where the `ORION` queue label is placed on a decomposed tree — which of
-  epic, story, epic-level task and sub-task `orion watch` should claim — is
-  decided by test under OR-390 and recorded here when it is.
+- The queue label goes on **stories and epic-level tasks**, never on the epic
+  and never on a task under a story (OR-390; `Tree.Queue` in
+  `internal/decompose/marker.go`, pinned by
+  `TestQueueLabelOnStoriesAndEpicLevelTasksAdmitsEachOnce`). The rule is the
+  queue's: `watch.Queued` drops a labelled issue whose parent is also
+  labelled, and a claimed parent works its children in one branch. Label the
+  epic and one agent works the whole project in one branch while every
+  story is dropped as "its parent has it"; label sub-tasks and they are
+  dropped as redundant. Stories and epic-level tasks have no labelled parent,
+  so each is admitted exactly once.
+- The task list's Dependencies section is carried into the epic body as
+  prose and **not** turned into `is blocked by` links, so Setup, Foundational
+  and story items are all claimable at once. Accepted for now rather than
+  done silently: the links would be one more thing to reconcile on a re-run,
+  and the queue already serialises within a story. Revisit if parallel
+  claims on one feature collide in practice.

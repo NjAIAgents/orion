@@ -12,8 +12,11 @@
 //
 // WHAT THIS IS NOT: it is not a replacement for the delegated path. The
 // decompose stage prompt is untouched, so a project with no spec-kit output
-// decomposes exactly as it did before. This is a second, operator-invoked
-// route for the projects that DO have a tasks.md -- see docs/decisions/0001,
+// decomposes exactly as it did before. This is the native route for the
+// projects that DO have a tasks.md: `orion plan` runs it as the decompose
+// step when <FeatureDir>/tasks.md exists, stamping the queue label at the
+// levels Queue documents, and falls back to the supervised stage otherwise;
+// `orion decompose` runs the same code by hand -- see docs/decisions/0001,
 // which is also why nothing here decides whether a later stage runs.
 //
 // SCOPE LIMIT, STATED RATHER THAN HIDDEN: the tracker seam OR-303 describes

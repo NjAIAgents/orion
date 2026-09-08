@@ -148,3 +148,37 @@ func TestLabelPutsIdentityOnEveryItemAndRoutingOnlyOnTasksAndStories(t *testing.
 			"internal/catalogue, not docs/", ungrouped.Labels)
 	}
 }
+
+// The queue label lands on stories and epic-level tasks only: the levels
+// watch.Queued admits once each (docs/decisions/0023).
+func TestQueueLabelsStoriesAndEpicLevelTasksOnly(t *testing.T) {
+	tree := &Tree{Slug: "widget", Epic: &Item{Kind: KindEpic, Children: []*Item{
+		{Kind: KindStory, Children: []*Item{
+			{Kind: KindTask, Paths: []string{"docs/a.md"}},
+		}},
+		{Kind: KindTask, Paths: []string{"go.mod"}},
+	}}}
+	label(tree)
+	tree.Queue("ORION")
+
+	epic := tree.Epic
+	story, sub, setup := epic.Children[0], epic.Children[0].Children[0], epic.Children[1]
+	if has(epic.Labels, "ORION") {
+		t.Errorf("epic carries the queue label %v; it would become the one claimable unit", epic.Labels)
+	}
+	if !has(story.Labels, "ORION") {
+		t.Errorf("story lacks the queue label: %v", story.Labels)
+	}
+	if has(sub.Labels, "ORION") {
+		t.Errorf("a story's task carries the queue label %v; the story works it", sub.Labels)
+	}
+	if !has(setup.Labels, "ORION") {
+		t.Errorf("epic-level task lacks the queue label: %v", setup.Labels)
+	}
+	// Empty is a no-op, never an empty label Jira would refuse.
+	before := len(story.Labels)
+	tree.Queue("  ")
+	if len(story.Labels) != before {
+		t.Error("an empty queue label was appended")
+	}
+}
