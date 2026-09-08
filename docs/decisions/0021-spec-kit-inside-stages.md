@@ -116,6 +116,19 @@ mechanism, with no sequencing in it.
   is a verify-class finding for a later stage to report, never a licence
   for a toolkit to append work to the plan. If it is adopted, it is adopted
   as a report.
+- **spec-kit's own files are never edited in place.** Not a template, not a
+  script, not a `SKILL.md`. When one of its commands needs to behave
+  differently under Orion, the change goes in the `orion` preset
+  (`internal/provision/presets/orion/`) and spec-kit composes it through
+  `specify preset add`; when the behaviour cannot be expressed as a preset,
+  it becomes a gate on Orion's side rather than an edit on spec-kit's. The
+  reason is the upgrade: a composed preset survives
+  `specify integration upgrade` (verified, OR-398), while an edited file is
+  a conflict on every release and, worse, a silent revert. Verified on
+  1.0.5.dev0: every template, script and skill a project holds is
+  byte-identical to a fresh `specify init` except the `speckit-specify` the
+  preset composes. The contract test (OR-397) fails the day that stops being
+  true.
 - How spec-kit is installed, and where its artifacts live, is
   [0022](0022-per-project-toolkit-install-via-specify-init.md). What a
   feature is, and how a spec changes after it is written, is
