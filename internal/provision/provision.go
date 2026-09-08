@@ -146,6 +146,17 @@ func Remote(opts Options) (*Result, error) {
 	res.CreatedRemote = true
 	res.RemoteURL = existingRemote(opts.Dir)
 
+	// From here on the repository is addressed as OWNER/REPO. `gh repo
+	// create` accepts a bare name and infers the owner; nothing after it
+	// does -- `repo edit` refuses it outright, and `api repos/<name>/...`
+	// reads the name as the OWNER and returns a 404 for a repository that
+	// exists. FOUND ON A REAL PROJECT: develop was never made the default
+	// branch and neither branch was protected, each reported as "Not
+	// Found", on a repository the same run had just created.
+	if full := ownerRepo(opts.Dir, target); full != "" {
+		target = full
+	}
+
 	for _, b := range []string{opts.DefaultBranch, opts.WorkBranch} {
 		if out, err := git(opts.Dir, "push", "-u", "origin", b); err != nil {
 			return res, fmt.Errorf("pushing %s: %s", b, out)
@@ -346,4 +357,24 @@ func oneLine(s string) string {
 		cut = cut[:i]
 	}
 	return strings.TrimRight(cut, " ,;") + "…"
+}
+
+// ownerRepo is the created repository as OWNER/REPO.
+//
+// Read back from the repository itself rather than assembled from a
+// configured owner: the owner of a repository created without --org is
+// whoever gh is authenticated as, which Orion never asked for and should
+// not have to guess. Falls back to "" when gh cannot say, and the caller
+// keeps what it had.
+func ownerRepo(dir, target string) string {
+	if strings.Contains(target, "/") {
+		return target
+	}
+	cmd := exec.Command("gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
