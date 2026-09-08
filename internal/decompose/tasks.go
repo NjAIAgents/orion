@@ -34,6 +34,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/orion-sdlc/orion/internal/fanout"
 )
@@ -157,7 +158,7 @@ var (
 	parallelTag = regexp.MustCompile(`\[P\]`)
 	// phaseStory recognises the heading that NAMES a story group, e.g.
 	// "## Phase 3: User Story 2 - Checkout (Priority: P2)".
-	phaseStory = regexp.MustCompile(`(?i)user story\s*(\d+)\s*[-:–]?\s*(.*)$`)
+	phaseStory = regexp.MustCompile(`(?i)user story\s*(\d+)\s*[-:–—]?\s*(.*)$`)
 	priorityIn = regexp.MustCompile(`\s*\((?i:priority)[^)]*\)\s*`)
 	// pathish is a file path as a task line writes one: at least one
 	// separator and an extension.
@@ -204,7 +205,15 @@ func Parse(text, source string) (*Tree, error) {
 		line := strings.TrimRight(raw, " \t\r")
 
 		if h, ok := heading(line, "# "); ok {
-			epic.Summary = strings.TrimSpace(strings.TrimPrefix(h, "Tasks:"))
+			// The FIRST one names the feature, and only if it is the
+			// `# Tasks: <name>` heading the format documents. A later `# `
+			// line is a section of the document, not a second name --
+			// FOUND ON A REAL PROJECT: a "# Dependencies" section made the
+			// epic "Then T047, then T048.", which also became the identity
+			// label a re-run reconciles by.
+			if epic.Summary == "" && strings.HasPrefix(h, "Tasks:") {
+				epic.Summary = strings.TrimSpace(strings.TrimPrefix(h, "Tasks:"))
+			}
 			continue
 		}
 		if h, ok := heading(line, "## "); ok {
@@ -215,9 +224,17 @@ func Parse(text, source string) (*Tree, error) {
 			// so re-deriving it per item would either duplicate it or lose
 			// the cross-references it is made of.
 			inDepends = strings.HasPrefix(strings.ToLower(h), "dependencies")
-			if m := phaseStory.FindStringSubmatch(h); m != nil {
+			// A story is named by its PHASE heading and by nothing else.
+			// "## Parallel example: User Story 2" is documentation about a
+			// story, not the story -- and it captured an empty title that
+			// overwrote the real one, so the story was created as
+			// "User Story 2" (FOUND ON A REAL PROJECT). A later heading
+			// never blanks a name that is already known, either.
+			if m := phaseStory.FindStringSubmatch(h); m != nil && strings.HasPrefix(strings.ToLower(h), "phase") {
 				phaseStoryN = m[1]
-				storyTitle[m[1]] = cleanTitle(m[2])
+				if title := cleanTitle(m[2]); title != "" {
+					storyTitle[m[1]] = title
+				}
 			} else if strings.HasPrefix(strings.ToLower(h), "phase") {
 				phases = append(phases, h)
 			}
@@ -262,7 +279,7 @@ func Parse(text, source string) (*Tree, error) {
 		task := &Item{
 			ID:       id,
 			Kind:     KindTask,
-			Summary:  strings.TrimSpace(id + " " + desc),
+			Summary:  strings.TrimSpace(id + " " + summarise(desc)),
 			Paths:    pathsIn(desc),
 			Parallel: parallel,
 			Phase:    phase,
@@ -344,13 +361,24 @@ func heading(line, prefix string) (string, bool) {
 // name: the priority parenthetical, and trailing marker text like "MVP".
 func cleanTitle(s string) string {
 	s = priorityIn.ReplaceAllString(s, " ")
+	// Emoji and symbols go; PUNCTUATION STAYS. Dropping everything above
+	// U+2000 took the em dash and the en dash with it -- and a heading
+	// written "User Story 2 — See AWS cost by account" lost its title
+	// entirely, because the dash led the capture and its removal left a
+	// leading space that the marker trims below could not see past
+	// (FOUND ON A REAL PROJECT: the story was created as "User Story 2").
 	s = strings.Map(func(r rune) rune {
-		if r > 0x2000 { // emoji and other decoration
-			return -1
+		switch {
+		case r < 0x2000:
+			return r
+		case unicode.IsPunct(r) || unicode.IsSpace(r):
+			return r
 		}
-		return r
+		return -1
 	}, s)
 	s = strings.TrimSpace(s)
+	// A leading separator the regex left behind, now that it survives.
+	s = strings.TrimSpace(strings.TrimLeft(s, "-–—:"))
 	s = strings.TrimSuffix(strings.TrimSpace(strings.TrimSuffix(s, "MVP")), "-")
 	return strings.TrimSpace(s)
 }
@@ -524,4 +552,43 @@ func slug(name string) string {
 		s = strings.Trim(s[:40], "-")
 	}
 	return s
+}
+
+// summaryMax is how long a tracker summary may be.
+//
+// A /speckit.tasks line is a paragraph: the file paths, the section to fill,
+// the research references, the conditions. All of that belongs in the body,
+// where whoever works the ticket reads it -- and none of it belongs in the
+// title, which is what a person scans a backlog by and what every list, board
+// and notification shows. FOUND ON A REAL PROJECT: a 94-item preview no one
+// could read, and Jira titles of four hundred characters.
+const summaryMax = 100
+
+// summarise is the first sentence of a task description, bounded.
+//
+// The first sentence is the imperative: "Write internal/cost/reconcile.go",
+// "Request read-only payer-account access". What follows it is detail the
+// body carries in full.
+func summarise(desc string) string {
+	s := strings.Join(strings.Fields(desc), " ")
+	// The first sentence, when one ends early enough to be a title. A full
+	// stop inside a path or a version is not a sentence end, so the break
+	// has to be followed by a space.
+	if i := strings.Index(s, ". "); i > 0 && i < summaryMax {
+		return strings.TrimSpace(s[:i])
+	}
+	// Otherwise the first clause, at a semicolon or an em dash.
+	for _, sep := range []string{"; ", " -- ", " — "} {
+		if i := strings.Index(s, sep); i > 0 && i < summaryMax {
+			return strings.TrimSpace(s[:i])
+		}
+	}
+	if len(s) <= summaryMax {
+		return strings.TrimSuffix(s, ".")
+	}
+	cut := s[:summaryMax]
+	if i := strings.LastIndexByte(cut, ' '); i > summaryMax/2 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, " ,;:-") + "…"
 }

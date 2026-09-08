@@ -326,3 +326,76 @@ func has(labels []string, want string) bool {
 	}
 	return false
 }
+
+// A tracker summary is a title, not the paragraph a /speckit.tasks line is.
+func TestATaskSummaryIsATitleNotTheWholeDescription(t *testing.T) {
+	long := "- [ ] T041 PRECONDITION (analyze C1, C2): OQ-07 records all three values -- the account, " +
+		"the region, and whether any third party may receive cost figures. Then write `deploy/terraform/kms.tf` " +
+		"and run terraform validate against the real export.\n"
+	tree, err := Parse("# Tasks: Thing\n\n## Phase 1: Setup\n\n"+long, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var task *Item
+	_ = tree.Walk(func(it, _ *Item) error {
+		if it.Kind == KindTask {
+			task = it
+		}
+		return nil
+	})
+	if task == nil {
+		t.Fatal("no task parsed")
+	}
+	if len(task.Summary) > summaryMax+8 {
+		t.Errorf("summary is %d characters, not a title:\n%s", len(task.Summary), task.Summary)
+	}
+	if !strings.HasPrefix(task.Summary, "T041 ") {
+		t.Errorf("the id leads the summary: %q", task.Summary)
+	}
+	// The detail is not lost: the body carries the description in full.
+	if !strings.Contains(task.Body, "terraform validate") {
+		t.Errorf("the body must keep what the summary drops:\n%s", task.Body)
+	}
+}
+
+// A heading that talks ABOUT a story does not name it, and never blanks a
+// name already known.
+func TestOnlyAPhaseHeadingNamesAStory(t *testing.T) {
+	src := "# Tasks: Thing\n\n" +
+		"## Phase 4: User Story 2 — See AWS cost by account (Priority: P2) 🎯 MVP\n\n" +
+		"- [ ] T001 [US2] Do the thing in a.go\n\n" +
+		"## Parallel example: User Story 2\n\nSome prose.\n"
+	tree, err := Parse(src, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var story *Item
+	_ = tree.Walk(func(it, _ *Item) error {
+		if it.Kind == KindStory {
+			story = it
+		}
+		return nil
+	})
+	if story == nil {
+		t.Fatal("no story parsed")
+	}
+	if story.Summary != "US2 See AWS cost by account" {
+		t.Errorf("story summary = %q; a documentation heading overwrote the phase heading's title", story.Summary)
+	}
+}
+
+// The epic is named by the `# Tasks:` heading and by no other `# ` line.
+func TestTheEpicIsNamedByTheTasksHeadingAlone(t *testing.T) {
+	src := "# Tasks: CloudLens — cost by account\n\n## Phase 1: Setup\n\n- [ ] T001 Do it in a.go\n\n" +
+		"# Dependencies\n\nThen T047, then T048.\n"
+	tree, err := Parse(src, "specs/001-cloudlens/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree.Epic.Summary != "CloudLens — cost by account" {
+		t.Errorf("epic = %q; a later heading renamed it", tree.Epic.Summary)
+	}
+	if !strings.HasPrefix(tree.Label(), "orion-spec-cloudlens") {
+		t.Errorf("the identity label follows the epic name, and a re-run reconciles by it: %q", tree.Label())
+	}
+}

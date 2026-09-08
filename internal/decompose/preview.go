@@ -19,11 +19,18 @@ import (
 func Preview(w io.Writer, p *Plan) {
 	fmt.Fprintf(w, "%s -> %s (%s)\n\n", p.Tree.Source, p.Project, p.Backend)
 
+	// Blank lines between the story groups: 94 items in one block is a wall,
+	// and the groups are what a reader is deciding about.
+	lastStory := ""
 	for _, s := range p.Steps {
 		indent := "  "
 		switch s.Item.Kind {
 		case KindStory:
 			indent = "    "
+			if lastStory != "" {
+				fmt.Fprintln(w)
+			}
+			lastStory = s.Item.Summary
 		case KindTask:
 			indent = "      "
 			if s.Parent != nil && s.Parent.Kind == KindEpic {
@@ -31,18 +38,21 @@ func Preview(w io.Writer, p *Plan) {
 				// the level it will actually sit at rather than under the
 				// last story printed.
 				indent = "    "
+				if lastStory != "" {
+					fmt.Fprintln(w)
+					lastStory = ""
+				}
 			}
 		}
 		mark, key := "+", ""
 		if !s.New() {
 			mark, key = "=", " ("+s.ExistingKey+")"
 		}
-		fmt.Fprintf(w, "%s%s %-5s %s%s%s\n", indent, mark, s.Item.Kind, s.Item.Summary, key, labelNote(s.Item))
+		fmt.Fprintf(w, "%s%s %s%s%s\n", indent, mark, s.Item.Summary, key, labelNote(s.Item))
 	}
 
-	fmt.Fprintf(w, "\n  %d to create, %d already in %s\n",
-		p.NewCount(), p.ExistingCount(), p.Project)
-	fmt.Fprintf(w, "  identity label: %s\n", p.Tree.Label())
+	fmt.Fprintf(w, "\n  %d to create, %d already in %s  (%s)\n",
+		p.NewCount(), p.ExistingCount(), p.Project, p.Tree.Label())
 	previewCoupled(w, p.Tree.Coupled)
 }
 
@@ -63,8 +73,8 @@ func previewCoupled(w io.Writer, coupled []Coupling) {
 		"  accept the coupling -- but decide it now rather than at merge time.\n",
 		len(coupled))
 	for _, c := range coupled {
-		fmt.Fprintf(w, "    ! %s\n      %s\n      both declare: %s\n",
-			c.A, c.B, strings.Join(c.Shared, ", "))
+		fmt.Fprintf(w, "    ! %s  +  %s\n      %s\n",
+			c.A, c.B, sharedNote(c.Shared))
 	}
 }
 
@@ -81,4 +91,14 @@ func labelNote(it *Item) string {
 		return ""
 	}
 	return "  [" + strings.Join(markers, " ") + "]"
+}
+
+// sharedNote names the ground two stories share, at a length a reader
+// takes in: the first few files, then how many more.
+func sharedNote(shared []string) string {
+	const show = 3
+	if len(shared) <= show {
+		return strings.Join(shared, ", ")
+	}
+	return fmt.Sprintf("%s, and %d more", strings.Join(shared[:show], ", "), len(shared)-show)
 }
