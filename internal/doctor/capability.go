@@ -14,6 +14,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/agentcfg"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/creds"
+	"github.com/orion-sdlc/orion/internal/provision"
 	"github.com/orion-sdlc/orion/internal/slack"
 	"github.com/orion-sdlc/orion/internal/toolkit"
 	"github.com/orion-sdlc/orion/internal/tracker"
@@ -135,8 +136,9 @@ func checkGHScopes() check {
 //
 // Nothing for the default toolkit, which is reached through the operator's
 // own ~/.claude/skills either way -- that is what the install check resolves.
-func checkToolkitReachable(tk config.Toolkit) *check {
+func checkToolkitReachable(root string, tk config.Toolkit) *check {
 	spec := tk.Spec()
+	spec.ProjectDir = root
 	if spec.IsDefault() || agentcfg.CurationAuthenticates() {
 		return nil
 	}
@@ -148,9 +150,9 @@ func checkToolkitReachable(tk config.Toolkit) *check {
 	// repository, and Claude Code reads .claude/ from the working directory.
 	// This is what `specify init --here` produces, and it is the supported
 	// way to install spec-kit -- so warning about it would tell someone their
-	// working setup is broken.
-	if strings.Contains(inst.Root, string(filepath.Separator)+"projects"+string(filepath.Separator)) ||
-		hasLocalClaudeDir(inst.Root) {
+	// working setup is broken. Read off how discovery resolved it, not off
+	// a substring of the path.
+	if inst.Via == "installed in project" || toolkit.InstalledInProject(inst.Root) {
 		return nil
 	}
 	return &check{"toolkit reach", warn,
@@ -163,23 +165,28 @@ func checkToolkitReachable(tk config.Toolkit) *check {
 			"names one will report that it does not exist."}
 }
 
-// hasLocalClaudeDir reports whether a toolkit was installed into a project's
-// own .claude directory, which the agent reads directly from its working
-// directory rather than through Orion's linking.
-func hasLocalClaudeDir(root string) bool {
-	for _, d := range []string{"skills", "commands"} {
-		if st, err := os.Stat(filepath.Join(root, ".claude", d)); err == nil && st.IsDir() {
-			return true
-		}
-	}
-	return false
-}
-
-func checkNJAgents(tk config.Toolkit, autoFix bool) check {
+func checkNJAgents(root string, tk config.Toolkit, autoFix bool) check {
 	home := workspace.Home()
 	spec := tk.Spec()
+	spec.ProjectDir = root
 	name := toolkitName(spec)
 	inst := toolkit.Discover(home, spec)
+
+	// spec-kit is never cloned, with or without --fix: a raw clone is not an
+	// install (docs/decisions/0022). The fix is the chain's own step, or the
+	// installer by hand.
+	if inst == nil && spec.IsSpecKit() {
+		where := root
+		if where == "" {
+			where = "<repo>"
+		}
+		return check{name, fail, "not installed in this project", strings.Join([]string{
+			"spec-kit installs into the project, not into a clone. The planning chain",
+			"does it as its first step:  orion plan <KEY>",
+			"Or by hand:                 cd " + where + " && specify init --here --force --non-interactive --integration claude",
+			"If the specify CLI is missing:  " + provision.SpecKitInstall,
+		}, "\n")}
+	}
 
 	if inst == nil && autoFix {
 		cloned, err := toolkit.Clone(home, spec, tk.Ref, toolkit.ConfirmOnStdin)
@@ -222,6 +229,59 @@ func checkNJAgents(tk config.Toolkit, autoFix bool) check {
 
 	return check{name, ok, detail, ""}
 }
+
+// specKitRequiredFeatures are the capabilities of the specify CLI that
+// Orion's chain depends on, read from `specify version --features --json`.
+// Graded on feature keys rather than the version string, which on a
+// development build ("1.0.5.dev0") does not compare as semver. Each entry
+// says why it is required, so the list is edited with a reason.
+var specKitRequiredFeatures = []struct{ key, why string }{
+	{"bundled_templates", "`specify init` scaffolds from templates bundled in the CLI; without them it needs the network the chain denies"},
+}
+
+// checkSpecKit grades the specify CLI a project's stages depend on, or
+// returns nil when nothing delegates to spec-kit. No network: the roster of
+// features the installed CLI reports is the whole check.
+func checkSpecKit(tk config.Toolkit) *check {
+	if !tk.DelegatesTo("speckit") {
+		return nil
+	}
+	bin, err := exec.LookPath("specify")
+	if err != nil {
+		return &check{"spec-kit CLI", fail, "specify is not on PATH", strings.Join([]string{
+			"This project's stages delegate to spec-kit, whose commands `specify init`",
+			"installs. Install it:  " + provision.SpecKitInstall,
+		}, "\n")}
+	}
+	out, err := exec.Command(bin, "version", "--features", "--json").CombinedOutput()
+	if err != nil {
+		return &check{"spec-kit CLI", warn, "specify version --features --json failed",
+			strings.TrimSpace(string(out)) + "\nUpgrade it:  " + specKitUpgrade}
+	}
+	var v struct {
+		Version  string                     `json:"version"`
+		Features map[string]json.RawMessage `json:"features"`
+	}
+	if jsonErr := json.Unmarshal(out, &v); jsonErr != nil || v.Version == "" {
+		return &check{"spec-kit CLI", warn, "could not read the version report",
+			"specify version --features --json did not return the expected JSON.\nUpgrade it:  " + specKitUpgrade}
+	}
+	var missing []string
+	for _, f := range specKitRequiredFeatures {
+		if _, ok := v.Features[f.key]; !ok {
+			missing = append(missing, f.key+" ("+f.why+")")
+		}
+	}
+	if len(missing) > 0 {
+		return &check{"spec-kit CLI", warn, v.Version + ", missing " + strings.Join(missing, "; "),
+			"Upgrade it:  " + specKitUpgrade}
+	}
+	return &check{"spec-kit CLI", ok, v.Version, ""}
+}
+
+// specKitUpgrade is how the installed specify CLI is brought forward; it is
+// installed as a uv tool, so uv upgrades it.
+const specKitUpgrade = "uv tool upgrade specify-cli"
 
 // toolkitName is what the doctor line calls the toolkit. The default keeps
 // its old label so nothing about an unconfigured machine's output moves; a

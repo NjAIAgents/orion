@@ -62,7 +62,7 @@ func Run(w io.Writer, path string, autoFix bool) int {
 		checkGit(),
 		checkGH(),
 		checkGHScopes(),
-		checkNJAgents(config.Load(rootOr(path)).Toolkit, autoFix),
+		checkNJAgents(rootOr(path), config.Load(rootOr(path)).Toolkit, autoFix),
 		checkSandbox(),
 		checkHome(),
 		checkDisk(),
@@ -78,7 +78,12 @@ func Run(w io.Writer, path string, autoFix bool) int {
 	// Reported only when it has something to say: on a platform where
 	// curation works, or under the default toolkit, there is no second
 	// question to ask and a permanent "reachable: yes" is noise.
-	if c := checkToolkitReachable(config.Load(rootOr(path)).Toolkit); c != nil {
+	if c := checkToolkitReachable(rootOr(path), config.Load(rootOr(path)).Toolkit); c != nil {
+		checks = append(checks, *c)
+	}
+	// Only when a stage delegates to spec-kit: a project on nj-agents alone
+	// has no specify CLI to grade and a permanent "n/a" line is noise.
+	if c := checkSpecKit(config.Load(rootOr(path)).Toolkit); c != nil {
 		checks = append(checks, *c)
 	}
 

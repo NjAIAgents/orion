@@ -50,7 +50,7 @@ func TestDoctorNamesTheStageThatRequiredAMissingSkill(t *testing.T) {
 		},
 	}
 
-	c := checkNJAgents(tk, false)
+	c := checkNJAgents("", tk, false)
 
 	if c.grade != fail {
 		t.Fatalf("a missing configured skill graded %v, want fail: %+v", c.grade, c)
@@ -78,7 +78,7 @@ func TestAForeignToolkitShippingItsOwnSkillsIsHealthy(t *testing.T) {
 		Stages: map[string]string{"intent": "/their-capture", "review": "/their-review"},
 	}
 
-	c := checkNJAgents(tk, false)
+	c := checkNJAgents("", tk, false)
 
 	if c.grade != ok {
 		t.Errorf("a toolkit shipping every skill it was asked for graded %v: %+v\n%s",
@@ -90,7 +90,7 @@ func TestAForeignToolkitShippingItsOwnSkillsIsHealthy(t *testing.T) {
 // verdict, same six skills.
 func TestTheDefaultToolkitIsStillCheckedAsNJAgents(t *testing.T) {
 	isolate(t)
-	c := checkNJAgents(config.Toolkit{Dir: filepath.Join(t.TempDir(), "nowhere")}, false)
+	c := checkNJAgents("", config.Toolkit{Dir: filepath.Join(t.TempDir(), "nowhere")}, false)
 
 	if c.name != "nj-agents" {
 		t.Errorf("check name = %q, want the unchanged \"nj-agents\"", c.name)
@@ -110,7 +110,7 @@ func TestAutoFixDoesNotCloneAForeignToolkitWithoutConsent(t *testing.T) {
 		Stages: map[string]string{"review": "/their-review"},
 	}
 
-	c := checkNJAgents(tk, true)
+	c := checkNJAgents("", tk, true)
 
 	if c.grade != fail {
 		t.Errorf("an unfetched toolkit graded %v, want fail: %+v", c.grade, c)
@@ -120,5 +120,86 @@ func TestAutoFixDoesNotCloneAForeignToolkitWithoutConsent(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, "vendor")); err == nil {
 		t.Error("doctor --fix created a vendor directory for a URL nobody confirmed")
+	}
+}
+
+// specKitProject makes a project root with spec-kit installed the way
+// `specify init --integration claude` installs it: skills under the
+// project's own .claude directory, and orion.json naming them.
+func specKitProject(t *testing.T, stagesJSON string, skills ...string) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, s := range skills {
+		dir := filepath.Join(root, ".claude", "skills", s)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "orion.json"),
+		[]byte(`{"toolkit":{"repo":"https://github.com/github/spec-kit.git","stages":`+stagesJSON+`}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// spec-kit installed inside the project, with no vendor clone anywhere, is a
+// healthy toolkit: that is the supported install (docs/decisions/0022).
+func TestAToolkitInstalledInsideTheProjectIsHealthyWithNoClone(t *testing.T) {
+	isolate(t)
+	root := specKitProject(t, `{"spec":"/speckit-specify","plan":"/speckit-plan"}`, "speckit-specify", "speckit-plan")
+	c := checkNJAgents(root, config.Load(root).Toolkit, false)
+	if c.grade != ok {
+		t.Fatalf("grade = %v, want ok: %+v", c.grade, c)
+	}
+	if !strings.Contains(c.detail, "installed in project") {
+		t.Errorf("detail = %q; it should say the toolkit was found inside the project", c.detail)
+	}
+	if r := checkToolkitReachable(root, config.Load(root).Toolkit); r != nil {
+		t.Errorf("a project-local install was flagged unreachable: %+v", *r)
+	}
+}
+
+// A configured command with no file on disk FAILs naming the stage and the
+// command -- never a silent fall-back to the built-in prompt.
+func TestAConfiguredCommandWithNoFileFailsNamingTheStage(t *testing.T) {
+	isolate(t)
+	root := specKitProject(t, `{"spec":"/speckit-bogus"}`, "speckit-specify")
+	c := checkNJAgents(root, config.Load(root).Toolkit, false)
+	if c.grade != fail {
+		t.Fatalf("grade = %v, want fail: %+v", c.grade, c)
+	}
+	for _, want := range []string{"speckit-bogus", "spec"} {
+		if !strings.Contains(c.fix, want) {
+			t.Errorf("fix = %q, want it to name %q", c.fix, want)
+		}
+	}
+}
+
+// --fix never clones spec-kit: a raw clone is not an install. The fix names
+// the chain's own step and the installer.
+func TestAutoFixNeverClonesSpecKit(t *testing.T) {
+	isolate(t)
+	root := t.TempDir() // nothing installed
+	if err := os.WriteFile(filepath.Join(root, "orion.json"),
+		[]byte(`{"toolkit":{"repo":"https://github.com/github/spec-kit.git","stages":{"spec":"/speckit-specify"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := checkNJAgents(root, config.Load(root).Toolkit, true)
+	if c.grade != fail {
+		t.Fatalf("grade = %v, want fail: %+v", c.grade, c)
+	}
+	for _, want := range []string{"specify init", "orion plan"} {
+		if !strings.Contains(c.fix, want) {
+			t.Errorf("fix = %q, want it to name %q", c.fix, want)
+		}
+	}
+	if strings.Contains(c.fix, "git clone") {
+		t.Errorf("fix suggests cloning spec-kit: %q", c.fix)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(os.Getenv("ORION_HOME"), "vendor")); len(entries) > 0 {
+		t.Errorf("--fix cloned something into vendor/: %v", entries)
 	}
 }

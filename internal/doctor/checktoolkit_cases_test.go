@@ -43,7 +43,7 @@ func TestCheckNJAgentsMissingConfiguredSkillNamesSkillAndStage(t *testing.T) {
 		Stages: map[string]string{"review": "/their-review"},
 	}
 
-	c := checkNJAgents(tk, false)
+	c := checkNJAgents("", tk, false)
 
 	if c.grade != fail {
 		t.Fatalf("grade = %v, want fail: %+v", c.grade, c)
@@ -60,7 +60,7 @@ func TestCheckNJAgentsDefaultToolkitMissingSkillNamesSkillOnlyNoStage(t *testing
 	// attribute it to.
 	tk := config.Toolkit{Dir: foreignToolkit(t, "pre-push-review", "review-secrets")}
 
-	c := checkNJAgents(tk, false)
+	c := checkNJAgents("", tk, false)
 
 	if c.grade != fail {
 		t.Fatalf("grade = %v, want fail: %+v", c.grade, c)
@@ -81,7 +81,7 @@ func TestCheckNJAgentsForeignToolkitShippingAllConfiguredSkillsIsHealthy(t *test
 		Stages: map[string]string{"review": "/their-review", "build": "/their-build"},
 	}
 
-	c := checkNJAgents(tk, false)
+	c := checkNJAgents("", tk, false)
 
 	if c.grade != ok {
 		t.Errorf("grade = %v, want ok for a toolkit shipping everything it was asked for: %+v", c.grade, c)
@@ -90,7 +90,7 @@ func TestCheckNJAgentsForeignToolkitShippingAllConfiguredSkillsIsHealthy(t *test
 
 func TestCheckNJAgentsCheckNameIsNJAgentsForDefaultToolkit(t *testing.T) {
 	isolate(t)
-	c := checkNJAgents(config.Toolkit{Dir: foreignToolkit(t, "pre-push-review", "review-secrets",
+	c := checkNJAgents("", config.Toolkit{Dir: foreignToolkit(t, "pre-push-review", "review-secrets",
 		"review-tests-build", "pr-describe", "pm-plan", "scaffold-project")}, false)
 
 	if c.name != "nj-agents" {
@@ -106,7 +106,7 @@ func TestCheckNJAgentsCheckNameIncludesForeignRepoLeafForNonDefault(t *testing.T
 		Stages: map[string]string{"review": "/their-review"},
 	}
 
-	c := checkNJAgents(tk, false)
+	c := checkNJAgents("", tk, false)
 
 	if !strings.Contains(c.name, "house-skills") {
 		t.Errorf("name = %q, want it to name the foreign repo's leaf %q", c.name, "house-skills")
@@ -124,7 +124,7 @@ func TestCheckNJAgentsFixDoesNotCloneForeignRepoWithoutTTY(t *testing.T) {
 		Stages: map[string]string{"review": "/their-review"},
 	}
 
-	c := checkNJAgents(tk, true)
+	c := checkNJAgents("", tk, true)
 
 	if c.grade != fail {
 		t.Errorf("grade = %v, want fail: %+v", c.grade, c)
@@ -150,7 +150,7 @@ func TestCheckNJAgentsFixProceedsWithoutAskingForDefaultRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := checkNJAgents(config.Toolkit{}, true)
+	c := checkNJAgents("", config.Toolkit{}, true)
 
 	if c.grade != fail {
 		t.Fatalf("grade = %v, want fail: %+v", c.grade, c)
@@ -171,7 +171,7 @@ func TestCheckNJAgentsIncompleteInstallReportedAsFailedWithLocation(t *testing.T
 		Stages: map[string]string{"review": "/their-review", "build": "/their-build"},
 	}
 
-	c := checkNJAgents(tk, false)
+	c := checkNJAgents("", tk, false)
 
 	if c.grade != fail {
 		t.Fatalf("grade = %v, want fail: %+v", c.grade, c)
@@ -202,7 +202,7 @@ func TestAForeignToolkitIsFlaggedWhenARunCannotReachIt(t *testing.T) {
 		Stages: map[string]string{"review": "/their-review"},
 	}
 
-	c := checkToolkitReachable(tk)
+	c := checkToolkitReachable("", tk)
 
 	if agentcfg.CurationAuthenticates() {
 		if c != nil {
@@ -229,7 +229,7 @@ func TestTheDefaultToolkitIsNotFlaggedAsUnreachable(t *testing.T) {
 	isolate(t)
 	tk := config.Toolkit{Dir: foreignToolkit(t, "pre-push-review")}
 
-	if c := checkToolkitReachable(tk); c != nil {
+	if c := checkToolkitReachable("", tk); c != nil {
 		t.Errorf("the default toolkit was flagged: %+v", c)
 	}
 }
@@ -244,7 +244,7 @@ func TestAnAbsentToolkitIsNotFlaggedTwice(t *testing.T) {
 		Stages: map[string]string{"review": "/theirs"},
 	}
 
-	if c := checkToolkitReachable(tk); c != nil {
+	if c := checkToolkitReachable("", tk); c != nil {
 		t.Errorf("an absent toolkit was flagged as unreachable too: %+v", c)
 	}
 }

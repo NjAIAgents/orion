@@ -50,6 +50,34 @@ type Toolkit struct {
 	Repo   string            // clone URL; empty means the nj-agents default
 	Dir    string            // an existing clone to prefer over discovery
 	Stages map[string]string // stage name -> the command that stage delegates to
+	// ProjectDir is the project's own root, which may hold the toolkit
+	// installed INSIDE it -- .claude/skills or .claude/commands, as
+	// `specify init` writes (docs/decisions/0022). Considered before every
+	// other candidate when it does, because it is what the agent actually
+	// reads: Claude Code loads .claude/ from the working directory.
+	ProjectDir string
+}
+
+// SpecKitRepoURL is spec-kit's repository, the one toolkit that is not a
+// skills repository to clone: it is installed per project by its own CLI.
+const SpecKitRepoURL = "https://github.com/github/spec-kit.git"
+
+// IsSpecKit reports whether this toolkit is spec-kit, in any spelling of its
+// URL (with or without .git, https or ssh).
+func (t Toolkit) IsSpecKit() bool {
+	r := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(t.Repo), ".git"))
+	return strings.HasSuffix(r, "github/spec-kit") || strings.HasSuffix(r, "github.com:github/spec-kit")
+}
+
+// InstalledInProject reports whether root holds commands installed inside a
+// project's own .claude directory.
+func InstalledInProject(root string) bool {
+	for _, d := range []string{"skills", "commands"} {
+		if st, err := os.Stat(filepath.Join(root, ".claude", d)); err == nil && st.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // IsDefault reports whether this is the built-in nj-agents toolkit, which is
@@ -253,6 +281,12 @@ func Discover(orionHome string, tk Toolkit) *Install {
 	type candidate struct{ path, via string }
 	var candidates []candidate
 
+	// Installed inside the project itself. First, because it is the copy
+	// the agent reads, and a vendor clone that differs from it would be
+	// the stale-copy failure the ordering below exists to prevent.
+	if tk.ProjectDir != "" && InstalledInProject(tk.ProjectDir) {
+		candidates = append(candidates, candidate{tk.ProjectDir, "installed in project"})
+	}
 	if tk.Dir != "" {
 		candidates = append(candidates, candidate{expand(tk.Dir), "configured"})
 	}

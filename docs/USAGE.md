@@ -444,8 +444,7 @@ stages and leave the rest alone:
     "repo": "https://github.com/github/spec-kit.git",
     "stages": {
       "spec": "/speckit-specify",
-      "plan": "/speckit-plan",
-      "decompose": "/speckit-tasks"
+      "plan": "/speckit-plan"
     }
   }
 }
@@ -460,17 +459,31 @@ installer actually put on disk rather than inferring a name.
 
 **Installing spec-kit.** Cloning the repository is not enough: it is a Python
 CLI, and its commands live in `templates/commands/` as inputs to its own
-installer rather than as skills. Install the tool, then run its init inside
-the workspace repository:
+installer rather than as skills. **The planning chain installs it for you**:
+`orion plan <KEY>`'s first step runs `specify init` inside the workspace
+repository when any stage names a `speckit-*` command, from templates bundled
+in the CLI, and commits what it wrote
+([decisions/0022](decisions/0022-per-project-toolkit-install-via-specify-init.md)).
+The only thing you install by hand is the CLI itself:
 
 ```bash
 uv tool install specify-cli --from git+https://github.com/github/spec-kit.git
-cd <workspace>/repo && specify init --here --integration claude
+```
+
+To do the project step by hand instead -- an existing repository, say -- run
+the same command the chain does:
+
+```bash
+cd <repo> && specify init --here --force --non-interactive --integration claude
 ```
 
 That writes `.claude/skills/speckit-*/SKILL.md`, which is the layout Orion and
-Claude Code both read. Point `toolkit.dir` at that repository if you want
-`orion doctor` to grade it.
+Claude Code both read. `orion doctor` finds a toolkit installed inside the
+project on its own, grades every `toolkit.stages` command against a file that
+is really there, and reports the `specify` version and the features the chain
+needs -- with `uv tool upgrade specify-cli` when one is missing. A stage whose
+command has no file FAILs naming the stage; it does not fall back silently.
+`orion doctor --fix` never clones spec-kit: a clone is not an install.
 
 Orion clones a toolkit it manages into `<ORION_HOME>/vendor/<repo-name>` —
 `vendor/spec-kit` above, `vendor/nj-agents` for the default — so two toolkits
