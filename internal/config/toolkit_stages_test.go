@@ -11,7 +11,7 @@ import (
 // sample of it.
 func TestAllCanonicalStageNamesAreAccepted(t *testing.T) {
 	canonical := []string{
-		"intent", "constitution", "spec", "plan", "ticket", "scaffold",
+		"intent", "constitution", "spec", "plan", "analyze", "ticket", "scaffold",
 		"decompose", "build", "verify", "review", "pr",
 	}
 	for _, stage := range canonical {
@@ -59,7 +59,7 @@ func TestUnknownStageErrorListsValidOptions(t *testing.T) {
 	if !strings.Contains(msg, "deploy") {
 		t.Errorf("error must cite the invalid key %q, got: %v", "deploy", err)
 	}
-	for _, stage := range []string{"intent", "constitution", "spec", "plan", "ticket", "scaffold",
+	for _, stage := range []string{"intent", "constitution", "spec", "plan", "analyze", "ticket", "scaffold",
 		"decompose", "build", "verify", "review", "pr"} {
 		if !strings.Contains(msg, stage) {
 			t.Errorf("error must list valid stage %q among the options, got: %v", stage, err)

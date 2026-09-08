@@ -141,6 +141,7 @@ func TestANewProjectDeclaresItsToolkit(t *testing.T) {
 		"constitution": "/speckit-constitution",
 		"spec":         "/speckit-specify",
 		"plan":         "/speckit-plan",
+		"analyze":      "/speckit-analyze",
 	} {
 		if got := cfg.Toolkit.Stage(stage); got != want {
 			t.Errorf("%s stage = %q, want %q", stage, got, want)

@@ -234,7 +234,8 @@ const defaultProjectConfig = `{
     "stages": {
       "constitution": "/speckit-constitution",
       "spec": "/speckit-specify",
-      "plan": "/speckit-plan"
+      "plan": "/speckit-plan",
+      "analyze": "/speckit-analyze"
     }
   },
   "autonomy": {

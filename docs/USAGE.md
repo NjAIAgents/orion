@@ -490,7 +490,7 @@ Orion clones a toolkit it manages into `<ORION_HOME>/vendor/<repo-name>` —
 never land on the same directory. `toolkit.dir` overrides that entirely.
 
 **Stage names.** Only the stages Orion runs: `intent`, `constitution`, `spec`
-(or `design`), `plan`, `ticket`, `scaffold`, `decompose`, `build` (or `implement`), `verify`
+(or `design`), `plan`, `analyze`, `ticket`, `scaffold`, `decompose`, `build` (or `implement`), `verify`
 (or `test`), `review`, `pr` (or `ship`). Either spelling of a pair means the
 same stage. Naming a stage twice with two different commands is refused, with
 both keys quoted, rather than one being picked silently; so is a stage name

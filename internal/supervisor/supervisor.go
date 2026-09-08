@@ -284,9 +284,11 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 
 	overall := time.Now()
 	var last *Result
+	var lastOutput string
 
 	for attempt := 1; attempt <= quota.MaxAttempts; attempt++ {
 		res, output := runOnce(ws, bin, prompt, opts, attempt, ac)
+		lastOutput = output
 		recordUsage(ws, opts.Stage, output)
 		recordTicketCost(ws, opts, res, output)
 		// Numerator from the stream (a peak over turns), denominator from
@@ -424,17 +426,27 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	// anything.
 	if !opts.DryRun && opts.Prompt == "" {
 		if err := checkStageArtifact(ws.RepoDir(), cfg, opts.Stage, ws.Task.Slug); err != nil {
-			last.Reason = "the stage left no artifact"
-			ws.Task.Status = "failed"
-			if saveErr := ws.SaveTask(); saveErr != nil {
-				fmt.Fprintf(ui.Console(), "orion: could not update task.json: %v\n", saveErr)
-			}
+			failRun(ws, last, "the stage left no artifact")
 			notify.Send(notify.Event{
 				Level: notify.Blocked, Workspace: ws.ID, Channel: channelFor(ws),
 				Title: fmt.Sprintf("orion: %s left no artifact in %s", opts.Stage, ws.ID),
 				Body:  err.Error() + "\nlog: " + last.LogPath,
 			})
 			return last, err
+		}
+		// The analyze stage owes no file; it owes a verdict, and the verdict
+		// is read from its report rather than trusted from its exit code
+		// (docs/decisions/0001: the toolkit reports, Orion gates).
+		if strings.EqualFold(strings.TrimSpace(opts.Stage), "analyze") {
+			if err := analyzeGate(lastOutput); err != nil {
+				failRun(ws, last, err.Error())
+				notify.Send(notify.Event{
+					Level: notify.Blocked, Workspace: ws.ID, Channel: channelFor(ws),
+					Title: fmt.Sprintf("orion: analyze blocked %s", ws.ID),
+					Body:  err.Error() + "\nlog: " + last.LogPath,
+				})
+				return last, fmt.Errorf("%w\n  log: %s\n  Fix the spec, plan or tasks it names, then: orion plan <KEY> --from analyze", err, last.LogPath)
+			}
 		}
 		// The artifact is real and committed, so it can be published where
 		// the person who asked for it will actually see it. AFTER the check,
@@ -455,6 +467,21 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 		})
 	}
 	return last, nil
+}
+
+// failRun marks the run just recorded as failed, in the result AND in the
+// RunRec task.json keeps: StageDone reads that record to decide whether a
+// resumed chain may skip the stage, and a record still saying "completed"
+// after the gate refused it would skip straight past the refusal.
+func failRun(ws *workspace.Workspace, last *Result, reason string) {
+	last.Reason = reason
+	ws.Task.Status = "failed"
+	if n := len(ws.Task.Runs); n > 0 {
+		ws.Task.Runs[n-1].Reason = reason
+	}
+	if err := ws.SaveTask(); err != nil {
+		fmt.Fprintf(ui.Console(), "orion: could not update task.json: %v\n", err)
+	}
 }
 
 // stageNeedsIntent reports whether a stage designs from the captured intent.

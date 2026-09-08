@@ -317,6 +317,38 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			taskListNote(tk, tasks),
 		), nil
 
+	case "analyze":
+		// Read-only by contract: spec-kit's analyze reports, Orion gates on
+		// the report (docs/decisions/0001, 0021). The one line Orion parses
+		// is asked for verbatim, with <N> rather than a digit so the prompt
+		// itself can never satisfy the parser.
+		read := "docs/intent/" + ws.Task.Slug + ".md, " + spec + " and " + plan
+		if tasks != "" {
+			read = "docs/intent/" + ws.Task.Slug + ".md, " + spec + ", " + plan + " and " + tasks
+		}
+		return join(
+			"Read "+read+".",
+			"",
+			"Use "+command(tk, "analyze", "/speckit-analyze")+" for a READ-ONLY consistency check",
+			"of the spec, the plan and the task list against each other and against",
+			constitutionArtifact+": duplication, ambiguity, underspecification,",
+			"constitution violations, requirements no task covers, tasks no requirement",
+			"needs.",
+			"",
+			"WRITE NOTHING AND COMMIT NOTHING. Do not apply remediations, do not offer",
+			"them, do not ask whether to: nobody can answer. Skip any extension hook",
+			"check; Orion registers none.",
+			"",
+			"End your report with the Metrics block, and in it this line exactly, on its",
+			"own line, with the count as digits:",
+			"",
+			quote("Critical Issues Count: <N>"),
+			"",
+			"Orion reads that line and nothing else. A report without it fails the stage;",
+			"a count above zero blocks the chain until the spec, plan or tasks are fixed",
+			"and `orion plan <KEY> --from analyze` runs this check again.",
+		), nil
+
 	case "ticket":
 		// Filled in by TicketPrompt, which needs the issue. Reaching this
 		// through stagePrompt means a caller forgot to supply one, and
@@ -465,7 +497,7 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 
 	default:
 		return "", fmt.Errorf(
-			"unknown stage %q (want: intent, constitution, spec, plan, scaffold, decompose, build, verify, review, pr)", stage)
+			"unknown stage %q (want: intent, constitution, spec, plan, analyze, scaffold, decompose, build, verify, review, pr)", stage)
 	}
 }
 

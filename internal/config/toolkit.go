@@ -53,6 +53,7 @@ var canonicalStages = map[string]string{
 	"spec":         "spec",
 	"design":       "spec",
 	"plan":         "plan",
+	"analyze":      "analyze",
 	"ticket":       "ticket",
 	"scaffold":     "scaffold",
 	"decompose":    "decompose",
