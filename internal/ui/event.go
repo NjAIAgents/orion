@@ -147,6 +147,28 @@ func iconFor(verb string) string {
 	return s
 }
 
+// Icon is the icon column for a status word, padded -- what a line that has
+// ended is printed behind: ✓ for ok, ✗ for failed, ○ for pending. The same
+// glyphs, and the same ASCII fallbacks, as the event lines.
+func Icon(verb string) string { return iconFor(verb) }
+
+// Spinner is frame i of the in-flight glyph: the working circle turning,
+// which is how a line that is still going says so without a word. Padded
+// like an icon so the columns behind it do not move between frames.
+func Spinner(i int) string {
+	set := spinASCII
+	if glyphs() {
+		set = spinGlyphs
+	}
+	s := set[i%len(set)]
+	return s + strings.Repeat(" ", iconWidth-cells(s))
+}
+
+var (
+	spinGlyphs = []string{"◐", "◓", "◑", "◒"}
+	spinASCII  = []string{"|", "/", "-", "\\"}
+)
+
 // cells is the terminal width of an icon. A table rather than a rune-range
 // guess: the set is six glyphs and only one of them is wide.
 func cells(s string) int {

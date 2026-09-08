@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/supervisor"
+	"github.com/orion-sdlc/orion/internal/ui"
 )
 
 // The reported symptom: `orion run --stage spec` printed one warning and then
@@ -170,4 +171,60 @@ func (l *lockedBuffer) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.b.String()
+}
+
+// On a terminal the newest line is live -- redrawn in place with the
+// turning glyph -- and is committed behind a ✓ when the next one arrives or
+// the stage ends. The transcript keeps every line; the screen shows one
+// moving.
+func TestOnATerminalTheNewestLineIsLiveAndTheRestAreCommitted(t *testing.T) {
+	var out lockedBuffer
+	p := newStageProgressTTY(&out, true)
+	p.On(supervisor.Activity{Kind: "start", Model: "m"})
+	p.On(supervisor.Activity{Kind: "tool", Tool: "Read", Detail: "spec.md"})
+	p.Close()
+
+	got := out.String()
+	if !strings.Contains(got, clearLine) {
+		t.Fatalf("no in-place redraw on a terminal:\n%q", got)
+	}
+	ok := strings.TrimSpace(ui.Icon(ui.VerbOK))
+	// "starting" and "started on m" were committed when the next line
+	// arrived; "Read spec.md" when the stage closed.
+	for _, want := range []string{ok + " ", "started on m\n", "Read spec.md\n"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("transcript lacks %q:\n%q", want, got)
+		}
+	}
+	if strings.Contains(got, "still working") {
+		t.Error("the heartbeat line is for a piped transcript; on a terminal the live line moves instead")
+	}
+}
+
+// The glyph turns: consecutive frames differ, and the column keeps its width.
+func TestTheSpinnerTurns(t *testing.T) {
+	if ui.Spinner(0) == ui.Spinner(1) {
+		t.Error("frames 0 and 1 are the same glyph")
+	}
+	if ui.Spinner(0) != ui.Spinner(4) {
+		t.Error("the spinner does not cycle")
+	}
+	if len([]rune(ui.Spinner(2))) != len([]rune(ui.Icon(ui.VerbOK))) {
+		t.Errorf("spinner %q and icon %q occupy different widths", ui.Spinner(2), ui.Icon(ui.VerbOK))
+	}
+}
+
+// Off a terminal nothing moved: one committed line per activity, no
+// escape codes, the heartbeat as before.
+func TestOffATerminalTheTranscriptIsUnchanged(t *testing.T) {
+	var out lockedBuffer
+	p := newStageProgressTTY(&out, false)
+	p.On(supervisor.Activity{Kind: "tool", Tool: "Read", Detail: "spec.md"})
+	p.Close()
+	if strings.Contains(out.String(), "\r") || strings.Contains(out.String(), "\033[") {
+		t.Errorf("escape codes off a terminal:\n%q", out.String())
+	}
+	if !strings.HasSuffix(out.String(), "Read spec.md\n") {
+		t.Errorf("want the plain transcript line, got:\n%q", out.String())
+	}
 }

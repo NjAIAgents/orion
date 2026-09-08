@@ -31,17 +31,38 @@ import (
 // erases itself.
 
 // stageProgress prints what a stage is doing, one line at a time.
+//
+// ON A TERMINAL the most recent line is LIVE: redrawn in place a few times a
+// second with the working glyph turning and the elapsed time moving, so a
+// silent generation still visibly moves. When the next activity arrives the
+// live line is committed to the transcript behind a ✓ -- that action ended
+// -- and the new one takes its place. Off a terminal every line is committed
+// as it happens and the heartbeat speaks instead, which is the transcript a
+// piped log wants.
 type stageProgress struct {
 	out   io.Writer
 	start time.Time
+	tty   bool
 
 	mu     sync.Mutex
 	lines  int
 	lastAt time.Time
+	// live is the current line's text (after the icon and elapsed), and
+	// liveAt when it began; frame is the spinner's position.
+	live   string
+	liveAt time.Time
+	frame  int
 
 	done chan struct{}
 	stop sync.Once
 }
+
+// spinEvery is how often the live line is redrawn on a terminal.
+const spinEvery = 250 * time.Millisecond
+
+// clearLine returns to the start of the line and erases it: how the live
+// line is redrawn without scrolling.
+const clearLine = "\r\033[2K"
 
 // maxProgressLines caps the transcript.
 //
@@ -63,7 +84,17 @@ const maxProgressLines = 200
 const heartbeatEvery = 30 * time.Second
 
 func newStageProgress(out io.Writer) *stageProgress {
-	p := &stageProgress{out: out, start: time.Now(), lastAt: time.Now(), done: make(chan struct{})}
+	return newStageProgressTTY(out, ui.IsTerminal(out))
+}
+
+// newStageProgressTTY is newStageProgress with the terminal decision made
+// by the caller, which is what lets a test drive the live line into a buffer.
+func newStageProgressTTY(out io.Writer, tty bool) *stageProgress {
+	p := &stageProgress{out: out, start: time.Now(), lastAt: time.Now(), tty: tty, done: make(chan struct{})}
+	if tty {
+		p.live, p.liveAt = "starting", p.start
+		p.redraw()
+	}
 	go p.tick()
 	return p
 }
@@ -73,7 +104,11 @@ func newStageProgress(out io.Writer) *stageProgress {
 // Stops when Close is called. A goroutine per stage, and stages are
 // sequential, so there is one of these at a time.
 func (p *stageProgress) tick() {
-	t := time.NewTicker(heartbeatEvery)
+	every := heartbeatEvery
+	if p.tty {
+		every = spinEvery
+	}
+	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		select {
@@ -81,6 +116,14 @@ func (p *stageProgress) tick() {
 			return
 		case now := <-t.C:
 			p.mu.Lock()
+			if p.tty {
+				// The live line IS the heartbeat: its glyph turns and its
+				// elapsed time moves whether or not anything happened.
+				p.frame++
+				p.redraw()
+				p.mu.Unlock()
+				continue
+			}
 			quiet := now.Sub(p.lastAt)
 			if quiet >= heartbeatEvery {
 				p.lastAt = now
@@ -93,9 +136,32 @@ func (p *stageProgress) tick() {
 	}
 }
 
-// Close stops the heartbeat. Safe to call more than once.
+// Close stops the heartbeat, and on a terminal commits the live line so the
+// transcript keeps it and the outcome line that follows starts clean. Safe
+// to call more than once.
 func (p *stageProgress) Close() {
-	p.stop.Do(func() { close(p.done) })
+	p.stop.Do(func() {
+		close(p.done)
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.tty && p.live != "" {
+			p.commit()
+		}
+	})
+}
+
+// redraw paints the live line in place. Caller holds the mutex.
+func (p *stageProgress) redraw() {
+	fmt.Fprintf(p.out, "%s  %s%s %s", clearLine, ui.Spinner(p.frame),
+		ui.Dim(p.out, time.Since(p.start).Round(time.Second).String()), p.live)
+}
+
+// commit turns the live line into a transcript line behind a ✓: the action
+// it named has ended. Caller holds the mutex.
+func (p *stageProgress) commit() {
+	fmt.Fprintf(p.out, "%s  %s%s %s\n", clearLine, ui.Icon(ui.VerbOK),
+		ui.Dim(p.out, p.liveAt.Sub(p.start).Round(time.Second).String()), p.live)
+	p.live = ""
 }
 
 // On is the supervisor callback.
@@ -122,6 +188,14 @@ func (p *stageProgress) On(a supervisor.Activity) {
 	}
 	p.lines++
 	p.lastAt = now
+	if p.tty {
+		if p.live != "" {
+			p.commit()
+		}
+		p.live, p.liveAt = line, now
+		p.redraw()
+		return
+	}
 	fmt.Fprintf(p.out, "  %s %s\n",
 		ui.Dim(p.out, now.Sub(p.start).Round(time.Second).String()), line)
 }

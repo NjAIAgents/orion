@@ -13,6 +13,7 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/provision"
 	"github.com/orion-sdlc/orion/internal/supervisor"
+	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
@@ -653,5 +654,37 @@ func TestAnalyzeSitsBetweenPlanAndScaffold(t *testing.T) {
 	}
 	if planStages[a].Done == nil || planStages[a].Frame != nil {
 		t.Error("analyze must be a supervised stage with a Done predicate")
+	}
+}
+
+// Every line that ends carries the icon column: ✓ on a done or skipped
+// step, ✗ on a failed one, ○ when the operator stopped it.
+func TestChainLinesCarryTheOutcomeIcon(t *testing.T) {
+	fakeRemote(t)
+	var out bytes.Buffer
+	run := func(_ *workspace.Workspace, stage string) (*supervisor.Result, error) {
+		if stage == "spec" {
+			return &supervisor.Result{}, fmt.Errorf("boom")
+		}
+		return &supervisor.Result{ExitCode: 0, Duration: time.Second}, nil
+	}
+	runPlanChain(&out, chainWS(t), run, yes)
+	got := out.String()
+	ok, fail := ui.Icon(ui.VerbOK), ui.Icon(ui.VerbFail)
+	if !strings.Contains(got, ok+"= done") {
+		t.Errorf("a skipped step lacks the ok icon:\n%s", got)
+	}
+	if !strings.Contains(got, ok+"done") {
+		t.Errorf("a done step lacks the ok icon:\n%s", got)
+	}
+	if !strings.Contains(got, fail+"failed") || !strings.Contains(got, "boom") {
+		t.Errorf("the failed step lacks the fail icon:\n%s", got)
+	}
+
+	out.Reset()
+	asked := 0
+	runPlanChain(&out, chainWS(t), okRun(new([]string)), func(string) bool { asked++; return asked < 2 })
+	if !strings.Contains(out.String(), ui.Icon("pending")+"stopped") {
+		t.Errorf("a stop at the operator's request lacks the pending icon:\n%s", out.String())
 	}
 }
