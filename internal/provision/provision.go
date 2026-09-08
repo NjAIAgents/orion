@@ -137,8 +137,8 @@ func Remote(opts Options) (*Result, error) {
 	}
 
 	args := []string{"repo", "create", target, visibility, "--source", opts.Dir, "--remote", "origin"}
-	if opts.Description != "" {
-		args = append(args, "--description", opts.Description)
+	if d := oneLine(opts.Description); d != "" {
+		args = append(args, "--description", d)
 	}
 	if out, err := exec.Command("gh", args...).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("gh repo create failed: %s", strings.TrimSpace(string(out)))
@@ -324,4 +324,26 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n-1] + "…"
+}
+
+// oneLine makes a string GitHub will accept as a repository description.
+//
+// The description is whatever the tracker project says the work is, and a
+// tracker description is prose: it has paragraphs. GitHub refuses any
+// control character outright -- "Description control characters are not
+// allowed (createRepository)" -- and refuses it AFTER the repository name
+// is taken, so the failure costs the operator a confirmation and a
+// half-made remote. Every run of whitespace becomes one space, and what is
+// left is cut to GitHub's own limit at a word boundary.
+func oneLine(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	const max = 350
+	if len(s) <= max {
+		return s
+	}
+	cut := s[:max-1]
+	if i := strings.LastIndexByte(cut, ' '); i > max/2 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, " ,;") + "…"
 }

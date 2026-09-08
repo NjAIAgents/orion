@@ -226,3 +226,26 @@ func TestRemoteExplainsAMissingGH(t *testing.T) {
 	}
 	_ = filepath.Base(d)
 }
+
+// GitHub refuses a description carrying a control character, and refuses it
+// after the repository name is taken -- so the newlines a tracker
+// description always has must never reach it.
+func TestADescriptionIsFlattenedToOneLine(t *testing.T) {
+	got := oneLine("Assess whether an in-house replacement\n\nfor CloudHealth is viable.\tThree uses.\r\n")
+	want := "Assess whether an in-house replacement for CloudHealth is viable. Three uses."
+	if got != want {
+		t.Errorf("oneLine = %q, want %q", got, want)
+	}
+	for _, r := range got {
+		if r < 0x20 {
+			t.Fatalf("a control character survived: %q", got)
+		}
+	}
+	if oneLine("   \n\t ") != "" {
+		t.Error("whitespace-only must flatten to empty, so no --description is passed at all")
+	}
+	long := oneLine(strings.Repeat("residency ", 80))
+	if len(long) > 350 || !strings.HasSuffix(long, "…") {
+		t.Errorf("a long description must be cut at a word boundary: len=%d %q", len(long), long[max(0, len(long)-30):])
+	}
+}
