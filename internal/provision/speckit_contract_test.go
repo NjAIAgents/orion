@@ -47,6 +47,17 @@ func TestSpecKitReleaseSaysWhatTheGatesRead(t *testing.T) {
 	if !strings.Contains(skill("analyze"), "Critical Issues Count") {
 		t.Error("speckit-analyze no longer reports a Critical Issues Count; the analyze gate reads that line")
 	}
+	// The tasks wrap: decompose reads the done-when line, the acceptance
+	// criteria block and the [HUMAN] marker it asks for (OR-411).
+	if s := skill("tasks"); !strings.Contains(s, wrapMarker) {
+		t.Error("the orion preset's wrap was not composed into speckit-tasks")
+	} else {
+		for _, want := range []string{"Done when:", "Acceptance criteria", "[HUMAN]"} {
+			if !strings.Contains(s, want) {
+				t.Errorf("the composed speckit-tasks does not ask for %q", want)
+			}
+		}
+	}
 	// supervisor.placeholderRe fails a constitution still holding a slot;
 	// the template must ship as slots for that check to mean anything.
 	tmpl, err := os.ReadFile(filepath.Join(repo, ".specify", "templates", "constitution-template.md"))

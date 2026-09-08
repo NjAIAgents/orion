@@ -399,3 +399,121 @@ func TestTheEpicIsNamedByTheTasksHeadingAlone(t *testing.T) {
 		t.Errorf("the identity label follows the epic name, and a re-run reconciles by it: %q", tree.Label())
 	}
 }
+
+// A stated exit condition reaches the ticket verbatim, and one the artifact
+// omitted is derived from the line's own files and requirement ids -- marked
+// as derived, because a reader weighs the two differently.
+func TestATaskCarriesItsExitCondition(t *testing.T) {
+	src := "# Tasks: Thing\n\n## Phase 3: User Story 1 — Do the thing (Priority: P1)\n\n" +
+		"- [ ] T001 [US1] Write `internal/cost/reconcile.go` (FR-011, SC-004)\n" +
+		"  Done when: `go test ./internal/cost/` passes and the difference is shown on every row.\n" +
+		"- [ ] T002 [US1] Write `internal/cost/query.go` for FR-012\n" +
+		"- [ ] T003 [US1] Think about the shape of the thing\n"
+	tree, err := Parse(src, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]*Item{}
+	_ = tree.Walk(func(it, _ *Item) error {
+		if it.Kind == KindTask {
+			byID[it.ID] = it
+		}
+		return nil
+	})
+
+	stated := byID["T001"]
+	if stated.Derived || !strings.Contains(stated.DoneWhen, "go test ./internal/cost/") {
+		t.Errorf("a stated condition must survive verbatim and not be marked derived: %+v", stated.DoneWhen)
+	}
+	if !strings.Contains(stated.Body, "Done when:\n  `go test") {
+		t.Errorf("the body must carry it under its own heading:\n%s", stated.Body)
+	}
+
+	derived := byID["T002"]
+	if !derived.Derived {
+		t.Error("T002 stated no condition, so its own must be marked derived")
+	}
+	for _, want := range []string{"internal/cost/query.go", "exist and are committed", "FR-012"} {
+		if !strings.Contains(derived.DoneWhen, want) {
+			t.Errorf("derived condition lacks %q: %s", want, derived.DoneWhen)
+		}
+	}
+	if !strings.Contains(derived.Body, "derived by Orion") {
+		t.Errorf("the body must say the condition was derived:\n%s", derived.Body)
+	}
+
+	// Nothing on the line to derive from: say so rather than invent one.
+	if bare := byID["T003"]; !strings.Contains(bare.DoneWhen, "NOT STATED") {
+		t.Errorf("a line with no file and no requirement must admit it: %q", bare.DoneWhen)
+	}
+}
+
+// A story's acceptance criteria reach the ticket; a story without them says
+// so rather than implying none were needed.
+func TestAStoryCarriesItsAcceptanceCriteria(t *testing.T) {
+	src := "# Tasks: Thing\n\n## Phase 3: User Story 1 — Do the thing (Priority: P1)\n\n" +
+		"**Goal**: the thing is done\n\n" +
+		"**Acceptance criteria** (from spec.md US1 scenarios 1-2):\n" +
+		"1. **Given** no thing, **When** asked, **Then** refused.\n" +
+		"2. **Given** a thing, **When** asked, **Then** shown.\n\n" +
+		"- [ ] T001 [US1] Write a.go\n\n" +
+		"## Phase 4: User Story 2 — Another thing (Priority: P2)\n\n" +
+		"- [ ] T002 [US2] Write b.go\n"
+	tree, err := Parse(src, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]*Item{}
+	_ = tree.Walk(func(it, _ *Item) error {
+		if it.Kind == KindStory {
+			byID[it.ID] = it
+		}
+		return nil
+	})
+
+	with := byID["US1"]
+	if len(with.Criteria) != 2 || !strings.Contains(with.Criteria[0], "Then** refused") {
+		t.Fatalf("criteria = %#v", with.Criteria)
+	}
+	if !strings.Contains(with.Body, "Acceptance criteria:\n  - **Given** no thing") {
+		t.Errorf("the body must carry them:\n%s", with.Body)
+	}
+	// The block must not swallow the task lines that follow it.
+	if len(with.Children) != 1 {
+		t.Errorf("US1 has %d tasks, want 1 -- the criteria block ran on", len(with.Children))
+	}
+
+	if without := byID["US2"]; !strings.Contains(without.Body, "NONE STATED") {
+		t.Errorf("a story without criteria must say so:\n%s", without.Body)
+	}
+}
+
+// [HUMAN] is recorded and said plainly, so the queue can withhold the label
+// (OR-414) and a reader knows why.
+func TestAHumanTaskIsMarkedAsSuch(t *testing.T) {
+	src := "# Tasks: Thing\n\n## Phase 1: Setup\n\n" +
+		"- [ ] T001 [HUMAN] Register the OIDC client in the identity provider\n" +
+		"  Done when: the client id is recorded in the runbook.\n" +
+		"- [ ] T002 Write a.go\n"
+	tree, err := Parse(src, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]*Item{}
+	_ = tree.Walk(func(it, _ *Item) error {
+		if it.Kind == KindTask {
+			byID[it.ID] = it
+		}
+		return nil
+	})
+	human := byID["T001"]
+	if !human.Human || !strings.Contains(human.Body, "HUMAN:") {
+		t.Errorf("T001 must be marked human and say so:\n%s", human.Body)
+	}
+	if strings.Contains(human.Summary, "[HUMAN]") {
+		t.Errorf("the marker is metadata, not part of the title: %q", human.Summary)
+	}
+	if byID["T002"].Human {
+		t.Error("an ordinary task was marked human")
+	}
+}

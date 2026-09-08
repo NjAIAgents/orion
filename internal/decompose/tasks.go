@@ -75,8 +75,27 @@ type Item struct {
 	// Parallel records the [P] marker: this task may run alongside the other
 	// [P] tasks in its phase.
 	Parallel bool
+	// Human records the [HUMAN] marker: work no agent can do -- a credential
+	// a person holds, a console click, a conversation with another team.
+	// The queue label is withheld from these (OR-414).
+	Human bool
+	// DoneWhen is the exit condition: what a reviewer checks to say this is
+	// finished. Stated by the artifact when the orion preset asked for it
+	// (OR-411), derived from what the line already names when it did not
+	// (OR-412) -- and Derived says which, because a reader weighs the two
+	// differently.
+	DoneWhen string
+	Derived  bool
+	// Criteria are a story's acceptance criteria, in the artifact's own
+	// words. A story with none says so rather than implying they were
+	// considered.
+	Criteria []string
 	Phase    string
 	Children []*Item
+
+	// rawDesc is the task line's full text, kept until the body is written
+	// after the file has been read.
+	rawDesc string
 }
 
 // Coupling is two sibling items that declared the same ground (OR-260).
@@ -176,6 +195,15 @@ var (
 	// alternatives first, so package-lock.json is not read as package.json.
 	bareManifest = regexp.MustCompile(`\b(go\.mod|go\.sum|package-lock\.json|package\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.toml|Cargo\.lock|pyproject\.toml|requirements\.txt|setup\.py|Gemfile\.lock|Gemfile|composer\.json|build\.gradle|pom\.xml|tsconfig\.json|Dockerfile|Makefile)\b`)
 	goalLine     = regexp.MustCompile(`^\s*\*{0,2}Goal\*{0,2}\s*:\s*(.*)$`)
+	// doneWhenLine is the exit condition the orion preset asks for under
+	// every task line. Indented, because it belongs to the task above it.
+	doneWhenLine = regexp.MustCompile(`^\s+\*{0,2}Done when\*{0,2}\s*:\s*(.*)$`)
+	// criteriaHead opens a story phase's acceptance-criteria block; the
+	// numbered or bulleted lines under it are the criteria.
+	criteriaHead = regexp.MustCompile(`(?i)^\s*\*{0,2}Acceptance criteria\*{0,2}\b`)
+	criteriaItem = regexp.MustCompile(`^\s*(?:\d+\.|[-*+])\s+(.*)$`)
+	// humanTag marks work no agent can do.
+	humanTag = regexp.MustCompile(`\[HUMAN\]`)
 )
 
 // Parse reads a /speckit.tasks tasks.md into the neutral tree.
@@ -199,6 +227,16 @@ func Parse(text, source string) (*Tree, error) {
 		phases      []string
 		depends     []string
 		inDepends   bool
+		// defer0 are the tasks whose bodies are written after the file is
+		// read, because a task's own "Done when:" line comes after it.
+		defer0 []*Item
+		// lastTask is the task a following "Done when:" line belongs to,
+		// and inCriteria whether the lines being read are a story's
+		// acceptance criteria. Both are cleared by the next heading or
+		// task line, so a stray line never attaches to something distant.
+		lastTask      *Item
+		inCriteria    bool
+		storyCriteria = map[string][]string{}
 	)
 
 	for _, raw := range lines {
@@ -219,6 +257,7 @@ func Parse(text, source string) (*Tree, error) {
 		if h, ok := heading(line, "## "); ok {
 			phase = h
 			phaseStoryN = ""
+			lastTask, inCriteria = nil, false
 			// A "Dependencies" section is the artifact's statement of
 			// ORDER. It belongs on the epic verbatim: it names tasks by id,
 			// so re-deriving it per item would either duplicate it or lose
@@ -241,6 +280,7 @@ func Parse(text, source string) (*Tree, error) {
 			continue
 		}
 		if _, ok := heading(line, "### "); ok {
+			lastTask, inCriteria = nil, false
 			continue
 		}
 		if inDepends {
@@ -248,6 +288,34 @@ func Parse(text, source string) (*Tree, error) {
 				depends = append(depends, line)
 			}
 			continue
+		}
+		// A "Done when:" line belongs to the task above it: the exit
+		// condition the orion preset asks for (OR-411).
+		if lastTask != nil {
+			if m := doneWhenLine.FindStringSubmatch(line); m != nil {
+				lastTask.DoneWhen = strings.TrimSpace(m[1])
+				continue
+			}
+		}
+		// A story phase's acceptance-criteria block: the heading opens it,
+		// the numbered or bulleted lines under it are the criteria, and a
+		// blank line closes it.
+		if phaseStoryN != "" && criteriaHead.MatchString(line) {
+			inCriteria = true
+			continue
+		}
+		if inCriteria {
+			if strings.TrimSpace(line) == "" {
+				inCriteria = false
+				continue
+			}
+			if m := criteriaItem.FindStringSubmatch(line); m != nil {
+				if c := strings.TrimSpace(m[1]); c != "" {
+					storyCriteria[phaseStoryN] = append(storyCriteria[phaseStoryN], c)
+				}
+				continue
+			}
+			inCriteria = false
 		}
 		if phaseStoryN != "" {
 			if m := goalLine.FindStringSubmatch(line); m != nil {
@@ -263,6 +331,8 @@ func Parse(text, source string) (*Tree, error) {
 
 		parallel := parallelTag.MatchString(rest)
 		rest = parallelTag.ReplaceAllString(rest, "")
+		human := humanTag.MatchString(rest)
+		rest = humanTag.ReplaceAllString(rest, "")
 
 		num := ""
 		if s := storyTag.FindStringSubmatch(rest); s != nil {
@@ -282,9 +352,12 @@ func Parse(text, source string) (*Tree, error) {
 			Summary:  strings.TrimSpace(id + " " + summarise(desc)),
 			Paths:    pathsIn(desc),
 			Parallel: parallel,
+			Human:    human,
 			Phase:    phase,
+			rawDesc:  desc,
 		}
-		task.Body = taskBody(task, desc)
+		lastTask = task
+		defer0 = append(defer0, task)
 
 		if num == "" {
 			// A task in no story group -- Setup, Foundational, Polish -- is
@@ -314,6 +387,19 @@ func Parse(text, source string) (*Tree, error) {
 		return nil, fmt.Errorf("%s names no feature: expected a `# Tasks: <name>` heading", source)
 	}
 
+	// Every task's body, now that its "Done when:" line (which follows it)
+	// has been read. A task the artifact left without one gets a derived
+	// condition from what its own line already names -- the files it
+	// declares and the requirements it cites -- marked as derived, because
+	// a reader weighs a stated condition and an inferred one differently
+	// (OR-412).
+	for _, t := range defer0 {
+		if t.DoneWhen == "" {
+			t.DoneWhen, t.Derived = deriveDoneWhen(t), true
+		}
+		t.Body = taskBody(t, t.rawDesc)
+	}
+
 	// Stories in first-appearance order, and ahead of the ungrouped tasks:
 	// the tracker shows children in the order they were created, and the
 	// story groups are the point of the artifact.
@@ -325,6 +411,7 @@ func Parse(text, source string) (*Tree, error) {
 			title = "User Story " + num
 		}
 		st.Summary = st.ID + " " + title
+		st.Criteria = storyCriteria[num]
 		// The union of its tasks', because a STORY is the unit an agent
 		// claims and works in one branch (internal/tracker/children.go) --
 		// so the story is the level a batch collides at, and therefore the
@@ -408,10 +495,70 @@ func pathsIn(desc string) []string {
 	return out
 }
 
+// deriveDoneWhen states an exit condition from what the task line already
+// names, for an artifact written without one.
+//
+// It infers nothing about behaviour: the files the line declares and the
+// requirement ids it cites are facts on the line, and "those files exist,
+// are committed, and the requirement they cite is demonstrable" is the
+// weakest honest condition. Weak on purpose -- a derived condition that
+// overstated what was checked would be worse than none, because a reviewer
+// would trust it.
+func deriveDoneWhen(t *Item) string {
+	var parts []string
+	if len(t.Paths) > 0 {
+		parts = append(parts, fmt.Sprintf("%s exist and are committed", strings.Join(t.Paths, ", ")))
+	}
+	if refs := requirementRefs(t.rawDesc); len(refs) > 0 {
+		parts = append(parts, fmt.Sprintf("the behaviour %s describes is demonstrable", strings.Join(refs, ", ")))
+	}
+	if len(parts) == 0 {
+		// Nothing on the line to hang a condition on. Say that, rather than
+		// inventing one: an item whose done-when is a guess is the failure
+		// this whole mechanism exists to remove.
+		return "NOT STATED. The task list gave no exit condition and the line names no file " +
+			"and no requirement to derive one from. Agree what \"done\" means before starting."
+	}
+	return strings.Join(parts, ", and ")
+}
+
+// requirementRe finds the requirement and criterion ids a task line cites:
+// FR-011, NFR-S8, SC-004, and the research references beside them.
+var requirementRe = regexp.MustCompile(`\b((?:FR|NFR|SC|OQ)-[A-Z]?\d+)\b`)
+
+func requirementRefs(desc string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range requirementRe.FindAllStringSubmatch(desc, -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
 func taskBody(t *Item, desc string) string {
 	var b strings.Builder
 	b.WriteString(desc)
 	b.WriteString("\n\n")
+	// The exit condition first among the facts: it is what the person or
+	// agent working this item is held to, and the one line a reviewer
+	// checks. Said to be derived when it is, so nobody reads an inference
+	// as an agreement.
+	if t.DoneWhen != "" {
+		if t.Derived {
+			b.WriteString("Done when (derived by Orion from this line -- the task list stated none):\n  ")
+		} else {
+			b.WriteString("Done when:\n  ")
+		}
+		b.WriteString(t.DoneWhen)
+		b.WriteString("\n\n")
+	}
+	if t.Human {
+		b.WriteString("HUMAN: the task list marks this as work no agent can do, so Orion does not " +
+			"offer it to the queue. A person picks it up.\n")
+	}
 	if t.Phase != "" {
 		fmt.Fprintf(&b, "Phase: %s\n", t.Phase)
 	}
@@ -439,6 +586,19 @@ func storyBody(st *Item, goal string, coupled []Coupling) string {
 		fmt.Fprintf(&b, "Phase: %s\n", st.Phase)
 	}
 	fmt.Fprintf(&b, "Tasks: %d\n", len(st.Children))
+	// Acceptance criteria, in the artifact's own words. A story without
+	// them says so: a body that simply omitted the section would read as
+	// though none were needed.
+	if len(st.Criteria) > 0 {
+		b.WriteString("\nAcceptance criteria:\n")
+		for _, c := range st.Criteria {
+			fmt.Fprintf(&b, "  - %s\n", c)
+		}
+	} else {
+		b.WriteString("\nAcceptance criteria: NONE STATED in the task list. " +
+			"The spec's Acceptance Scenarios for this story are the agreed text; " +
+			"agree what this story must satisfy before working it.\n")
+	}
 	// The declared scope, in the one spelling the queue manager reads back
 	// (internal/tracker/scope.go). A story with no file paths in any of its
 	// tasks writes no line at all rather than an empty one: absent means
