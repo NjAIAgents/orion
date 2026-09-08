@@ -582,7 +582,7 @@ func TestPlanFromIndexRejectsAnUnknownStepAndListsThem(t *testing.T) {
 
 // The toolkit step has nothing to do for a project that delegates nothing to
 // spec-kit -- the chain tests' workspaces are such projects -- and is done
-// for a spec-kit project once .specify/ is there.
+// for a spec-kit project once .specify/ is there and the preset is composed.
 func TestTheToolkitStepIsDoneWhenNothingDelegatesToSpecKitOrItIsInstalled(t *testing.T) {
 	w := chainWS(t)
 	if !toolkitDone(w) {
@@ -601,8 +601,20 @@ func TestTheToolkitStepIsDoneWhenNothingDelegatesToSpecKitOrItIsInstalled(t *tes
 	if err := os.MkdirAll(filepath.Join(w.RepoDir(), ".specify"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Installed but the specify skill was not composed with the orion
+	// preset (or an upgrade reinstalled it): not done, so the step re-applies.
+	if toolkitDone(w) {
+		t.Error("a spec-kit project whose specify skill lacks the orion wrap is reported done")
+	}
+	skill := filepath.Join(w.RepoDir(), ".claude", "skills", "speckit-specify")
+	if err := os.MkdirAll(skill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("## Orion runs this headless\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if !toolkitDone(w) {
-		t.Error("a spec-kit project with .specify/ is not reported done")
+		t.Error("a spec-kit project with .specify/ and the composed skill is not reported done")
 	}
 }
 

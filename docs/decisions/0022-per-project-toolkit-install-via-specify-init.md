@@ -103,6 +103,10 @@ network is used for this; there is no "latest release" comparison.
 - `001-` is pinned for the chain's feature. A second feature on an existing
   project needs a counter and an entry point; both are out of scope here
   and recorded in [0023](0023-living-spec-project-vs-feature.md).
+- The CLI is pinned to one release (`provision.SpecKitTag`): the gates read
+  strings its templates contain, and a contract test against the real CLI
+  (`speckit_contract_test.go`, skipped where `specify` is absent) is what
+  makes moving the pin a checked change rather than a discovered one (OR-395).
 - `specify preset add --dev <path>` copies the preset into the project's own
   `.specify/presets/orion/` and recomposes the installed skill in place;
   nothing is written under `~/.specify`. Verified on 1.0.5.dev0 (OR-382), so

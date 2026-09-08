@@ -256,7 +256,7 @@ func checkSpecKit(tk config.Toolkit) *check {
 	out, err := exec.Command(bin, "version", "--features", "--json").CombinedOutput()
 	if err != nil {
 		return &check{"spec-kit CLI", warn, "specify version --features --json failed",
-			strings.TrimSpace(string(out)) + "\nUpgrade it:  " + specKitUpgrade}
+			strings.TrimSpace(string(out)) + "\nInstall the pinned release:  " + specKitUpgrade}
 	}
 	var v struct {
 		Version  string                     `json:"version"`
@@ -264,7 +264,7 @@ func checkSpecKit(tk config.Toolkit) *check {
 	}
 	if jsonErr := json.Unmarshal(out, &v); jsonErr != nil || v.Version == "" {
 		return &check{"spec-kit CLI", warn, "could not read the version report",
-			"specify version --features --json did not return the expected JSON.\nUpgrade it:  " + specKitUpgrade}
+			"specify version --features --json did not return the expected JSON.\nInstall the pinned release:  " + specKitUpgrade}
 	}
 	var missing []string
 	for _, f := range specKitRequiredFeatures {
@@ -274,14 +274,17 @@ func checkSpecKit(tk config.Toolkit) *check {
 	}
 	if len(missing) > 0 {
 		return &check{"spec-kit CLI", warn, v.Version + ", missing " + strings.Join(missing, "; "),
-			"Upgrade it:  " + specKitUpgrade}
+			"Install the pinned release:  " + specKitUpgrade}
 	}
-	return &check{"spec-kit CLI", ok, v.Version, ""}
+	// Reported, never refused: an operator ahead of the pin is not blocked,
+	// but the mismatch is visible on the line they read.
+	return &check{"spec-kit CLI", ok, v.Version + " (pinned " + provision.SpecKitTag + ")", ""}
 }
 
-// specKitUpgrade is how the installed specify CLI is brought forward; it is
-// installed as a uv tool, so uv upgrades it.
-const specKitUpgrade = "uv tool upgrade specify-cli"
+// specKitUpgrade brings the installed specify CLI to the release Orion is
+// pinned to. Not `uv tool upgrade`: with a tagged source that re-resolves
+// the same tag and does nothing.
+const specKitUpgrade = provision.SpecKitReinstall
 
 // toolkitName is what the doctor line calls the toolkit. The default keeps
 // its old label so nothing about an unconfigured machine's output moves; a

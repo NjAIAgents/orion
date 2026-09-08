@@ -33,8 +33,8 @@ now refuses to do**.
   interactive questionnaire a headless run cannot answer.
 - **`orion doctor` checks spec-kit's version.** It resolves every `toolkit.stages`
   command to a file on disk and fails naming the stage when one is missing; it reads
-  `specify version --features --json` and prompts `uv tool upgrade specify-cli` when a
-  required feature is absent.
+  `specify version --features --json`, prints the installed version beside the release
+  Orion pins (v1.0.4), and names the reinstall line when a required feature is absent.
 
 ### Changed
 

@@ -36,7 +36,34 @@ const PresetID = "orion"
 // SpecKitInstall is how the `specify` CLI is installed on a machine that
 // lacks it. Named in every message that finds it missing, so the fix is on
 // screen rather than in a manual.
-const SpecKitInstall = "uv tool install specify-cli --from git+https://github.com/github/spec-kit.git"
+const SpecKitInstall = "uv tool install specify-cli --from git+https://github.com/github/spec-kit.git@" + SpecKitTag
+
+// SpecKitTag is the spec-kit release Orion's gates were written against:
+// the skill names, the [NEEDS CLARIFICATION] marker, the Critical Issues
+// Count line and the constitution template's slots are all read from what
+// this release installs (speckit_contract_test.go pins them). A machine
+// provisioned later gets the same release, not whatever main holds that
+// day; moving the pin is a change here, checked by that test.
+const SpecKitTag = "v1.0.4"
+
+// SpecKitReinstall brings an installed CLI to the pinned release. `uv tool
+// upgrade` re-resolves the same tag and does nothing, so a reinstall is the
+// verb.
+const SpecKitReinstall = "uv tool install --reinstall specify-cli --from git+https://github.com/github/spec-kit.git@" + SpecKitTag
+
+// wrapMarker is the first heading of the orion preset's wrap, and the one
+// thing that proves the installed speckit-specify skill was composed with
+// it. The preset's registration under .specify/presets/ is not that proof:
+// spec-kit recomposes skills on its own paths, and the registration
+// outlives the composition.
+const wrapMarker = "## Orion runs this headless"
+
+// PresetApplied reports whether the installed specify skill carries the
+// orion wrap -- the chain's toolkit step is not done until it does.
+func PresetApplied(dir string) bool {
+	b, err := os.ReadFile(filepath.Join(dir, ".claude", "skills", "speckit-specify", "SKILL.md"))
+	return err == nil && strings.Contains(string(b), wrapMarker)
+}
 
 // SpecKitDir is the directory spec-kit keeps its own state in, and the
 // signal that a project has been initialised.
@@ -53,7 +80,11 @@ const SpecKitDir = ".specify"
 // empty, which a provisioned workspace never is.
 func InitSpecKit(dir string) (bool, error) {
 	needInit := !isDir(filepath.Join(dir, SpecKitDir))
-	needPreset := !exists(filepath.Join(dir, SpecKitDir, "presets", PresetID, "preset.yml"))
+	// Judged by the composed skill, not by the registration: a skill that
+	// lost the wrap runs spec-kit's best-guess rule, which is exactly what
+	// the preset exists to remove, and the registration would still say
+	// "installed".
+	needPreset := !PresetApplied(dir)
 	if !needInit && !needPreset {
 		return false, nil
 	}
@@ -85,11 +116,19 @@ func InitSpecKit(dir string) (bool, error) {
 		if err := materialise(orionPreset, "presets/"+PresetID, tmp); err != nil {
 			return needInit, fmt.Errorf("writing the %s preset: %w", PresetID, err)
 		}
+		// A registration without the composition -- the skill was
+		// reinstalled around it -- has to be removed first: `preset add`
+		// refuses an id it already knows, and nothing recomposes on its own.
+		if exists(filepath.Join(dir, SpecKitDir, "presets", PresetID, "preset.yml")) {
+			if out, err := specify(bin, dir, "preset", "remove", PresetID); err != nil {
+				return needInit, fmt.Errorf("specify preset remove failed in %s: %v\n%s", dir, err, out)
+			}
+		}
 		if out, err := specify(bin, dir, "preset", "add", "--dev", tmp); err != nil {
 			return needInit, fmt.Errorf("specify preset add failed in %s: %v\n%s", dir, err, out)
 		}
-		if !exists(filepath.Join(dir, SpecKitDir, "presets", PresetID, "preset.yml")) {
-			return needInit, fmt.Errorf("specify preset add exited 0 but %s/presets/%s/ is not there", SpecKitDir, PresetID)
+		if !PresetApplied(dir) {
+			return needInit, fmt.Errorf("specify preset add exited 0 but .claude/skills/speckit-specify/SKILL.md does not carry the %s wrap", PresetID)
 		}
 	}
 

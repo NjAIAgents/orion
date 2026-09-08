@@ -19,7 +19,8 @@ func fakeSpecify(t *testing.T) string {
 	fakebin.Install(t, dir, "specify", "#!/bin/sh\n"+
 		"echo \"$@\" >> "+fakebin.ShPath(log)+"\n"+
 		"case \"$1\" in init) mkdir -p .specify/memory .claude/skills/speckit-specify; echo x > .claude/skills/speckit-specify/SKILL.md;; "+
-		"preset) mkdir -p .specify/presets/orion && cp \"$4\"/preset.yml .specify/presets/orion/preset.yml;; esac\n"+
+		"preset) case \"$2\" in add) mkdir -p .specify/presets/orion .claude/skills/speckit-specify && cp \"$4\"/preset.yml .specify/presets/orion/preset.yml && "+
+		"cat \"$4\"/commands/speckit.specify.md > .claude/skills/speckit-specify/SKILL.md;; remove) rm -rf .specify/presets/orion;; esac;; esac\n"+
 		"exit 0\n")
 	return log
 }
@@ -133,5 +134,47 @@ func TestInitSpecKitAddsThePresetToAProjectInitialisedByHand(t *testing.T) {
 	}
 	if !strings.Contains(string(calls), "preset add --dev") {
 		t.Errorf("the preset was not installed: %s", calls)
+	}
+}
+
+// A registration whose composition is gone -- the skill reinstalled around
+// it -- is not "applied": the step removes and re-adds the preset. One with
+// both intact is left alone.
+func TestInitSpecKitReappliesThePresetWhenTheSkillLostTheWrap(t *testing.T) {
+	log := fakeSpecify(t)
+	repo := repoAt(t, true)
+	if _, err := InitSpecKit(repo); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".claude", "skills", "speckit-specify", "SKILL.md"), []byte("# fresh from an upgrade\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(log, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	did, err := InitSpecKit(repo)
+	if err != nil || !did {
+		t.Fatalf("did=%v err=%v", did, err)
+	}
+	calls, _ := os.ReadFile(log)
+	got := string(calls)
+	if !strings.Contains(got, "preset remove orion") || !strings.Contains(got, "preset add --dev") ||
+		strings.Index(got, "preset remove") > strings.Index(got, "preset add") {
+		t.Errorf("want remove then add, got:\n%s", got)
+	}
+	if strings.Contains(got, "init") {
+		t.Errorf("init re-ran on an initialised project:\n%s", got)
+	}
+	if !PresetApplied(repo) {
+		t.Error("the wrap is still missing after the re-apply")
+	}
+
+	// Both intact: nothing to do.
+	if err := os.Truncate(log, 0); err != nil {
+		t.Fatal(err)
+	}
+	if did, err := InitSpecKit(repo); err != nil || did {
+		t.Errorf("an applied preset was touched: did=%v err=%v", did, err)
 	}
 }

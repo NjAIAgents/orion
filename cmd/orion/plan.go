@@ -178,24 +178,36 @@ var planStages = []planStage{
 
 // toolkitStep installs spec-kit into the workspace repository, once.
 func toolkitStep(out io.Writer, ws *workspace.Workspace, _ confirmer) error {
+	hadInit := toolkitInstalled(ws)
 	did, err := provision.InitSpecKit(ws.RepoDir())
 	if err != nil {
 		return err
 	}
-	if did {
+	switch {
+	case did && hadInit:
+		// spec-kit was there; only its composed skill had lost the wrap.
+		ui.Ok(out, "re-applied", "the %s preset in %s", provision.PresetID, ws.RepoDir())
+	case did:
 		ui.Ok(out, "installed", "spec-kit into %s", ws.RepoDir())
-	} else {
+	default:
 		fmt.Fprintf(out, "  %s\n", ui.Dim(out, "spec-kit is already installed"))
 	}
 	return nil
 }
 
 // toolkitDone: nothing to do for a project that delegates nothing to
-// spec-kit; otherwise done when the installer's own directory is there.
+// spec-kit; otherwise done when the installer's own directory is there AND
+// the orion preset is composed into the specify skill -- the registration
+// alone outlives the composition (docs/decisions/0022).
 func toolkitDone(ws *workspace.Workspace) bool {
 	if !config.Load(ws.RepoDir()).Toolkit.DelegatesTo("speckit") {
 		return true
 	}
+	return toolkitInstalled(ws) && provision.PresetApplied(ws.RepoDir())
+}
+
+// toolkitInstalled: the installer's own directory is there.
+func toolkitInstalled(ws *workspace.Workspace) bool {
 	st, err := os.Stat(filepath.Join(ws.RepoDir(), provision.SpecKitDir))
 	return err == nil && st.IsDir()
 }

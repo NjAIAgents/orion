@@ -467,8 +467,18 @@ in the CLI, and commits what it wrote
 The only thing you install by hand is the CLI itself:
 
 ```bash
-uv tool install specify-cli --from git+https://github.com/github/spec-kit.git
+uv tool install specify-cli --from git+https://github.com/github/spec-kit.git@v1.0.4
 ```
+
+Orion pins spec-kit to one release (`provision.SpecKitTag`, v1.0.4 today): the
+skill names, the `[NEEDS CLARIFICATION]` marker, the `Critical Issues Count`
+line and the constitution template's slots are all read from what that release
+installs, and `go test ./internal/provision/` checks them against the real CLI
+whenever `specify` is on PATH. `orion doctor` prints the installed version
+beside the pin. To move to a newer spec-kit, change the pin and run that test;
+an existing workspace keeps the templates it was initialised with until
+`specify integration upgrade` is run inside it — the `orion` preset survives
+that, and the chain re-applies it if it ever does not.
 
 To do the project step by hand instead -- an existing repository, say -- run
 the same command the chain does:
