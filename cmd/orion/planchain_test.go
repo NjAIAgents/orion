@@ -670,7 +670,7 @@ func TestChainLinesCarryTheOutcomeIcon(t *testing.T) {
 	}
 	runPlanChain(&out, chainWS(t), run, yes)
 	got := out.String()
-	ok, fail := ui.Icon(ui.VerbOK), ui.Icon(ui.VerbFail)
+	ok, fail := ui.Icon(&out, ui.VerbOK), ui.Icon(&out, ui.VerbFail)
 	if !strings.Contains(got, ok+"= done") {
 		t.Errorf("a skipped step lacks the ok icon:\n%s", got)
 	}
@@ -684,7 +684,7 @@ func TestChainLinesCarryTheOutcomeIcon(t *testing.T) {
 	out.Reset()
 	asked := 0
 	runPlanChain(&out, chainWS(t), okRun(new([]string)), func(string) bool { asked++; return asked < 2 })
-	if !strings.Contains(out.String(), ui.Icon("pending")+"stopped") {
+	if !strings.Contains(out.String(), ui.Icon(&out, "pending")+"stopped") {
 		t.Errorf("a stop at the operator's request lacks the pending icon:\n%s", out.String())
 	}
 }

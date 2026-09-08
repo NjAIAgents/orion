@@ -147,21 +147,23 @@ func iconFor(verb string) string {
 	return s
 }
 
-// Icon is the icon column for a status word, padded -- what a line that has
-// ended is printed behind: ✓ for ok, ✗ for failed, ○ for pending. The same
-// glyphs, and the same ASCII fallbacks, as the event lines.
-func Icon(verb string) string { return iconFor(verb) }
+// Icon is the icon column for a status word, padded and coloured the way
+// the event lines colour it -- green ✓ for ok, red ✗ for failed, dim ○ for
+// pending -- with the same glyphs and ASCII fallbacks. Colour follows the
+// writer: none off a terminal or under NO_COLOR.
+func Icon(w io.Writer, verb string) string { return paint(w, statusColor(verb), iconFor(verb)) }
 
 // Spinner is frame i of the in-flight glyph: the working circle turning,
-// which is how a line that is still going says so without a word. Padded
-// like an icon so the columns behind it do not move between frames.
-func Spinner(i int) string {
+// in the working colour, which is how a line that is still going says so
+// without a word. Padded like an icon so the columns behind it do not move
+// between frames.
+func Spinner(w io.Writer, i int) string {
 	set := spinASCII
 	if glyphs() {
 		set = spinGlyphs
 	}
 	s := set[i%len(set)]
-	return s + strings.Repeat(" ", iconWidth-cells(s))
+	return paint(w, statusColor(VerbWorking), s+strings.Repeat(" ", iconWidth-cells(s)))
 }
 
 var (

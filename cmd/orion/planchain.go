@@ -130,7 +130,7 @@ func runPlanChainFrom(out io.Writer, ws *workspace.Workspace, run stageRunner, a
 		// counts as done, so a chain that skips everything still ends.
 		// Unless --from reaches it: then the operator has said to redo it.
 		if !forced && s.Done != nil && s.Done(ws) {
-			fmt.Fprintf(out, "\n  %s%s\n", ui.Icon(ui.VerbOK), ui.Dim(out, fmt.Sprintf("= done  %d/%d  %s", i+1, len(planStages), s.Stage)))
+			fmt.Fprintf(out, "\n  %s%s\n", ui.Icon(out, ui.VerbOK), ui.Dim(out, fmt.Sprintf("= done  %d/%d  %s", i+1, len(planStages), s.Stage)))
 			done++
 			continue
 		}
@@ -142,7 +142,7 @@ func runPlanChainFrom(out io.Writer, ws *workspace.Workspace, run stageRunner, a
 			fmt.Fprintln(out)
 			if !ask(fmt.Sprintf("Continue to %d/%d %s -- %s?",
 				i+1, len(planStages), s.Stage, s.What)) {
-				fmt.Fprintf(out, "\n  %s%s\n", ui.Icon("pending"), ui.Dim(out, fmt.Sprintf(
+				fmt.Fprintf(out, "\n  %s%s\n", ui.Icon(out, "pending"), ui.Dim(out, fmt.Sprintf(
 					"stopped after %d of %d stages, at your request", done, len(planStages))))
 				// A frame step cannot be run by `orion run`; the chain runs
 				// it, so the resume is `orion plan`, which skips what is
@@ -177,14 +177,14 @@ func runPlanChainFrom(out io.Writer, ws *workspace.Workspace, run stageRunner, a
 				// fall through to the stage runner
 			} else if err != nil {
 				fmt.Fprintln(out)
-				fmt.Fprintln(out, ui.Icon(ui.VerbFail)+ui.Label(out, "failed", err.Error()))
+				fmt.Fprintln(out, ui.Icon(out, ui.VerbFail)+ui.Label(out, "failed", err.Error()))
 				fmt.Fprintf(out, "\n  %s\n", ui.Dim(out, fmt.Sprintf(
 					"stopped at %d of %d steps, at %s", i+1, len(planStages), s.Stage)))
 				fmt.Fprintf(out, "  resume: orion plan %s\n", planKeyOf(ws))
 				return done
 			} else {
 				done++
-				fmt.Fprintln(out, ui.Icon(ui.VerbOK)+ui.Label(out, "done", s.Stage))
+				fmt.Fprintln(out, ui.Icon(out, ui.VerbOK)+ui.Label(out, "done", s.Stage))
 				continue
 			}
 		}
@@ -200,14 +200,14 @@ func runPlanChainFrom(out io.Writer, ws *workspace.Workspace, run stageRunner, a
 			// declares itself BLOCKED. Repeating it as "stage failed" would
 			// bury the part that names the fix.
 			fmt.Fprintln(out)
-			fmt.Fprintln(out, ui.Icon(ui.VerbFail)+ui.Label(out, "failed", err.Error()))
+			fmt.Fprintln(out, ui.Icon(out, ui.VerbFail)+ui.Label(out, "failed", err.Error()))
 			fmt.Fprintf(out, "\n  %s\n", ui.Dim(out, fmt.Sprintf(
 				"stopped at %d of %d stages", i+1, len(planStages))))
 			fmt.Fprintf(out, "  re-run this stage: orion run %s --stage %s\n", ws.ID, s.Stage)
 			return done
 		}
 		done++
-		fmt.Fprintln(out, ui.Icon(ui.VerbOK)+ui.Label(out, "done", s.Stage))
+		fmt.Fprintln(out, ui.Icon(out, ui.VerbOK)+ui.Label(out, "done", s.Stage))
 	}
 	return done
 }
