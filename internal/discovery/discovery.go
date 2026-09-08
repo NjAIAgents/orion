@@ -16,6 +16,7 @@ package discovery
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -27,6 +28,11 @@ type Question struct {
 	Text     string
 	Answer   string
 	Answered bool
+	// Line is where the question sits in the file, 1-based: the bullet's
+	// first line, or the line carrying the marker. It is what Answer
+	// rewrites, so a caller answering several must re-assess between
+	// writes -- a bullet answer inserts a line and shifts the rest.
+	Line int
 }
 
 // Assessment is what a captured intent looks like.
@@ -84,8 +90,10 @@ func assess(path string, markers bool) Assessment {
 	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	inSection := false
 	inFence := false
+	n := 0
 	for sc.Scan() {
 		line := sc.Text()
+		n++
 
 		if markers {
 			if strings.HasPrefix(strings.TrimSpace(line), "```") {
@@ -98,7 +106,7 @@ func assess(path string, markers bool) Assessment {
 					if text == "" {
 						text = "an unstated clarification"
 					}
-					a.Questions = append(a.Questions, Question{Text: text})
+					a.Questions = append(a.Questions, Question{Text: text, Line: n})
 					a.Open++
 				}
 			}
@@ -132,7 +140,7 @@ func assess(path string, markers bool) Assessment {
 		if isNone(text) {
 			continue
 		}
-		q := Question{Text: text, Answered: answeredRe.MatchString(line)}
+		q := Question{Text: text, Answered: answeredRe.MatchString(line), Line: n}
 		if !q.Answered {
 			a.Open++
 		}
@@ -206,4 +214,61 @@ func (a Assessment) GateMessage(id string) string {
 	fmt.Fprintf(&b, "  Or edit:       %s\n", a.Path)
 	b.WriteString("  Mark an answer with [x], ~~strikethrough~~, or \"Answer: ...\".\n")
 	return b.String()
+}
+
+// Answer writes one answer into the file, in the form the parser reads back
+// as answered: a bullet gets `[x]` and an indented `Answer: ...` line after
+// its continuation lines; a [NEEDS CLARIFICATION: ...] marker is replaced by
+// the decision, in the sentence it qualified. The file is the record every
+// later stage reads, so the answer goes there and nowhere else.
+func Answer(path string, q Question, text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return errors.New("an empty answer answers nothing")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(b), "\n")
+	if q.Line < 1 || q.Line > len(lines) {
+		return fmt.Errorf("line %d is not in %s (re-read the file: an earlier answer may have moved it)", q.Line, path)
+	}
+	i := q.Line - 1
+	line := lines[i]
+
+	// A marker on this line whose text is the question: replace that span.
+	for _, m := range markerRe.FindAllStringSubmatchIndex(line, -1) {
+		got := strings.TrimSpace(line[m[2]:m[3]])
+		if got == "" {
+			got = "an unstated clarification"
+		}
+		if got == q.Text {
+			lines[i] = line[:m[0]] + text + line[m[1]:]
+			return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+		}
+	}
+
+	// Otherwise a bullet under Open questions.
+	m := bulletRe.FindStringSubmatch(line)
+	if m == nil || strings.TrimSpace(m[1]) != q.Text && !strings.HasPrefix(strings.TrimSpace(m[1]), q.Text) {
+		return fmt.Errorf("line %d of %s is no longer the question %q", q.Line, path, q.Text)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(m[1]), "[x]") {
+		k := strings.IndexAny(line, "-*+")
+		lines[i] = line[:k+1] + " [x]" + line[k+1:]
+	}
+	// Past the bullet's own continuation lines: indented, non-empty, not
+	// a bullet themselves.
+	j := i + 1
+	for j < len(lines) {
+		l := lines[j]
+		if strings.TrimSpace(l) == "" || bulletRe.MatchString(l) || !(strings.HasPrefix(l, " ") || strings.HasPrefix(l, "\t")) {
+			break
+		}
+		j++
+	}
+	indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))] + "  "
+	lines = append(lines[:j], append([]string{indent + "Answer: " + text}, lines[j:]...)...)
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
 }

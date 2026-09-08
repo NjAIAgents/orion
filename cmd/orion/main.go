@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1621,10 +1622,26 @@ func runAnswer(id string) {
 		return
 	}
 
-	// Editing the file is the answer path, not a prompt loop. The answers
-	// belong in the committed artifact where every later stage reads them;
-	// capturing them in a terminal session would put them somewhere no
-	// stage can see.
+	// On a terminal, ask. The answers still go into the file -- the
+	// committed artifact every later stage reads -- which is the whole
+	// reason a prompt loop was refused before: it used to put them
+	// somewhere no stage could see. Written in place, the loop is only a
+	// faster editor.
+	if isTerminal(os.Stdin) {
+		written := answerInteractively(os.Stdout, bufio.NewReader(os.Stdin), []discovery.Assessment{a, s})
+		commitAnswers(os.Stdout, ws.RepoDir(), written)
+		open := discovery.Assess(path).Open
+		if s.Found {
+			open += discovery.AssessSpec(specPath).Open
+		}
+		if open == 0 {
+			fmt.Printf("\nno open questions left. Then: orion plan %s\n", planKeyOf(ws))
+			return
+		}
+		fmt.Printf("\n%d still open; run orion answer %s again, or edit the file.\n", open, ws.ID)
+		os.Exit(1)
+	}
+
 	for _, x := range []discovery.Assessment{a, s} {
 		if !x.Found || x.Open == 0 {
 			continue
@@ -1648,6 +1665,82 @@ func runAnswer(id string) {
 	fmt.Println("answer a [NEEDS CLARIFICATION] marker by replacing it with the decision.")
 	fmt.Printf("Then: orion plan %s\n", planKeyOf(ws))
 	os.Exit(1)
+}
+
+// answerInteractively asks each open question in turn and writes the answer
+// into its file. `-` (or nothing) skips; `?` records the honest answer when
+// there is none yet. Re-assesses after every write, because a bullet answer
+// inserts a line and the remaining questions move. Returns the files it
+// wrote to.
+func answerInteractively(out io.Writer, in *bufio.Reader, as []discovery.Assessment) []string {
+	var written []string
+	for _, x := range as {
+		if !x.Found || x.Open == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "%d open question(s) in %s\n  (answer on one line; - skips, ? records \"unknown, design for it\")\n\n", x.Open, x.Path)
+		skipped := map[string]bool{}
+		asked := 0
+		for {
+			cur := x
+			if strings.HasSuffix(x.Path, "spec.md") {
+				cur = discovery.AssessSpec(x.Path)
+			} else {
+				cur = discovery.Assess(x.Path)
+			}
+			var next *discovery.Question
+			for i := range cur.Questions {
+				q := cur.Questions[i]
+				if !q.Answered && !skipped[q.Text] {
+					next = &cur.Questions[i]
+					break
+				}
+			}
+			if next == nil {
+				break
+			}
+			asked++
+			ans, ok := ask(in, out, fmt.Sprintf("[%d/%d] %s", asked, x.Open, next.Text))
+			if !ok {
+				return written
+			}
+			switch ans {
+			case "", "-":
+				skipped[next.Text] = true
+				continue
+			case "?":
+				ans = "Unknown at this stage; design for it as a parameter to confirm, and flag anything that depends on it."
+			}
+			if err := discovery.Answer(x.Path, *next, ans); err != nil {
+				fmt.Fprintf(out, "  could not write that answer: %v\n", err)
+				skipped[next.Text] = true
+				continue
+			}
+			if len(written) == 0 || written[len(written)-1] != x.Path {
+				written = append(written, x.Path)
+			}
+		}
+	}
+	return written
+}
+
+// commitAnswers commits the answered files, so the handoff to the next stage
+// is the committed record and not a dirty worktree. Best effort: a workspace
+// that is not a repository just keeps the edit.
+func commitAnswers(out io.Writer, repo string, files []string) {
+	if len(files) == 0 {
+		return
+	}
+	args := append([]string{"add", "--"}, files...)
+	if _, err := gitIn(repo, args...); err != nil {
+		fmt.Fprintf(out, "  %s\n", ui.Dim(out, "answers written but not committed: "+err.Error()))
+		return
+	}
+	if _, err := gitIn(repo, "commit", "-qm", "docs: answer the open questions"); err != nil {
+		fmt.Fprintf(out, "  %s\n", ui.Dim(out, "answers written but not committed: "+err.Error()))
+		return
+	}
+	ui.Ok(out, "committed", "the answers")
 }
 
 // createProjectChannel makes the workspace's Slack channel and posts the

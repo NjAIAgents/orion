@@ -355,3 +355,67 @@ func TestAssessDoesNotCountMarkers(t *testing.T) {
 		t.Errorf("the intent reader counted a marker: %+v", a)
 	}
 }
+
+// Answer writes what Assess reads back: a bullet gets [x] and an Answer line
+// after its continuation lines; the rest of the file is untouched.
+func TestAnswerRoundTripsThroughAssess(t *testing.T) {
+	p := write(t, "# Intent\n\n## Open questions\n\n- Which region ships first?\n- How many accounts, and\n  under which payer?\n- [x] Already settled.\n\n---\nfooter\n")
+	a := Assess(p)
+	if a.Open != 2 {
+		t.Fatalf("Open = %d, want 2", a.Open)
+	}
+	// The multi-line one first, so the shift is exercised.
+	if err := Answer(p, a.Questions[1], "Twelve, one payer."); err != nil {
+		t.Fatal(err)
+	}
+	a = Assess(p)
+	if err := Answer(p, a.Questions[0], "eu-west-1"); err != nil {
+		t.Fatal(err)
+	}
+	a = Assess(p)
+	if a.Open != 0 {
+		t.Errorf("Open = %d after answering both: %+v", a.Open, a.Questions)
+	}
+	b, _ := os.ReadFile(p)
+	got := string(b)
+	for _, want := range []string{
+		"- [x] Which region ships first?\n  Answer: eu-west-1\n",
+		"- [x] How many accounts, and\n  under which payer?\n  Answer: Twelve, one payer.\n",
+		"- [x] Already settled.\n\n---\nfooter\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("file lacks %q:\n%s", want, got)
+		}
+	}
+}
+
+// A marker is answered by replacing it with the decision, in place.
+func TestAnswerReplacesAMarkerInPlace(t *testing.T) {
+	p := write(t, "# Spec\n\n- **FR-003**: retain data for [NEEDS CLARIFICATION: retention period not specified] after close.\n\n## Open questions\n- retention period not specified\n")
+	s := AssessSpec(p)
+	if s.Open != 2 {
+		t.Fatalf("Open = %d, want 2 (marker and bullet)", s.Open)
+	}
+	if err := Answer(p, s.Questions[0], "13 months"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), "retain data for 13 months after close.") {
+		t.Errorf("marker not replaced:\n%s", b)
+	}
+	if got := AssessSpec(p).Open; got != 1 {
+		t.Errorf("Open = %d after the marker was answered, want 1 (the bullet)", got)
+	}
+}
+
+func TestAnswerRefusesAnEmptyAnswerAndAMovedLine(t *testing.T) {
+	p := write(t, "## Open questions\n- One?\n")
+	q := Assess(p).Questions[0]
+	if err := Answer(p, q, "  "); err == nil {
+		t.Error("an empty answer was written")
+	}
+	q.Line = 9
+	if err := Answer(p, q, "x"); err == nil {
+		t.Error("a line past the end was accepted")
+	}
+}

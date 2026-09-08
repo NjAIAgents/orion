@@ -31,6 +31,10 @@ now refuses to do**.
   questions. The `orion` preset Orion installs into every spec-kit project makes
   `/speckit-specify` write every uncertainty as a marker — no best guess, no cap, no
   interactive questionnaire a headless run cannot answer.
+- **`orion answer` asks.** On a terminal it walks every open question — the intent's
+  bullets and the spec's `[NEEDS CLARIFICATION]` markers — one line each, `-` to skip,
+  `?` to record "unknown, design for it", and writes each answer into the file where the
+  gate and every later stage read it, then commits. Off a terminal it lists them as before.
 - **`orion doctor` checks spec-kit's version.** It resolves every `toolkit.stages`
   command to a file on disk and fails naming the stage when one is missing; it reads
   `specify version --features --json`, prints the installed version beside the release
