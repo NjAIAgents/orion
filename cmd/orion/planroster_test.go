@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"io"
 	"regexp"
 	"strings"
 	"testing"
@@ -401,7 +400,7 @@ func TestPlanRosterAnnouncesAFrameStepWithoutRosteringTheNarrator(t *testing.T) 
 	planStages = []planStage{
 		{Stage: "intent", Actor: events.ActorPM, What: "intent"},
 		{Stage: "remote", Actor: events.ActorOrion, What: "create the remote",
-			Frame: func(io.Writer, *workspace.Workspace, confirmer) error { return nil }},
+			Frame: func(*stepIO, *workspace.Workspace) error { return nil }},
 	}
 
 	if a, ok := rosterOf(t, "")[events.ActorOrion]; ok {

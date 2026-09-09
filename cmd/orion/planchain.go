@@ -38,6 +38,40 @@ type stageRunner func(ws *workspace.Workspace, stage string) (*supervisor.Result
 // confirmer asks a yes/no question. Injected for the same reason.
 type confirmer func(prompt string) bool
 
+// asker reads one free-text answer, or "" when nobody is there. A frame
+// step that can recover from a bad input -- a path already taken -- needs
+// to ask for a value, not a yes or no.
+type asker func(prompt string) string
+
+// stepIO is what a frame step is given: where to write, and the two ways to
+// ask. Both may be nil off a terminal, and a step must behave sensibly then.
+type stepIO struct {
+	Out     io.Writer
+	Confirm confirmer
+	Ask     asker
+}
+
+// Degraded is a frame step reporting that it did NOT do what it exists to
+// do, without claiming the chain must stop.
+//
+// A step had two outcomes -- nil, meaning done, or an error, meaning stop --
+// and a step that half-worked had to pick one. Both were wrong: the remote
+// step set no default branch and protected neither branch and printed
+// "done"; the clone step created no copy at all and printed "done" (OR-408).
+// A reader who is told a step is done and finds it is not stops reading the
+// other lines too.
+type Degraded struct {
+	// What did not happen, in the step's own words.
+	Reason string
+	// Fix is what the operator can do about it, when there is something.
+	Fix string
+}
+
+func (d *Degraded) Error() string { return d.Reason }
+
+// degraded is a helper for the common case.
+func degraded(reason, fix string) error { return &Degraded{Reason: reason, Fix: fix} }
+
 // askCheckoutPath asks where the operator wants their own clone.
 //
 // Asked BEFORE the chain rather than after it, while they are already
@@ -73,13 +107,35 @@ func askCheckoutPath(out io.Writer, ask func(string) string) string {
 // names the command to retry with, and returns nil so the chain still ends.
 // A step of the chain rather than a call after it, so that a resume can see
 // it: a re-run after a failed clone retries the clone.
-func cloneStep(out io.Writer, ws *workspace.Workspace, _ confirmer) error {
+func cloneStep(sio *stepIO, ws *workspace.Workspace) error {
 	dest := strings.TrimSpace(ws.Task.CheckoutPath)
-	if err := cloneWorkspace(out, ws, dest); err != nil {
-		ui.Warn(out, "%v", err)
-		fmt.Fprintf(out, "  Retry when you like: orion clone %s %s\n", ws.ID, dest)
+	if dest == "" {
+		return nil
 	}
-	return nil
+	// A path already taken is the ordinary failure here, and the operator
+	// is standing right there: ask for another rather than warning about
+	// it and calling the step done (OR-408). Up to three tries, because a
+	// prompt that will not take no for an answer is its own problem.
+	for try := 0; try < 3; try++ {
+		err := cloneWorkspace(sio.Out, ws, dest)
+		if err == nil {
+			ws.Task.CheckoutPath = dest
+			_ = ws.SaveTask()
+			return nil
+		}
+		ui.Warn(sio.Out, "%v", err)
+		if sio.Ask == nil {
+			break
+		}
+		next := strings.TrimSpace(sio.Ask("  Another path for your copy, or press enter to skip:"))
+		if next == "" {
+			break
+		}
+		dest = next
+	}
+	return degraded(
+		fmt.Sprintf("no copy was made at %s", dest),
+		fmt.Sprintf("orion clone %s <path>", ws.ID))
 }
 
 // cloneDone: nothing to do when no copy was asked for, and done when the
@@ -111,6 +167,12 @@ func runPlanChain(out io.Writer, ws *workspace.Workspace, run stageRunner, ask c
 // the normal rule. from is a step name already validated by planFromIndex;
 // an unknown one here is treated as no --from, never as "from the start".
 func runPlanChainFrom(out io.Writer, ws *workspace.Workspace, run stageRunner, ask confirmer, from string) int {
+	return runPlanChainWith(out, ws, run, ask, nil, from)
+}
+
+// runPlanChainWith is runPlanChainFrom with the free-text asker a frame step
+// may need to recover from a bad input -- a clone path already taken.
+func runPlanChainWith(out io.Writer, ws *workspace.Workspace, run stageRunner, ask confirmer, askText asker, from string) int {
 	fromIdx, err := planFromIndex(from)
 	if err != nil {
 		fromIdx = -1
@@ -165,7 +227,7 @@ func runPlanChainFrom(out io.Writer, ws *workspace.Workspace, run stageRunner, a
 		// makes -- a tracker tree needs a remote to point at.
 		started = true
 		if s.Frame != nil {
-			err := s.Frame(out, ws, ask)
+			err := s.Frame(&stepIO{Out: out, Confirm: ask, Ask: askText}, ws)
 			// A fallback step that found nothing to work from hands the
 			// stage to the supervised runner below, which is what it would
 			// have been before the native route existed.
@@ -173,8 +235,26 @@ func runPlanChainFrom(out io.Writer, ws *workspace.Workspace, run stageRunner, a
 				err = nil
 				s.Frame = nil
 			}
+			var deg *Degraded
 			if s.Frame == nil {
 				// fall through to the stage runner
+			} else if errors.As(err, &deg) {
+				// DID NOT DO WHAT IT EXISTS TO DO, and the chain can still
+				// go on. Said as a warning rather than a tick, and the
+				// operator decides whether to continue -- a step reported
+				// done that was not is a line nobody trusts afterwards.
+				done++
+				fmt.Fprintln(out, ui.Icon(out, ui.VerbWarn)+ui.Label(out, "warning", deg.Reason))
+				if deg.Fix != "" {
+					fmt.Fprintf(out, "  %s\n", ui.Dim(out, "when you want it: "+deg.Fix))
+				}
+				if ask != nil && !ask(fmt.Sprintf("%s did not finish. Continue anyway?", s.Stage)) {
+					fmt.Fprintf(out, "\n  %s\n", ui.Dim(out, fmt.Sprintf(
+						"stopped after %d of %d steps, at your request", done, len(planStages))))
+					fmt.Fprintf(out, "  resume: orion plan %s\n", planKeyOf(ws))
+					return done
+				}
+				continue
 			} else if err != nil {
 				fmt.Fprintln(out)
 				fmt.Fprintln(out, ui.Icon(out, ui.VerbFail)+ui.Label(out, "failed", err.Error()))

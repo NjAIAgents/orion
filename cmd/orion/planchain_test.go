@@ -3,9 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
-	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -261,7 +262,7 @@ func TestAFrameStepRunsWithoutAStageRunner(t *testing.T) {
 	withPlanStages(t, []planStage{
 		{Stage: "intent", Actor: "pm", What: "intent"},
 		{Stage: "remote", Actor: "orion", What: "the remote",
-			Frame: func(io.Writer, *workspace.Workspace, confirmer) error { framed++; return nil }},
+			Frame: func(*stepIO, *workspace.Workspace) error { framed++; return nil }},
 		{Stage: "spec", Actor: "architect", What: "spec"},
 	})
 
@@ -320,7 +321,7 @@ func TestAFailingFrameStepStopsTheChainAndNamesTheResume(t *testing.T) {
 	withPlanStages(t, []planStage{
 		{Stage: "intent", Actor: "pm", What: "intent"},
 		{Stage: "remote", Actor: "orion", What: "the remote",
-			Frame: func(io.Writer, *workspace.Workspace, confirmer) error {
+			Frame: func(*stepIO, *workspace.Workspace) error {
 				return fmt.Errorf("gh repo create failed: not logged in")
 			}},
 		{Stage: "spec", Actor: "architect", What: "spec"},
@@ -350,9 +351,9 @@ func TestAFailingFrameStepStopsTheChainAndNamesTheResume(t *testing.T) {
 func TestNextPlanStageSkipsFrameSteps(t *testing.T) {
 	withPlanStages(t, []planStage{
 		{Stage: "scaffold", Actor: "devops"},
-		{Stage: "remote", Actor: "orion", Frame: func(io.Writer, *workspace.Workspace, confirmer) error { return nil }},
+		{Stage: "remote", Actor: "orion", Frame: func(*stepIO, *workspace.Workspace) error { return nil }},
 		{Stage: "decompose", Actor: "pm"},
-		{Stage: "clone", Actor: "orion", Frame: func(io.Writer, *workspace.Workspace, confirmer) error { return nil }},
+		{Stage: "clone", Actor: "orion", Frame: func(*stepIO, *workspace.Workspace) error { return nil }},
 	})
 	if next, ok := nextPlanStage("scaffold"); !ok || next.Stage != "decompose" {
 		t.Errorf("after scaffold got %q/%v, want decompose (skipping the remote frame step)", next.Stage, ok)
@@ -370,7 +371,7 @@ func TestDecliningBeforeAFrameStepNamesOrionPlanAsTheResume(t *testing.T) {
 	withPlanStages(t, []planStage{
 		{Stage: "scaffold", Actor: "devops", What: "scaffold"},
 		{Stage: "remote", Actor: "orion", What: "the remote",
-			Frame: func(io.Writer, *workspace.Workspace, confirmer) error { return nil }},
+			Frame: func(*stepIO, *workspace.Workspace) error { return nil }},
 	})
 	no := func(string) bool { return false }
 
@@ -690,5 +691,114 @@ func TestChainLinesCarryTheOutcomeIcon(t *testing.T) {
 	runPlanChain(&out, chainWS(t), okRun(new([]string)), func(string) bool { asked++; return asked < 2 })
 	if !strings.Contains(out.String(), ui.Icon(&out, "pending")+"stopped") {
 		t.Errorf("a stop at the operator's request lacks the pending icon:\n%s", out.String())
+	}
+}
+
+// A frame step that did not do what it exists to do -- an unprotected
+// branch, a copy that was never made -- must not be reported as done. It
+// says so, says how to get it, and asks before the chain goes on (OR-408).
+func TestADegradedFrameStepIsNotReportedAsDone(t *testing.T) {
+	var out bytes.Buffer
+	var ran []string
+	withPlanStages(t, []planStage{
+		{Stage: "remote", Actor: "orion", What: "the remote",
+			Frame: func(*stepIO, *workspace.Workspace) error {
+				return degraded("not protected: main (no admin rights)", "orion provision w1")
+			}},
+		{Stage: "spec", Actor: "architect", What: "the spec"},
+	})
+
+	done := runPlanChain(&out, chainWS(t), okRun(&ran), func(string) bool { return true })
+
+	got := out.String()
+	if strings.Contains(got, "done  1/2") {
+		t.Errorf("a degraded step reported itself done:\n%s", got)
+	}
+	for _, want := range []string{"not protected", "orion provision w1"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the degraded line does not say %q:\n%s", want, got)
+		}
+	}
+	if done != 2 || len(ran) != 1 {
+		t.Errorf("the chain did not continue past the degraded step: done=%d ran=%v", done, ran)
+	}
+}
+
+// Saying no at that question stops the chain, and names `orion plan` as the
+// resume -- a frame step is not something `orion run --stage` can run.
+func TestDecliningAfterADegradedStepStopsTheChain(t *testing.T) {
+	var out bytes.Buffer
+	var ran []string
+	withPlanStages(t, []planStage{
+		{Stage: "clone", Actor: "orion", What: "your copy",
+			Frame: func(*stepIO, *workspace.Workspace) error {
+				return degraded("no copy was made at /tmp/x", "orion clone w1 <path>")
+			}},
+		{Stage: "spec", Actor: "architect", What: "the spec"},
+	})
+
+	runPlanChain(&out, chainWS(t), okRun(&ran), func(q string) bool {
+		return !strings.Contains(q, "did not finish")
+	})
+
+	if len(ran) != 0 {
+		t.Errorf("the chain ran on after being told to stop: %v", ran)
+	}
+	if !strings.Contains(out.String(), "orion plan") {
+		t.Errorf("the resume line must name `orion plan`:\n%s", out.String())
+	}
+}
+
+// A clone onto a path that is already taken used to warn and report the
+// step done. It now offers another path, and takes it (OR-408).
+func TestCloneStepOffersAnotherPathWhenTheFirstIsTaken(t *testing.T) {
+	ws := chainWS(t)
+	ws.Task.CheckoutPath = t.TempDir() // exists, so the first try refuses
+
+	// Point the second answer at a git repo we can actually clone.
+	src := ws.RepoDir()
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init"}, {"commit", "--allow-empty", "-m", "x"}} {
+		cmd := exec.Command("git", append([]string{"-C", src}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=o", "GIT_AUTHOR_EMAIL=o@l",
+			"GIT_COMMITTER_NAME=o", "GIT_COMMITTER_EMAIL=o@l")
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable: %v\n%s", err, b)
+		}
+	}
+	want := filepath.Join(t.TempDir(), "copy")
+
+	var out bytes.Buffer
+	err := cloneStep(&stepIO{Out: &out, Ask: func(string) string { return want }}, ws)
+
+	if err != nil {
+		t.Fatalf("the retry did not take: %v\n%s", err, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(want, ".git")); err != nil {
+		t.Errorf("nothing was cloned to the second path: %v", err)
+	}
+	if ws.Task.CheckoutPath != want {
+		t.Errorf("the new path was not recorded: %q", ws.Task.CheckoutPath)
+	}
+}
+
+// With nowhere to ask -- a non-interactive run -- it reports degraded
+// rather than claiming the copy was made.
+func TestCloneStepReportsDegradedWithNoOneToAsk(t *testing.T) {
+	ws := chainWS(t)
+	ws.Task.CheckoutPath = t.TempDir()
+
+	var out bytes.Buffer
+	err := cloneStep(&stepIO{Out: &out}, ws)
+
+	var deg *Degraded
+	if !errors.As(err, &deg) {
+		t.Fatalf("a failed clone reported %v, want a degraded outcome", err)
+	}
+	if !strings.Contains(deg.Fix, "orion clone") {
+		t.Errorf("the fix does not name the command: %q", deg.Fix)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -471,7 +470,7 @@ func TestPlanCostShapeCountsOnlySupervisedSteps(t *testing.T) {
 	planStages = []planStage{
 		{Stage: "intent", Actor: events.ActorPM, What: "intent"},
 		{Stage: "remote", Actor: events.ActorOrion, What: "the remote",
-			Frame: func(io.Writer, *workspace.Workspace, confirmer) error { return nil }},
+			Frame: func(*stepIO, *workspace.Workspace) error { return nil }},
 		{Stage: "spec", Actor: events.ActorArchitect, What: "spec"},
 	}
 	home := planHome(t)

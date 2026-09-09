@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,18 +50,18 @@ func bindingKey(ws *workspace.Workspace) string {
 
 // decomposeStep creates the tracker tree from tasks.md, or declines when
 // there is none so the supervised stage runs.
-func decomposeStep(out io.Writer, ws *workspace.Workspace, ask confirmer) error {
+func decomposeStep(sio *stepIO, ws *workspace.Workspace) error {
 	path := tasksPath(ws)
 	if _, err := os.Stat(path); err != nil {
 		rel, _ := filepath.Rel(ws.RepoDir(), path)
-		fmt.Fprintf(out, "  %s\n", ui.Dim(out, "no "+filepath.ToSlash(rel)+" here, so the decompose stage runs its configured command instead"))
+		fmt.Fprintf(sio.Out, "  %s\n", ui.Dim(sio.Out, "no "+filepath.ToSlash(rel)+" here, so the decompose stage runs its configured command instead"))
 		return errNotApplicable
 	}
 	project := bindingKey(ws)
 	if project == "" {
 		return fmt.Errorf("this workspace records no tracker binding, so there is no project to create the tree in.\n  orion plan <KEY> binds one; orion decompose <KEY> %s creates the tree by hand", path)
 	}
-	return decomposeTree(out, ws.RepoDir(), project, path, ask)
+	return decomposeTree(sio.Out, ws.RepoDir(), project, path, sio.Confirm)
 }
 
 // decomposeDone is "every item in the task list is in the tracker" when
@@ -107,10 +106,10 @@ func treePlan(ws *workspace.Workspace) (*decompose.Plan, bool) {
 // releaseStep creates the version --release named and attaches every
 // ticket in the tree to it. Without --release it has nothing to do and
 // says so.
-func releaseStep(out io.Writer, ws *workspace.Workspace, _ confirmer) error {
+func releaseStep(sio *stepIO, ws *workspace.Workspace) error {
 	version := strings.TrimSpace(ws.Task.ReleaseVersion)
 	if version == "" {
-		fmt.Fprintf(out, "  %s\n", ui.Dim(out, "= skipped (no --release)"))
+		fmt.Fprintf(sio.Out, "  %s\n", ui.Dim(sio.Out, "= skipped (no --release)"))
 		return nil
 	}
 	project := bindingKey(ws)
@@ -143,11 +142,11 @@ func releaseStep(out io.Writer, ws *workspace.Workspace, _ confirmer) error {
 		return err
 	}
 	if created {
-		ui.Ok(out, "created", "version %s on %s", v.Name, project)
+		ui.Ok(sio.Out, "created", "version %s on %s", v.Name, project)
 	} else {
-		ui.Ok(out, "exists", "version %s already exists on %s", v.Name, project)
+		ui.Ok(sio.Out, "exists", "version %s already exists on %s", v.Name, project)
 	}
-	if err := attachToVersion(j, out, project, version, keys, false); err != nil {
+	if err := attachToVersion(j, sio.Out, project, version, keys, false); err != nil {
 		return err
 	}
 	ws.Task.Released = version

@@ -68,7 +68,7 @@ type planStage struct {
 	// and the dispatch loop all read one list and none can omit a step the
 	// others know about. Actor is events.ActorOrion for these, so the roster
 	// says who does it without listing Orion as a participant on a model.
-	Frame func(out io.Writer, ws *workspace.Workspace, ask confirmer) error
+	Frame func(io *stepIO, ws *workspace.Workspace) error
 	// Fallback marks a frame step that may decline -- errNotApplicable --
 	// when the artifact it works from is absent, in which case the
 	// supervised stage of the same name runs instead. Counted as a stage
@@ -177,7 +177,7 @@ var planStages = []planStage{
 }
 
 // toolkitStep installs spec-kit into the workspace repository, once.
-func toolkitStep(out io.Writer, ws *workspace.Workspace, _ confirmer) error {
+func toolkitStep(sio *stepIO, ws *workspace.Workspace) error {
 	hadInit := toolkitInstalled(ws)
 	did, err := provision.InitSpecKit(ws.RepoDir())
 	if err != nil {
@@ -186,11 +186,11 @@ func toolkitStep(out io.Writer, ws *workspace.Workspace, _ confirmer) error {
 	switch {
 	case did && hadInit:
 		// spec-kit was there; only its composed skill had lost the wrap.
-		ui.Ok(out, "re-applied", "the %s preset in %s", provision.PresetID, ws.RepoDir())
+		ui.Ok(sio.Out, "re-applied", "the %s preset in %s", provision.PresetID, ws.RepoDir())
 	case did:
-		ui.Ok(out, "installed", "spec-kit into %s", ws.RepoDir())
+		ui.Ok(sio.Out, "installed", "spec-kit into %s", ws.RepoDir())
 	default:
-		fmt.Fprintf(out, "  %s\n", ui.Dim(out, "spec-kit is already installed"))
+		fmt.Fprintf(sio.Out, "  %s\n", ui.Dim(sio.Out, "spec-kit is already installed"))
 	}
 	return nil
 }
@@ -448,7 +448,13 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 			}
 		}
 
-		done := runPlanChainFrom(out, ws, opts.Run, opts.Confirm, opts.From)
+		// asker(nil) is a non-nil asker wrapping a nil func, which every
+		// step guarding on `Ask != nil` would then call. Keep nil nil.
+		var ask asker
+		if opts.Ask != nil {
+			ask = opts.Ask
+		}
+		done := runPlanChainWith(out, ws, opts.Run, opts.Confirm, ask, opts.From)
 		if done == len(planStages) {
 			fmt.Fprintf(out, "\n%s\n", ui.Dim(out,
 				"all planning stages are done; the tracker holds the work tree"))
