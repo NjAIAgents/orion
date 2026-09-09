@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"testing"
 )
 
 // Attribution instruments a repository with whodunit (`dun`), which stamps
@@ -191,7 +192,7 @@ func EnsureDun(dir string, autoInstall bool, confirm func(prompt string) bool) (
 
 	// dun chains to hooks that already exist rather than replacing them, so
 	// this is safe alongside husky, pre-commit or lefthook.
-	out, err := exec.Command(st.Path, "init", "--repo", dir).CombinedOutput()
+	out, err := dunInit(st.Path, dir).CombinedOutput()
 	if err != nil {
 		return lines, append(warnings, fmt.Sprintf("dun init failed: %v\n         %s", err, lastLine(string(out))))
 	}
@@ -235,7 +236,7 @@ func EnsureSandboxDun(clone string) error {
 	if st.Path == "" {
 		return fmt.Errorf("dun is not on PATH, so commits in this sandbox carry no attribution trailer")
 	}
-	if out, err := exec.Command(st.Path, "init", "--repo", clone).CombinedOutput(); err != nil {
+	if out, err := dunInit(st.Path, clone).CombinedOutput(); err != nil {
 		return fmt.Errorf("dun init on the sandbox clone %s: %w\n%s", clone, err, lastLine(string(out)))
 	}
 	// Verify rather than trust the exit code. `dun init` succeeding while the
@@ -245,6 +246,37 @@ func EnsureSandboxDun(clone string) error {
 		return fmt.Errorf("dun init reported success but %s has no dun hooks", HooksDir(clone))
 	}
 	return nil
+}
+
+// dunInit builds the `dun init` command, pointed at a throwaway registry
+// while the caller is a test.
+//
+// WHY THIS EXISTS. `dun init` registers a path in ~/.whodunit PERMANENTLY,
+// and EnsureSandboxDun runs on every supervised job. Under test the sandbox
+// clone is a t.TempDir(): the directory is deleted when the test ends, the
+// registration is not. MEASURED 2026-09-09, before this: 8,782 registered
+// repositories, of which SEVEN existed. 8,775 were dead fixtures under /tmp
+// and /var/folders, one per supervised-job test, accumulated over weeks --
+// and `dun status` rendered every one of them above the seven real rows.
+//
+// Nothing failed while that happened. EnsureSandboxDun is best-effort by
+// contract, the registry is global state outside the repository, and no test
+// asserts on it. The same shape as the attribution bugs this code was written
+// to support: a wrong state that produces no error, in a record nobody reads
+// until they go looking.
+//
+// WHODUNIT_HOME is whodunit's own documented test seam ("honoring
+// WHODUNIT_HOME for tests", internal/config/config.go), so this borrows the
+// mechanism rather than inventing one. Set here rather than in a TestMain
+// because three packages reach this function and a per-package TestMain is
+// three places to remember; the guarantee belongs where the process is
+// spawned, so a caller added later inherits it.
+func dunInit(bin, dir string) *exec.Cmd {
+	cmd := exec.Command(bin, "init", "--repo", dir)
+	if testing.Testing() {
+		cmd.Env = append(os.Environ(), "WHODUNIT_HOME="+filepath.Join(os.TempDir(), "orion-test-whodunit"))
+	}
+	return cmd
 }
 
 // DunVerify returns dun's own verdict on a repository.
