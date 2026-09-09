@@ -48,11 +48,14 @@ func Preview(w io.Writer, p *Plan) {
 		if !s.New() {
 			mark, key = "=", " ("+s.ExistingKey+")"
 		}
-		fmt.Fprintf(w, "%s%s %s%s%s\n", indent, mark, s.Item.Summary, key, labelNote(s.Item))
+		fmt.Fprintf(w, "%s%s %s%s%s%s\n", indent, mark, s.Item.Summary, key, humanNote(s.Item), labelNote(s.Item))
 	}
 
 	fmt.Fprintf(w, "\n  %d to create, %d already in %s  (%s)\n",
 		p.NewCount(), p.ExistingCount(), p.Project, p.Tree.Label())
+	if n := humanCount(p); n > 0 {
+		fmt.Fprintf(w, "  %d of them are [human]: created as tickets, never offered to an agent.\n", n)
+	}
 	previewCoupled(w, p.Tree.Coupled)
 }
 
@@ -101,4 +104,23 @@ func sharedNote(shared []string) string {
 		return strings.Join(shared, ", ")
 	}
 	return fmt.Sprintf("%s, and %d more", strings.Join(shared[:show], ", "), len(shared)-show)
+}
+
+// humanNote marks an item no agent will be offered, so a reader sees before
+// creating the tree which work is waiting on a person.
+func humanNote(it *Item) string {
+	if it.Human {
+		return "  [human]"
+	}
+	return ""
+}
+
+func humanCount(p *Plan) int {
+	n := 0
+	for _, s := range p.Steps {
+		if s.Item.Human {
+			n++
+		}
+	}
+	return n
 }

@@ -565,3 +565,37 @@ func TestACriteriaBlockSurvivesABlankLineAndReleasesTheTasks(t *testing.T) {
 		}
 	}
 }
+
+// A task id may carry a letter suffix: T004a is one task inserted after
+// T004, not T004 followed by a description beginning "a". Reading it as the
+// latter put two tasks under one id and titled a ticket "a Run the ...".
+func TestATaskIdMayCarryALetterSuffix(t *testing.T) {
+	src := "# Tasks: Thing\n\n## Phase 1: Setup\n\n" +
+		"- [ ] T004 Create the export\n  Done when: it exists.\n" +
+		"- [ ] T004a Run the reconciliation spike\n  Done when: three accounts are compared.\n" +
+		"- [ ] T00A Record the conflicts\n  Done when: each has an answer.\n"
+	tree, err := Parse(src, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	byID := map[string]*Item{}
+	_ = tree.Walk(func(it, _ *Item) error {
+		if it.Kind == KindTask {
+			ids = append(ids, it.ID)
+			byID[it.ID] = it
+		}
+		return nil
+	})
+	if len(ids) != 3 {
+		t.Fatalf("ids = %v, want three distinct tasks", ids)
+	}
+	for _, want := range []string{"T004", "T004a", "T00A"} {
+		if byID[want] == nil {
+			t.Errorf("no task with id %q: %v", want, ids)
+		}
+	}
+	if got := byID["T004a"]; got != nil && !strings.HasPrefix(got.Summary, "T004a Run the reconciliation") {
+		t.Errorf("summary = %q; the suffix belongs to the id, not the description", got.Summary)
+	}
+}

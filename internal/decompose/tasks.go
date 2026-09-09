@@ -168,7 +168,13 @@ var (
 	// checkbox and the T-id are both required, which is what keeps the
 	// template's own "## Format" section -- whose bullets look like
 	// `- **[P]**: Can run in parallel` -- out of the tree.
-	taskLine = regexp.MustCompile(`^\s*[-*]\s*\[[ xX]\]\s*\*{0,2}(T\d+)\*{0,2}\s*(.*)$`)
+	// The id is T then digits, and may carry a letter suffix: a task
+	// inserted between two others is T004a, not a renumbering of everything
+	// after it. Matching digits alone split "T004a" into id T004 and a
+	// description opening with a stray "a" -- two tasks then shared one id,
+	// and the tree carried a duplicate and a ticket titled "a Run the
+	// reconciliation spike" (FOUND ON A REAL PROJECT).
+	taskLine = regexp.MustCompile(`^\s*[-*]\s*\[[ xX]\]\s*\*{0,2}(T\d+[a-zA-Z]?)\*{0,2}\s+(.*)$`)
 	// storyTag is the [USn] group marker, and parallelTag the [P] marker.
 	// Matched anywhere in the remainder rather than only at the front:
 	// real output writes them in either order, and one template revision

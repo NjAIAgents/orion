@@ -113,6 +113,15 @@ func (t *Tree) Queue(label string) {
 		return
 	}
 	_ = t.Walk(func(it, parent *Item) error {
+		// WORK NO AGENT CAN DO IS NOT OFFERED TO THE QUEUE. A credential a
+		// person holds, a console click, a conversation with another team,
+		// a signature. The ticket is still created -- it is real work and
+		// belongs in the tracker -- it simply carries no claim label, so an
+		// agent never picks it up, spends a run discovering it cannot do
+		// it, and leaves a ticket in `working` for a human to unstick.
+		if it.Human {
+			return nil
+		}
 		switch {
 		case it.Kind == KindStory:
 			it.Labels = append(it.Labels, label)
