@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orion web mockup — 04 agents</title>
+<style>
+:root{
+  --ink:#e6e6e6; --ink-dim:#9aa0a6; --ink-faint:#6b7178;
+  --bg:#0b0d10; --panel:#12161b; --line:#242a33; --line-soft:rgba(36,42,51,.55);
+  --ok:#4bb543; --fail:#e05252; --warn:#d6a231; --wait:#4f8ff0; --work:#2fb3c4;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:12px;}
+a{color:var(--wait);} a:hover{color:#7db0ff;}
+.app{display:flex;flex-direction:column;height:900px;}
+.topbar{display:flex;align-items:center;gap:16px;padding:0 18px;height:44px;
+  border-bottom:1px solid var(--line);background:var(--panel);flex:none;}
+.brand{font-weight:600;font-size:13px;} .brand .dot{color:var(--work);}
+.nav{display:flex;gap:2px;}
+.nav .item{padding:5px 11px;border-radius:5px;color:var(--ink-faint);font-size:11.5px;}
+.nav .item.on{background:rgba(47,179,196,.12);color:var(--work);}
+.spacer{flex:1;}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:4px;
+  border:1px solid var(--line);color:var(--ink-dim);font-size:11px;}
+.head{padding:20px 24px 4px;display:flex;align-items:baseline;gap:14px;}
+.h1{font-size:15px;font-weight:600;}
+.head .sub{color:var(--ink-faint);font-size:11.5px;}
+.note{margin:10px 24px 16px;padding:10px 13px;border-radius:6px;font-size:11px;line-height:1.65;
+  color:var(--ink-dim);background:rgba(79,143,240,.06);border:1px solid rgba(79,143,240,.22);}
+.scroll{flex:1;overflow:auto;padding:0 24px 30px;min-height:0;}
+table{width:100%;border-collapse:collapse;}
+th{text-align:left;font-size:10px;letter-spacing:.11em;text-transform:uppercase;color:var(--ink-faint);
+  font-weight:600;padding:0 14px 9px 0;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);}
+td{padding:10px 14px 10px 0;border-bottom:1px solid var(--line-soft);vertical-align:top;font-size:11.5px;}
+.nm{color:var(--ink);white-space:nowrap;}
+.desig{color:var(--ink-dim);white-space:nowrap;}
+.id{color:var(--ink-faint);font-size:10.5px;}
+.mdl{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10.5px;}
+.opus{background:rgba(224,138,61,.14);color:#e0a06a;}
+.sonnet{background:rgba(79,143,240,.13);color:#7bb6f0;}
+.haiku{background:rgba(75,181,67,.12);color:#7cc47a;}
+.dash{color:var(--ink-faint);}
+.why{color:var(--ink-faint);font-size:10.5px;line-height:1.6;max-width:430px;}
+.ovr{display:inline-block;font-size:9.5px;padding:1.5px 6px;border-radius:3px;
+  background:rgba(214,162,49,.13);color:var(--warn);margin-left:7px;}
+.fixed{color:var(--ink-faint);font-size:10.5px;font-style:normal;}
+.sect{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-faint);
+  padding:22px 0 9px;font-weight:600;}
+</style>
+</head><body>
+
+<div class="app">
+  <div class="topbar">
+    <div class="brand">orion<span class="dot">·</span>web</div>
+    <div class="nav">
+      <div class="item">gate board</div>
+      <div class="item">run</div>
+      <div class="item">history</div>
+      <div class="item on">agents</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="chip">orion.json</div>
+    <div class="chip">read-only</div>
+  </div>
+
+  <div class="head">
+    <div class="h1">Agent roster</div>
+    <div class="sub">what each role runs on, and where the value came from</div>
+  </div>
+  <div class="note">
+    This is what a run will actually use — the shipped defaults with this project's overrides applied.
+    Reading either file alone cannot tell you this: the override file holds only overrides, so most actors
+    are absent from it entirely. <span style="color:var(--warn)">overridden</span> marks a field
+    <span style="color:var(--ink)">orion.json</span> decided rather than the build.
+  </div>
+
+  <div class="scroll">
+    <table>
+      <tr>
+        <th>Actor</th><th>Role</th><th>Model</th><th>Why this model</th>
+      </tr>
+
+      <tr><td class="nm">Ravi<div class="id">implementer</div></td>
+        <td class="desig">backend developer</td>
+        <td><span class="mdl opus">opus</span></td>
+        <td class="why">The only model choice that is a real cost decision: it runs 120–600 turns and dominates per-ticket spend.</td></tr>
+
+      <tr><td class="nm">Kai<div class="id">frontend</div></td>
+        <td class="desig">frontend developer</td>
+        <td><span class="mdl opus">opus</span></td>
+        <td class="why">Same argument as the backend developer — it writes the change rather than reading one.</td></tr>
+
+      <tr><td class="nm">Navjyot<div class="id">architect</div></td>
+        <td class="desig">architect</td>
+        <td><span class="mdl opus">opus</span></td>
+        <td class="why">Blast radius decides where to spend: an architecture answer is built upon and expensive to reverse.</td></tr>
+
+      <tr><td class="nm">Surya<div class="id">dba</div></td>
+        <td class="desig">database architect</td>
+        <td><span class="mdl opus">opus</span></td>
+        <td class="why">A schema decision is inherited by the next twenty tickets and is expensive to reverse once there is data in it.</td></tr>
+
+      <tr><td class="nm">Anita<div class="id">qa</div></td>
+        <td class="desig">QA engineer</td>
+        <td><span class="mdl sonnet">sonnet</span><span class="ovr">overridden</span></td>
+        <td class="why">The specification is written down, so the work is careful reading rather than design; opus would pay implementer prices to author test files.</td></tr>
+
+      <tr><td class="nm">Priya<div class="id">pm</div></td>
+        <td class="desig">product manager</td>
+        <td><span class="mdl sonnet">sonnet</span></td>
+        <td class="why">Reads a diff and returns; chosen for quality rather than economy.</td></tr>
+
+      <tr><td class="nm">Iris<div class="id">docs</div></td>
+        <td class="desig">docs engineer</td>
+        <td><span class="mdl sonnet">sonnet</span></td>
+        <td class="why">Writes ADRs from a codebase that already exists — careful reading and structured writing, not design.</td></tr>
+
+      <tr><td class="nm">Arjun<div class="id">devops</div></td>
+        <td class="desig">devops engineer</td>
+        <td><span class="mdl sonnet">sonnet</span></td>
+        <td class="why">Reads a diff and returns.</td></tr>
+
+      <tr><td class="nm">Dana<div class="id">describer</div></td>
+        <td class="desig">PR writer</td>
+        <td><span class="mdl sonnet">sonnet</span></td>
+        <td class="why">Summarises a diff that already exists.</td></tr>
+
+      <tr><td class="nm">Baba<div class="id">aiops</div></td>
+        <td class="desig">AIOps engineer</td>
+        <td><span class="mdl sonnet">sonnet</span></td>
+        <td class="why">Decides whether to propose creating something. A cheap model that answers yes too readily makes a backlog nobody can scan.</td></tr>
+
+      <tr><td class="nm">Hema<div class="id">done-triage</div></td>
+        <td class="desig">delivery triage</td>
+        <td><span class="mdl sonnet">sonnet</span></td>
+        <td class="why">May hand finished work back, and both directions of error are expensive: too-ready a “done” buys nothing, too-ready a “not done” teaches you the verdict is noise.</td></tr>
+
+      <tr><td class="nm">Nadia<div class="id">plan-conform</div></td>
+        <td class="desig">plan conformance reviewer</td>
+        <td><span class="mdl sonnet">sonnet</span></td>
+        <td class="why">Reads two documents against each other. A model that flags a rewording as a divergence makes a report people stop reading.</td></tr>
+
+      <tr><td class="nm">Sam<div class="id">router</div></td>
+        <td class="desig">dispatcher</td>
+        <td><span class="mdl haiku">haiku</span></td>
+        <td class="why">Routes the question a run stopped on; one line per escalation.</td></tr>
+
+      <tr><td class="nm">Milo<div class="id">log-triage</div></td>
+        <td class="desig">log triage</td>
+        <td><span class="mdl haiku">haiku</span></td>
+        <td class="why">Finding the failure in a wall of output is mechanical. Runs on every red build, so its model is a real cost decision.</td></tr>
+
+      <tr><td class="nm">Zoya<div class="id">explore</div></td>
+        <td class="desig">code explorer</td>
+        <td><span class="mdl haiku">haiku</span></td>
+        <td class="why">Locating a definition is mechanical reading. The question that recurs most often inside a single run.</td></tr>
+
+      <tr><td class="nm">Tara<div class="id">case-derive</div></td>
+        <td class="desig">test case analyst</td>
+        <td><span class="mdl haiku">haiku</span></td>
+        <td class="why">Turning a written specification into a list of what to check is reading with a short answer.</td></tr>
+    </table>
+
+    <div class="sect">Not configurable</div>
+    <table>
+      <tr><td class="nm" style="width:auto">ci</td><td class="desig">ci</td><td><span class="dash">—</span></td>
+        <td class="why">A machine that renders no judgement. Naming it would imply one.</td></tr>
+      <tr><td class="nm">you</td><td class="desig">human</td><td><span class="dash">—</span></td>
+        <td class="why">The person reading this output, who has a name already.</td></tr>
+    </table>
+  </div>
+</div>
+
+</body></html>
