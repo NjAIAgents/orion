@@ -1041,3 +1041,37 @@ func wantClaimExclusions() string {
 	return tracker.JQLNotIn("labels", tracker.LabelWorking, tracker.LabelCIWait,
 		tracker.LabelReady, tracker.LabelFailed)
 }
+
+// Where the queue label goes on a decomposed tree (OR-390), stated by what
+// the queue would admit. dropClaimedChildren drops a labelled issue whose
+// parent is labelled, and a claimed parent works its children in one
+// branch -- so labelling every level makes the EPIC the one claimable unit,
+// and one agent works the whole project in one branch. Labelling stories
+// and epic-level tasks admits each exactly once; sub-tasks under a story
+// are the story's to work.
+func TestQueueLabelOnStoriesAndEpicLevelTasksAdmitsEachOnce(t *testing.T) {
+	// The query returns only labelled issues, so "labelled" is membership.
+	everyLevel := []tracker.Issue{
+		{Key: "OR-1"},                 // epic
+		{Key: "OR-2", Parent: "OR-1"}, // story
+		{Key: "OR-3", Parent: "OR-2"}, // sub-task
+		{Key: "OR-4", Parent: "OR-1"}, // epic-level Setup task
+	}
+	if got := keysOf(dropClaimedChildren(everyLevel)); len(got) != 1 || got[0] != "OR-1" {
+		t.Errorf("every level labelled admits %v; the epic alone was expected, which is why the epic is never labelled", got)
+	}
+
+	decided := []tracker.Issue{
+		{Key: "OR-2", Parent: "OR-1"}, // story, parent (epic) not labelled
+		{Key: "OR-4", Parent: "OR-1"}, // epic-level task
+	}
+	got := keysOf(dropClaimedChildren(decided))
+	if len(got) != 2 || got[0] != "OR-2" || got[1] != "OR-4" {
+		t.Errorf("stories and epic-level tasks labelled admits %v; want each once", got)
+	}
+
+	withSubtasks := append(decided, tracker.Issue{Key: "OR-3", Parent: "OR-2"})
+	if got := keysOf(dropClaimedChildren(withSubtasks)); len(got) != 2 {
+		t.Errorf("a labelled sub-task under a labelled story is dropped anyway (%v); the label there is noise", got)
+	}
+}

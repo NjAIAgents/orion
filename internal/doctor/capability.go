@@ -6,12 +6,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/adopt"
+	"github.com/orion-sdlc/orion/internal/agentcfg"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/creds"
+	"github.com/orion-sdlc/orion/internal/provision"
 	"github.com/orion-sdlc/orion/internal/slack"
 	"github.com/orion-sdlc/orion/internal/toolkit"
 	"github.com/orion-sdlc/orion/internal/tracker"
@@ -111,11 +114,79 @@ func checkGHScopes() check {
 // What it requires comes from the project's OWN toolkit block, not from
 // nj-agents' catalogue: a project delegating to its own skill repository
 // would otherwise fail this check for six skills it never invokes.
-func checkNJAgents(tk config.Toolkit, autoFix bool) check {
+// checkToolkitReachable reports whether a RUN can use the toolkit that is on
+// disk, which is a different question from whether it is installed.
+//
+// Orion links a toolkit's commands into a curated config directory. Where
+// curation cannot authenticate -- darwin (OR-239) -- the agent inherits the
+// operator's own configuration instead, which holds whatever they installed
+// and not what the clone holds.
+//
+// A spec-kit clone therefore passed the install check while the stage that
+// named /speckit.specify could not invoke it, and had to discover that for
+// itself: "not installed on this machine... I wrote this spec to the stage's
+// contract rather than reproducing spec-kit's template shape from memory and
+// passing it off as spec-kit output." That is the right behaviour from the
+// agent and a wrong answer from doctor.
+//
+// Its own check rather than a grade on the install one: whether a toolkit is
+// COMPLETE and whether a run can REACH it are different axes, and folding the
+// second into the first makes the answer depend on the platform the test runs
+// on.
+//
+// Nothing for the default toolkit, which is reached through the operator's
+// own ~/.claude/skills either way -- that is what the install check resolves.
+func checkToolkitReachable(root string, tk config.Toolkit) *check {
+	spec := tk.Spec()
+	spec.ProjectDir = root
+	if spec.IsDefault() || agentcfg.CurationAuthenticates() {
+		return nil
+	}
+	inst := toolkit.Discover(workspace.Home(), spec)
+	if inst == nil {
+		return nil // the install check already says it is absent
+	}
+	// Installed INSIDE a project is reachable: the agent runs in that
+	// repository, and Claude Code reads .claude/ from the working directory.
+	// This is what `specify init --here` produces, and it is the supported
+	// way to install spec-kit -- so warning about it would tell someone their
+	// working setup is broken. Read off how discovery resolved it, not off
+	// a substring of the path.
+	if inst.Via == "installed in project" || toolkit.InstalledInProject(inst.Root) {
+		return nil
+	}
+	return &check{"toolkit reach", warn,
+		"a run on " + runtime.GOOS + " cannot use " + toolkitName(spec),
+		"The clone is there, but an agent does not see it. Orion links a\n" +
+			"toolkit's commands into a curated config directory, and that\n" +
+			"directory cannot authenticate here (OR-239), so a run inherits YOUR\n" +
+			"Claude Code setup instead -- which holds whatever you installed.\n" +
+			"Install its commands where your own CLI finds them, or a stage that\n" +
+			"names one will report that it does not exist."}
+}
+
+func checkNJAgents(root string, tk config.Toolkit, autoFix bool) check {
 	home := workspace.Home()
 	spec := tk.Spec()
+	spec.ProjectDir = root
 	name := toolkitName(spec)
 	inst := toolkit.Discover(home, spec)
+
+	// spec-kit is never cloned, with or without --fix: a raw clone is not an
+	// install (docs/decisions/0022). The fix is the chain's own step, or the
+	// installer by hand.
+	if inst == nil && spec.IsSpecKit() {
+		where := root
+		if where == "" {
+			where = "<repo>"
+		}
+		return check{name, fail, "not installed in this project", strings.Join([]string{
+			"spec-kit installs into the project, not into a clone. The planning chain",
+			"does it as its first step:  orion plan <KEY>",
+			"Or by hand:                 cd " + where + " && specify init --here --force --non-interactive --integration claude",
+			"If the specify CLI is missing:  " + provision.SpecKitInstall,
+		}, "\n")}
+	}
 
 	if inst == nil && autoFix {
 		cloned, err := toolkit.Clone(home, spec, tk.Ref, toolkit.ConfirmOnStdin)
@@ -155,8 +226,65 @@ func checkNJAgents(tk config.Toolkit, autoFix bool) check {
 	if len(inst.Warnings) > 0 {
 		return check{name, warn, detail, strings.Join(inst.Warnings, "\n")}
 	}
+
 	return check{name, ok, detail, ""}
 }
+
+// specKitRequiredFeatures are the capabilities of the specify CLI that
+// Orion's chain depends on, read from `specify version --features --json`.
+// Graded on feature keys rather than the version string, which on a
+// development build ("1.0.5.dev0") does not compare as semver. Each entry
+// says why it is required, so the list is edited with a reason.
+var specKitRequiredFeatures = []struct{ key, why string }{
+	{"bundled_templates", "`specify init` scaffolds from templates bundled in the CLI; without them it needs the network the chain denies"},
+}
+
+// checkSpecKit grades the specify CLI a project's stages depend on, or
+// returns nil when nothing delegates to spec-kit. No network: the roster of
+// features the installed CLI reports is the whole check.
+func checkSpecKit(tk config.Toolkit) *check {
+	if !tk.DelegatesTo("speckit") {
+		return nil
+	}
+	bin, err := exec.LookPath("specify")
+	if err != nil {
+		return &check{"spec-kit CLI", fail, "specify is not on PATH", strings.Join([]string{
+			"This project's stages delegate to spec-kit, whose commands `specify init`",
+			"installs. Install it:  " + provision.SpecKitInstall,
+		}, "\n")}
+	}
+	out, err := exec.Command(bin, "version", "--features", "--json").CombinedOutput()
+	if err != nil {
+		return &check{"spec-kit CLI", warn, "specify version --features --json failed",
+			strings.TrimSpace(string(out)) + "\nInstall the pinned release:  " + specKitUpgrade}
+	}
+	var v struct {
+		Version  string                     `json:"version"`
+		Features map[string]json.RawMessage `json:"features"`
+	}
+	if jsonErr := json.Unmarshal(out, &v); jsonErr != nil || v.Version == "" {
+		return &check{"spec-kit CLI", warn, "could not read the version report",
+			"specify version --features --json did not return the expected JSON.\nInstall the pinned release:  " + specKitUpgrade}
+	}
+	var missing []string
+	for _, f := range specKitRequiredFeatures {
+		if _, ok := v.Features[f.key]; !ok {
+			missing = append(missing, f.key+" ("+f.why+")")
+		}
+	}
+	if len(missing) > 0 {
+		return &check{"spec-kit CLI", warn, v.Version + ", missing " + strings.Join(missing, "; "),
+			"Install the pinned release:  " + specKitUpgrade}
+	}
+	// Reported, never refused: an operator ahead of the pin is not blocked,
+	// but the mismatch is visible on the line they read.
+	return &check{"spec-kit CLI", ok, v.Version + " (pinned " + provision.SpecKitTag + ")", ""}
+}
+
+// specKitUpgrade brings the installed specify CLI to the release Orion is
+// pinned to. Not `uv tool upgrade`: with a tagged source that re-resolves
+// the same tag and does nothing.
+const specKitUpgrade = provision.SpecKitReinstall
 
 // toolkitName is what the doctor line calls the toolkit. The default keeps
 // its old label so nothing about an unconfigured machine's output moves; a

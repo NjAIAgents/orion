@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -235,6 +236,10 @@ func main() {
 		runConfig(os.Args[2:])
 	case "init":
 		runInit(os.Args[2:])
+	case "clone":
+		runClone(os.Args[2:])
+	case "idea":
+		runIdea(os.Args[2:])
 	case "answer":
 		mustArg(os.Args, 2, "orion answer <id>")
 		runAnswer(os.Args[2])
@@ -1602,28 +1607,176 @@ func runAnswer(id string) {
 		fmt.Printf("run: orion run %s --stage intent\n", ws.ID)
 		os.Exit(1)
 	}
-	if a.Open == 0 {
-		fmt.Printf("no open questions in %s\n", path)
+	// The spec's own undecided points, once there is a spec: spec-kit
+	// writes them as [NEEDS CLARIFICATION] markers, and the plan stage's
+	// gate reads them the same way it reads the intent's questions.
+	specPath := filepath.Join(ws.RepoDir(), filepath.FromSlash(supervisor.SpecArtifact(cfg, ws.Task.Slug)))
+	s := discovery.AssessSpec(specPath)
+
+	if a.Open == 0 && (!s.Found || s.Open == 0) {
+		fmt.Printf("no open questions in %s", path)
+		if s.Found {
+			fmt.Printf(" or %s", specPath)
+		}
+		fmt.Println()
 		return
 	}
 
-	// Editing the file is the answer path, not a prompt loop. The answers
-	// belong in the committed artifact where every later stage reads them;
-	// capturing them in a terminal session would put them somewhere no
-	// stage can see.
-	fmt.Printf("%d open question(s) in %s\n\n", a.Open, path)
-	for _, q := range a.Questions {
-		if q.Answered {
+	// On a terminal, ask. The answers still go into the file -- the
+	// committed artifact every later stage reads -- which is the whole
+	// reason a prompt loop was refused before: it used to put them
+	// somewhere no stage could see. Written in place, the loop is only a
+	// faster editor.
+	if isTerminal(os.Stdin) {
+		written := answerInteractively(os.Stdout, bufio.NewReader(os.Stdin), []discovery.Assessment{a, s})
+		commitAnswers(os.Stdout, ws.RepoDir(), written)
+		open := discovery.Assess(path).Open
+		if s.Found {
+			open += discovery.AssessSpec(specPath).Open
+		}
+		if open == 0 {
+			fmt.Printf("\nno open questions left. Then: orion plan %s\n", planKeyOf(ws))
+			return
+		}
+		fmt.Printf("\n%d still open; run orion answer %s again, or edit the file.\n", open, ws.ID)
+		os.Exit(1)
+	}
+
+	for _, x := range []discovery.Assessment{a, s} {
+		if !x.Found || x.Open == 0 {
 			continue
 		}
-		fmt.Printf("  - %s\n", q.Text)
+		fmt.Printf("%d open question(s) in %s\n\n", x.Open, x.Path)
+		for _, q := range x.Questions {
+			if q.Answered {
+				continue
+			}
+			fmt.Printf("  - %s\n", q.Text)
+		}
+		fmt.Println()
+	}
+	fmt.Println("Answer them in the file itself, so every later stage reads the answer:")
+	fmt.Printf("  $EDITOR %s\n", path)
+	if s.Found && s.Open > 0 {
+		fmt.Printf("  $EDITOR %s\n", specPath)
 	}
 	fmt.Println()
-	fmt.Println("Answer them in the file itself, so every later stage reads the answer:")
-	fmt.Printf("  $EDITOR %s\n\n", path)
-	fmt.Println("Mark each one with [x], ~~strikethrough~~, or an inline \"Answer: ...\".")
-	fmt.Printf("Then: orion run %s --stage spec\n", ws.ID)
+	fmt.Println("Mark a question with [x], ~~strikethrough~~, or an inline \"Answer: ...\";")
+	fmt.Println("answer a [NEEDS CLARIFICATION] marker by replacing it with the decision.")
+	fmt.Printf("Then: orion plan %s\n", planKeyOf(ws))
 	os.Exit(1)
+}
+
+// answerInteractively asks each open question in turn and writes the answer
+// into its file. `-` (or nothing) skips; `?` records the honest answer when
+// there is none yet. Re-assesses after every write, because a bullet answer
+// inserts a line and the remaining questions move. Returns the files it
+// wrote to.
+func answerInteractively(out io.Writer, in *bufio.Reader, as []discovery.Assessment) []string {
+	var written []string
+	for _, x := range as {
+		if !x.Found || x.Open == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "%d open question(s) in %s\n  (answer on one line; - skips, ? records \"unknown, design for it\", = accepts the stand-in)\n\n", x.Open, x.Path)
+		skipped := map[string]bool{}
+		asked := 0
+		for {
+			cur := x
+			if strings.HasSuffix(x.Path, "spec.md") {
+				cur = discovery.AssessSpec(x.Path)
+			} else {
+				cur = discovery.Assess(x.Path)
+			}
+			var next *discovery.Question
+			for i := range cur.Questions {
+				q := cur.Questions[i]
+				if !q.Answered && !skipped[q.Text] {
+					next = &cur.Questions[i]
+					break
+				}
+			}
+			if next == nil {
+				break
+			}
+			asked++
+			ans, ok := ask(in, out, fmt.Sprintf("[%d/%d] %s", asked, x.Open, next.Text))
+			if !ok {
+				return written
+			}
+			switch ans {
+			case "", "-":
+				skipped[next.Text] = true
+				continue
+			case "?":
+				ans = "Unknown at this stage; design for it as a parameter to confirm, and flag anything that depends on it."
+			case "=":
+				ans = standIn(next.Text)
+				if ans == "" {
+					ans = "Unknown at this stage; design for it as a parameter to confirm, and flag anything that depends on it."
+				}
+			}
+			if err := discovery.Answer(x.Path, *next, ans); err != nil {
+				// A refused answer is asked again, not skipped: the person
+				// is here now, and "that names no value" is information
+				// they can act on immediately.
+				fmt.Fprintf(out, "  %s\n\n", err)
+				if again, ok := ask(in, out, "  Answer it, or press enter to leave it open:"); ok && strings.TrimSpace(again) != "" {
+					if err := discovery.Answer(x.Path, *next, again); err == nil {
+						if len(written) == 0 || written[len(written)-1] != x.Path {
+							written = append(written, x.Path)
+						}
+						continue
+					}
+					fmt.Fprintf(out, "  still not an answer; left open.\n")
+				}
+				skipped[next.Text] = true
+				continue
+			}
+			if len(written) == 0 || written[len(written)-1] != x.Path {
+				written = append(written, x.Path)
+			}
+		}
+	}
+	return written
+}
+
+// standIn is the answer a question already proposes for itself -- spec-kit
+// carries the intent's assumptions as "Stand-in: ..." -- or "" when it
+// proposes none.
+func standIn(text string) string {
+	i := strings.Index(strings.ToLower(text), "stand-in:")
+	if i < 0 {
+		return ""
+	}
+	s := strings.TrimSpace(text[i+len("stand-in:"):])
+	// Up to the end of that sentence: a trailing "(FR-012)" or a following
+	// sentence about the assessment is commentary, not the value.
+	for _, stop := range []string{"* ", "*", " (", ". "} {
+		if k := strings.Index(s, stop); k > 0 {
+			s = s[:k]
+		}
+	}
+	return strings.TrimSpace(strings.TrimRight(s, ".*"))
+}
+
+// commitAnswers commits the answered files, so the handoff to the next stage
+// is the committed record and not a dirty worktree. Best effort: a workspace
+// that is not a repository just keeps the edit.
+func commitAnswers(out io.Writer, repo string, files []string) {
+	if len(files) == 0 {
+		return
+	}
+	args := append([]string{"add", "--"}, files...)
+	if _, err := gitIn(repo, args...); err != nil {
+		fmt.Fprintf(out, "  %s\n", ui.Dim(out, "answers written but not committed: "+err.Error()))
+		return
+	}
+	if _, err := gitIn(repo, "commit", "-qm", "docs: answer the open questions"); err != nil {
+		fmt.Fprintf(out, "  %s\n", ui.Dim(out, "answers written but not committed: "+err.Error()))
+		return
+	}
+	ui.Ok(out, "committed", "the answers")
 }
 
 // createProjectChannel makes the workspace's Slack channel and posts the
@@ -1685,6 +1838,15 @@ func runSupervised(id string, rest []string) {
 		exitOn(runDatabaseStage(ws, opts))
 		return
 	}
+	// Narrated, unless the caller already set its own. A stage is minutes of
+	// silence otherwise: `orion run --stage spec` printed one warning and
+	// then nothing for five and a half minutes on a run that was working the
+	// whole time, which reads as a hang.
+	if opts.OnActivity == nil {
+		prog := newStageProgress(os.Stdout)
+		defer prog.Close()
+		opts.OnActivity = prog.On
+	}
 	res, err := supervisor.Run(ws, opts)
 	if res != nil {
 		fmt.Printf("\nstage      %s\nexit       %d\nreason     %s\nattempts   %d\nduration   %s\nlog        %s\n",
@@ -1693,6 +1855,21 @@ func runSupervised(id string, rest []string) {
 		if !res.ResumeAt.IsZero() {
 			fmt.Printf("resume     %s (orion run %s --stage %s)\n",
 				res.ResumeAt.Local().Format("15:04 MST"), ws.ID, opts.Stage)
+		}
+		// Where to go next. Every other command in the chain ends with one
+		// -- `orion new` names `orion plan`, `orion plan` names the first
+		// `orion run` -- and the run itself ending in silence left the
+		// operator to work out the order from the roster they saw once.
+		//
+		// Only on success, and only while a next stage exists. A failed
+		// stage's next step is to read the log, which the line above already
+		// names; suggesting the following stage there would be advice to
+		// build on something that did not finish.
+		if res.ExitCode == 0 && res.ResumeAt.IsZero() {
+			if next, ok := nextPlanStage(opts.Stage); ok {
+				fmt.Printf("\nnext: orion run %s --stage %s  (%s)\n",
+					ws.ID, next.Stage, next.What)
+			}
 		}
 	}
 	exitOn(err)
@@ -1799,17 +1976,7 @@ func runProvision(id string, rest []string) {
 
 	// 1. Remote repository and branch model.
 	if !hasFlag(rest, "--skip-repo") {
-		res, err := provision.Remote(provision.Options{
-			Dir:           ws.RepoDir(),
-			Name:          ws.Task.Slug,
-			Description:   truncateStr(ws.Task.Idea, 200),
-			DefaultBranch: cfg.VCS.DefaultBranch,
-			WorkBranch:    cfg.VCS.WorkBranch,
-			Private:       true,
-			Org:           argFlag(rest, "--org", ""),
-			Confirm:       confirm,
-			Out:           os.Stdout,
-		})
+		res, err := provision.Remote(remoteOptions(ws, cfg, confirm, os.Stdout, argFlag(rest, "--org", "")))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "orion: repository provisioning failed: %v\n", err)
 		} else {

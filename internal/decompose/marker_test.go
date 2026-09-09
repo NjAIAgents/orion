@@ -148,3 +148,71 @@ func TestLabelPutsIdentityOnEveryItemAndRoutingOnlyOnTasksAndStories(t *testing.
 			"internal/catalogue, not docs/", ungrouped.Labels)
 	}
 }
+
+// The queue label lands on stories and epic-level tasks only: the levels
+// watch.Queued admits once each (docs/decisions/0023).
+func TestQueueLabelsStoriesAndEpicLevelTasksOnly(t *testing.T) {
+	tree := &Tree{Slug: "widget", Epic: &Item{Kind: KindEpic, Children: []*Item{
+		{Kind: KindStory, Children: []*Item{
+			{Kind: KindTask, Paths: []string{"docs/a.md"}},
+		}},
+		{Kind: KindTask, Paths: []string{"go.mod"}},
+	}}}
+	label(tree)
+	tree.Queue("ORION")
+
+	epic := tree.Epic
+	story, sub, setup := epic.Children[0], epic.Children[0].Children[0], epic.Children[1]
+	if has(epic.Labels, "ORION") {
+		t.Errorf("epic carries the queue label %v; it would become the one claimable unit", epic.Labels)
+	}
+	if !has(story.Labels, "ORION") {
+		t.Errorf("story lacks the queue label: %v", story.Labels)
+	}
+	if has(sub.Labels, "ORION") {
+		t.Errorf("a story's task carries the queue label %v; the story works it", sub.Labels)
+	}
+	if !has(setup.Labels, "ORION") {
+		t.Errorf("epic-level task lacks the queue label: %v", setup.Labels)
+	}
+	// Empty is a no-op, never an empty label Jira would refuse.
+	before := len(story.Labels)
+	tree.Queue("  ")
+	if len(story.Labels) != before {
+		t.Error("an empty queue label was appended")
+	}
+}
+
+// Work no agent can do carries no queue label: the ticket exists, and an
+// agent never claims it only to discover it cannot register an OIDC client
+// or sign an assessment.
+func TestTheQueueLabelIsWithheldFromHumanWork(t *testing.T) {
+	tree := &Tree{Slug: "widget", Epic: &Item{Kind: KindEpic, Children: []*Item{
+		{Kind: KindStory, ID: "US1", Children: []*Item{
+			{Kind: KindTask, ID: "T001", Paths: []string{"a.go"}},
+			{Kind: KindTask, ID: "T002", Human: true, Paths: []string{"b.go"}},
+		}},
+		{Kind: KindTask, ID: "T080", Human: true, Paths: []string{"deploy/main.tf"}},
+		{Kind: KindTask, ID: "T014", Paths: []string{"go.mod"}},
+	}}}
+	label(tree)
+	tree.Queue("ORION")
+
+	epic := tree.Epic
+	story, setupHuman, setupAgent := epic.Children[0], epic.Children[1], epic.Children[2]
+	if !has(story.Labels, "ORION") {
+		t.Errorf("the story lost its queue label: %v", story.Labels)
+	}
+	if has(setupHuman.Labels, "ORION") {
+		t.Errorf("T080 is human work and must not be claimable: %v", setupHuman.Labels)
+	}
+	if !has(setupAgent.Labels, "ORION") {
+		t.Errorf("an ordinary epic-level task lost its queue label: %v", setupAgent.Labels)
+	}
+	// The identity label stays on everything: a re-run must still find it.
+	for _, it := range []*Item{setupHuman, setupAgent, story} {
+		if !has(it.Labels, tree.Label()) {
+			t.Errorf("%s lost its identity label: %v", it.ID, it.Labels)
+		}
+	}
+}

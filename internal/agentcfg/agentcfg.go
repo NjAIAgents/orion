@@ -135,10 +135,20 @@ func For(orionHome string, cfg config.Config, stage, actor string) (*Run, error)
 		return &Run{
 			Inherited: true,
 			OptIn:     "platform:" + runtime.GOOS,
+			// Worded for whoever is READING it, which is whoever runs Orion
+			// and not whoever wrote it. "Not capability-curated" names an
+			// internal design goal, and a ticket number is a reference the
+			// reader cannot follow; between them they said that something
+			// was wrong without saying what it meant for the run in front of
+			// them. What matters to them is the blast radius and whether the
+			// result will reproduce elsewhere.
 			Warnings: []string{
-				"this run inherited YOUR Claude Code configuration -- plugins, MCP servers and " +
-					"subagents included -- because a curated config directory cannot authenticate " +
-					"on " + runtime.GOOS + ". The run is not capability-curated. See OR-239.",
+				"this agent is running with YOUR Claude Code setup -- your plugins, MCP " +
+					"servers and subagents -- rather than the small, fixed toolset Orion " +
+					"prefers, because that isolated setup cannot sign in on " + runtime.GOOS + ".\n" +
+					"  It will work. Two things to know: the agent can reach anything your " +
+					"own Claude Code can reach, and a run on another machine may behave " +
+					"differently because its tools differ.",
 			},
 		}, nil
 	}
@@ -159,7 +169,11 @@ func For(orionHome string, cfg config.Config, stage, actor string) (*Run, error)
 		r.Warnings = append(r.Warnings,
 			"nj-agents was not found, so this run has no delegated skills; check: orion doctor")
 	} else {
-		r.Skills = linkAll(filepath.Join(inst.Root, "skills"), filepath.Join(dir, "skills"), r)
+		// From wherever this toolkit keeps its commands, not from a fixed
+		// <root>/skills. A toolkit laid out otherwise -- spec-kit keeps
+		// them in templates/commands -- would otherwise pass `orion doctor`
+		// and then hand the agent an empty directory.
+		r.Skills = linkAll(toolkit.CommandsDir(inst), filepath.Join(dir, "skills"), r)
 		r.Agents = linkAll(filepath.Join(inst.Root, "agents"), filepath.Join(dir, "agents"), r)
 	}
 	linkCredentials(dir, r)

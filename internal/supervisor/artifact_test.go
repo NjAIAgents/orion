@@ -43,7 +43,7 @@ func TestStagesThatProduceNoFileAreSkipped(t *testing.T) {
 	cfg := defaults(t)
 	for _, stage := range []string{
 		"verify", "test", "review", "pr", "ship",
-		"build", "implement", "scaffold", "decompose", "ticket", "",
+		"build", "implement", "decompose", "ticket", "",
 	} {
 		if got := stageArtifact(cfg, stage, "thing"); got != "" {
 			t.Errorf("stage %q must owe no artifact, got %q", stage, got)
@@ -55,8 +55,11 @@ func TestStagesThatProduceNoFileAreSkipped(t *testing.T) {
 }
 
 // The artifact directories follow cfg.Paths -- a project's own chain layout,
-// which is Orion's setting -- while nothing a TOOLKIT declares can move them.
-func TestNoToolkitCommandCanChangeWhichArtifactAStageOwes(t *testing.T) {
+// which is Orion's setting -- and a TOOLKIT command selects only between the
+// two layouts Orion owns: a delegated spec or plan stage owes the feature
+// directory (<paths.specs>/001-<slug>/spec.md, plan.md), a built-in one owes
+// the classic file. It can name no other path, and it cannot move intent.
+func TestAToolkitCommandSelectsBetweenTheTwoLayoutsOrionOwns(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "orion.json"), []byte(`{
 	  "paths": {"intent": "capture", "specs": "design", "plans": "steps"},
@@ -67,12 +70,59 @@ func TestNoToolkitCommandCanChangeWhichArtifactAStageOwes(t *testing.T) {
 	cfg := config.Load(dir)
 	for _, tc := range []struct{ stage, want string }{
 		{"intent", "capture/thing.md"},
-		{"spec", "design/thing.spec.md"},
-		{"plan", "steps/thing.plan.md"},
+		{"spec", "design/001-thing/spec.md"},
+		{"plan", "design/001-thing/plan.md"},
 	} {
 		if got := stageArtifact(cfg, tc.stage, "thing"); got != tc.want {
 			t.Errorf("stageArtifact(%q) = %q, want %q", tc.stage, got, tc.want)
 		}
+	}
+	// Delegating only the spec leaves the plan on the classic path.
+	if err := os.WriteFile(filepath.Join(dir, "orion.json"), []byte(`{
+	  "paths": {"intent": "capture", "specs": "design", "plans": "steps"},
+	  "toolkit": {"stages": {"spec": "/some-other-skill"}}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg = config.Load(dir)
+	if got := stageArtifact(cfg, "plan", "thing"); got != "steps/thing.plan.md" {
+		t.Errorf("an undelegated plan moved to %q", got)
+	}
+}
+
+// A delegated plan owes its task list too: spec-kit's plan hands off to
+// tasks, and decompose reads tasks.md. A plan with no task list is a plan
+// and nothing to decompose from.
+func TestADelegatedPlanOwesItsTaskListAsWell(t *testing.T) {
+	repo := gitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "orion.json"), []byte(`{
+	  "toolkit": {"stages": {"plan": "/speckit-plan"}}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, repo, "orion.json")
+	cfg := config.Load(repo)
+
+	dir := filepath.Join(repo, "specs", "001-thing")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plan.md"), []byte("# Plan\n\nreal\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, repo, "specs/001-thing/plan.md")
+
+	err := checkStageArtifact(repo, cfg, "plan", "thing")
+	if err == nil || !strings.Contains(err.Error(), "tasks.md") {
+		t.Fatalf("a delegated plan without tasks.md passed, or the error does not name it: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "tasks.md"), []byte("- [ ] T001 do the thing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, repo, "specs/001-thing/tasks.md")
+	if err := checkStageArtifact(repo, cfg, "plan", "thing"); err != nil {
+		t.Errorf("a delegated plan with both files failed: %v", err)
 	}
 }
 
@@ -182,7 +232,7 @@ func TestFailureNamesTheArtifactTheStageAndTheCommand(t *testing.T) {
 		t.Fatal("a misconfigured stage must fail")
 	}
 	for _, want := range []string{
-		"specs/thing.spec.md",       // the artifact
+		"specs/001-thing/spec.md",   // the artifact
 		"spec stage",                // the stage
 		"/skil-that-does-not-exist", // the configured command
 		"toolkit.stages.spec",       // where to correct it
@@ -252,7 +302,7 @@ func TestRunFailsAStageWhoseCommandLeftNoArtifact(t *testing.T) {
 	if err == nil {
 		t.Fatal("a stage that left no artifact must fail the run")
 	}
-	for _, want := range []string{"specs/thing.spec.md", "spec stage", "/wrong-skill-name"} {
+	for _, want := range []string{"specs/001-thing/spec.md", "spec stage", "/wrong-skill-name"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("message must name %q, got:\n%v", want, err)
 		}
@@ -270,8 +320,8 @@ func TestRunFailsAStageWhoseCommandLeftNoArtifact(t *testing.T) {
 func TestRunPassesAStageThatCommittedItsArtifact(t *testing.T) {
 	w := gitWorkspace(t, `{"toolkit": {"stages": {"spec": "/some-skill"}}}`)
 	claudeWriting(t, w.RepoDir(),
-		"mkdir -p specs && printf '# Spec\\n\\nreal content\\n' > specs/thing.spec.md && "+
-			"git add specs/thing.spec.md && git commit -qm spec")
+		"mkdir -p specs/001-thing && printf '# Spec\\n\\nreal content\\n' > specs/001-thing/spec.md && "+
+			"git add specs/001-thing/spec.md && git commit -qm spec")
 
 	res, err := Run(w, Options{Stage: "spec", MaxMinutes: 1, MaxTurns: 1})
 	if err != nil {
@@ -472,5 +522,213 @@ func TestEmptyStageNameOwesNoArtifact(t *testing.T) {
 	}
 	if err := checkStageArtifact(t.TempDir(), cfg, "", "thing"); err != nil {
 		t.Errorf("an empty stage name must be skipped, got: %v", err)
+	}
+}
+
+// commit stages and commits one path, so a test can reach the states that
+// only exist after a commit.
+func commit(t *testing.T, repo, rel string) {
+	t.Helper()
+	for _, args := range [][]string{{"add", rel}, {"commit", "-qm", "artifact"}} {
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+// A stage that declares itself BLOCKED in its own artifact must not report
+// success.
+//
+// FOUND IN PRACTICE, on the CloudLens project. The spec stage could not find
+// the intent it was to design from, correctly refused to invent one, and
+// committed a 26KB document whose first lines read "Status: BLOCKED -- not an
+// approved design." Orion printed "exit 0 / reason completed". The artifact
+// check passed it because the file was present, non-empty and tracked -- all
+// true, and none of them the question. The next stage would have planned from
+// a document that says it is not a design.
+func TestAnArtifactThatDeclaresItselfBlockedIsNotSuccess(t *testing.T) {
+	cfg := defaults(t)
+
+	// The real spec's own wording, plus the forms a different agent would
+	// reasonably use. The marker has to be found in the opening lines, which
+	// is where a refusal is stated.
+	for _, body := range []string{
+		"# CloudLens — Spec\n\n**Status: BLOCKED — not an approved design.**\n\nbody\n",
+		"# Spec\n\nSTATUS: BLOCKED\n\nmore\n",
+		"---\nstatus: blocked\n---\n\n# Spec\n",
+		"# Spec\n\n## Verdict\n\nBLOCKED: the source intent does not exist.\n",
+	} {
+		t.Run(strings.SplitN(body, "\n", 2)[0], func(t *testing.T) {
+			repo := gitRepo(t)
+			rel := writeSpec(t, repo, body)
+			commit(t, repo, rel)
+
+			err := checkStageArtifact(repo, cfg, "spec", "thing")
+			if err == nil {
+				t.Fatal("an artifact declaring itself BLOCKED was reported as success")
+			}
+			if !strings.Contains(err.Error(), "BLOCKED") {
+				t.Errorf("the message must say the stage blocked itself, got: %v", err)
+			}
+		})
+	}
+}
+
+// The marker is only honoured near the TOP of the document. A spec that
+// merely discusses blocking -- a risks section naming what would block a
+// later stage -- is a finished spec and must pass.
+func TestDiscussingBlockingDeepInTheDocumentIsStillSuccess(t *testing.T) {
+	cfg := defaults(t)
+	repo := gitRepo(t)
+
+	var b strings.Builder
+	b.WriteString("# Spec\n\n## Requirements\n\n")
+	for i := 0; i < 60; i++ {
+		b.WriteString("A real requirement, stated plainly.\n")
+	}
+	b.WriteString("\n## Risks\n\nStatus: BLOCKED would be the outcome if the vendor API is withdrawn.\n")
+
+	rel := writeSpec(t, repo, b.String())
+	commit(t, repo, rel)
+
+	if err := checkStageArtifact(repo, cfg, "spec", "thing"); err != nil {
+		t.Errorf("a finished spec discussing blockage was failed: %v", err)
+	}
+}
+
+// A document describing its own APPROVAL state is not a stage refusing to
+// work.
+//
+// FOUND ON A REAL RUN. A spec stage wrote a complete document, self-reviewed
+// it, found and fixed three of its own errors, secret-scanned it and
+// committed it -- and was failed because its first line read "Status: DRAFT
+// -- unapproved, and blocked." The subject of that sentence is approval. The
+// earlier substring test could not tell it from "Status: BLOCKED -- not an
+// approved design", which is a stage that produced nothing, so it discarded
+// eight minutes of finished work.
+func TestADraftDescribingItsApprovalStateIsNotABlockedStage(t *testing.T) {
+	cfg := defaults(t)
+
+	for _, body := range []string{
+		"# Spec\n\n**Status: DRAFT — unapproved, and blocked.**\n\nreal content\n",
+		"# Spec\n\nStatus: draft (approval blocked on review)\n\nreal content\n",
+		"# Spec\n\nStatus: complete -- nothing blocked\n\nreal content\n",
+	} {
+		t.Run(strings.SplitN(body, "\n", 3)[2], func(t *testing.T) {
+			repo := gitRepo(t)
+			rel := writeSpec(t, repo, body)
+			commit(t, repo, rel)
+
+			if err := checkStageArtifact(repo, cfg, "spec", "thing"); err != nil {
+				t.Errorf("a finished document was failed for describing itself: %v", err)
+			}
+		})
+	}
+}
+
+// And the real case still fails: the STATUS is blocked, which is a stage
+// saying it could not do the work.
+func TestAStatusOfBlockedStillFails(t *testing.T) {
+	cfg := defaults(t)
+
+	for _, body := range []string{
+		"# Spec\n\n**Status: BLOCKED — not an approved design.**\n\nbody\n",
+		"# Spec\n\nSTATUS: BLOCKED\n\nbody\n",
+		"# Spec\n\nstatus: blocked, pending the intent document\n\nbody\n",
+	} {
+		t.Run(strings.SplitN(body, "\n", 3)[2], func(t *testing.T) {
+			repo := gitRepo(t)
+			rel := writeSpec(t, repo, body)
+			commit(t, repo, rel)
+
+			err := checkStageArtifact(repo, cfg, "spec", "thing")
+			if err == nil {
+				t.Fatal("a stage whose status is BLOCKED was reported as success")
+			}
+			if !strings.Contains(err.Error(), "BLOCKED") {
+				t.Errorf("the message does not say the stage blocked itself: %v", err)
+			}
+		})
+	}
+}
+
+func commitConstitution(t *testing.T, repo, body string) {
+	t.Helper()
+	dir := filepath.Join(repo, ".specify", "memory")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "constitution.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, repo)
+}
+
+func commitAll(t *testing.T, repo string) {
+	t.Helper()
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-qm", "artifact"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+// The constitution's template is slots; a committed file still holding one
+// is not a constitution, and the failure names the slots left.
+func TestAConstitutionStillHoldingTemplateSlotsFails(t *testing.T) {
+	repo := gitRepo(t)
+	cfg := defaults(t)
+	commitConstitution(t, repo, "# [PROJECT_NAME] Constitution\n\n## Core Principles\n\n### [PRINCIPLE_1_NAME]\nDo the thing.\n")
+	err := checkStageArtifact(repo, cfg, "constitution", "thing")
+	if err == nil {
+		t.Fatal("a constitution with template slots passed")
+	}
+	for _, want := range []string{"[PROJECT_NAME]", "[PRINCIPLE_1_NAME]", ".specify/memory/constitution.md"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message must name %q, got:\n%v", want, err)
+		}
+	}
+}
+
+func TestAFinishedConstitutionPasses(t *testing.T) {
+	repo := gitRepo(t)
+	commitConstitution(t, repo, "# Thing Constitution\n\n## Core Principles\n\n### I. Plan first\nA plan is approved before any edit (gates.require_plan_before_edit).\n\n"+
+		"Open point: [NEEDS CLARIFICATION: retention period] -- the discovery gate's, not this check's.\n")
+	if err := checkStageArtifact(repo, defaults(t), "constitution", "thing"); err != nil {
+		t.Fatalf("a finished constitution failed: %v", err)
+	}
+}
+
+// The slot check is the constitution's alone: a spec mentioning a bracketed
+// identifier in prose is finished work.
+func TestTheSlotCheckDoesNotReachOtherStages(t *testing.T) {
+	repo := gitRepo(t)
+	cfg := defaults(t)
+	writeSpec(t, repo, "# Spec\n\nSet [FEATURE_FLAG] to on.\n")
+	commitAll(t, repo)
+	if err := checkStageArtifact(repo, cfg, "spec", "thing"); err != nil {
+		t.Fatalf("the spec was held to the constitution's slot check: %v", err)
+	}
+}
+
+// The scaffold stage owes its README: a run refused every write exits 0
+// with nothing committed, and without an owed artifact that is
+// indistinguishable from a repository laid out.
+func TestScaffoldOwesItsReadme(t *testing.T) {
+	if got := stageArtifact(defaults(t), "scaffold", "thing"); got != "README.md" {
+		t.Errorf("scaffold owes %q, want README.md", got)
+	}
+	w := gitWorkspace(t, `{}`)
+	claudeWriting(t, w.RepoDir(), "true")
+	_, err := Run(w, Options{Stage: "scaffold", MaxMinutes: 1, MaxTurns: 1})
+	if err == nil || !strings.Contains(err.Error(), "README.md") {
+		t.Fatalf("a scaffold that wrote nothing must fail naming README.md: %v", err)
+	}
+
+	w2 := gitWorkspace(t, `{}`)
+	claudeWriting(t, w2.RepoDir(), "printf '# Thing\\n\\nreal\\n' > README.md && git add README.md && git commit -qm readme")
+	if _, err := Run(w2, Options{Stage: "scaffold", MaxMinutes: 1, MaxTurns: 1}); err != nil {
+		t.Fatalf("a scaffold that committed its README failed: %v", err)
 	}
 }

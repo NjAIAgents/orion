@@ -156,3 +156,39 @@ func truncate(s string, n int) string {
 	}
 	return string(r[:n-1]) + "…"
 }
+
+// LinkBlocks records that blocker blocks blocked, so the queue will not
+// admit the blocked ticket while the blocker is open.
+//
+// The link TYPE is "Blocks" and the direction matters: inwardIssue is the
+// ticket that blocks, outwardIssue the one being blocked, which is the
+// convention blockersOf reads back. Sending them the wrong way round
+// produces a link that reads correctly in the UI and orders the work
+// backwards.
+//
+// An already-existing link is not an error. A re-run of decompose creates
+// the same edges again, and a tree that refuses to be re-run is a tree that
+// cannot be resumed after a partial failure -- so a duplicate is left to
+// Jira, which stores one link per pair and per type.
+func (j *Jira) LinkBlocks(blocker, blocked string) error {
+	blocker, blocked = strings.ToUpper(strings.TrimSpace(blocker)), strings.ToUpper(strings.TrimSpace(blocked))
+	if blocker == "" || blocked == "" {
+		return fmt.Errorf("a link needs two issues, got %q and %q", blocker, blocked)
+	}
+	if blocker == blocked {
+		return fmt.Errorf("%s cannot block itself", blocker)
+	}
+	body := map[string]any{
+		"type":         map[string]any{"name": "Blocks"},
+		"inwardIssue":  map[string]any{"key": blocker},
+		"outwardIssue": map[string]any{"key": blocked},
+	}
+	code, out, err := j.do("POST", "/rest/api/3/issueLink", body)
+	if err != nil {
+		return err
+	}
+	if code < 200 || code > 299 {
+		return fmt.Errorf("linking %s to block %s: HTTP %d: %s", blocker, blocked, code, truncate(string(out), 200))
+	}
+	return nil
+}

@@ -179,4 +179,6 @@ func (stubBackend) Name() string { return "stub" }
 func (stubBackend) Existing(string, string) (map[string]string, error) {
 	return map[string]string{}, nil
 }
+func (stubBackend) Link(string, string) error { return nil }
+
 func (stubBackend) Create(CreateRequest) (string, error) { return "OR-1", nil }

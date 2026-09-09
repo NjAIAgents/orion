@@ -242,6 +242,17 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 			return &Result{ExitCode: 0, Reason: "stopped at the discovery gate"},
 				fmt.Errorf("%s", a.GateMessage(ws.ID))
 		}
+		// And the spec, for the stages that read it: spec-kit writes its
+		// undecided points as [NEEDS CLARIFICATION] markers, the same
+		// statement as an open bullet in a different spelling, and a plan
+		// built on one inherits the guess (docs/decisions/0021).
+		if stageNeedsSpec(opts.Stage) {
+			specPath := filepath.Join(ws.RepoDir(), filepath.FromSlash(specArtifact(cfgEarly, ws.Task.Slug)))
+			if a := discovery.AssessSpec(specPath); a.Found && a.Open > 0 {
+				return &Result{ExitCode: 0, Reason: "stopped at the discovery gate"},
+					fmt.Errorf("%s", a.GateMessage(ws.ID))
+			}
+		}
 	}
 
 	// Budget checkpoint BEFORE spending, not after. Checking afterwards
@@ -273,9 +284,11 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 
 	overall := time.Now()
 	var last *Result
+	var lastOutput string
 
 	for attempt := 1; attempt <= quota.MaxAttempts; attempt++ {
 		res, output := runOnce(ws, bin, prompt, opts, attempt, ac)
+		lastOutput = output
 		recordUsage(ws, opts.Stage, output)
 		recordTicketCost(ws, opts, res, output)
 		// Numerator from the stream (a peak over turns), denominator from
@@ -413,11 +426,7 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	// anything.
 	if !opts.DryRun && opts.Prompt == "" {
 		if err := checkStageArtifact(ws.RepoDir(), cfg, opts.Stage, ws.Task.Slug); err != nil {
-			last.Reason = "the stage left no artifact"
-			ws.Task.Status = "failed"
-			if saveErr := ws.SaveTask(); saveErr != nil {
-				fmt.Fprintf(ui.Console(), "orion: could not update task.json: %v\n", saveErr)
-			}
+			failRun(ws, last, "the stage left no artifact")
 			notify.Send(notify.Event{
 				Level: notify.Blocked, Workspace: ws.ID, Channel: channelFor(ws),
 				Title: fmt.Sprintf("orion: %s left no artifact in %s", opts.Stage, ws.ID),
@@ -425,6 +434,32 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 			})
 			return last, err
 		}
+		// The analyze stage owes no file; it owes a verdict, and the verdict
+		// is read from its report rather than trusted from its exit code
+		// (docs/decisions/0001: the toolkit reports, Orion gates).
+		if strings.EqualFold(strings.TrimSpace(opts.Stage), "analyze") {
+			if err := analyzeGate(lastOutput); err != nil {
+				failRun(ws, last, err.Error())
+				notify.Send(notify.Event{
+					Level: notify.Blocked, Workspace: ws.ID, Channel: channelFor(ws),
+					Title: fmt.Sprintf("orion: analyze blocked %s", ws.ID),
+					Body:  err.Error() + "\nlog: " + last.LogPath,
+				})
+				key := ws.Task.TrackerKey()
+				if key == "" {
+					key = ws.ID
+				}
+				return last, fmt.Errorf("%w\n\n  Each finding names the file and line to change and the fix the report proposes.\n"+
+					"  The full report, with the HIGH and MEDIUM findings too, is in the log:\n    %s\n"+
+					"  When the artefacts are edited and committed:  orion plan %s --from analyze", err, last.LogPath, key)
+			}
+		}
+		// The artifact is real and committed, so it can be published where
+		// the person who asked for it will actually see it. AFTER the check,
+		// never before: publishing a missing or self-blocked artifact would
+		// put a document in the tracker saying the work could not be done,
+		// as though it were the work.
+		sayPublish(publishIntent(trackerForPublish(), ws, cfg, opts.Stage))
 	}
 	// Notify on failure, not only on the quota and timeout paths that
 	// already did. A supervisor that stays silent when a stage fails is one
@@ -440,13 +475,39 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	return last, nil
 }
 
+// failRun marks the run just recorded as failed, in the result AND in the
+// RunRec task.json keeps: StageDone reads that record to decide whether a
+// resumed chain may skip the stage, and a record still saying "completed"
+// after the gate refused it would skip straight past the refusal.
+func failRun(ws *workspace.Workspace, last *Result, reason string) {
+	last.Reason = reason
+	ws.Task.Status = "failed"
+	if n := len(ws.Task.Runs); n > 0 {
+		ws.Task.Runs[n-1].Reason = reason
+	}
+	if err := ws.SaveTask(); err != nil {
+		fmt.Fprintf(ui.Console(), "orion: could not update task.json: %v\n", err)
+	}
+}
+
 // stageNeedsIntent reports whether a stage designs from the captured intent.
 // Intent itself is excluded for the obvious reason, and the later build and
 // ship stages are excluded because by then the spec and plan are the
 // governing artifacts and re-litigating intent would block finished work.
 func stageNeedsIntent(stage string) bool {
 	switch strings.ToLower(stage) {
-	case "spec", "design", "plan", "scaffold", "decompose":
+	case "constitution", "spec", "design", "plan", "analyze", "scaffold", "decompose":
+		return true
+	}
+	return false
+}
+
+// stageNeedsSpec reports whether a stage designs from the spec, so an
+// undecided point in it blocks the stage the way an open intent question
+// does. The spec stage itself is excluded: it is the one writing the file.
+func stageNeedsSpec(stage string) bool {
+	switch strings.ToLower(stage) {
+	case "plan", "analyze", "scaffold", "decompose":
 		return true
 	}
 	return false
@@ -969,6 +1030,13 @@ func childEnv(ws *workspace.Workspace, ac *agentcfg.Run, actor string) []string 
 	}
 	out = ac.Env(out)
 	out = append(out, "ORION_WORKSPACE="+ws.ID, "ORION_WORKSPACE_DIR="+ws.Dir)
+	// Which feature spec-kit's commands work in. Its own resolution reads
+	// this first and otherwise invents a name from the description -- a
+	// second name for the same work (docs/decisions/0009, 0022). Exported
+	// to every run, delegated or not: a stage that never reads it costs
+	// nothing, and a conditional would be a second place that has to know
+	// which stages are delegated.
+	out = append(out, "SPECIFY_FEATURE_DIRECTORY="+config.Load(ws.RepoDir()).FeatureDir(ws.Task.Slug))
 	if actor != "" {
 		// Which role this run IS, so a command the run calls back into Orion
 		// with can attribute what it spends to the same actor rather than

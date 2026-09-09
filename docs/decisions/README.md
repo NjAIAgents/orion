@@ -23,3 +23,7 @@ already have been decided against, on purpose.
 - [0017](0017-integration-state-machine-not-a-job-queue.md) — the integration state machine carries the sophistication; the queue is Go channels and JSON, with a git SHA recorded at every transition
 - [0018](0018-fan-unit-is-per-stage.md) — the fan-out unit is per stage: the Go package for implementation, the case group for test authoring, where 0016's two hazards do not apply
 - [0019](0019-toolkit-agnostic-nj-agents-is-the-default.md) — Orion is toolkit-agnostic; nj-agents ships as the default, not a hardcoded dependency
+- [0020](0020-a-toolkit-must-ship-skills-and-vendoring-is-global.md) — A toolkit must ship a `skills/` directory, and vendoring is global to the machine
+- [0021](0021-spec-kit-inside-stages.md) — spec-kit runs inside Orion's stages; its workflow engine, extension hooks and bundles are declined
+- [0022](0022-per-project-toolkit-install-via-specify-init.md) — spec-kit is installed per project by `specify init` at provisioning, and Orion pins the feature directory
+- [0023](0023-living-spec-project-vs-feature.md) — One tracker project is one `.specify/`; features accrue as `specs/NNN-*/`; the spec is a living document

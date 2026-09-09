@@ -74,6 +74,20 @@ type newOptions struct {
 	// key rather than prose (OR-349). Nil means the key path is unavailable
 	// and the command interviews as it always has.
 	Ideas ideaReader
+	// Files an INTERVIEWED idea back into the discovery project, so an idea
+	// typed at the prompt joins the ones written in the tracker. Nil means
+	// no tracker to file into; Home is where the chosen project is
+	// remembered.
+	Filer ideaFiler
+	Home  string
+	// Describer records the idea's key on the project it created, so a later
+	// stage is told which idea belongs to this work.
+	Describer projectDescriber
+}
+
+// projectDescriber updates a project's description.
+type projectDescriber interface {
+	UpdateProjectDescription(key, description string) error
 }
 
 func runNew(idea string, rest []string) {
@@ -101,12 +115,15 @@ func runNew(idea string, rest []string) {
 	exitOn(err)
 
 	exitOn(newRun(j, newOptions{
-		Idea:    idea,
-		Site:    j.BaseURL,
-		In:      os.Stdin,
-		Out:     os.Stdout,
-		Confirm: confirm,
-		Ideas:   j,
+		Idea:      idea,
+		Site:      j.BaseURL,
+		In:        os.Stdin,
+		Out:       os.Stdout,
+		Confirm:   confirm,
+		Ideas:     j,
+		Filer:     j,
+		Describer: j,
+		Home:      workspace.Home(),
 	}))
 }
 
@@ -238,6 +255,44 @@ func newRun(t tracker.Tracker, opts newOptions) error {
 
 	fmt.Fprintln(out)
 	ui.Ok(out, "created", "%s project %s  %s/browse/%s", t.Name(), b.Key, opts.Site, b.Key)
+
+	// An INTERVIEWED idea is filed as an idea, so it joins the discovery
+	// board rather than existing only as this project's description. Skipped
+	// when the idea CAME from there: source is set only on the key path, and
+	// filing a copy of PRIOR-3 next to PRIOR-3 is noise.
+	//
+	// Best effort, after the project exists: the run has already succeeded,
+	// and losing the idea copy is untidy where losing the project would not
+	// be.
+	if source.Key == "" && opts.Filer != nil {
+		if project := ideasProject(opts.Home, r, out, isTerminal(os.Stdin)); project != "" {
+			link := ""
+			if opts.Site != "" {
+				link = strings.TrimRight(opts.Site, "/") + "/browse/" + b.Key
+			}
+			key, err := fileIdea(opts.Filer, project, ideaSummary(name), description, link)
+			switch {
+			case key == "":
+				ui.Warn(out, "could not file the idea in %s: %v", project, err)
+				fmt.Fprintf(out, "  The project was created; only the idea copy is missing.\n")
+			default:
+				ui.Ok(out, "idea", "%s  %s/browse/%s", key, opts.Site, key)
+				// The same provenance marker a keyed idea already carries in
+				// its description, so `orion plan` can tell a stage WHICH
+				// idea to fill in rather than leaving it to hunt for one.
+				if opts.Describer != nil {
+					if err := opts.Describer.UpdateProjectDescription(b.Key,
+						"From "+key+"\n\n"+description); err != nil {
+						ui.Warn(out, "could not record %s on the project: %v", key, err)
+					}
+				}
+				// The idea landed; err here is only about its extra fields.
+				if err != nil {
+					ui.Warn(out, "%v", err)
+				}
+			}
+		}
+	}
 
 	// The back-link, so a reader of the idea can find the work (OR-349).
 	// BEST EFFORT: the project exists by now, and losing the link is untidy

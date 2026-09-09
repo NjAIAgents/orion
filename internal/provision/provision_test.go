@@ -1,6 +1,7 @@
 package provision
 
 import (
+	"github.com/orion-sdlc/orion/internal/fakebin"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -225,4 +226,57 @@ func TestRemoteExplainsAMissingGH(t *testing.T) {
 		t.Errorf("the error should name the missing tool, got: %v", err)
 	}
 	_ = filepath.Base(d)
+}
+
+// GitHub refuses a description carrying a control character, and refuses it
+// after the repository name is taken -- so the newlines a tracker
+// description always has must never reach it.
+func TestADescriptionIsFlattenedToOneLine(t *testing.T) {
+	got := oneLine("Assess whether an in-house replacement\n\nfor CloudHealth is viable.\tThree uses.\r\n")
+	want := "Assess whether an in-house replacement for CloudHealth is viable. Three uses."
+	if got != want {
+		t.Errorf("oneLine = %q, want %q", got, want)
+	}
+	for _, r := range got {
+		if r < 0x20 {
+			t.Fatalf("a control character survived: %q", got)
+		}
+	}
+	if oneLine("   \n\t ") != "" {
+		t.Error("whitespace-only must flatten to empty, so no --description is passed at all")
+	}
+	long := oneLine(strings.Repeat("residency ", 80))
+	if len(long) > 350 || !strings.HasSuffix(long, "…") {
+		t.Errorf("a long description must be cut at a word boundary: len=%d %q", len(long), long[max(0, len(long)-30):])
+	}
+}
+
+// Everything after `gh repo create` addresses the repository as OWNER/REPO.
+// A bare name is accepted by create and by nothing else: `repo edit` refuses
+// it, and `api repos/<name>/...` reads the name as the owner and 404s on a
+// repository that exists -- which is how a run created a repository and then
+// failed to make develop its default or protect either branch.
+func TestTheRepositoryIsAddressedAsOwnerRepoAfterCreation(t *testing.T) {
+	dir := t.TempDir()
+	bin := t.TempDir()
+	fakebin.Install(t, bin, "gh", "#!/bin/sh\n"+
+		"case \"$*\" in *nameWithOwner*) echo 'someone/cloudlens';; esac\nexit 0\n")
+
+	if got := ownerRepo(dir, "cloudlens"); got != "someone/cloudlens" {
+		t.Errorf("ownerRepo = %q, want someone/cloudlens", got)
+	}
+	// An explicit org is already qualified and is not second-guessed.
+	if got := ownerRepo(dir, "acme/cloudlens"); got != "acme/cloudlens" {
+		t.Errorf("a qualified target was rewritten to %q", got)
+	}
+}
+
+// gh saying nothing leaves the caller with what it had, rather than an
+// empty repository name in every later call.
+func TestOwnerRepoFallsBackWhenGhCannotSay(t *testing.T) {
+	bin := t.TempDir()
+	fakebin.Install(t, bin, "gh", "#!/bin/sh\nexit 1\n")
+	if got := ownerRepo(t.TempDir(), "cloudlens"); got != "" {
+		t.Errorf("ownerRepo = %q, want empty so the caller keeps its target", got)
+	}
 }

@@ -32,7 +32,15 @@ type Backend interface {
 
 	// Create makes one item and returns its key in the tracker.
 	Create(CreateRequest) (string, error)
+
+	// Link records that one item blocks another, by tracker key. A backend
+	// whose tracker has no such concept returns ErrNoLinks and the ordering
+	// is reported instead of created -- the tree is still worth having.
+	Link(blocker, blocked string) error
 }
+
+// ErrNoLinks is a backend saying its tracker cannot express ordering.
+var ErrNoLinks = errors.New("this tracker does not support blocking links")
 
 // CreateRequest is one item, ready to create.
 type CreateRequest struct {
@@ -116,6 +124,12 @@ func Build(t *Tree, b Backend, project string) (*Plan, error) {
 type Result struct {
 	// Keys is every item's key, created or already there, by summary.
 	Keys map[string]string
+	// Linked ordering: the edges created, and the ones that could not be.
+	// Reported rather than fatal -- a tree without its links is still the
+	// tree, and refusing to finish over an ordering link would leave the
+	// items half-created.
+	Links      int
+	LinkFailed []string
 	// Created are the keys this run made, in creation order. Separate from
 	// Keys because "what did THIS run add" is the question a partial failure
 	// has to answer.
@@ -176,5 +190,50 @@ func Apply(p *Plan, b Backend) (Result, error) {
 		res.Keys[s.Item.Summary] = key
 		res.Created = append(res.Created, key)
 	}
+
+	// The ordering, after every item exists: a link needs both keys, and
+	// the artifact states its dependencies in its own ids.
+	applyLinks(p, b, &res)
 	return res, nil
+}
+
+// applyLinks creates the tree's ordering edges, by tracker key.
+//
+// AFTER creation and never during it: an edge may point backwards (T041 is
+// blocked by a task created before it) or forwards, and resolving one
+// mid-walk would need a key that does not exist yet. A link that cannot be
+// made is recorded and the run continues -- the items are the tree, the
+// links are how the queue reads it, and losing an ordering statement is
+// worth reporting rather than worth abandoning ninety created tickets over.
+func applyLinks(p *Plan, b Backend, res *Result) {
+	if p.Tree == nil || len(p.Tree.Blocks) == 0 {
+		return
+	}
+	byID := map[string]string{}
+	_ = p.Tree.Walk(func(it, _ *Item) error {
+		if it.ID != "" {
+			if k := res.Keys[it.Summary]; k != "" {
+				byID[it.ID] = k
+			}
+		}
+		return nil
+	})
+	for _, e := range p.Tree.Blocks {
+		blocker, blocked := byID[e.Blocker], byID[e.Blocked]
+		if blocker == "" || blocked == "" {
+			res.LinkFailed = append(res.LinkFailed,
+				fmt.Sprintf("%s blocks %s: not in this tree", e.Blocker, e.Blocked))
+			continue
+		}
+		if err := b.Link(blocker, blocked); err != nil {
+			if errors.Is(err, ErrNoLinks) {
+				res.LinkFailed = append(res.LinkFailed,
+					fmt.Sprintf("%d ordering link(s) not created: %v", len(p.Tree.Blocks), err))
+				return
+			}
+			res.LinkFailed = append(res.LinkFailed, fmt.Sprintf("%s blocks %s: %v", blocker, blocked, err))
+			continue
+		}
+		res.Links++
+	}
 }

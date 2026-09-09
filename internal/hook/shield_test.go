@@ -191,3 +191,35 @@ func TestShieldIgnoresEmptyPath(t *testing.T) {
 		t.Error("a tool call with no file path is not something shield can judge")
 	}
 }
+
+// The plan gate knows both layouts: a built-in plan under plans/, and a
+// delegated one in spec-kit's feature directory. Knowing only the first
+// refused every write on a project that had a finished plan.
+func TestThePlanGateSeesADelegatedPlanInTheFeatureDirectory(t *testing.T) {
+	cfg := shieldCfg(t)
+	root := cfg.Root
+	cfg.Gates.RequirePlanBeforeEdit = true
+
+	write := edit(filepath.Join(root, "README.md"))
+
+	if !Shield(write, cfg).Blocked() {
+		t.Fatal("with no plan anywhere the gate must refuse")
+	}
+	dir := filepath.Join(root, cfg.Paths.Specs, "001-thing")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plan.md"), []byte("# Plan\n\nreal content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if d := Shield(write, cfg); d.Blocked() {
+		t.Errorf("a delegated plan at specs/001-thing/plan.md is a plan: %s", d.Msg)
+	}
+	// An empty one is not.
+	if err := os.WriteFile(filepath.Join(dir, "plan.md"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !Shield(write, cfg).Blocked() {
+		t.Error("an empty plan.md satisfied the gate")
+	}
+}

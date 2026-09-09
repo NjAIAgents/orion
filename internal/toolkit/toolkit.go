@@ -50,6 +50,34 @@ type Toolkit struct {
 	Repo   string            // clone URL; empty means the nj-agents default
 	Dir    string            // an existing clone to prefer over discovery
 	Stages map[string]string // stage name -> the command that stage delegates to
+	// ProjectDir is the project's own root, which may hold the toolkit
+	// installed INSIDE it -- .claude/skills or .claude/commands, as
+	// `specify init` writes (docs/decisions/0022). Considered before every
+	// other candidate when it does, because it is what the agent actually
+	// reads: Claude Code loads .claude/ from the working directory.
+	ProjectDir string
+}
+
+// SpecKitRepoURL is spec-kit's repository, the one toolkit that is not a
+// skills repository to clone: it is installed per project by its own CLI.
+const SpecKitRepoURL = "https://github.com/github/spec-kit.git"
+
+// IsSpecKit reports whether this toolkit is spec-kit, in any spelling of its
+// URL (with or without .git, https or ssh).
+func (t Toolkit) IsSpecKit() bool {
+	r := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(t.Repo), ".git"))
+	return strings.HasSuffix(r, "github/spec-kit") || strings.HasSuffix(r, "github.com:github/spec-kit")
+}
+
+// InstalledInProject reports whether root holds commands installed inside a
+// project's own .claude directory.
+func InstalledInProject(root string) bool {
+	for _, d := range []string{"skills", "commands"} {
+		if st, err := os.Stat(filepath.Join(root, ".claude", d)); err == nil && st.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // IsDefault reports whether this is the built-in nj-agents toolkit, which is
@@ -68,6 +96,11 @@ func (t Toolkit) IsDefault() bool {
 type Requirement struct {
 	Skill string
 	Stage string // "" for Orion's built-in default set, which no stage named
+	// Layout is the directory prefix the command was looked for under, with
+	// its trailing separator -- "skills/" or "templates/commands/". Set when
+	// a toolkit has been examined, so a missing-command message names a path
+	// that exists in THAT toolkit rather than one layout's path for all.
+	Layout string
 }
 
 // defaultSkills are the ones Orion invokes when a project configures no
@@ -160,8 +193,22 @@ func HasSkill(inst *Install, name string) bool {
 	if inst == nil || inst.Root == "" {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(inst.Root, "skills", name, "SKILL.md"))
-	return err == nil
+	return skillPath(inst.Root, commandLeaf(name)) != ""
+}
+
+// commandLeaf is the file name a configured command refers to.
+//
+// A stage names its command the way the agent will type it -- "/speckit.specify"
+// -- while the file on disk is specify.md, because the prefix is the toolkit's
+// namespace rather than part of the name. Both the slash and the namespace are
+// stripped, so a config written the way its own documentation writes it
+// resolves.
+func commandLeaf(name string) string {
+	name = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(name), "/"))
+	if i := strings.LastIndex(name, "."); i > 0 {
+		name = name[i+1:]
+	}
+	return name
 }
 
 // Install describes a located toolkit.
@@ -234,6 +281,12 @@ func Discover(orionHome string, tk Toolkit) *Install {
 	type candidate struct{ path, via string }
 	var candidates []candidate
 
+	// Installed inside the project itself. First, because it is the copy
+	// the agent reads, and a vendor clone that differs from it would be
+	// the stale-copy failure the ordering below exists to prevent.
+	if tk.ProjectDir != "" && InstalledInProject(tk.ProjectDir) {
+		candidates = append(candidates, candidate{tk.ProjectDir, "installed in project"})
+	}
 	if tk.Dir != "" {
 		candidates = append(candidates, candidate{expand(tk.Dir), "configured"})
 	}
@@ -314,8 +367,77 @@ func isToolkitRoot(dir string, tk Toolkit) bool {
 }
 
 func hasSkillsDir(root string) bool {
-	st, err := os.Stat(filepath.Join(root, "skills"))
-	return err == nil && st.IsDir()
+	return skillPath(root, "") != ""
+}
+
+// commandDirs are the layouts a toolkit's commands may be in, most specific
+// first.
+//
+// TWO SHAPES, BECAUSE THERE ARE TWO REAL TOOLKITS. nj-agents ships
+// skills/<name>/SKILL.md. github/spec-kit -- the toolkit ADR 0019 names as
+// its worked example -- ships templates/commands/<name>.md and no skills/
+// directory at all: it is a Python CLI whose `specify init` copies those
+// commands into a project. Requiring only the first shape is why 0019's own
+// example could never be adopted while every child of its epic reported Done.
+//
+// A directory of markdown command files IS what a toolkit is here. The
+// SKILL.md nesting is one way to lay that out, not the definition.
+var commandDirs = []struct {
+	dir string
+	// file names the command file inside dir, given the command name. Two
+	// forms because one nests and the other does not.
+	file func(name string) string
+}{
+	{"skills", func(n string) string { return filepath.Join(n, "SKILL.md") }},
+	{filepath.Join("templates", "commands"), func(n string) string { return n + ".md" }},
+	// Where an installer puts them inside a project, for a toolkit.dir
+	// pointed at one that has been initialised. spec-kit's Claude
+	// integration writes .claude/skills/<name>/SKILL.md -- the same shape
+	// nj-agents ships, which is why `specify init` is the right way to
+	// install it and a raw clone is not. Other integrations write
+	// .claude/commands/<name>.md, so both are read.
+	{filepath.Join(".claude", "skills"), func(n string) string { return filepath.Join(n, "SKILL.md") }},
+	{filepath.Join(".claude", "commands"), func(n string) string { return n + ".md" }},
+}
+
+// CommandsDir is the directory a toolkit's commands actually live in --
+// skills/ for nj-agents, templates/commands/ for spec-kit -- or "" when it
+// has none.
+//
+// Exported because the agent config links that directory into the curated
+// run directory, and linking a hardcoded <root>/skills means a toolkit laid
+// out otherwise resolves in `orion doctor` and then hands the agent nothing.
+func CommandsDir(inst *Install) string {
+	if inst == nil {
+		return ""
+	}
+	return skillPath(inst.Root, "")
+}
+
+// skillPath resolves one command to a file, or "" when the toolkit has no
+// such command. An empty name asks only whether the layout exists at all.
+func skillPath(root, name string) string {
+	for _, layout := range commandDirs {
+		dir := filepath.Join(root, layout.dir)
+		st, err := os.Stat(dir)
+		if err != nil || !st.IsDir() {
+			continue
+		}
+		if name == "" {
+			// The directory existing is the signal, populated or not.
+			// Deliberately: a layout directory with nothing in it is an
+			// INCOMPLETE toolkit, and reporting "found at X, these commands
+			// are missing" is far more useful than "not installed" -- which
+			// is the rule TestARandomDirectoryIsNotAToolkitUnderAOneSkillZeroDocConfig
+			// already held for skills/, and it should not change because a
+			// second layout was added beside it.
+			return dir
+		}
+		if _, err := os.Stat(filepath.Join(dir, layout.file(name))); err == nil {
+			return filepath.Join(dir, layout.file(name))
+		}
+	}
+	return ""
 }
 
 // Validate checks a candidate root and reports precisely what is missing.
@@ -348,9 +470,20 @@ func Validate(root string, tk Toolkit) *Install {
 			inst.Missing = append(inst.Missing, d)
 		}
 	}
-	skillsDir := filepath.Join(root, "skills")
+	// The layout this toolkit uses, so a missing-command message names a
+	// path that exists in it.
+	layout := ""
+	if dir := skillPath(root, ""); dir != "" {
+		if rel, err := filepath.Rel(root, dir); err == nil {
+			layout = filepath.ToSlash(rel) + "/"
+		}
+	}
 	for _, req := range RequiredSkills(tk) {
-		if _, err := os.Stat(filepath.Join(skillsDir, req.Skill, "SKILL.md")); err != nil {
+		// Through skillPath, so a toolkit laid out as templates/commands is
+		// checked where its commands actually are rather than reported
+		// wholly missing from a directory it does not have.
+		if skillPath(root, commandLeaf(req.Skill)) == "" {
+			req.Layout = layout
 			inst.Missing = append(inst.Missing, req.describe())
 		}
 	}
@@ -371,11 +504,24 @@ func Validate(root string, tk Toolkit) *Install {
 
 // describe names the missing skill AND the config line that asked for it,
 // so a failure points at something the reader can change.
+// describe names the missing command, under the layout the toolkit uses.
+//
+// The "skills/" prefix used to be fixed, which is one toolkit's layout
+// written as though it were the only one: a spec-kit user was told "Missing:
+// skills/speckit.specify" about a repository that has no skills directory and
+// a perfectly good templates/commands/specify.md. It now follows the layout
+// actually found, and stays exactly "skills/<name>" for a toolkit laid out
+// that way -- so doctor's output on an unconfigured machine does not move,
+// which is what TestAnEmptyStagesMapKeepsTodaysSixSkills is protecting.
 func (r Requirement) describe() string {
-	if r.Stage == "" {
-		return "skills/" + r.Skill
+	name := r.Layout + r.Skill
+	if r.Layout == "" {
+		name = "skills/" + r.Skill
 	}
-	return "skills/" + r.Skill + " (required by the " + r.Stage + " stage)"
+	if r.Stage == "" {
+		return name
+	}
+	return name + " (required by the " + r.Stage + " stage)"
 }
 
 func gitState(dir string) (string, bool) {

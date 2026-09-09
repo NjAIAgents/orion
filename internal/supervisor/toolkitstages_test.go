@@ -60,9 +60,18 @@ func TestConfiguredCommandAcceptsEitherStageSpelling(t *testing.T) {
 	if !strings.Contains(p, "/theirs") {
 		t.Errorf("the intent prompt ignored its configured command:\n%s", p)
 	}
-	if strings.Contains(q, "/their-spec") {
-		t.Errorf("the spec prompt names no command, so nothing should have been "+
-			"substituted into it:\n%s", q)
+	// The alias resolving is the point: "design" was configured under the
+	// key "spec", and the command reaches the prompt.
+	//
+	// This assertion used to be its inverse -- the spec prompt named no
+	// command, so nothing could be substituted -- which documented a gap as
+	// though it were a design. spec and plan were the two stages that never
+	// read their configured command, which is why a project declaring
+	// "spec": "/speckit.specify" ran Orion's own prompt while `orion doctor`
+	// reported the toolkit healthy.
+	if !strings.Contains(q, "/their-spec") {
+		t.Errorf("the design spelling did not resolve to the spec stage's "+
+			"configured command:\n%s", q)
 	}
 }
 
@@ -112,10 +121,16 @@ func TestDecomposeKeepsTheRoutingContractUnderAConfiguredCommand(t *testing.T) {
 // artifact is the handoff and the next stage reads files, not conversation.
 func TestOrionStillNamesTheArtifactUnderAConfiguredCommand(t *testing.T) {
 	for _, c := range []struct{ stage, artifact string }{
-		{"intent", "docs/intent/<slug>.md"},
+		// The RESOLVED path, like the decompose case beside it. The
+		// placeholder form was the defect: an agent told to write
+		// docs/intent/<slug>.md, and never told the slug, writes a
+		// descriptive name of its own.
+		{"intent", "docs/intent/thing.md"},
 		{"decompose", "plans/thing.plan.md"},
 	} {
-		p, err := stagePrompt(ws(t, ""), c.stage, tk(c.stage, "/theirs"))
+		w := ws(t, "")
+		w.Task.Slug = "thing"
+		p, err := stagePrompt(w, c.stage, tk(c.stage, "/theirs"))
 		if err != nil {
 			t.Fatalf("%s: %v", c.stage, err)
 		}
@@ -123,5 +138,64 @@ func TestOrionStillNamesTheArtifactUnderAConfiguredCommand(t *testing.T) {
 			t.Errorf("the %s prompt stopped naming %s once a command was configured:\n%s",
 				c.stage, c.artifact, p)
 		}
+	}
+}
+
+// A delegated spec or plan stage is told the feature-directory layout its
+// command writes -- and never the classic path, which is the contradiction
+// that sent a real run to write one file while the gate checked another.
+func TestADelegatedStageIsToldTheFeatureDirectoryLayout(t *testing.T) {
+	w := ws(t, `{"toolkit":{"stages":{"spec":"/speckit-specify","plan":"/speckit-plan"}}}`)
+	w.Task.Slug = "thing"
+
+	spec, err := stagePrompt(w, "spec", config.Load(w.RepoDir()).Toolkit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(spec, "specs/001-thing/spec.md") || strings.Contains(spec, ".spec.md") {
+		t.Errorf("the delegated spec prompt does not name specs/001-thing/spec.md, or still names the classic path:\n%s", spec)
+	}
+
+	plan, err := stagePrompt(w, "plan", config.Load(w.RepoDir()).Toolkit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"specs/001-thing/spec.md", "specs/001-thing/plan.md", "specs/001-thing/tasks.md"} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("the delegated plan prompt does not name %s:\n%s", want, plan)
+		}
+	}
+	if strings.Contains(plan, ".plan.md") {
+		t.Errorf("the delegated plan prompt still names the classic path:\n%s", plan)
+	}
+
+	// scaffold reads the spec from the same place.
+	scaffold, err := stagePrompt(w, "scaffold", config.Load(w.RepoDir()).Toolkit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(scaffold, "specs/001-thing/spec.md") {
+		t.Errorf("scaffold reads the spec from somewhere else than the spec stage wrote it:\n%s", scaffold)
+	}
+}
+
+// The constitution prompt names the configured command, the exact file
+// spec-kit reads, and what orion.json already decided.
+func TestTheConstitutionPromptIsSeededFromTheConfig(t *testing.T) {
+	w := ws(t, "")
+	w.Task.Slug = "thing"
+	p, err := stagePrompt(w, "constitution", tk("constitution", "/my-constitution"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"/my-constitution", ".specify/memory/constitution.md", "Branch model", "develop", "main", "docs/intent/thing.md", "[ALL_CAPS]"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("constitution prompt lacks %q:\n%s", want, p)
+		}
+	}
+	// Without a configured command the stage still knows spec-kit's.
+	p, err = stagePrompt(w, "constitution", config.Toolkit{})
+	if err != nil || !strings.Contains(p, "/speckit-constitution") {
+		t.Errorf("unconfigured constitution prompt does not name /speckit-constitution: %v\n%s", err, p)
 	}
 }

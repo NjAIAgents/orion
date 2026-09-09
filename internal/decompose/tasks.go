@@ -12,8 +12,11 @@
 //
 // WHAT THIS IS NOT: it is not a replacement for the delegated path. The
 // decompose stage prompt is untouched, so a project with no spec-kit output
-// decomposes exactly as it did before. This is a second, operator-invoked
-// route for the projects that DO have a tasks.md -- see docs/decisions/0001,
+// decomposes exactly as it did before. This is the native route for the
+// projects that DO have a tasks.md: `orion plan` runs it as the decompose
+// step when <FeatureDir>/tasks.md exists, stamping the queue label at the
+// levels Queue documents, and falls back to the supervised stage otherwise;
+// `orion decompose` runs the same code by hand -- see docs/decisions/0001,
 // which is also why nothing here decides whether a later stage runs.
 //
 // SCOPE LIMIT, STATED RATHER THAN HIDDEN: the tracker seam OR-303 describes
@@ -30,7 +33,9 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/orion-sdlc/orion/internal/fanout"
 )
@@ -71,8 +76,27 @@ type Item struct {
 	// Parallel records the [P] marker: this task may run alongside the other
 	// [P] tasks in its phase.
 	Parallel bool
+	// Human records the [HUMAN] marker: work no agent can do -- a credential
+	// a person holds, a console click, a conversation with another team.
+	// The queue label is withheld from these (OR-414).
+	Human bool
+	// DoneWhen is the exit condition: what a reviewer checks to say this is
+	// finished. Stated by the artifact when the orion preset asked for it
+	// (OR-411), derived from what the line already names when it did not
+	// (OR-412) -- and Derived says which, because a reader weighs the two
+	// differently.
+	DoneWhen string
+	Derived  bool
+	// Criteria are a story's acceptance criteria, in the artifact's own
+	// words. A story with none says so rather than implying they were
+	// considered.
+	Criteria []string
 	Phase    string
 	Children []*Item
+
+	// rawDesc is the task line's full text, kept until the body is written
+	// after the file has been read.
+	rawDesc string
 }
 
 // Coupling is two sibling items that declared the same ground (OR-260).
@@ -100,6 +124,22 @@ type Tree struct {
 	// Coupled are the sibling pairs whose declared scopes overlap. Reported,
 	// never resolved: see couplings.
 	Coupled []Coupling
+	// Blocks are the ordering edges the Dependencies section states, as
+	// task ids: Blocks[i] says "Blocker must finish before Blocked starts".
+	// Prose until now, pasted into the epic body, which meant the queue saw
+	// none of it and admitted every task at once (docs/decisions/0023).
+	Blocks []Edge
+}
+
+// Edge is one ordering statement: Blocker must finish before Blocked can
+// start. Ids are the artifact's own (T012, T041), resolved to tracker keys
+// at creation.
+type Edge struct {
+	Blocker string
+	Blocked string
+	// Why is the line the edge was read from, so a person looking at a link
+	// in the tracker can find the sentence that put it there.
+	Why string
 }
 
 // Label is the identity label every item created from this tree carries.
@@ -145,7 +185,13 @@ var (
 	// checkbox and the T-id are both required, which is what keeps the
 	// template's own "## Format" section -- whose bullets look like
 	// `- **[P]**: Can run in parallel` -- out of the tree.
-	taskLine = regexp.MustCompile(`^\s*[-*]\s*\[[ xX]\]\s*\*{0,2}(T\d+)\*{0,2}\s*(.*)$`)
+	// The id is T then digits, and may carry a letter suffix: a task
+	// inserted between two others is T004a, not a renumbering of everything
+	// after it. Matching digits alone split "T004a" into id T004 and a
+	// description opening with a stray "a" -- two tasks then shared one id,
+	// and the tree carried a duplicate and a ticket titled "a Run the
+	// reconciliation spike" (FOUND ON A REAL PROJECT).
+	taskLine = regexp.MustCompile(`^\s*[-*]\s*\[[ xX]\]\s*\*{0,2}(T\d+[a-zA-Z]?)\*{0,2}\s+(.*)$`)
 	// storyTag is the [USn] group marker, and parallelTag the [P] marker.
 	// Matched anywhere in the remainder rather than only at the front:
 	// real output writes them in either order, and one template revision
@@ -154,7 +200,7 @@ var (
 	parallelTag = regexp.MustCompile(`\[P\]`)
 	// phaseStory recognises the heading that NAMES a story group, e.g.
 	// "## Phase 3: User Story 2 - Checkout (Priority: P2)".
-	phaseStory = regexp.MustCompile(`(?i)user story\s*(\d+)\s*[-:–]?\s*(.*)$`)
+	phaseStory = regexp.MustCompile(`(?i)user story\s*(\d+)\s*[-:–—]?\s*(.*)$`)
 	priorityIn = regexp.MustCompile(`\s*\((?i:priority)[^)]*\)\s*`)
 	// pathish is a file path as a task line writes one: at least one
 	// separator and an extension.
@@ -172,6 +218,15 @@ var (
 	// alternatives first, so package-lock.json is not read as package.json.
 	bareManifest = regexp.MustCompile(`\b(go\.mod|go\.sum|package-lock\.json|package\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.toml|Cargo\.lock|pyproject\.toml|requirements\.txt|setup\.py|Gemfile\.lock|Gemfile|composer\.json|build\.gradle|pom\.xml|tsconfig\.json|Dockerfile|Makefile)\b`)
 	goalLine     = regexp.MustCompile(`^\s*\*{0,2}Goal\*{0,2}\s*:\s*(.*)$`)
+	// doneWhenLine is the exit condition the orion preset asks for under
+	// every task line. Indented, because it belongs to the task above it.
+	doneWhenLine = regexp.MustCompile(`^\s+\*{0,2}Done when\*{0,2}\s*:\s*(.*)$`)
+	// criteriaHead opens a story phase's acceptance-criteria block; the
+	// numbered or bulleted lines under it are the criteria.
+	criteriaHead = regexp.MustCompile(`(?i)^\s*\*{0,2}Acceptance criteria\*{0,2}\b`)
+	criteriaItem = regexp.MustCompile(`^\s*(?:\d+\.|[-*+])\s+(.*)$`)
+	// humanTag marks work no agent can do.
+	humanTag = regexp.MustCompile(`\[HUMAN\]`)
 )
 
 // Parse reads a /speckit.tasks tasks.md into the neutral tree.
@@ -195,32 +250,67 @@ func Parse(text, source string) (*Tree, error) {
 		phases      []string
 		depends     []string
 		inDepends   bool
+		// defer0 are the tasks whose bodies are written after the file is
+		// read, because a task's own "Done when:" line comes after it.
+		defer0 []*Item
+		// lastTask is the task a following "Done when:" line belongs to,
+		// and inCriteria whether the lines being read are a story's
+		// acceptance criteria. Both are cleared by the next heading or
+		// task line, so a stray line never attaches to something distant.
+		lastTask      *Item
+		inCriteria    bool
+		storyCriteria = map[string][]string{}
 	)
 
 	for _, raw := range lines {
 		line := strings.TrimRight(raw, " \t\r")
 
 		if h, ok := heading(line, "# "); ok {
-			epic.Summary = strings.TrimSpace(strings.TrimPrefix(h, "Tasks:"))
+			// The FIRST one names the feature, and only if it is the
+			// `# Tasks: <name>` heading the format documents. A later `# `
+			// line is a section of the document, not a second name --
+			// FOUND ON A REAL PROJECT: a "# Dependencies" section made the
+			// epic "Then T047, then T048.", which also became the identity
+			// label a re-run reconciles by.
+			if epic.Summary == "" && strings.HasPrefix(h, "Tasks:") {
+				epic.Summary = strings.TrimSpace(strings.TrimPrefix(h, "Tasks:"))
+			}
 			continue
 		}
 		if h, ok := heading(line, "## "); ok {
 			phase = h
 			phaseStoryN = ""
+			lastTask, inCriteria = nil, false
 			// A "Dependencies" section is the artifact's statement of
 			// ORDER. It belongs on the epic verbatim: it names tasks by id,
 			// so re-deriving it per item would either duplicate it or lose
 			// the cross-references it is made of.
 			inDepends = strings.HasPrefix(strings.ToLower(h), "dependencies")
-			if m := phaseStory.FindStringSubmatch(h); m != nil {
+			// A story is named by its PHASE heading and by nothing else.
+			// "## Parallel example: User Story 2" is documentation about a
+			// story, not the story -- and it captured an empty title that
+			// overwrote the real one, so the story was created as
+			// "User Story 2" (FOUND ON A REAL PROJECT). A later heading
+			// never blanks a name that is already known, either.
+			if m := phaseStory.FindStringSubmatch(h); m != nil && strings.HasPrefix(strings.ToLower(h), "phase") {
 				phaseStoryN = m[1]
-				storyTitle[m[1]] = cleanTitle(m[2])
+				if title := cleanTitle(m[2]); title != "" {
+					storyTitle[m[1]] = title
+				}
 			} else if strings.HasPrefix(strings.ToLower(h), "phase") {
 				phases = append(phases, h)
 			}
 			continue
 		}
 		if _, ok := heading(line, "### "); ok {
+			lastTask, inCriteria = nil, false
+			// Inside the Dependencies section a sub-heading is part of what
+			// the section says -- "### Parallel opportunities" changes the
+			// meaning of every bullet under it -- so it is carried with the
+			// body rather than swallowed here.
+			if inDepends {
+				depends = append(depends, line)
+			}
 			continue
 		}
 		if inDepends {
@@ -228,6 +318,57 @@ func Parse(text, source string) (*Tree, error) {
 				depends = append(depends, line)
 			}
 			continue
+		}
+		// A "Done when:" line belongs to the task above it: the exit
+		// condition the orion preset asks for (OR-411).
+		if lastTask != nil {
+			if m := doneWhenLine.FindStringSubmatch(line); m != nil {
+				lastTask.DoneWhen = strings.TrimSpace(m[1])
+				continue
+			}
+		}
+		// A story phase's acceptance-criteria block: the heading opens it,
+		// the numbered or bulleted lines under it are the criteria, and a
+		// blank line closes it.
+		if phaseStoryN != "" && criteriaHead.MatchString(line) {
+			inCriteria = true
+			continue
+		}
+		// A TASK LINE ENDS THE BLOCK, and is never a criterion. Both open
+		// with "- ", so a criteria block still open when the phase's first
+		// task arrived absorbed it -- three tasks silently lost, each the
+		// first after a block (FOUND ON A REAL PROJECT).
+		if inCriteria && taskLine.MatchString(line) {
+			inCriteria = false
+		}
+		if inCriteria {
+			// A BLANK LINE DOES NOT CLOSE THE BLOCK. Real output writes the
+			// heading, then a blank line, then the numbered criteria -- so
+			// closing on the first blank read none of them at all (FOUND ON
+			// A REAL PROJECT: six blocks written, zero parsed). What closes
+			// it is the next thing that is plainly not a criterion: a task
+			// line, a heading, or ordinary prose. Blank lines inside are
+			// skipped, and a blank line before the first item is expected.
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if m := criteriaItem.FindStringSubmatch(line); m != nil {
+				if c := strings.TrimSpace(m[1]); c != "" {
+					storyCriteria[phaseStoryN] = append(storyCriteria[phaseStoryN], c)
+				}
+				continue
+			}
+			// A continuation of the criterion above it: indented, and not a
+			// line that belongs to something else. A task line and its
+			// "Done when:" are both indented too, and folding one of those
+			// into a criterion swallows the task with it.
+			n := len(storyCriteria[phaseStoryN])
+			isTask := taskLine.MatchString(line) || doneWhenLine.MatchString(line)
+			if n > 0 && !isTask && (strings.HasPrefix(line, "   ") || strings.HasPrefix(line, "\t")) {
+				storyCriteria[phaseStoryN][n-1] += " " + strings.TrimSpace(line)
+				continue
+			}
+			inCriteria = false
 		}
 		if phaseStoryN != "" {
 			if m := goalLine.FindStringSubmatch(line); m != nil {
@@ -243,6 +384,8 @@ func Parse(text, source string) (*Tree, error) {
 
 		parallel := parallelTag.MatchString(rest)
 		rest = parallelTag.ReplaceAllString(rest, "")
+		human := humanTag.MatchString(rest)
+		rest = humanTag.ReplaceAllString(rest, "")
 
 		num := ""
 		if s := storyTag.FindStringSubmatch(rest); s != nil {
@@ -259,12 +402,15 @@ func Parse(text, source string) (*Tree, error) {
 		task := &Item{
 			ID:       id,
 			Kind:     KindTask,
-			Summary:  strings.TrimSpace(id + " " + desc),
+			Summary:  strings.TrimSpace(id + " " + summarise(desc)),
 			Paths:    pathsIn(desc),
 			Parallel: parallel,
+			Human:    human,
 			Phase:    phase,
+			rawDesc:  desc,
 		}
-		task.Body = taskBody(task, desc)
+		lastTask = task
+		defer0 = append(defer0, task)
 
 		if num == "" {
 			// A task in no story group -- Setup, Foundational, Polish -- is
@@ -294,6 +440,19 @@ func Parse(text, source string) (*Tree, error) {
 		return nil, fmt.Errorf("%s names no feature: expected a `# Tasks: <name>` heading", source)
 	}
 
+	// Every task's body, now that its "Done when:" line (which follows it)
+	// has been read. A task the artifact left without one gets a derived
+	// condition from what its own line already names -- the files it
+	// declares and the requirements it cites -- marked as derived, because
+	// a reader weighs a stated condition and an inferred one differently
+	// (OR-412).
+	for _, t := range defer0 {
+		if t.DoneWhen == "" {
+			t.DoneWhen, t.Derived = deriveDoneWhen(t), true
+		}
+		t.Body = taskBody(t, t.rawDesc)
+	}
+
 	// Stories in first-appearance order, and ahead of the ungrouped tasks:
 	// the tracker shows children in the order they were created, and the
 	// story groups are the point of the artifact.
@@ -305,6 +464,7 @@ func Parse(text, source string) (*Tree, error) {
 			title = "User Story " + num
 		}
 		st.Summary = st.ID + " " + title
+		st.Criteria = storyCriteria[num]
 		// The union of its tasks', because a STORY is the unit an agent
 		// claims and works in one branch (internal/tracker/children.go) --
 		// so the story is the level a batch collides at, and therefore the
@@ -324,6 +484,7 @@ func Parse(text, source string) (*Tree, error) {
 		st := storyByNum[num]
 		st.Body = storyBody(st, storyGoal[num], tree.Coupled)
 	}
+	tree.Blocks = dependencyEdges(depends, tree)
 	epic.Body = epicBody(tree, phases, depends)
 
 	label(tree)
@@ -341,13 +502,24 @@ func heading(line, prefix string) (string, bool) {
 // name: the priority parenthetical, and trailing marker text like "MVP".
 func cleanTitle(s string) string {
 	s = priorityIn.ReplaceAllString(s, " ")
+	// Emoji and symbols go; PUNCTUATION STAYS. Dropping everything above
+	// U+2000 took the em dash and the en dash with it -- and a heading
+	// written "User Story 2 — See AWS cost by account" lost its title
+	// entirely, because the dash led the capture and its removal left a
+	// leading space that the marker trims below could not see past
+	// (FOUND ON A REAL PROJECT: the story was created as "User Story 2").
 	s = strings.Map(func(r rune) rune {
-		if r > 0x2000 { // emoji and other decoration
-			return -1
+		switch {
+		case r < 0x2000:
+			return r
+		case unicode.IsPunct(r) || unicode.IsSpace(r):
+			return r
 		}
-		return r
+		return -1
 	}, s)
 	s = strings.TrimSpace(s)
+	// A leading separator the regex left behind, now that it survives.
+	s = strings.TrimSpace(strings.TrimLeft(s, "-–—:"))
 	s = strings.TrimSuffix(strings.TrimSpace(strings.TrimSuffix(s, "MVP")), "-")
 	return strings.TrimSpace(s)
 }
@@ -377,10 +549,70 @@ func pathsIn(desc string) []string {
 	return out
 }
 
+// deriveDoneWhen states an exit condition from what the task line already
+// names, for an artifact written without one.
+//
+// It infers nothing about behaviour: the files the line declares and the
+// requirement ids it cites are facts on the line, and "those files exist,
+// are committed, and the requirement they cite is demonstrable" is the
+// weakest honest condition. Weak on purpose -- a derived condition that
+// overstated what was checked would be worse than none, because a reviewer
+// would trust it.
+func deriveDoneWhen(t *Item) string {
+	var parts []string
+	if len(t.Paths) > 0 {
+		parts = append(parts, fmt.Sprintf("%s exist and are committed", strings.Join(t.Paths, ", ")))
+	}
+	if refs := requirementRefs(t.rawDesc); len(refs) > 0 {
+		parts = append(parts, fmt.Sprintf("the behaviour %s describes is demonstrable", strings.Join(refs, ", ")))
+	}
+	if len(parts) == 0 {
+		// Nothing on the line to hang a condition on. Say that, rather than
+		// inventing one: an item whose done-when is a guess is the failure
+		// this whole mechanism exists to remove.
+		return "NOT STATED. The task list gave no exit condition and the line names no file " +
+			"and no requirement to derive one from. Agree what \"done\" means before starting."
+	}
+	return strings.Join(parts, ", and ")
+}
+
+// requirementRe finds the requirement and criterion ids a task line cites:
+// FR-011, NFR-S8, SC-004, and the research references beside them.
+var requirementRe = regexp.MustCompile(`\b((?:FR|NFR|SC|OQ)-[A-Z]?\d+)\b`)
+
+func requirementRefs(desc string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range requirementRe.FindAllStringSubmatch(desc, -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
 func taskBody(t *Item, desc string) string {
 	var b strings.Builder
 	b.WriteString(desc)
 	b.WriteString("\n\n")
+	// The exit condition first among the facts: it is what the person or
+	// agent working this item is held to, and the one line a reviewer
+	// checks. Said to be derived when it is, so nobody reads an inference
+	// as an agreement.
+	if t.DoneWhen != "" {
+		if t.Derived {
+			b.WriteString("Done when (derived by Orion from this line -- the task list stated none):\n  ")
+		} else {
+			b.WriteString("Done when:\n  ")
+		}
+		b.WriteString(t.DoneWhen)
+		b.WriteString("\n\n")
+	}
+	if t.Human {
+		b.WriteString("HUMAN: the task list marks this as work no agent can do, so Orion does not " +
+			"offer it to the queue. A person picks it up.\n")
+	}
 	if t.Phase != "" {
 		fmt.Fprintf(&b, "Phase: %s\n", t.Phase)
 	}
@@ -408,6 +640,19 @@ func storyBody(st *Item, goal string, coupled []Coupling) string {
 		fmt.Fprintf(&b, "Phase: %s\n", st.Phase)
 	}
 	fmt.Fprintf(&b, "Tasks: %d\n", len(st.Children))
+	// Acceptance criteria, in the artifact's own words. A story without
+	// them says so: a body that simply omitted the section would read as
+	// though none were needed.
+	if len(st.Criteria) > 0 {
+		b.WriteString("\nAcceptance criteria:\n")
+		for _, c := range st.Criteria {
+			fmt.Fprintf(&b, "  - %s\n", c)
+		}
+	} else {
+		b.WriteString("\nAcceptance criteria: NONE STATED in the task list. " +
+			"The spec's Acceptance Scenarios for this story are the agreed text; " +
+			"agree what this story must satisfy before working it.\n")
+	}
 	// The declared scope, in the one spelling the queue manager reads back
 	// (internal/tracker/scope.go). A story with no file paths in any of its
 	// tasks writes no line at all rather than an empty one: absent means
@@ -521,4 +766,182 @@ func slug(name string) string {
 		s = strings.Trim(s[:40], "-")
 	}
 	return s
+}
+
+// summaryMax is how long a tracker summary may be.
+//
+// A /speckit.tasks line is a paragraph: the file paths, the section to fill,
+// the research references, the conditions. All of that belongs in the body,
+// where whoever works the ticket reads it -- and none of it belongs in the
+// title, which is what a person scans a backlog by and what every list, board
+// and notification shows. FOUND ON A REAL PROJECT: a 94-item preview no one
+// could read, and Jira titles of four hundred characters.
+const summaryMax = 100
+
+// summarise is the first sentence of a task description, bounded.
+//
+// The first sentence is the imperative: "Write internal/cost/reconcile.go",
+// "Request read-only payer-account access". What follows it is detail the
+// body carries in full.
+func summarise(desc string) string {
+	s := strings.Join(strings.Fields(desc), " ")
+	// The first sentence, when one ends early enough to be a title. A full
+	// stop inside a path or a version is not a sentence end, so the break
+	// has to be followed by a space.
+	if i := strings.Index(s, ". "); i > 0 && i < summaryMax {
+		return strings.TrimSpace(s[:i])
+	}
+	// Otherwise the first clause, at a semicolon or an em dash.
+	for _, sep := range []string{"; ", " -- ", " — "} {
+		if i := strings.Index(s, sep); i > 0 && i < summaryMax {
+			return strings.TrimSpace(s[:i])
+		}
+	}
+	if len(s) <= summaryMax {
+		return strings.TrimSuffix(s, ".")
+	}
+	cut := s[:summaryMax]
+	if i := strings.LastIndexByte(cut, ' '); i > summaryMax/2 {
+		cut = cut[:i]
+	}
+	cut = closeBrackets(cut)
+	return strings.TrimRight(cut, " ,;:-") + "…"
+}
+
+// closeBrackets drops a trailing fragment left inside an opener the cut did
+// not reach the close of.
+//
+// "…run-rate (linear" reads as a broken sentence rather than a shortened
+// one, and the words after the bracket are the qualifier, never the point
+// (OR-415). Cutting back to the opener loses nothing a reader wanted.
+func closeBrackets(s string) string {
+	for _, pair := range []struct{ open, close byte }{{'(', ')'}, {'[', ']'}, {'{', '}'}} {
+		i := strings.LastIndexByte(s, pair.open)
+		if i >= 0 && strings.IndexByte(s[i:], pair.close) < 0 {
+			s = strings.TrimRight(s[:i], " ,;:-")
+		}
+	}
+	return s
+}
+
+// afterTask reads "after T012" / "after T000" from a dependency line.
+var afterTask = regexp.MustCompile(`(?i)\bafter\s+(T\d+[a-zA-Z]?)\b`)
+
+// afterPhase reads "after Phase 3" from a dependency line.
+var afterPhase = regexp.MustCompile(`(?i)\bafter\s+Phase\s+(\d+)`)
+
+// phaseOf reads the phase number a heading opens with: "Phase 3: ..." -> 3.
+var phaseNum = regexp.MustCompile(`(?i)^\s*\**\s*Phase\s+(\d+)`)
+
+// dependencyLine is one bullet of the Dependencies section, naming the
+// phase it constrains: "- **Phase 2 (Setup)**: after T012."
+var dependencyLine = regexp.MustCompile(`(?i)^\s*[-*]\s*\**\s*Phase\s+(\d+)`)
+
+// dependencyEdges turns the Dependencies section's prose into ordering
+// edges between tasks.
+//
+// The section is written for a person -- "Phase 2 (Setup): after T012",
+// "Phase 4 (US2): after Phase 3" -- and every reader before the tracker had
+// to take it on trust. Two shapes are read, both of which the template
+// documents and real output uses: a phase that follows a NAMED TASK, and a
+// phase that follows another PHASE (whose last task is the one to wait on).
+//
+// WHAT IS NOT INFERRED: anything the section only implies. "Independent of
+// Phases 4-5 at the code level, but quickstart B3 is only meaningful after
+// B1" is a sentence about judgement, and turning it into a hard link would
+// order work the artifact did not order. Prose that states no dependency
+// produces no edge, and the epic body still carries the whole section for a
+// person to read.
+func dependencyEdges(depends []string, t *Tree) []Edge {
+	if t == nil || t.Epic == nil || len(depends) == 0 {
+		return nil
+	}
+	// Every task, and the phase number its heading carries.
+	type placed struct {
+		id    string
+		phase int
+	}
+	var all []placed
+	_ = t.Walk(func(it, _ *Item) error {
+		if it.Kind != KindTask || it.ID == "" {
+			return nil
+		}
+		n := 0
+		if m := phaseNum.FindStringSubmatch(it.Phase); m != nil {
+			n, _ = strconv.Atoi(m[1])
+		}
+		all = append(all, placed{it.ID, n})
+		return nil
+	})
+	if len(all) == 0 {
+		return nil
+	}
+	inPhase := func(n int) []string {
+		var out []string
+		for _, p := range all {
+			if p.phase == n {
+				out = append(out, p.id)
+			}
+		}
+		return out
+	}
+
+	var edges []Edge
+	seen := map[string]bool{}
+	add := func(blocker, blocked, why string) {
+		if blocker == "" || blocked == "" || blocker == blocked {
+			return
+		}
+		k := blocker + ">" + blocked
+		if seen[k] {
+			return
+		}
+		seen[k] = true
+		edges = append(edges, Edge{Blocker: blocker, Blocked: blocked, Why: strings.TrimSpace(why)})
+	}
+
+	// ONLY THE PHASE-DEPENDENCY BULLETS. The section also carries a
+	// "Parallel opportunities" list -- "Phase 2: T015, T016, T017, T019 in
+	// parallel after T014" -- which says what MAY run together, not what
+	// must wait. Reading it as ordering produced "T014 blocks T013", an
+	// edge pointing backwards through the file and stating the opposite of
+	// what the line means (FOUND ON A REAL PROJECT).
+	inParallel := false
+	for _, line := range depends {
+		if h := strings.TrimSpace(strings.ToLower(line)); strings.HasPrefix(h, "###") {
+			inParallel = strings.Contains(h, "parallel")
+			continue
+		}
+		if inParallel {
+			continue
+		}
+		m := dependencyLine.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		target, _ := strconv.Atoi(m[1])
+		blocked := inPhase(target)
+		if len(blocked) == 0 {
+			continue
+		}
+		// "after T012": that task blocks every task of this phase.
+		for _, am := range afterTask.FindAllStringSubmatch(line, -1) {
+			for _, b := range blocked {
+				add(am[1], b, line)
+			}
+		}
+		// "after Phase 3": that phase's LAST task blocks this phase's
+		// first. One edge rather than a cross product -- the phases are
+		// already sequential within themselves, and N x M links on a
+		// ninety-task tree is a board nobody can read.
+		for _, pm := range afterPhase.FindAllStringSubmatch(line, -1) {
+			n, _ := strconv.Atoi(pm[1])
+			prev := inPhase(n)
+			if len(prev) == 0 {
+				continue
+			}
+			add(prev[len(prev)-1], blocked[0], line)
+		}
+	}
+	return edges
 }

@@ -35,7 +35,21 @@ const (
 	JiraToken  = "ORION_JIRA_TOKEN"
 	SlackToken = "ORION_SLACK_TOKEN"
 	Webhook    = "ORION_NOTIFY_WEBHOOK"
+	// IdeasProject is the discovery project `orion new` files an interviewed
+	// idea into, so an idea typed at the prompt joins the ones written in the
+	// tracker instead of existing only as a project description.
+	//
+	// Asked for once and remembered rather than defaulted: which project
+	// holds ideas is a fact about someone's Jira, and guessing it files work
+	// into a project they did not choose. The sentinel below records a
+	// deliberate "no", so the question is asked once and not every run.
+	IdeasProject = "ORION_JIRA_IDEAS_PROJECT"
 )
+
+// IdeasNone is what IdeasProject holds when the operator declined. A stored
+// "no" and an unasked question look identical otherwise, and the difference
+// decides whether to ask again.
+const IdeasNone = "-"
 
 // Secret reports whether a key's value must never be displayed in full.
 func Secret(key string) bool {
@@ -47,7 +61,7 @@ func Secret(key string) bool {
 }
 
 // Known is every key, in the order a setup wizard should ask for them.
-var Known = []string{JiraURL, JiraEmail, JiraToken, SlackToken, Webhook}
+var Known = []string{JiraURL, JiraEmail, JiraToken, SlackToken, Webhook, IdeasProject}
 
 // Path is where Orion keeps its credentials.
 func Path(home string) string { return filepath.Join(home, "config.env") }

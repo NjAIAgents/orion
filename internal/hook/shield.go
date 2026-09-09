@@ -101,21 +101,48 @@ func isArtifact(rel string, cfg config.Config) bool {
 	return rel == "CLAUDE.md"
 }
 
-// planExists reports whether the configured plans directory holds a plan.
+// planExists reports whether this project has produced a plan.
 //
 // Any plan, not a named one: the shield sees a file path, never a task, so
 // the question it can answer is whether this project has produced a plan at
-// all. The directory and the suffix both come from config -- the same helper
-// the plan stage's prompt names the file with -- so the gate cannot end up
-// looking for something the prompt never asked for.
+// all.
+//
+// TWO LAYOUTS, THE SAME QUESTION. A built-in plan stage writes
+// plans/<slug>.plan.md. A DELEGATED one writes into spec-kit's feature
+// directory as specs/NNN-<slug>/plan.md, and leaves at most a pointer in
+// plans/ -- so a gate that knew only the first layout said "no approved
+// plan" to a project holding a finished plan, and refused every write of
+// the stage that came next. FOUND ON A REAL PROJECT: scaffold spent six
+// minutes being refused its own README and reverse-engineering this
+// function out of the orion binary with `strings`.
 func planExists(cfg config.Config) bool {
-	dir := filepath.Join(cfg.Root, cfg.Paths.Plans)
+	if anyPlanIn(filepath.Join(cfg.Root, cfg.Paths.Plans), config.PlanExt) {
+		return true
+	}
+	// The delegated layout: any specs/*/plan.md.
+	specs := filepath.Join(cfg.Root, cfg.Paths.Specs)
+	entries, err := os.ReadDir(specs)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if st, err := os.Stat(filepath.Join(specs, e.Name(), "plan.md")); err == nil && st.Size() > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func anyPlanIn(dir, ext string) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
 	}
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), config.PlanExt) {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ext) {
 			return true
 		}
 	}

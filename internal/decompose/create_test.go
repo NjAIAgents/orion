@@ -23,6 +23,10 @@ type fake struct {
 	n      int
 	// searched records the arguments Existing was called with.
 	searched []string
+	// links are the ordering edges asked for, as "blocker>blocked", and
+	// noLinks makes the backend say its tracker cannot express them.
+	links   []string
+	noLinks bool
 }
 
 func newFake() *fake { return &fake{name: "fake", have: map[string]string{}} }
@@ -36,6 +40,14 @@ func (f *fake) Existing(project, label string) (map[string]string, error) {
 		out[k] = v
 	}
 	return out, nil
+}
+
+func (f *fake) Link(blocker, blocked string) error {
+	if f.noLinks {
+		return ErrNoLinks
+	}
+	f.links = append(f.links, blocker+">"+blocked)
+	return nil
 }
 
 func (f *fake) Create(req CreateRequest) (string, error) {
@@ -230,4 +242,79 @@ func parentKindOf(calls []CreateRequest, id string) Kind {
 		}
 	}
 	return ""
+}
+
+// The ordering the artifact states becomes links in the tracker, created
+// after every item exists -- an edge may point backwards or forwards, and a
+// link needs both keys.
+func TestApplyCreatesTheOrderingLinks(t *testing.T) {
+	src := "# Tasks: Thing\n\n" +
+		"## Phase 1: Setup\n\n- [ ] T001 Do a in a.go\n- [ ] T002 Do b in b.go\n\n" +
+		"## Phase 2: Build\n\n- [ ] T010 Do c in c.go\n- [ ] T011 Do d in d.go\n\n" +
+		"## Dependencies\n\n- **Phase 2 (Build)**: after T001.\n"
+	tree, err := Parse(src, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree.Blocks) != 2 {
+		t.Fatalf("edges = %+v, want T001 blocking both phase-2 tasks", tree.Blocks)
+	}
+	f := newFake()
+	plan, err := Build(tree, f, "CAT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Apply(plan, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Links != 2 || len(res.LinkFailed) != 0 {
+		t.Fatalf("links=%d failed=%v", res.Links, res.LinkFailed)
+	}
+	// By tracker key, not by task id, and blocker first.
+	want := map[string]bool{}
+	for _, l := range f.links {
+		want[l] = true
+	}
+	t001 := res.Keys[keyOfID(tree, "T001")]
+	for _, id := range []string{"T010", "T011"} {
+		edge := t001 + ">" + res.Keys[keyOfID(tree, id)]
+		if !want[edge] {
+			t.Errorf("missing link %s (have %v)", edge, f.links)
+		}
+	}
+}
+
+// A tracker that cannot express ordering does not lose the tree: the items
+// are created, the ordering is reported.
+func TestATrackerWithoutLinksStillGetsItsTree(t *testing.T) {
+	src := "# Tasks: Thing\n\n## Phase 1: Setup\n\n- [ ] T001 Do a in a.go\n\n" +
+		"## Phase 2: Build\n\n- [ ] T010 Do c in c.go\n\n" +
+		"## Dependencies\n\n- **Phase 2 (Build)**: after T001.\n"
+	tree, _ := Parse(src, "specs/001-thing/tasks.md")
+	f := newFake()
+	f.noLinks = true
+	plan, _ := Build(tree, f, "CAT")
+	res, err := Apply(plan, f)
+	if err != nil {
+		t.Fatalf("a tracker without links must still create the tree: %v", err)
+	}
+	if len(res.Created) != 3 {
+		t.Errorf("created %d items, want epic + 2 tasks", len(res.Created))
+	}
+	if res.Links != 0 || len(res.LinkFailed) != 1 {
+		t.Errorf("the unmade ordering must be reported once: links=%d failed=%v", res.Links, res.LinkFailed)
+	}
+}
+
+// keyOfID is the summary an id was created under, for looking up its key.
+func keyOfID(t *Tree, id string) string {
+	out := ""
+	_ = t.Walk(func(it, _ *Item) error {
+		if it.ID == id {
+			out = it.Summary
+		}
+		return nil
+	})
+	return out
 }

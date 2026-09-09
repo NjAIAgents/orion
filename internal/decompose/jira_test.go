@@ -25,6 +25,7 @@ var teamManaged = []tracker.IssueType{
 }
 
 type fakeJira struct {
+	links  []string
 	types  []tracker.IssueType
 	issues []tracker.Issue
 	sent   []tracker.NewIssue
@@ -40,6 +41,11 @@ func (f *fakeJira) Search(jql string, _ int) ([]tracker.Issue, error) {
 func (f *fakeJira) IssueTypes(string) ([]tracker.IssueType, error) {
 	f.n++
 	return f.types, nil
+}
+
+func (f *fakeJira) LinkBlocks(blocker, blocked string) error {
+	f.links = append(f.links, blocker+">"+blocked)
+	return nil
 }
 
 func (f *fakeJira) CreateIssue(in tracker.NewIssue) (string, error) {

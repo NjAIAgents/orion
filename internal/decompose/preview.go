@@ -19,11 +19,18 @@ import (
 func Preview(w io.Writer, p *Plan) {
 	fmt.Fprintf(w, "%s -> %s (%s)\n\n", p.Tree.Source, p.Project, p.Backend)
 
+	// Blank lines between the story groups: 94 items in one block is a wall,
+	// and the groups are what a reader is deciding about.
+	lastStory := ""
 	for _, s := range p.Steps {
 		indent := "  "
 		switch s.Item.Kind {
 		case KindStory:
 			indent = "    "
+			if lastStory != "" {
+				fmt.Fprintln(w)
+			}
+			lastStory = s.Item.Summary
 		case KindTask:
 			indent = "      "
 			if s.Parent != nil && s.Parent.Kind == KindEpic {
@@ -31,18 +38,25 @@ func Preview(w io.Writer, p *Plan) {
 				// the level it will actually sit at rather than under the
 				// last story printed.
 				indent = "    "
+				if lastStory != "" {
+					fmt.Fprintln(w)
+					lastStory = ""
+				}
 			}
 		}
 		mark, key := "+", ""
 		if !s.New() {
 			mark, key = "=", " ("+s.ExistingKey+")"
 		}
-		fmt.Fprintf(w, "%s%s %-5s %s%s%s\n", indent, mark, s.Item.Kind, s.Item.Summary, key, labelNote(s.Item))
+		fmt.Fprintf(w, "%s%s %s%s%s%s\n", indent, mark, s.Item.Summary, key, humanNote(s.Item), labelNote(s.Item))
 	}
 
-	fmt.Fprintf(w, "\n  %d to create, %d already in %s\n",
-		p.NewCount(), p.ExistingCount(), p.Project)
-	fmt.Fprintf(w, "  identity label: %s\n", p.Tree.Label())
+	fmt.Fprintf(w, "\n  %d to create, %d already in %s  (%s)\n",
+		p.NewCount(), p.ExistingCount(), p.Project, p.Tree.Label())
+	if n := humanCount(p); n > 0 {
+		fmt.Fprintf(w, "  %d of them are [human]: created as tickets, never offered to an agent.\n", n)
+	}
+	previewBlocks(w, p.Tree.Blocks)
 	previewCoupled(w, p.Tree.Coupled)
 }
 
@@ -63,8 +77,8 @@ func previewCoupled(w io.Writer, coupled []Coupling) {
 		"  accept the coupling -- but decide it now rather than at merge time.\n",
 		len(coupled))
 	for _, c := range coupled {
-		fmt.Fprintf(w, "    ! %s\n      %s\n      both declare: %s\n",
-			c.A, c.B, strings.Join(c.Shared, ", "))
+		fmt.Fprintf(w, "    ! %s  +  %s\n      %s\n",
+			c.A, c.B, sharedNote(c.Shared))
 	}
 }
 
@@ -81,4 +95,67 @@ func labelNote(it *Item) string {
 		return ""
 	}
 	return "  [" + strings.Join(markers, " ") + "]"
+}
+
+// sharedNote names the ground two stories share, at a length a reader
+// takes in: the first few files, then how many more.
+func sharedNote(shared []string) string {
+	const show = 3
+	if len(shared) <= show {
+		return strings.Join(shared, ", ")
+	}
+	return fmt.Sprintf("%s, and %d more", strings.Join(shared[:show], ", "), len(shared)-show)
+}
+
+// humanNote marks an item no agent will be offered, so a reader sees before
+// creating the tree which work is waiting on a person.
+func humanNote(it *Item) string {
+	if it.Human {
+		return "  [human]"
+	}
+	return ""
+}
+
+func humanCount(p *Plan) int {
+	n := 0
+	for _, s := range p.Steps {
+		if s.Item.Human {
+			n++
+		}
+	}
+	return n
+}
+
+// previewBlocks says what the queue will be able to read, before anything
+// is created: which task waits on which, from the artifact's own
+// Dependencies section.
+func previewBlocks(w io.Writer, edges []Edge) {
+	if len(edges) == 0 {
+		fmt.Fprintf(w, "\n  No ordering links: the task list states no dependencies, so every\n"+
+			"  item is startable at once.\n")
+		return
+	}
+	// Grouped by blocker, which is how a reader thinks about it: "what does
+	// T012 hold up".
+	order := []string{}
+	by := map[string][]string{}
+	for _, e := range edges {
+		if _, ok := by[e.Blocker]; !ok {
+			order = append(order, e.Blocker)
+		}
+		by[e.Blocker] = append(by[e.Blocker], e.Blocked)
+	}
+	fmt.Fprintf(w, "\n  %d ordering link(s), from the task list's Dependencies section --\n"+
+		"  the queue will not start a task while its blocker is open:\n", len(edges))
+	for _, blocker := range order {
+		fmt.Fprintf(w, "    %s blocks %s\n", blocker, joinCapped(by[blocker], 6))
+	}
+}
+
+// joinCapped lists ids, naming a few and counting the rest.
+func joinCapped(ids []string, n int) string {
+	if len(ids) <= n {
+		return strings.Join(ids, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(ids[:n], ", "), len(ids)-n)
 }

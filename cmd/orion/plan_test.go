@@ -159,7 +159,7 @@ func TestPlanAnnouncesEveryStageAndItsCostShapeBeforeDispatch(t *testing.T) {
 		}
 	}
 	// The shape, not just the list: how many runs, and that it does not loop.
-	if !strings.Contains(out, fmt.Sprint(len(planStages))) || !strings.Contains(out, "no fix loop") {
+	if !strings.Contains(out, fmt.Sprint(supervisedStages())) || !strings.Contains(out, "no fix loop") {
 		t.Errorf("cost shape does not state the fleet size and loop shape:\n%s", out)
 	}
 	// The number is the user's own limit, never the provider's.
@@ -207,18 +207,22 @@ func TestPlanDryRunIsRepeatableAndLeavesNothingBehind(t *testing.T) {
 // docs/decisions/0012: a tracker project gets ONE workspace. The second call
 // refuses, names the existing one, and says how to go forward -- it does not
 // reuse it and does not create a suffixed twin.
-func TestPlanRefusesASecondRunOnTheSameKey(t *testing.T) {
+func TestPlanResumesASecondRunOnTheSameKey(t *testing.T) {
 	home := planHome(t)
 	if _, err := runPlanInto(t, orpay(), config.Config{}, planOptions{Key: "ORPAY", Home: home}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := runPlanInto(t, orpay(), config.Config{}, planOptions{Key: "ORPAY", Home: home})
-	if err == nil {
-		t.Fatal("the second run succeeded; one project must map to one workspace")
+	out, err := runPlanInto(t, orpay(), config.Config{}, planOptions{Key: "ORPAY", Home: home})
+	if err != nil {
+		t.Fatalf("the second run on the same key refused; it should resume: %v", err)
 	}
-	for _, want := range []string{"orion-payments", "orion rm", "--stage"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("refusal is missing %q, so it is a dead end: %v", want, err)
+	if !strings.Contains(out, "resumed") || !strings.Contains(out, "orion-payments") {
+		t.Errorf("the second run does not say it resumed the existing workspace:\n%s", out)
+	}
+	// It says where it is: every step, with its state.
+	for _, s := range planStages {
+		if !strings.Contains(out, s.Stage) {
+			t.Errorf("the resume does not list the %s step:\n%s", s.Stage, out)
 		}
 	}
 	entries, readErr := os.ReadDir(filepath.Join(home, "projects"))
@@ -227,6 +231,28 @@ func TestPlanRefusesASecondRunOnTheSameKey(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("there are %d workspaces; the second run created a twin", len(entries))
+	}
+}
+
+// --from is validated before anything else happens: a typo must not read
+// the tracker, provision, or re-run the whole chain as "from the start".
+func TestPlanRejectsAnUnknownFromStepBeforeDoingAnything(t *testing.T) {
+	home := planHome(t)
+	pr := orpay()
+	_, err := runPlanInto(t, pr, config.Config{}, planOptions{Key: "ORPAY", Home: home, From: "bogus"})
+	if err == nil {
+		t.Fatal("--from bogus was accepted")
+	}
+	for _, want := range []string{"bogus", "intent", "spec", "decompose"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not name %q: %v", want, err)
+		}
+	}
+	if len(pr.asked) != 0 {
+		t.Errorf("the tracker was read (%v) before --from was validated", pr.asked)
+	}
+	if _, err := os.Stat(filepath.Join(home, "projects", "orion-payments")); !os.IsNotExist(err) {
+		t.Error("a workspace was created despite the bad --from")
 	}
 }
 
@@ -347,7 +373,7 @@ func TestPlanEstimatesTheChainFromRecordedRuns(t *testing.T) {
 	if !strings.Contains(out, "$2.00 per run") {
 		t.Errorf("the per-run estimate is not the measured mean:\n%s", out)
 	}
-	want := fmt.Sprintf("$%.2f for the chain", 2.0*float64(len(planStages)))
+	want := fmt.Sprintf("$%.2f for the chain", 2.0*float64(supervisedStages()))
 	if !strings.Contains(out, want) {
 		t.Errorf("the chain total %q is missing; the fleet size is what multiplies the cost:\n%s",
 			want, out)
@@ -433,5 +459,30 @@ func spend(t *testing.T, home string, usd float64) {
 		}
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The cost shape counts the steps that SPEND. A frame step runs in Orion's
+// own process; counting it would estimate a claude run that never happens.
+func TestPlanCostShapeCountsOnlySupervisedSteps(t *testing.T) {
+	orig := planStages
+	t.Cleanup(func() { planStages = orig })
+	planStages = []planStage{
+		{Stage: "intent", Actor: events.ActorPM, What: "intent"},
+		{Stage: "remote", Actor: events.ActorOrion, What: "the remote",
+			Frame: func(*stepIO, *workspace.Workspace) error { return nil }},
+		{Stage: "spec", Actor: events.ActorArchitect, What: "spec"},
+	}
+	home := planHome(t)
+	out, err := runPlanInto(t, orpay(), config.Config{}, planOptions{Key: "ORPAY", Home: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "2 sequential stages") {
+		t.Errorf("cost shape should count the 2 supervised steps, not all 3:\n%s", out)
+	}
+	// The frame step is still announced in the roster, by the narrator.
+	if !strings.Contains(out, "remote") || !strings.Contains(out, "the remote") {
+		t.Errorf("the frame step is missing from the roster announcement:\n%s", out)
 	}
 }

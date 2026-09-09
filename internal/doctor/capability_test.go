@@ -3,6 +3,7 @@ package doctor
 import (
 	"encoding/json"
 	"github.com/orion-sdlc/orion/internal/fakebin"
+	"github.com/orion-sdlc/orion/internal/provision"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -539,7 +540,7 @@ func TestAMissingNJAgentsIsStillAFailure(t *testing.T) {
 	t.Setenv("ORION_HOME", t.TempDir()) // and no managed clone
 	t.Setenv("ORION_NJ_AGENTS_DIR", "")
 
-	c := checkNJAgents(config.Toolkit{Dir: filepath.Join(t.TempDir(), "nowhere")}, false)
+	c := checkNJAgents("", config.Toolkit{Dir: filepath.Join(t.TempDir(), "nowhere")}, false)
 
 	if c.grade != fail {
 		t.Errorf("missing nj-agents graded %v, want fail: %+v", c.grade, c)
@@ -553,4 +554,62 @@ func TestAMissingNJAgentsIsStillAFailure(t *testing.T) {
 func jsonStr(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// fakeSpecify plants a `specify` on PATH that answers `version --features
+// --json` with the given body.
+func fakeSpecify(t *testing.T, body string) {
+	t.Helper()
+	fakebin.Install(t, t.TempDir(), "specify", "#!/bin/sh\nprintf '%s' '"+body+"'\nexit 0\n")
+}
+
+func specKitToolkit() config.Toolkit {
+	return config.Toolkit{Repo: "https://github.com/github/spec-kit.git",
+		Stages: map[string]string{"spec": "/speckit-specify"}}
+}
+
+func TestCheckSpecKitIsSilentWhenNothingDelegatesToIt(t *testing.T) {
+	if c := checkSpecKit(config.Toolkit{Stages: map[string]string{"review": "/their-review"}}); c != nil {
+		t.Errorf("a project with no spec-kit stage got a spec-kit line: %+v", *c)
+	}
+}
+
+func TestCheckSpecKitFailsNamingTheInstallWhenTheCLIIsAbsent(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	c := checkSpecKit(specKitToolkit())
+	if c == nil || c.grade != fail || !strings.Contains(c.fix, provision.SpecKitInstall) {
+		t.Errorf("want fail naming the install command, got %+v", c)
+	}
+}
+
+func TestCheckSpecKitWarnsNamingTheMissingFeatureAndTheUpgrade(t *testing.T) {
+	fakeSpecify(t, `{"version":"0.9.0","features":{"workflow_catalog":{}}}`)
+	c := checkSpecKit(specKitToolkit())
+	if c == nil || c.grade != warn {
+		t.Fatalf("want warn, got %+v", c)
+	}
+	for _, want := range []string{"bundled_templates", "0.9.0"} {
+		if !strings.Contains(c.detail, want) {
+			t.Errorf("detail = %q, want it to name %q", c.detail, want)
+		}
+	}
+	if !strings.Contains(c.fix, specKitUpgrade) {
+		t.Errorf("fix = %q, want the upgrade command", c.fix)
+	}
+}
+
+func TestCheckSpecKitPassesWithEveryFeatureAndPrintsTheVersion(t *testing.T) {
+	fakeSpecify(t, `{"version":"1.0.5.dev0","features":{"bundled_templates":{},"self_check_command":{}}}`)
+	c := checkSpecKit(specKitToolkit())
+	if c == nil || c.grade != ok || !strings.Contains(c.detail, "1.0.5.dev0") {
+		t.Errorf("want ok with the version, got %+v", c)
+	}
+}
+
+func TestCheckSpecKitNeverPassesOnMalformedOutput(t *testing.T) {
+	fakeSpecify(t, `not json`)
+	c := checkSpecKit(specKitToolkit())
+	if c == nil || c.grade == ok {
+		t.Errorf("malformed output must not pass, got %+v", c)
+	}
 }

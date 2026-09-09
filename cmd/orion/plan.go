@@ -32,10 +32,12 @@ package main
 // leaving a directory tree behind.
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -44,6 +46,8 @@ import (
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/dbaplan"
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/provision"
+	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -54,14 +58,52 @@ type planStage struct {
 	Stage string // the --stage name supervisor.Run already understands
 	Actor string // who does it, for the roster announcement
 	What  string // one line, for a reader deciding whether to let it run
+
+	// Frame, when set, runs this step in Orion's own process -- no claude
+	// run, no budget checkpoint, no cost line. It is for the deterministic
+	// work between stages (installing the toolkit, creating the remote,
+	// creating the tracker tree, cloning) that used to be a separate command
+	// the operator had to remember, in the right order, after the chain.
+	// Held in the same slice as the stages so the roster, the cost shape
+	// and the dispatch loop all read one list and none can omit a step the
+	// others know about. Actor is events.ActorOrion for these, so the roster
+	// says who does it without listing Orion as a participant on a model.
+	Frame func(io *stepIO, ws *workspace.Workspace) error
+	// Fallback marks a frame step that may decline -- errNotApplicable --
+	// when the artifact it works from is absent, in which case the
+	// supervised stage of the same name runs instead. Counted as a stage
+	// that may spend, and reachable by `orion run --stage`.
+	Fallback bool
+	// Done, when set, reports that this step's work is already there, so a
+	// resumed chain prints it as done and moves on without asking. Derived
+	// from the step's own artifact wherever there is one -- a flag can say
+	// done about a file that was never committed; the file cannot.
+	Done func(ws *workspace.Workspace) bool
+}
+
+// supervisedStages counts the steps that spend: one claude run each. Frame
+// steps are in the chain and not in this number, which is why the cost
+// shape reads it rather than len(planStages).
+func supervisedStages() int {
+	n := 0
+	for _, s := range planStages {
+		if s.Frame == nil || s.Fallback {
+			n++
+		}
+	}
+	return n
 }
 
 // planStages is the chain, in order.
 //
-// The four stages are the ones docs/decisions/0006 names as running after the
-// interactive phase: "one ambiguous premise there propagates into spec, plan,
-// scaffold and the tracker tree". Intent is absent because 0006 puts it in
-// `orion new`, where a human is present to be asked.
+// docs/decisions/0006 names spec, plan, scaffold and the tracker tree as the
+// stages running after the interactive phase: "one ambiguous premise there
+// propagates into spec, plan, scaffold and the tracker tree". It puts intent
+// in `orion new`, where a human is present to be asked -- but `orion new`
+// only ever wrote those answers to the tracker, never to the repository the
+// stages read, so the first of them designed from a file nobody had written.
+// Intent runs here instead, as the stage that turns what was said into the
+// artifact the rest of the chain reads.
 //
 // Declared here rather than inside the announcement so that the dispatch a
 // later ticket adds iterates this same slice. A roster that is written out by
@@ -72,10 +114,153 @@ type planStage struct {
 // -- a name not in it is refused there by name, so a typo here surfaces as
 // "unknown stage" on the first dispatch rather than as silence.
 var planStages = []planStage{
-	{"spec", events.ActorArchitect, "requirements and design spec"},
-	{"plan", events.ActorArchitect, "implementation plan: files, order of work, tests, risks"},
-	{"scaffold", events.ActorDevOps, "repository skeleton on the OpenSSF baseline"},
-	{"decompose", events.ActorPM, "the Epic, Story and Task tree in the tracker"},
+	// The toolkit comes before everything, and spends nothing: spec-kit is
+	// installed into the repository once, by `specify init`, from templates
+	// bundled in its CLI, so that the first stage delegating to it finds
+	// its commands where Claude Code reads them (docs/decisions/0022). A
+	// project whose stages name no spec-kit command has nothing to install
+	// and the step reports done.
+	{Stage: "toolkit", Actor: events.ActorOrion, What: "spec-kit installed into the repository, once",
+		Frame: toolkitStep, Done: toolkitDone},
+	// Intent comes first among the STAGES because every stage after it
+	// reads what it wrote.
+	//
+	// It was missing from this chain, and the chain began at spec -- which
+	// opens by reading docs/intent/<slug>.md, a file nothing had ever
+	// created. FOUND ON A REAL PROJECT: the spec stage looked for the intent,
+	// did not find it, correctly refused to invent a product from the name
+	// alone, and committed 26KB explaining why. The answers it needed were
+	// sitting in the tracker's project description, because `orion new` puts
+	// them there and no stage brought them into the repository.
+	//
+	// The stage itself was already built -- supervisor's prompt for it, the
+	// discovery gate that reads its open questions, `orion answer` that walks
+	// them. Only its place in the chain was missing.
+	{Stage: "intent", Actor: events.ActorPM, What: "what is being built and why, captured from the idea", Done: stageDone("intent")},
+	// Between intent and spec: spec-kit's every later command reads the
+	// constitution, and it is seeded from the intent's constraints, so it
+	// can be written no earlier and is wanted no later.
+	{Stage: "constitution", Actor: events.ActorArchitect, What: "project principles for spec-kit, seeded from orion.json gates and the intent", Done: stageDone("constitution")},
+	{Stage: "spec", Actor: events.ActorArchitect, What: "requirements and design spec", Done: stageDone("spec")},
+	{Stage: "plan", Actor: events.ActorArchitect, What: "implementation plan: files, order of work, tests, risks", Done: stageDone("plan")},
+	// After plan and before anything is built from it: a read-only check
+	// that spec, plan and tasks agree with each other and the constitution.
+	// It owes no file, so its Done is the recorded verdict of its last run.
+	{Stage: "analyze", Actor: events.ActorArchitect, What: "read-only consistency check of spec, plan and tasks; blocks on critical issues", Done: stageDone("analyze")},
+	{Stage: "scaffold", Actor: events.ActorDevOps, What: "repository skeleton on the OpenSSF baseline", Done: stageDone("scaffold")},
+	// The remote comes AFTER scaffold and BEFORE decompose. After scaffold,
+	// because creating a repository on GitHub is outward and irreversible
+	// enough to want every gate before it passed first -- a chain stopped
+	// at the discovery gate has created nothing anybody has to delete.
+	// Before decompose, because the tickets name branches and a repository
+	// to push to, and `orion watch` needs the remote to open pull requests
+	// against. It used to be `orion provision`, a separate command typed
+	// after the chain; the chain runs it now (docs/decisions/0022).
+	{Stage: "remote", Actor: events.ActorOrion, What: "the GitHub repository: create it, push main and develop, protect both",
+		Frame: remoteStep, Done: remoteDone},
+	// Native when the plan stage left a tasks.md -- Orion creates the tree
+	// itself, stamping the queue label so `orion watch` can claim it -- and
+	// the supervised /pm-plan stage otherwise. One entry with both, because
+	// which one runs is a property of the artifact, not of the roster.
+	{Stage: "decompose", Actor: events.ActorPM, What: "the Epic, Story and Task tree in the tracker",
+		Frame: decomposeStep, Fallback: true, Done: decomposeDone},
+	// Opt-in, and free when opted into: the version every ticket in the
+	// tree is attached to, so `orion release status` never reports the
+	// tree as orphans. Skipped, and done, without --release.
+	{Stage: "release", Actor: events.ActorOrion, What: "the tracker version the tree is attached to (--release vX.Y.Z)",
+		Frame: releaseStep, Done: releaseDone},
+	// Last, and best effort: the operator's own copy, once there is
+	// something committed worth copying. In the chain rather than after it
+	// so a resume can retry a clone that failed.
+	{Stage: "clone", Actor: events.ActorOrion, What: "your own copy of the repository, where you asked for it",
+		Frame: cloneStep, Done: cloneDone},
+}
+
+// toolkitStep installs spec-kit into the workspace repository, once.
+func toolkitStep(sio *stepIO, ws *workspace.Workspace) error {
+	hadInit := toolkitInstalled(ws)
+	did, err := provision.InitSpecKit(ws.RepoDir())
+	if err != nil {
+		return err
+	}
+	switch {
+	case did && hadInit:
+		// spec-kit was there; only its composed skill had lost the wrap.
+		ui.Ok(sio.Out, "re-applied", "the %s preset in %s", provision.PresetID, ws.RepoDir())
+	case did:
+		ui.Ok(sio.Out, "installed", "spec-kit into %s", ws.RepoDir())
+	default:
+		fmt.Fprintf(sio.Out, "  %s\n", ui.Dim(sio.Out, "spec-kit is already installed"))
+	}
+	return nil
+}
+
+// toolkitDone: nothing to do for a project that delegates nothing to
+// spec-kit; otherwise done when the installer's own directory is there AND
+// the orion preset is composed into the specify skill -- the registration
+// alone outlives the composition (docs/decisions/0022).
+func toolkitDone(ws *workspace.Workspace) bool {
+	if !config.Load(ws.RepoDir()).Toolkit.DelegatesTo("speckit") {
+		return true
+	}
+	return toolkitInstalled(ws) && provision.PresetApplied(ws.RepoDir())
+}
+
+// toolkitInstalled: the installer's own directory is there.
+func toolkitInstalled(ws *workspace.Workspace) bool {
+	st, err := os.Stat(filepath.Join(ws.RepoDir(), provision.SpecKitDir))
+	return err == nil && st.IsDir()
+}
+
+// planFromIndex resolves --from to an index into planStages, or -1 when
+// nothing was asked for. An unknown name is an error that lists the steps,
+// because the alternative -- treating it as "from the start" -- would make
+// a typo re-run the whole chain at full cost.
+func planFromIndex(from string) (int, error) {
+	from = strings.TrimSpace(from)
+	if from == "" {
+		return -1, nil
+	}
+	names := make([]string, 0, len(planStages))
+	for i, s := range planStages {
+		if strings.EqualFold(s.Stage, from) {
+			return i, nil
+		}
+		names = append(names, s.Stage)
+	}
+	return -1, fmt.Errorf("--from %q is not a step of the chain.\n  Steps: %s", from, strings.Join(names, ", "))
+}
+
+// stageDone is the Done predicate for a supervised stage: the artifact gate
+// and the run record, read by supervisor.StageDone. One closure per entry
+// rather than a switch in the chain, so the slice stays the only list.
+func stageDone(stage string) func(*workspace.Workspace) bool {
+	return func(ws *workspace.Workspace) bool { return supervisor.StageDone(ws, stage) }
+}
+
+// nextPlanStage returns the stage that follows the one given, and whether
+// there is one.
+//
+// Reads planStages rather than repeating the order, for the reason declared
+// above it: an order written out twice is an order that eventually disagrees
+// with itself. Unknown stage names -- the work stages, which are not part of
+// the planning chain -- return false and get no suggestion, which is correct:
+// this only knows about the planning chain.
+func nextPlanStage(stage string) (planStage, bool) {
+	for i, s := range planStages {
+		if strings.EqualFold(s.Stage, stage) {
+			// The next SUPERVISED step. A frame step is not something
+			// `orion run --stage` can run, so suggesting it would name a
+			// command that refuses; the chain itself runs frame steps.
+			for _, next := range planStages[i+1:] {
+				if next.Frame == nil || next.Fallback {
+					return next, true
+				}
+			}
+			return planStage{}, false
+		}
+	}
+	return planStage{}, false
 }
 
 type planOptions struct {
@@ -83,6 +268,25 @@ type planOptions struct {
 	DryRun bool
 	Home   string
 	Out    io.Writer
+	// Org is the GitHub organisation for the remote step, from --org.
+	// Recorded on the task when given, so a resume needs no flag.
+	Org string
+	// From names a step to re-run from, regardless of whether it and the
+	// steps after it are done. Done derived from artifacts is right by
+	// default and wrong when the operator has edited the spec and wants
+	// everything downstream rebuilt from it.
+	From string
+	// Release is the tracker version to attach the tree to, from --release.
+	// Recorded on the task when given, so a resume needs no flag.
+	Release string
+	// Run and Confirm drive the stage chain. Both nil means announce only --
+	// which is what a non-interactive caller gets, and what every existing
+	// test of this command already exercises.
+	Run     stageRunner
+	Confirm confirmer
+	// Ask reads one free-text answer. Nil means no terminal, so nothing that
+	// needs typing is offered.
+	Ask func(prompt string) string
 }
 
 // projectReader is the slice of tracker.Tracker this command needs.
@@ -107,12 +311,36 @@ func runPlan(args []string) {
 	j, err := tracker.NewJiraFromEnv()
 	exitOn(err)
 
-	exitOn(planRun(j, config.Load(rootOrCwd()), planOptions{
-		Key:    key,
-		DryRun: hasFlag(args[1:], "--dry-run"),
-		Home:   home,
-		Out:    os.Stdout,
-	}))
+	o := planOptions{
+		Key:     key,
+		DryRun:  hasFlag(args[1:], "--dry-run"),
+		Home:    home,
+		Out:     os.Stdout,
+		Org:     argFlag(args[1:], "--org", ""),
+		From:    argFlag(args[1:], "--from", ""),
+		Release: argFlag(args[1:], "--release", ""),
+	}
+	// A dry run spends nothing and dispatches nothing, so it must not offer
+	// to. Off a terminal there is nobody to answer the pauses.
+	if !o.DryRun && isTerminal(os.Stdin) {
+		r := bufio.NewReader(os.Stdin)
+		o.Confirm = func(prompt string) bool { return askYesNo(r, os.Stdout, prompt) }
+		o.Ask = func(prompt string) string {
+			answer, _ := ask(r, os.Stdout, prompt)
+			return answer
+		}
+		o.Run = func(ws *workspace.Workspace, stage string) (*supervisor.Result, error) {
+			// Narrated. A stage is minutes of silence otherwise, which reads
+			// as a hang and gets a working run killed halfway.
+			prog := newStageProgress(os.Stdout)
+			defer prog.Close()
+			return supervisor.Run(ws, supervisor.Options{
+				Stage:      stage,
+				OnActivity: prog.On,
+			})
+		}
+	}
+	exitOn(planRun(j, config.Load(rootOrCwd()), o))
 }
 
 // planRun is the whole command, with the tracker and the destination injected
@@ -121,6 +349,11 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 	out := opts.Out
 	if opts.Key == "" {
 		return fmt.Errorf("orion plan needs a tracker project key, e.g. orion plan ORPAY")
+	}
+	// A wrong --from fails here, before the tracker is read or anything is
+	// provisioned: a typo is cheapest to find at the prompt.
+	if _, err := planFromIndex(opts.From); err != nil {
+		return err
 	}
 
 	// 1. The handoff artifact.
@@ -153,6 +386,21 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 		return err
 	}
 
+	// Where the remote goes, recorded once so the remote step and every
+	// resume after it agree. A dry run has no task to write to.
+	if opts.Org != "" && !opts.DryRun && ws.Task.RemoteOrg != opts.Org {
+		ws.Task.RemoteOrg = opts.Org
+		if err := ws.SaveTask(); err != nil {
+			return err
+		}
+	}
+	if opts.Release != "" && !opts.DryRun && ws.Task.ReleaseVersion != opts.Release {
+		ws.Task.ReleaseVersion = opts.Release
+		if err := ws.SaveTask(); err != nil {
+			return err
+		}
+	}
+
 	// 4. What would be dispatched, and what it costs, before it is.
 	printPlanRoster(out, ws.ID, planIdea(p))
 	st, budgetSet := printPlanCostShape(out, cfg, opts.Home)
@@ -179,8 +427,72 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 		fmt.Fprintf(out, "  run it: orion plan %s\n", p.Key)
 		return nil
 	}
+	// Run the chain when there is someone to pause for. Without a terminal
+	// -- a script, CI, a pipe -- there is nobody to answer the confirmations
+	// this chain is built around, so it announces the first command and stops
+	// exactly as it always did.
+	if opts.Run != nil && opts.Confirm != nil {
+		if !opts.Confirm(fmt.Sprintf("Run all %d stages, pausing after each?", len(planStages))) {
+			fmt.Fprintf(out, "\nnext: orion run %s --stage %s\n", ws.ID, planStages[0].Stage)
+			return nil
+		}
+		// Where their own copy should go, asked once, acted on at the end.
+		// Only when nothing has been recorded already, so a resumed chain
+		// does not ask again.
+		if opts.Ask != nil && strings.TrimSpace(ws.Task.CheckoutPath) == "" {
+			if p := askCheckoutPath(out, opts.Ask); p != "" {
+				ws.Task.CheckoutPath = p
+				if err := ws.SaveTask(); err != nil {
+					ui.Warn(out, "could not record where to clone: %v", err)
+				}
+			}
+		}
+
+		// asker(nil) is a non-nil asker wrapping a nil func, which every
+		// step guarding on `Ask != nil` would then call. Keep nil nil.
+		var ask asker
+		if opts.Ask != nil {
+			ask = opts.Ask
+		}
+		done := runPlanChainWith(out, ws, opts.Run, opts.Confirm, ask, opts.From)
+		if done == len(planStages) {
+			fmt.Fprintf(out, "\n%s\n", ui.Dim(out,
+				"all planning stages are done; the tracker holds the work tree"))
+			fmt.Fprintf(out, "next: orion watch %s\n", strings.ToUpper(opts.Key))
+		}
+		return nil
+	}
+
 	fmt.Fprintf(out, "next: orion run %s --stage %s\n", ws.ID, planStages[0].Stage)
 	return nil
+}
+
+// ideaKeyFromDescription reads the provenance marker `orion new` writes.
+//
+// Only the FIRST line, and only when it is the whole line: a description that
+// mentions another ticket in passing is not a statement about where this
+// project came from, and treating it as one would point a stage at the wrong
+// idea.
+func ideaKeyFromDescription(desc string) string {
+	first := strings.TrimSpace(desc)
+	if i := strings.IndexByte(first, '\n'); i >= 0 {
+		first = strings.TrimSpace(first[:i])
+	}
+	rest, ok := strings.CutPrefix(first, "From ")
+	if !ok {
+		return ""
+	}
+	// "From PRIOR-3 (https://...)" -- the key is the first field. A bare
+	// "From " with nothing after it has no fields at all.
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ""
+	}
+	key := fields[0]
+	if !looksLikeIdeaKey(key) {
+		return ""
+	}
+	return strings.ToUpper(key)
 }
 
 // planWorkspace provisions the workspace, or -- on a dry run -- reports the
@@ -194,6 +506,23 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 // projects whose names happen to slugify alike.
 func planWorkspace(out io.Writer, p tracker.Project, slug string, opts planOptions) (*workspace.Workspace, error) {
 	if existing, err := workspace.Open(slug); err == nil && existing.ID == slug {
+		// THE SAME PROJECT RESUMES. docs/decisions/0012 refused a second run
+		// because it would plan again into a half-finished workspace; with
+		// each step now deriving whether it is done from its own artifact,
+		// a re-run skips what is there and picks up where the last one
+		// stopped. A DIFFERENT project whose name slugified alike still
+		// refuses, naming the owner: that is a name clash, and 0012's
+		// reason for it holds unchanged. A missing binding refuses too --
+		// "probably the same project" is not a basis for writing into it.
+		if planBoundTo(existing) == p.Key {
+			fmt.Fprintln(out, ui.Heading(out, "Workspace"))
+			fmt.Fprintf(out, "  id           %s  %s\n", existing.ID, ui.Dim(out, "(resumed)"))
+			fmt.Fprintf(out, "  path         %s\n", existing.Dir)
+			fmt.Fprintf(out, "  repo         %s\n", existing.RepoDir())
+			printPlanProgress(out, existing, opts.From)
+			fmt.Fprintln(out)
+			return existing, nil
+		}
 		return nil, fmt.Errorf("workspace %s already exists for %s.\n"+
 			"  A tracker project gets ONE workspace, so this will not create a second.\n"+
 			"  Continue in it:      orion run %s --stage %s\n"+
@@ -229,6 +558,11 @@ func planWorkspace(out io.Writer, p tracker.Project, slug string, opts planOptio
 	}
 	ws.Task.Tracker = raw
 	ws.Task.Stage = planStages[0].Stage
+	// The discovery idea this came from, if the description says. `orion new`
+	// writes "From PRIOR-3" at the top for an idea given by key and for one
+	// it filed from an interview, so a stage can be TOLD which idea to fill
+	// in rather than reading orion's own help output looking for a key.
+	ws.Task.IdeaKey = ideaKeyFromDescription(p.Description)
 
 	// The project channel follows the workspace, which is now born here rather
 	// than in `orion new` (docs/decisions/0013). Failure is reported and never
@@ -248,6 +582,35 @@ func planWorkspace(out io.Writer, p tracker.Project, slug string, opts planOptio
 	fmt.Fprintf(out, "  sandbox      %s\n", ws.SandboxMode())
 	fmt.Fprintln(out)
 	return ws, nil
+}
+
+// planBoundTo is the tracker key the workspace records, or "" when it
+// records none.
+func planBoundTo(ws *workspace.Workspace) string {
+	var b tracker.Binding
+	if len(ws.Task.Tracker) > 0 && json.Unmarshal(ws.Task.Tracker, &b) == nil {
+		return b.Key
+	}
+	return ""
+}
+
+// printPlanProgress says where a resumed chain is: which steps are done and
+// will be skipped, and which will run -- including any --from forces. This
+// is what a dry run of a resumable workspace reports, and what a real run
+// shows before asking to continue, so "resumed" is never a word without a
+// position behind it.
+func printPlanProgress(out io.Writer, ws *workspace.Workspace, from string) {
+	fromIdx, _ := planFromIndex(from)
+	for i, s := range planStages {
+		state := "would run"
+		switch {
+		case fromIdx >= 0 && i >= fromIdx:
+			state = "would run (--from " + from + ")"
+		case s.Done != nil && s.Done(ws):
+			state = "done"
+		}
+		fmt.Fprintf(out, "  %d/%d %-10s %s\n", i+1, len(planStages), s.Stage, ui.Dim(out, state))
+	}
 }
 
 // planExistingOwner names the project the existing workspace is bound to,
@@ -384,12 +747,16 @@ func printPlanCostShape(out io.Writer, cfg config.Config, home string) (budget.S
 	st := ledger.Status(lim)
 	est := ledger.Estimate()
 
+	// Frame steps are in the chain and not in this number: they run in
+	// Orion's own process and spend nothing, and a cost line that counted
+	// them would estimate a run that never happens.
+	supervised := supervisedStages()
 	fmt.Fprintln(out, ui.Heading(out, "Cost shape"))
 	fmt.Fprintf(out, "  shape        %d sequential stages, one supervised claude run each; no fix loop\n",
-		len(planStages))
+		supervised)
 	if est.CostUSD > 0 {
 		fmt.Fprintf(out, "  estimate     $%.2f per run (mean of %d runs in the last 7 days) -- about $%.2f for the chain\n",
-			est.CostUSD, st.Runs, est.CostUSD*float64(len(planStages)))
+			est.CostUSD, st.Runs, est.CostUSD*float64(supervised))
 	} else {
 		fmt.Fprintf(out, "  estimate     %s\n", ui.Dim(out,
 			"no run history in the window, so there is nothing to estimate from"))

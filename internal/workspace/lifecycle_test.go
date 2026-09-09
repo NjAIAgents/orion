@@ -247,3 +247,32 @@ func TestSandboxModeReportsSomething(t *testing.T) {
 		t.Error("SandboxMode is empty; doctor and status both print it")
 	}
 }
+
+// SaveTask writes beside the file and renames over it, so a kill mid-write
+// leaves the previous task.json whole. Afterwards nothing temporary remains,
+// and a stale temporary from an earlier kill does not get in the way.
+func TestSaveTaskIsAtomicAndLeavesNoTemporaryBehind(t *testing.T) {
+	home(t)
+	ws, err := New(NewOptions{Idea: "a thing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A stale temporary, as a killed write would leave.
+	if err := os.WriteFile(ws.TaskPath()+".tmp", []byte("{truncated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws.Task.Stage = "spec"
+	if err := ws.SaveTask(); err != nil {
+		t.Fatalf("SaveTask with a stale temporary present: %v", err)
+	}
+	if _, err := os.Stat(ws.TaskPath() + ".tmp"); err == nil {
+		t.Error("task.json.tmp is still there after a save")
+	}
+	got, err := Open(ws.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Task.Stage != "spec" {
+		t.Errorf("stage = %q after save; the rename did not land the new content", got.Task.Stage)
+	}
+}

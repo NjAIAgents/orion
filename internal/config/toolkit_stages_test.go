@@ -11,7 +11,7 @@ import (
 // sample of it.
 func TestAllCanonicalStageNamesAreAccepted(t *testing.T) {
 	canonical := []string{
-		"intent", "spec", "plan", "ticket", "scaffold",
+		"intent", "constitution", "spec", "plan", "analyze", "ticket", "scaffold",
 		"decompose", "build", "verify", "review", "pr",
 	}
 	for _, stage := range canonical {
@@ -59,7 +59,7 @@ func TestUnknownStageErrorListsValidOptions(t *testing.T) {
 	if !strings.Contains(msg, "deploy") {
 		t.Errorf("error must cite the invalid key %q, got: %v", "deploy", err)
 	}
-	for _, stage := range []string{"intent", "spec", "plan", "ticket", "scaffold",
+	for _, stage := range []string{"intent", "constitution", "spec", "plan", "analyze", "ticket", "scaffold",
 		"decompose", "build", "verify", "review", "pr"} {
 		if !strings.Contains(msg, stage) {
 			t.Errorf("error must list valid stage %q among the options, got: %v", stage, err)
@@ -89,5 +89,21 @@ func TestCollisionErrorNamesBothSpellingsSorted(t *testing.T) {
 	sort.Strings(got)
 	if got[0] != "design" {
 		t.Fatalf("sanity: sort.Strings ordering assumption is wrong: %v", got)
+	}
+}
+
+// KnownStage is the same set parseToolkit accepts, in either spelling, and
+// nothing else -- a caller asking "is this stage done" must get no for a
+// name that is not a stage.
+func TestKnownStageAcceptsBothSpellingsAndNothingElse(t *testing.T) {
+	for _, name := range []string{"intent", "spec", "design", "plan", "build", "implement", "verify", "test", "pr", "ship", " Scaffold ", "DECOMPOSE"} {
+		if !KnownStage(name) {
+			t.Errorf("KnownStage(%q) = false", name)
+		}
+	}
+	for _, name := range []string{"", "bogus", "deploy", "specify"} {
+		if KnownStage(name) {
+			t.Errorf("KnownStage(%q) = true", name)
+		}
 	}
 }

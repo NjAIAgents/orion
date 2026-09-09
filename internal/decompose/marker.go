@@ -93,6 +93,45 @@ func label(t *Tree) {
 	})
 }
 
+// Queue puts the queue label -- the one `orion watch` claims by -- on the
+// items that are each ONE unit of work: every story, and every task that
+// hangs off the epic directly (Setup, Foundational, Polish). Not the epic,
+// and not a task under a story.
+//
+// THE RULE COMES FROM THE QUEUE, not from taste. watch.Queued drops any
+// labelled issue whose parent is also labelled, and a claimed parent works
+// its children in one branch (internal/tracker/children.go). Label the epic
+// and it becomes the one claimable unit: a single agent works the whole
+// project in one branch while every story is dropped as "its parent has
+// it". Label a story's sub-tasks and they are dropped for the same reason,
+// so the label there is noise at best and, on a story somebody unlabels by
+// hand, a surprise. Stories and epic-level tasks have no labelled parent,
+// so each is admitted exactly once (OR-390, docs/decisions/0023).
+func (t *Tree) Queue(label string) {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return
+	}
+	_ = t.Walk(func(it, parent *Item) error {
+		// WORK NO AGENT CAN DO IS NOT OFFERED TO THE QUEUE. A credential a
+		// person holds, a console click, a conversation with another team,
+		// a signature. The ticket is still created -- it is real work and
+		// belongs in the tracker -- it simply carries no claim label, so an
+		// agent never picks it up, spends a run discovering it cannot do
+		// it, and leaves a ticket in `working` for a human to unstick.
+		if it.Human {
+			return nil
+		}
+		switch {
+		case it.Kind == KindStory:
+			it.Labels = append(it.Labels, label)
+		case it.Kind == KindTask && parent != nil && parent.Kind == KindEpic:
+			it.Labels = append(it.Labels, label)
+		}
+		return nil
+	})
+}
+
 // signals are the structural parts of a task the marker may be read from:
 // the DIRECTORIES its file paths sit in, and its phase heading.
 //
