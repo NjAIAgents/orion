@@ -33,6 +33,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -456,6 +457,13 @@ func planRun(pr projectReader, cfg config.Config, opts planOptions) error {
 		}
 		done := runPlanChainWith(out, ws, opts.Run, opts.Confirm, ask, opts.From)
 		if done == len(planStages) {
+			// Immediately before the command that needs it. `orion watch KEY`
+			// refuses a project the registry does not know, and nothing along
+			// the chain had recorded one -- so it ended by naming its own
+			// next command and that command refused (OR-419). Here rather
+			// than in the clone step, which is skipped when the operator
+			// keeps the project in the sandbox.
+			registerPlanProject(out, ws)
 			fmt.Fprintf(out, "\n%s\n", ui.Dim(out,
 				"all planning stages are done; the tracker holds the work tree"))
 			fmt.Fprintf(out, "next: orion watch %s\n", strings.ToUpper(opts.Key))
@@ -557,6 +565,18 @@ func planWorkspace(out io.Writer, p tracker.Project, slug string, opts planOptio
 		return nil, err
 	}
 	ws.Task.Tracker = raw
+	// And into the repository's own orion.json, which is written from a
+	// static default before any project is known and so leaves the tracker
+	// off. Nothing else fills it in, and `registerRepo` returns early
+	// without it -- so the chain ends by printing `orion watch KEY`, a
+	// command that refuses because the project was never registered
+	// (FOUND ON A REAL PROJECT). The workspace knows the key here; the
+	// file it wrote a moment ago is the one thing that does not.
+	if err := setProjectKey(ws.RepoDir(), p.Key); err != nil {
+		ui.Warn(out, "could not record %s in orion.json: %v", p.Key, err)
+		fmt.Fprintf(out, "  %s\n", ui.Dim(out,
+			"orion watch will not find this project until it is set"))
+	}
 	ws.Task.Stage = planStages[0].Stage
 	// The discovery idea this came from, if the description says. `orion new`
 	// writes "From PRIOR-3" at the top for an idea given by key and for one
@@ -783,4 +803,53 @@ func orNone(s string) string {
 		return "(none)"
 	}
 	return s
+}
+
+// setProjectKey records the tracker project in the repository's orion.json.
+//
+// A TARGETED EDIT, not a rewrite. The file is written from a static default
+// before any project is known, and by the time one is it may already carry
+// hand edits -- gates turned off, paths moved. Re-serialising a parsed
+// config would silently normalise all of that, so only the two fields that
+// answer "which project is this" are touched and every other byte is left
+// as it was found.
+func setProjectKey(repo, key string) error {
+	path := filepath.Join(repo, "orion.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return err
+	}
+	var tr map[string]json.RawMessage
+	if raw, ok := doc["tracker"]; ok {
+		if err := json.Unmarshal(raw, &tr); err != nil {
+			return err
+		}
+	} else {
+		tr = map[string]json.RawMessage{}
+	}
+	if bytes.Equal(tr["project_key"], mustJSON(key)) && bytes.Equal(tr["enabled"], []byte("true")) {
+		return nil
+	}
+	tr["project_key"] = mustJSON(key)
+	// Enabled too: a key with the tracker off is a project nothing reads.
+	tr["enabled"] = []byte("true")
+	merged, err := json.Marshal(tr)
+	if err != nil {
+		return err
+	}
+	doc["tracker"] = merged
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(out, '\n'), 0o644)
+}
+
+func mustJSON(s string) []byte {
+	b, _ := json.Marshal(s)
+	return b
 }

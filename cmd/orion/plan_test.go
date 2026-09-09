@@ -486,3 +486,48 @@ func TestPlanCostShapeCountsOnlySupervisedSteps(t *testing.T) {
 		t.Errorf("the frame step is missing from the roster announcement:\n%s", out)
 	}
 }
+
+// The chain ends by printing `orion watch KEY`, which refuses unless the
+// project is registered -- and registration reads the tracker key out of
+// the repository's orion.json, which is written from a static default
+// before any project is known. Nothing else filled it in (OR-419).
+func TestPlanRecordsTheProjectKeyInTheRepositoryConfig(t *testing.T) {
+	repo := t.TempDir()
+	cfg := `{
+  "vcs": {"provider": "github", "work_branch": "develop"},
+  "tracker": {"enabled": false, "provider": "jira", "project_key": ""},
+  "qa": {"enabled": true, "max_rounds": 3}
+}`
+	if err := os.WriteFile(filepath.Join(repo, "orion.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := setProjectKey(repo, "CLOUDLEN"); err != nil {
+		t.Fatalf("recording the key failed: %v", err)
+	}
+
+	var got map[string]any
+	b, err := os.ReadFile(filepath.Join(repo, "orion.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("the file is no longer valid json: %v", err)
+	}
+	tr, _ := got["tracker"].(map[string]any)
+	if tr["project_key"] != "CLOUDLEN" {
+		t.Errorf("project_key is %v, want CLOUDLEN", tr["project_key"])
+	}
+	if tr["enabled"] != true {
+		t.Error("a key with the tracker off is a project nothing reads")
+	}
+	// EVERY OTHER SETTING SURVIVES. The file may already carry hand edits,
+	// and a rewrite that normalises them is a worse bug than the one this
+	// fixes.
+	if qa, _ := got["qa"].(map[string]any); qa["max_rounds"] != float64(3) {
+		t.Errorf("an unrelated setting was lost: %v", got["qa"])
+	}
+	if vcs, _ := got["vcs"].(map[string]any); vcs["work_branch"] != "develop" {
+		t.Errorf("the vcs block was lost: %v", got["vcs"])
+	}
+}

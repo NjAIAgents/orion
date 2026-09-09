@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/provision"
+	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -921,5 +922,54 @@ func TestCloneIsDoneWhenTheCopyIsInsideTheFolderYouNamed(t *testing.T) {
 	}
 	if !cloneDone(ws) {
 		t.Errorf("a copy at %s was not recognised", inside)
+	}
+}
+
+// The chain ends by printing `orion watch KEY`, and that command refuses a
+// project the registry does not know. Nothing along the chain recorded one,
+// so the chain named its own next command and that command refused (OR-419).
+func TestTheChainRegistersTheProjectItJustPlanned(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ORION_HOME", home)
+	if workspace.Home() != home {
+		t.Skipf("workspace home is %s, not the temp dir", workspace.Home())
+	}
+
+	ws := chainWS(t)
+	ws.Task.Tracker = []byte(`{"provider":"jira","key":"CLOUDLEN","name":"CloudLens"}`)
+	ws.Task.Remote = "https://github.com/me/cloudlens.git"
+	ws.Task.CheckoutPath = t.TempDir()
+
+	var out bytes.Buffer
+	registerPlanProject(&out, ws)
+
+	f, err := registry.Load(home)
+	if err != nil {
+		t.Fatalf("reading the registry: %v", err)
+	}
+	if _, ok := f.Repos["CLOUDLEN"]; !ok {
+		t.Errorf("the project was not registered; registry holds %v\n%s", f.Keys(), out.String())
+	}
+}
+
+// A project kept in the sandbox is still registered: staying there is a
+// normal choice, and `orion watch` has to work for it too.
+func TestAProjectWithNoCopyIsStillRegistered(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ORION_HOME", home)
+	if workspace.Home() != home {
+		t.Skipf("workspace home is %s, not the temp dir", workspace.Home())
+	}
+
+	ws := chainWS(t)
+	ws.Task.Tracker = []byte(`{"provider":"jira","key":"CLOUDLEN"}`)
+	// no CheckoutPath: the operator kept it in the sandbox
+
+	var out bytes.Buffer
+	registerPlanProject(&out, ws)
+
+	f, _ := registry.Load(home)
+	if _, ok := f.Repos["CLOUDLEN"]; !ok {
+		t.Errorf("a sandbox-only project was not registered: %v", f.Keys())
 	}
 }

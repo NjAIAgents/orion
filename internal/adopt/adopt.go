@@ -188,9 +188,26 @@ func Run(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("%s is not a directory", opts.Dir)
 	}
 	if _, err := os.Stat(filepath.Join(opts.Dir, ".git")); err != nil {
-		// Not fatal. Orion's artifact chain is committed, so a non-repo is
-		// a degraded setup rather than an impossible one, and saying so
-		// beats refusing.
+		// REFUSED, because the usual cause is being one directory up.
+		//
+		// This used to warn and carry on: a non-repository was called a
+		// degraded setup rather than an impossible one. But the directory
+		// holding your repositories is exactly the place `orion init` gets
+		// run by mistake, and carrying on writes seven entries -- specs,
+		// plans, docs/intent, evals, .changelog.d, orion.json and a merged
+		// .claude/settings.json -- into the middle of them. Nothing marks
+		// them as Orion's, so the cleanup is by hand and by memory.
+		//
+		// A repository with no commits is still a repository and still
+		// passes. --force is the way through for the case this cannot
+		// foresee (FOUND ON A REAL PROJECT: run twice, one directory up).
+		if !opts.Force {
+			return res, fmt.Errorf("%s is not a git repository.\n"+
+				"  orion init writes the artifact chain, which is meant to be committed.\n"+
+				"  Run it inside the repository: cd <repo> && orion init\n"+
+				"  Or start one here first: git init\n"+
+				"  To scaffold here anyway: orion init --force", opts.Dir)
+		}
 		res.Warnings = append(res.Warnings,
 			"no .git here: the artifact chain is meant to be committed, so init a repo when you can")
 	}
