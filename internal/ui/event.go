@@ -69,7 +69,11 @@ func VerbFor(kind string) string {
 	switch kind {
 	case events.KindFailed, events.KindBlocked:
 		return VerbFail
-	case events.KindEscalate, events.KindRefuse, events.KindBudget:
+	case events.KindEscalate, events.KindRefuse, events.KindBudget,
+		events.KindAttribution:
+		// Attribution is only EMITTED when something is wrong with it -- a
+		// correctly attributed run says nothing at all -- so every stored
+		// event of this kind is one worth a look.
 		return VerbWarn
 	case events.KindCI:
 		return VerbWaiting

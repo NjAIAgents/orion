@@ -891,6 +891,27 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}
 	log.Emitf(events.KindCommit, actorID, "%d commit(s) on %s", commits, job.Branch)
 
+	// What the attribution hook recorded, said out loud at the moment it
+	// happened. The hook itself prints into a git commit nobody reads until
+	// a report is run weeks later, and its worst failure -- claiming a human
+	// wrote an agent's code -- is invisible in that report because it looks
+	// like an ordinary finding (OR-193). Reported, never fatal: this is a
+	// record ABOUT the work, and a run that produced good code is not failed
+	// because a trailer is wrong.
+	if att := readAttribution(job.Path, cfg.VCS.WorkBranch, commits); att.line() != "" {
+		verb := ui.VerbWarn
+		if !att.wrong() && att.Missing == 0 {
+			verb = ui.VerbOK
+		}
+		// The KIND carries the severity, because `orion log` replays a
+		// stored event through ui.VerbFor(kind) and has nothing else to go
+		// on. Emitted as a note, a false claim would read back in green as
+		// something that worked -- the failure repeating itself inside the
+		// tool built to surface it.
+		log.Emitf(events.KindAttribution, actorID, "%s", att.line())
+		ui.Say(w, key, actorID, verb, "%s", att.line())
+	}
+
 	// Boundary two: implementation is over. The commit count is DETAIL on
 	// this line rather than a line of its own -- it used to be the last thing
 	// printed before QA started, so it stood in for a handoff it never

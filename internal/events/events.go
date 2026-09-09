@@ -55,6 +55,12 @@ const (
 	KindSay      = "say"       // an agent said what it was doing
 	KindStage    = "stage"     // the run crossed from one stage into the next
 	KindNote     = "note"      // anything else worth seeing
+	// KindAttribution reports what the whodunit hook recorded about a run's
+	// commits. Its own kind rather than a note because a note replays as
+	// `ok`, and the case worth reporting is a commit claiming a human wrote
+	// an agent's code -- which read back in green is the failure repeating
+	// itself in the tool built to surface it (OR-193).
+	KindAttribution = "attribution"
 )
 
 // STAGE IS A BOUNDARY, NOT AN ACTION. Every other kind reports something that
