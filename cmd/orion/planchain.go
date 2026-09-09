@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/ui"
 	"github.com/orion-sdlc/orion/internal/workspace"
@@ -412,4 +413,50 @@ func pushPlanBranch(out io.Writer, ws *workspace.Workspace) {
 		ws.Task.PlanBranch = branch
 		_ = ws.SaveTask()
 	}
+}
+
+// registerPlanProject records the project-key to repository mapping, so the
+// `orion watch KEY` the chain ends by printing actually runs.
+//
+// It was nobody's job. `orion init` does it, but only for a repository it
+// recognises as its own source -- and a workspace the chain provisioned has
+// the sandbox as its source, so running init in the copy tries to create a
+// SECOND sandbox for a project that already has one. The chain knows the
+// key, the workspace and the remote at this point; the registry is the one
+// place that does not (FOUND ON A REAL PROJECT: the chain finished and its
+// own next command refused with "not a registered project").
+//
+// Reported and never fatal: the tree is created and the copy is made either
+// way, and a mapping is one command to add.
+func registerPlanProject(out io.Writer, ws *workspace.Workspace) {
+	key := strings.TrimSpace(ws.Task.TrackerKey())
+	if key == "" {
+		return
+	}
+	// The source is the operator's own copy when there is one, since that is
+	// the checkout a person works in; the sandbox otherwise.
+	source := strings.TrimSpace(ws.Task.CheckoutPath)
+	if p, err := expandPath(source); err == nil && source != "" {
+		if _, statErr := os.Stat(filepath.Join(p, ws.ID, ".git")); statErr == nil {
+			source = filepath.Join(p, ws.ID)
+		} else {
+			source = p
+		}
+	}
+	if source == "" {
+		source = ws.RepoDir()
+	}
+	var channel string
+	if ws.Task.Slack != nil {
+		channel = ws.Task.Slack.ID
+	}
+	err := registry.Bind(workspace.Home(), registry.Entry{
+		Key: key, Source: source, Workspace: ws.ID,
+		Channel: channel, Remote: ws.Task.Remote,
+	})
+	if err != nil {
+		ui.Warn(out, "%v", err)
+		return
+	}
+	ui.Ok(out, "registered", "%s -> %s", key, source)
 }

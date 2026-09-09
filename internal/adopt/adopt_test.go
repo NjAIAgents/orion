@@ -195,9 +195,13 @@ func TestExistingConfigNotOverwrittenWithoutForce(t *testing.T) {
 	}
 }
 
-func TestWarnsWhenNotAGitRepo(t *testing.T) {
+// Adopting a non-repository is now a refusal rather than a warning
+// (OR-419), but forcing past it must still say so -- the artifact chain is
+// meant to be committed, and a scaffold that reaches no remote is worth a
+// line either way.
+func TestWarnsWhenForcedIntoSomethingThatIsNotAGitRepo(t *testing.T) {
 	d := t.TempDir() // no .git
-	res, err := Run(Options{Dir: d, Binary: "orion"})
+	res, err := Run(Options{Dir: d, Binary: "orion", Force: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,5 +605,51 @@ func TestGitignoreWithoutTrailingNewline(t *testing.T) {
 		if !found {
 			t.Errorf("%q is not its own line:\n%s", want, b)
 		}
+	}
+}
+
+// The folder holding your repositories is exactly where `orion init` gets
+// run by mistake. It used to warn and scaffold anyway, leaving seven
+// entries among the repositories with nothing to mark them as Orion's
+// (OR-419).
+func TestInitRefusesADirectoryThatIsNotARepository(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := Run(Options{Dir: dir})
+
+	if err == nil {
+		t.Fatal("scaffolded into a directory with no .git")
+	}
+	for _, want := range []string{"not a git repository", "cd <repo>", "--force"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
+	for _, made := range []string{"specs", "plans", "orion.json", ".changelog.d"} {
+		if _, err := os.Stat(filepath.Join(dir, made)); err == nil {
+			t.Errorf("%s was created despite the refusal", made)
+		}
+	}
+}
+
+// --force is the way through, for the case the check cannot foresee.
+func TestInitScaffoldsANonRepositoryWithForce(t *testing.T) {
+	dir := t.TempDir()
+
+	res, err := Run(Options{Dir: dir, Force: true})
+	if err != nil {
+		t.Fatalf("--force did not get through: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "specs")); err != nil {
+		t.Errorf("--force refused to scaffold: %v", err)
+	}
+	var warned bool
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "no .git here") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Error("--force scaffolded a non-repository without saying so")
 	}
 }
