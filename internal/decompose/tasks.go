@@ -804,7 +804,24 @@ func summarise(desc string) string {
 	if i := strings.LastIndexByte(cut, ' '); i > summaryMax/2 {
 		cut = cut[:i]
 	}
+	cut = closeBrackets(cut)
 	return strings.TrimRight(cut, " ,;:-") + "…"
+}
+
+// closeBrackets drops a trailing fragment left inside an opener the cut did
+// not reach the close of.
+//
+// "…run-rate (linear" reads as a broken sentence rather than a shortened
+// one, and the words after the bracket are the qualifier, never the point
+// (OR-415). Cutting back to the opener loses nothing a reader wanted.
+func closeBrackets(s string) string {
+	for _, pair := range []struct{ open, close byte }{{'(', ')'}, {'[', ']'}, {'{', '}'}} {
+		i := strings.LastIndexByte(s, pair.open)
+		if i >= 0 && strings.IndexByte(s[i:], pair.close) < 0 {
+			s = strings.TrimRight(s[:i], " ,;:-")
+		}
+	}
+	return s
 }
 
 // afterTask reads "after T012" / "after T000" from a dependency line.

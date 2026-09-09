@@ -634,3 +634,28 @@ func TestOnlyThePhaseDependenciesBecomeEdges(t *testing.T) {
 		}
 	}
 }
+
+// A clipped summary must not stop inside an open bracket: "run-rate
+// (linear" reads as broken rather than shortened (OR-415).
+func TestASummaryNeverEndsInsideAnOpenBracket(t *testing.T) {
+	long := "compute burn-down from the previous fourteen days of recorded " +
+		"spend per account (linear run-rate, no seasonality assumed)"
+
+	got := summarise(long)
+
+	if strings.ContainsAny(got, "([{") && !strings.ContainsAny(got, ")]}") {
+		t.Errorf("the summary stops inside an open bracket: %q", got)
+	}
+	if strings.HasSuffix(strings.TrimSuffix(got, "…"), "(") {
+		t.Errorf("the summary ends on a bare opener: %q", got)
+	}
+}
+
+// The whole-sentence path is untouched: a summary that already closes what
+// it opens keeps its brackets.
+func TestASummaryKeepsBracketsItCloses(t *testing.T) {
+	got := summarise("record the spend (per account) each night. Then report it.")
+	if !strings.Contains(got, "(per account)") {
+		t.Errorf("a closed bracket was dropped: %q", got)
+	}
+}
