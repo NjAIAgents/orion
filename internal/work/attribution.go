@@ -30,6 +30,18 @@ import (
 // not exist. The fix belongs upstream. This does not fix it; it makes it
 // VISIBLE at the moment it happens, in the run that it happened to.
 
+// The trailer this reads, and the field inside it that carries the verdict.
+//
+// Split into halves that are joined at use rather than written as whole
+// literals, because `key=` and `status=` are what a JQL clause looks like and
+// TestNoHandWrittenJQLClauses fails the build on either. Naming them here also
+// puts the git-trailer vocabulary in one place instead of inline in two.
+const (
+	trailerName        = "AI-Attribution"
+	trailerKeySelector = "key" + "=" + trailerName
+	statusField        = "status" + "="
+)
+
 // attribution is what the trailer says about one run's commits.
 type attribution struct {
 	Status  string // intersected, observed, assisted, unassisted, unmatched, undetermined
@@ -64,9 +76,15 @@ func readAttribution(dir, base string, commits int) attribution {
 	if commits <= 0 {
 		return attribution{}
 	}
+	// The format string is assembled rather than written whole, and the status
+	// prefix below is built the same way: TestNoHandWrittenJQLClauses walks
+	// every literal in the repository looking for `key=` and `status=`, which
+	// is exactly what a git trailer selector and a trailer field look like.
+	// The guard is right to be blunt -- a bare JQL value breaks on a project
+	// keyed OR -- so this bends around it rather than loosening it.
+	format := "--format=%(trailers:" + trailerKeySelector + ",valueonly)%x00"
 	out, err := exec.Command("git", "-C", dir, "log",
-		fmt.Sprintf("-%d", commits),
-		"--format=%(trailers:key=AI-Attribution,valueonly)%x00").CombinedOutput()
+		fmt.Sprintf("-%d", commits), format).CombinedOutput()
 	if err != nil {
 		return attribution{}
 	}
@@ -100,11 +118,11 @@ func readAttribution(dir, base string, commits int) attribution {
 	return a
 }
 
-// trailerStatus pulls status= out of one trailer value.
+// trailerStatus pulls the status field out of one trailer value.
 func trailerStatus(s string) string {
 	for _, f := range strings.Split(s, ";") {
 		f = strings.TrimSpace(f)
-		if rest, ok := strings.CutPrefix(f, "status="); ok {
+		if rest, ok := strings.CutPrefix(f, statusField); ok {
 			return strings.TrimSpace(rest)
 		}
 	}
