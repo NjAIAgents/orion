@@ -100,8 +100,45 @@ func TestGateProductionDeployWithApproval(t *testing.T) {
 	}
 }
 
+// onFeatureBranch puts the test in a throwaway repository standing on a
+// branch no gate protects, so a bare `git push` resolves to something
+// harmless rather than to whatever the developer or CI happens to have
+// checked out.
+func onFeatureBranch(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		c := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		c.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=o", "GIT_AUTHOR_EMAIL=o@l",
+			"GIT_COMMITTER_NAME=o", "GIT_COMMITTER_EMAIL=o@l")
+		if b, err := c.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable: %v\n%s", err, b)
+		}
+	}
+	run("init", "-b", "orion/test-fixture")
+	run("commit", "--allow-empty", "-m", "x")
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGatePushProtection(t *testing.T) {
 	cfg := config.Defaults()
+
+	// STAND SOMEWHERE HARMLESS FIRST. A refspec-less `git push` resolves
+	// against the CHECKED-OUT branch, so this test's allowed cases depend on
+	// where it is run from: green on a feature branch, red on develop, which
+	// is exactly what CI checks out. It passed until develop joined the
+	// protected set (f31c658) and then failed on CI alone, which is the worst
+	// shape for a test to have.
+	onFeatureBranch(t)
 
 	// Both long-lived branches are protected. Protecting only main would
 	// leave the pull request into develop optional, and an optional gate is not
