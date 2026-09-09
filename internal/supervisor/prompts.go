@@ -62,8 +62,108 @@ func command(tk config.Toolkit, stage, builtin string) string {
 	return builtin
 }
 
+// ideaFieldsNote asks for the tracker's idea to be filled in, but only when
+// there IS one and Orion can name it.
+//
+// Naming it is the whole point. The first version said "IF THE TRACKER HOLDS
+// AN IDEA FOR THIS WORK" and left the agent to find out: it spent ninety
+// seconds reading `orion --help`, `orion ls`, `orion status` and grepping the
+// workspace for a key that was recorded in task.json all along. An instruction
+// that sends an agent hunting for its own input is a worse instruction than
+// none.
+func ideaFieldsNote(ws *workspace.Workspace) string {
+	key := strings.TrimSpace(ws.Task.IdeaKey)
+	if key == "" {
+		return ""
+	}
+	return join(
+		"",
+		"FINALLY, FILL IN THE TRACKER'S IDEA FOR THIS WORK, which is "+key+".",
+		"A discovery board where every idea is an empty form is a board nobody reads.",
+		"",
+		quote("orion idea fields "+key+"        # what this project accepts\n"+
+			"orion idea set "+key+" --field \"Theme\" --value \"...\""),
+		"",
+		"Read the fields first and choose only from what it prints: these are custom",
+		"fields whose options differ per project, and a value it does not offer is",
+		"refused. Set only what the idea and your research support -- a horizon nobody",
+		"stated is a guess, and a guess in a roadmap field is read later as a decision.",
+	)
+}
+
+// useCommandNote tells the stage which command to run, when its project
+// configured one.
+//
+// Only spec and plan need this helper: intent, scaffold and decompose name
+// their command inline because they have always had a built-in one to name.
+// These two had no built-in skill, so their prompts named nothing -- and a
+// project that configured "spec": "/speckit-specify" got a prompt that never
+// mentioned it. The config loaded, `orion doctor` reported the toolkit
+// healthy, and the stage ran Orion's own prompt regardless.
+func useCommandNote(tk config.Toolkit, stage string) string {
+	c := strings.TrimSpace(tk.Stage(stage))
+	if c == "" {
+		return ""
+	}
+	return "Use " + c + " for this stage.\n"
+}
+
+// gatesNote lists what orion.json has already decided, for the constitution
+// to record: the branch model, and each gate that is on, named by its key so
+// a reader can find the setting the principle came from.
+func gatesNote(cfg config.Config) string {
+	lines := []string{
+		"- Branch model: feature branches are cut from " + cfg.VCS.WorkBranch + " and merge",
+		"  back by reviewed pull request; " + cfg.VCS.DefaultBranch + " is the release branch.",
+		"  Both are protected; nothing pushes to either directly (orion.json vcs).",
+	}
+	g := cfg.Gates
+	if g.RequirePlanBeforeEdit {
+		lines = append(lines, "- A plan is written and approved before any edit (gates.require_plan_before_edit).")
+	}
+	if g.ProtectTestsDuringFix {
+		lines = append(lines, "- Tests are not edited while fixing the code they cover (gates.protect_tests_during_fix).")
+	}
+	if g.ProductionRequiresAuth {
+		lines = append(lines, "- A production change needs explicit authorisation (gates.production_requires_authorization).")
+	}
+	if g.BlockDirectPushToDefaultBranch {
+		lines = append(lines, "- No direct push to the default branch (gates.block_direct_push_to_default_branch).")
+	}
+	return join(lines...)
+}
+
+// taskListNote asks the plan stage to leave the task list the decompose stage
+// reads.
+//
+// Only under a toolkit that produces one. `/speckit-plan` writes plan.md,
+// research.md, data-model.md and contracts -- NOT tasks.md, which is
+// /speckit-tasks' job, and which `orion decompose` reads from
+// specs/<nnn>/tasks.md. Configuring the plan stage without this leaves the
+// chain with a plan and nothing to decompose from.
+//
+// Orion still owns the sequencing: this is one stage running two of its
+// toolkit's commands in the order that toolkit itself defines (plan hands off
+// to tasks), not config expressing an order between Orion's stages.
+func taskListNote(tk config.Toolkit, tasks string) string {
+	if strings.TrimSpace(tk.Stage("plan")) == "" || tasks == "" {
+		return ""
+	}
+	return join(
+		"",
+		"THEN LEAVE A TASK LIST. If the command above produces a plan but no task",
+		"list -- spec-kit's /speckit-plan is exactly this, and hands off to",
+		"/speckit-tasks -- run that handoff too, so "+tasks,
+		"exists. The decompose stage reads that file to create the tracker tree;",
+		"without it the chain has a plan and nothing to decompose.",
+	)
+}
+
 func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string, error) {
 	idea := ws.Task.Idea
+	// The exact artifact path, so the prompt and the check that reads it
+	// cannot disagree about the filename.
+	intentPath := config.Load(ws.RepoDir()).IntentPath(ws.Task.Slug)
 
 	// Four stages name the plan file: the one that writes it, and the three
 	// that read it. The path comes from config rather than a literal so a
@@ -71,7 +171,19 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 	// the shield's plan gate, which reads the same setting through the same
 	// helper. A build prompt pointing at a file the plan stage never wrote
 	// is the same silent break as a gate looking in the wrong directory.
-	plan := config.Load(ws.RepoDir()).PlanPath(ws.Task.Slug)
+	//
+	// The spec and plan paths come from the SAME functions the artifact
+	// gate checks, so a delegated stage is told the feature-directory layout
+	// and checked there, and a built-in one is told the classic path and
+	// checked there (artifact.go, docs/decisions/0022).
+	cfg := config.Load(ws.RepoDir())
+	// The toolkit block handed in is the authority, not the one on disk:
+	// Run passes the same block it loaded, and a caller building a prompt
+	// for a given configuration must get paths that match it.
+	cfg.Toolkit = tk
+	spec := specArtifact(cfg, ws.Task.Slug)
+	plan := planArtifact(cfg, ws.Task.Slug)
+	tasks := tasksArtifact(cfg, ws.Task.Slug)
 
 	switch strings.ToLower(stage) {
 	case "intent":
@@ -79,9 +191,15 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"Capture the intent behind this idea, in the originator's words:",
 			quote(idea),
 			"",
-			"Use the "+command(tk, "intent", "/capture-intent")+" skill. It writes docs/intent/<slug>.md with a fixed",
-			"shape and proposes the commit; the path is part of its contract, so do not",
-			"relocate the file. "+command(tk, "decompose", "/pm-plan")+" later points at this capture as grounding.",
+			"Use the "+command(tk, "intent", "/capture-intent")+" skill, and write EXACTLY this file:",
+			"",
+			quote(intentPath),
+			"",
+			"THAT PATH, character for character. Not a descriptive name of your own --",
+			"Orion reads this exact file to hand your work to the next stage, and a",
+			"well-named file beside it is a stage that produced nothing. Commit it.",
+			"",
+			command(tk, "decompose", "/pm-plan")+" later points at this capture as grounding.",
 			"",
 			"You are the product manager here, and that one file is everything you leave",
 			"behind: what is being built, why it matters, and how success will be",
@@ -114,26 +232,80 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"Never delete a question to unblock the chain. Mark it answered in place, with",
 			"`[x]`, with ~~strikethrough~~, or with an inline \"Answer: ...\".",
 			"",
-			"Record only what was actually said. Do not write code or design a solution.",
+			"A URL IN THE IDEA IS A RESEARCH TARGET, IF YOU CAN REACH IT. An idea given",
+			"as \"something like <product>\" is stating a requirement by reference, and the",
+			"reference is where the requirement actually lives, so read it before writing",
+			"anything: what the thing does, the capabilities a replacement would be",
+			"measured against, the vocabulary its users already have.",
+			"",
+			"EXPECT TO BE BLOCKED. Orion denies WebFetch, curl and wget to every stage --",
+			"deliberately, as an egress control, next to the rules that stop an agent",
+			"reading a credentials file. Try once; if it is refused, do not spend the run",
+			"working around it through another tool.",
+			"",
+			"An unreachable reference is a GAP IN THE IDEA, not a licence to imagine what",
+			"was behind it. Say plainly that it could not be read, make what it would have",
+			"answered an open question, and let the gate stop the chain. Somebody reading",
+			"the page and answering takes minutes; a spec built on an invented feature",
+			"list is found much later. Cite whatever you do read, and mark which lines",
+			"came from a source rather than from the originator.",
+			"",
+			"Record only what was actually said, or what a source named in the idea",
+			"actually says. Do not write code or design a solution.",
+			"",
+			ideaFieldsNote(ws),
+		), nil
+
+	case "constitution":
+		// Project-level, not per feature (docs/decisions/0023): one
+		// .specify/memory/constitution.md that every spec-kit command reads.
+		// Seeded from what orion.json and the intent already decided, so the
+		// stage records decisions rather than inventing principles.
+		return join(
+			"Read "+intentPath+".",
+			"",
+			"Use "+command(tk, "constitution", "/speckit-constitution")+" to write the project",
+			"constitution: the principles every later stage -- spec, plan, tasks and the",
+			"implementation -- is held to. Write EXACTLY this file, which is where",
+			"spec-kit's other commands read it:",
+			"",
+			quote(constitutionArtifact),
+			"",
+			"SEED IT FROM WHAT IS ALREADY DECIDED, and say in the text where each rule",
+			"comes from, rather than inventing principles the project never chose:",
+			"",
+			gatesNote(cfg),
+			"",
+			"Add the constraints the intent records -- compliance, platform, performance,",
+			"budget, anything stated as a limit -- as principles or under an Additional",
+			"Constraints section. What the intent leaves open stays open; do not settle",
+			"it here.",
+			"",
+			"REPLACE EVERY TEMPLATE PLACEHOLDER. spec-kit's template ships as",
+			"`# [PROJECT_NAME] Constitution` full of `[ALL_CAPS]` slots, and Orion's gate",
+			"fails the stage naming any slot still in the file. Fewer principles, fully",
+			"written, beat five slots half-filled. Commit the file.",
 		), nil
 
 	case "spec", "design":
 		return join(
 			"Read docs/intent/"+ws.Task.Slug+".md.",
 			"",
+			useCommandNote(tk, "spec"),
 			"Produce a requirements and design spec. Apply every skill available to you so the",
 			"design conforms to the security, UX and API standards in force.",
 			"",
 			"Flag areas of concern explicitly, especially anywhere two policies contradict and",
 			"you cannot satisfy both. A flagged concern is more useful than a confident guess.",
 			"",
-			"Write specs/"+ws.Task.Slug+".spec.md and commit it. No implementation.",
+			"Write "+spec+" and commit it. No implementation.",
 		), nil
 
 	case "plan":
 		return join(
-			"Read docs/intent/"+ws.Task.Slug+".md and specs/"+ws.Task.Slug+".spec.md.",
+			"Read docs/intent/"+ws.Task.Slug+".md and "+spec+".",
 			"",
+			useCommandNote(tk, "plan"),
 			"Produce an implementation plan naming: the files that change, the order of work,",
 			"the tests that prove it, and the risks. Interrogate your own plan: what could this",
 			"break, which step is riskiest, what did you reject and why.",
@@ -142,6 +314,39 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"from the plan alone.",
 			"",
 			"Write "+plan+" and commit it. Do not implement yet.",
+			taskListNote(tk, tasks),
+		), nil
+
+	case "analyze":
+		// Read-only by contract: spec-kit's analyze reports, Orion gates on
+		// the report (docs/decisions/0001, 0021). The one line Orion parses
+		// is asked for verbatim, with <N> rather than a digit so the prompt
+		// itself can never satisfy the parser.
+		read := "docs/intent/" + ws.Task.Slug + ".md, " + spec + " and " + plan
+		if tasks != "" {
+			read = "docs/intent/" + ws.Task.Slug + ".md, " + spec + ", " + plan + " and " + tasks
+		}
+		return join(
+			"Read "+read+".",
+			"",
+			"Use "+command(tk, "analyze", "/speckit-analyze")+" for a READ-ONLY consistency check",
+			"of the spec, the plan and the task list against each other and against",
+			constitutionArtifact+": duplication, ambiguity, underspecification,",
+			"constitution violations, requirements no task covers, tasks no requirement",
+			"needs.",
+			"",
+			"WRITE NOTHING AND COMMIT NOTHING. Do not apply remediations, do not offer",
+			"them, do not ask whether to: nobody can answer. Skip any extension hook",
+			"check; Orion registers none.",
+			"",
+			"End your report with the Metrics block, and in it this line exactly, on its",
+			"own line, with the count as digits:",
+			"",
+			quote("Critical Issues Count: <N>"),
+			"",
+			"Orion reads that line and nothing else. A report without it fails the stage;",
+			"a count above zero blocks the chain until the spec, plan or tasks are fixed",
+			"and `orion plan <KEY> --from analyze` runs this check again.",
 		), nil
 
 	case "ticket":
@@ -159,11 +364,15 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"layer in the OpenSSF OSPS Baseline and delegates the stack layout to the",
 			"ecosystem's own generator rather than inventing one.",
 			"",
-			"Read docs/intent/"+ws.Task.Slug+".md and specs/"+ws.Task.Slug+".spec.md first",
+			"Read docs/intent/"+ws.Task.Slug+".md and "+spec+" first",
 			"so the stack choice follows the design rather than a default.",
 			"",
 			"Work on a branch cut from develop. Do not commit to develop or main directly;",
 			"the gate will refuse it and the refusal is correct.",
+			"",
+			"COMMIT README.md. It is the artifact this stage owes: Orion checks that it",
+			"is there, not empty and tracked, and fails the stage otherwise. If something",
+			"stops you laying out the repository, say so there rather than exiting quietly.",
 		), nil
 
 	case "decompose":
@@ -292,7 +501,7 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 
 	default:
 		return "", fmt.Errorf(
-			"unknown stage %q (want: intent, spec, plan, scaffold, decompose, build, verify, review, pr)", stage)
+			"unknown stage %q (want: intent, constitution, spec, plan, analyze, scaffold, decompose, build, verify, review, pr)", stage)
 	}
 }
 

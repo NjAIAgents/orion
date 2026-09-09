@@ -1,9 +1,15 @@
 Capture the intent behind this idea, in the originator's words:
   an idea
 
-Use the /capture-intent skill. It writes docs/intent/<slug>.md with a fixed
-shape and proposes the commit; the path is part of its contract, so do not
-relocate the file. /pm-plan later points at this capture as grounding.
+Use the /capture-intent skill, and write EXACTLY this file:
+
+  docs/intent/thing.md
+
+THAT PATH, character for character. Not a descriptive name of your own --
+Orion reads this exact file to hand your work to the next stage, and a
+well-named file beside it is a stage that produced nothing. Commit it.
+
+/pm-plan later points at this capture as grounding.
 
 You are the product manager here, and that one file is everything you leave
 behind: what is being built, why it matters, and how success will be
@@ -40,7 +46,28 @@ none, so nobody has to guess whether you thought about it.
 Never delete a question to unblock the chain. Mark it answered in place, with
 `[x]`, with ~~strikethrough~~, or with an inline "Answer: ...".
 
-Record only what was actually said. Do not write code or design a solution.
+A URL IN THE IDEA IS A RESEARCH TARGET, IF YOU CAN REACH IT. An idea given
+as "something like <product>" is stating a requirement by reference, and the
+reference is where the requirement actually lives, so read it before writing
+anything: what the thing does, the capabilities a replacement would be
+measured against, the vocabulary its users already have.
+
+EXPECT TO BE BLOCKED. Orion denies WebFetch, curl and wget to every stage --
+deliberately, as an egress control, next to the rules that stop an agent
+reading a credentials file. Try once; if it is refused, do not spend the run
+working around it through another tool.
+
+An unreachable reference is a GAP IN THE IDEA, not a licence to imagine what
+was behind it. Say plainly that it could not be read, make what it would have
+answered an open question, and let the gate stop the chain. Somebody reading
+the page and answering takes minutes; a spec built on an invented feature
+list is found much later. Cite whatever you do read, and mark which lines
+came from a source rather than from the originator.
+
+Record only what was actually said, or what a source named in the idea
+actually says. Do not write code or design a solution.
+
+
 
 THIS RUN IS HEADLESS. Nothing will ever be announced back to you: a command
 run with run_in_background is never reported as finished, ScheduleWakeup does

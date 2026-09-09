@@ -61,10 +61,25 @@ type fixPlan struct {
 	// Missing is keys no such ticket exists for -- the hazard a range
 	// introduces, since a range names tickets nobody looked at.
 	Missing []string
+	// Shipped is tickets whose CURRENT milestone is already released.
+	//
+	// Moving one rewrites history that is already public: it shipped in that
+	// release, the changelog and the release notes say so, and a milestone
+	// that no longer lists it makes those two records disagree with Jira.
+	// The destination has always been guarded (a released milestone cannot be
+	// added to); this is the same rule applied to the SOURCE, which it was
+	// not, and OR-306 left an already-released v0.8.11 that way.
+	Shipped []fixMove
 }
 
 // writes counts the tickets this plan would actually change.
 func (p fixPlan) writes() int { return len(p.Add) + len(p.Move) }
+
+// blocked reports whether the plan contains anything this command refuses to
+// do. Separate from writes(): a plan of nothing-but-refusals has no writes
+// and is still not a no-op, because it must exit non-zero rather than say
+// "nothing to write".
+func (p fixPlan) blocked() bool { return len(p.Shipped) > 0 }
 
 // planFixVersion decides what attaching these keys to `target` would do,
 // given each key's current milestones.
@@ -77,7 +92,11 @@ func (p fixPlan) writes() int { return len(p.Add) + len(p.Move) }
 // Order follows the keys as given, so the plan reads back in the order the
 // operator typed -- including the expanded interior of a range, which is the
 // part they did not type and most need to see.
-func planFixVersion(target string, keys []string, current map[string][]string) fixPlan {
+// released is the set of milestone names that have already shipped. A key
+// carrying one of them is refused rather than moved -- see fixPlan.Shipped. A
+// nil map means nothing is known to have shipped, which keeps every existing
+// caller's behaviour unchanged.
+func planFixVersion(target string, keys []string, current map[string][]string, released map[string]bool) fixPlan {
 	var p fixPlan
 	for _, k := range keys {
 		on, exists := current[k]
@@ -92,10 +111,27 @@ func planFixVersion(target string, keys []string, current map[string][]string) f
 		case len(on) == 0:
 			p.Add = append(p.Add, k)
 		default:
+			if from := shippedAmong(on, released); len(from) > 0 {
+				p.Shipped = append(p.Shipped, fixMove{Key: k, From: from})
+				continue
+			}
 			p.Move = append(p.Move, fixMove{Key: k, From: on})
 		}
 	}
 	return p
+}
+
+// shippedAmong returns the milestones in list that have already been
+// released. Plural because a ticket can carry several, and naming every one
+// is what lets the operator see what a --force would actually rewrite.
+func shippedAmong(list []string, released map[string]bool) []string {
+	var out []string
+	for _, v := range list {
+		if released[v] {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func containsExact(list []string, want string) bool {
@@ -162,8 +198,10 @@ func projectForKeys(cmd, flag string, keys []string) (string, error) {
 // tickets the range expanded to, so a ticket the operator did not picture is
 // visible before it moves rather than after.
 func printFixPlan(w io.Writer, project, target string, p fixPlan) {
-	ui.Ok(w, "plan", "%s on %s: %d to add, %d to move, %d already there, %d not found",
-		target, project, len(p.Add), len(p.Move), len(p.Already), len(p.Missing))
+	ui.Ok(w, "plan", "%s on %s: %d to add, %d to move, %d already there, "+
+		"%d already shipped, %d not found",
+		target, project, len(p.Add), len(p.Move), len(p.Already),
+		len(p.Shipped), len(p.Missing))
 	for _, k := range p.Add {
 		fmt.Fprintf(w, "          %s\n", ui.Dim(w, "add      "+k))
 	}
@@ -173,6 +211,10 @@ func printFixPlan(w io.Writer, project, target string, p fixPlan) {
 	}
 	for _, k := range p.Already {
 		fmt.Fprintf(w, "          %s\n", ui.Dim(w, "already  "+k))
+	}
+	for _, m := range p.Shipped {
+		ui.Warn(w, "shipped  %s  already released in %s",
+			m.Key, strings.Join(m.From, ", "))
 	}
 	for _, k := range p.Missing {
 		ui.Warn(w, "no such ticket: %s", k)
@@ -222,13 +264,42 @@ func runReleaseAdd(args []string) {
 
 	j, err := tracker.NewJiraFromEnv()
 	exitOn(err)
-	w := os.Stdout
+	if err := attachToVersion(j, os.Stdout, key, name, keys, force); err != nil {
+		if errors.Is(err, errReported) {
+			os.Exit(1)
+		}
+		exitOn(err)
+	}
+}
+
+// releaseAPI is the slice of the tracker attaching a tree to a version
+// needs. An interface so the chain's release step can be tested against a
+// fake; *tracker.Jira satisfies it.
+type releaseAPI interface {
+	FindVersion(projectKey, name string) (tracker.Version, bool, error)
+	ListVersions(projectKey string) ([]tracker.Version, error)
+	GetIssue(key string) (*tracker.Issue, error)
+	SetFixVersion(key, versionID string) error
+	CreateVersion(projectKey, name, description string) (tracker.Version, bool, error)
+}
+
+// errReported is returned when the failure has already been printed in the
+// operator's own words -- the caller exits without adding "orion: " on top.
+var errReported = errors.New("release: not applied; see above")
+
+// attachToVersion attaches keys to the version named `name` on project key,
+// idempotently: the body `orion release add` always had, callable from the
+// chain's release step as well. Every refusal is printed here and returned
+// as errReported; a transport failure is returned as itself.
+func attachToVersion(j releaseAPI, w io.Writer, key, name string, keys []string, force bool) error {
 
 	// The SAME lookup `create` and `close` use, deliberately: internal/tracker
 	// owns version resolution and its case-exact matching, and a second path to
 	// fixVersion is how two answers to one question drift apart.
 	v, found, err := j.FindVersion(key, name)
-	exitOn(err)
+	if err != nil {
+		return err
+	}
 	if !found {
 		ui.Fail(w, "%s has no version named %s", key, name)
 		// Name what DOES exist. "not found" alone leaves the operator guessing
@@ -240,7 +311,7 @@ func runReleaseAdd(args []string) {
 			}
 			ui.Warn(w, "%s has: %s", key, strings.Join(names, ", "))
 		}
-		os.Exit(1)
+		return errReported
 	}
 	// A released milestone records what SHIPPED. Adding to it rewrites a
 	// history that is already public -- in the changelog, in the release notes,
@@ -251,7 +322,7 @@ func runReleaseAdd(args []string) {
 			"rewrite history that has shipped", v.Name, key)
 		ui.Warn(w, "attach it to the next milestone, or pass --force if it really did ship in %s",
 			v.Name)
-		os.Exit(1)
+		return errReported
 	}
 
 	// RESOLVE EVERY KEY BEFORE WRITING ANY. One key per request rather than one
@@ -264,12 +335,41 @@ func runReleaseAdd(args []string) {
 		if errors.Is(err, tracker.ErrIssueNotFound) {
 			continue
 		}
-		exitOn(err)
+		if err != nil {
+			return err
+		}
 		current[k] = is.FixVersions
 	}
 
-	plan := planFixVersion(v.Name, keys, current)
+	// Which milestones have already shipped, so a move OFF one is refused.
+	// A failure to list is not fatal: it degrades to the old behaviour rather
+	// than blocking the command, and says so, because a lookup that cannot
+	// answer must not silently read as "nothing has shipped".
+	released := map[string]bool{}
+	if vs, lerr := j.ListVersions(key); lerr == nil {
+		for _, existing := range vs {
+			if existing.Released {
+				released[existing.Name] = true
+			}
+		}
+	} else {
+		ui.Warn(w, "could not read %s's milestones, so a move off a released "+
+			"one cannot be caught here: %v", key, lerr)
+	}
+
+	plan := planFixVersion(v.Name, keys, current, released)
 	printFixPlan(w, key, v.Name, plan)
+
+	// A ticket that already shipped is not moved. Its release is public --
+	// the changelog and the release notes name it -- and a milestone that no
+	// longer lists it makes those records disagree with Jira.
+	if plan.blocked() && !force {
+		ui.Fail(w, "%d ticket(s) already shipped in a released milestone; "+
+			"moving one rewrites a history that is already public.", len(plan.Shipped))
+		fmt.Fprintf(w, "          %s\n", ui.Dim(w,
+			"If the milestone is genuinely wrong, re-run with --force."))
+		return errReported
+	}
 
 	if plan.writes() == 0 {
 		// Re-running is a no-op that says so, the same property `release
@@ -277,9 +377,18 @@ func runReleaseAdd(args []string) {
 		ui.Ok(w, "unchanged", "%d ticket(s) already on %s; nothing to write",
 			len(plan.Already), v.Name)
 		if len(plan.Missing) > 0 {
-			os.Exit(1)
+			return errReported
 		}
-		return
+		return nil
+	}
+
+	// --force was given, so the refusals proceed as ordinary moves. Merged
+	// here rather than in planFixVersion so the plan the operator READ stays
+	// the plan that was decided: the refusal is still printed as a refusal
+	// above, and forcing it does not rewrite that account after the fact.
+	if len(plan.Shipped) > 0 {
+		ui.Warn(w, "--force: moving %d ticket(s) off a released milestone", len(plan.Shipped))
+		plan.Move = append(plan.Move, plan.Shipped...)
 	}
 
 	var failed []string
@@ -307,7 +416,7 @@ func runReleaseAdd(args []string) {
 		// Partial application is safe to leave: the command is idempotent, so
 		// the fix is to re-run it once the cause is dealt with.
 		ui.Fail(w, "%d ticket(s) could not be updated: %s", len(failed), strings.Join(failed, ", "))
-		os.Exit(1)
+		return errReported
 	}
 	if len(plan.Missing) > 0 {
 		// The writes succeeded, but a key naming no ticket means the range was
@@ -315,6 +424,7 @@ func runReleaseAdd(args []string) {
 		// keep passing over a typo.
 		ui.Fail(w, "%d key(s) name no ticket: %s",
 			len(plan.Missing), strings.Join(plan.Missing, ", "))
-		os.Exit(1)
+		return errReported
 	}
+	return nil
 }

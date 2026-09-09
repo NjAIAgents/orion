@@ -48,20 +48,22 @@ type Toolkit struct {
 // cannot be dispatched is a typo, and a typo silently ignored is a stage
 // nobody notices is unconfigured.
 var canonicalStages = map[string]string{
-	"intent":    "intent",
-	"spec":      "spec",
-	"design":    "spec",
-	"plan":      "plan",
-	"ticket":    "ticket",
-	"scaffold":  "scaffold",
-	"decompose": "decompose",
-	"build":     "build",
-	"implement": "build",
-	"verify":    "verify",
-	"test":      "verify",
-	"review":    "review",
-	"pr":        "pr",
-	"ship":      "pr",
+	"intent":       "intent",
+	"constitution": "constitution",
+	"spec":         "spec",
+	"design":       "spec",
+	"plan":         "plan",
+	"analyze":      "analyze",
+	"ticket":       "ticket",
+	"scaffold":     "scaffold",
+	"decompose":    "decompose",
+	"build":        "build",
+	"implement":    "build",
+	"verify":       "verify",
+	"test":         "verify",
+	"review":       "review",
+	"pr":           "pr",
+	"ship":         "pr",
 }
 
 // orderingKeys are the spellings that would express sequence. Rejected by
@@ -76,6 +78,30 @@ var orderingKeys = map[string]bool{"order": true, "sequence": true, "stage_order
 // Orion's built-in prompt.
 func (t Toolkit) Stage(name string) string {
 	return t.Stages[canonicalStages[strings.ToLower(strings.TrimSpace(name))]]
+}
+
+// DelegatesTo reports whether any stage of this project runs a command whose
+// name contains substr -- "speckit" is the one caller today: it decides
+// whether spec-kit has to be installed and graded at all. A project that
+// names no such command has nothing to install and nothing to check.
+func (t Toolkit) DelegatesTo(substr string) bool {
+	for _, cmd := range t.Stages {
+		if strings.Contains(cmd, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// KnownStage reports whether name is a stage Orion runs, in either spelling.
+//
+// The same set parseToolkit validates a toolkit block against, exported so a
+// caller deciding something ON a stage name -- is this stage's work done? --
+// can refuse a name that is not one, rather than answering from whatever
+// record happens to carry it.
+func KnownStage(name string) bool {
+	_, ok := canonicalStages[strings.ToLower(strings.TrimSpace(name))]
+	return ok
 }
 
 // Spec hands the block to the toolkit package, which resolves what a toolkit

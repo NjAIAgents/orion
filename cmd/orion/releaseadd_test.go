@@ -18,7 +18,7 @@ func TestPlanFixVersionSeparatesAddMoveAlreadyAndMissing(t *testing.T) {
 		// OR-999 is absent from the map: no such ticket.
 	}
 
-	p := planFixVersion("v0.8.3", keys, current)
+	p := planFixVersion("v0.8.3", keys, current, nil)
 
 	if strings.Join(p.Add, ",") != "OR-100" {
 		t.Errorf("Add = %v, want [OR-100]", p.Add)
@@ -43,7 +43,7 @@ func TestPlanFixVersionSeparatesAddMoveAlreadyAndMissing(t *testing.T) {
 // silently skip writing to it.
 func TestPlanFixVersionTellsNoMilestoneFromNoTicket(t *testing.T) {
 	p := planFixVersion("v0.8.3", []string{"OR-1", "OR-2"},
-		map[string][]string{"OR-1": nil})
+		map[string][]string{"OR-1": nil}, nil)
 
 	if strings.Join(p.Add, ",") != "OR-1" {
 		t.Errorf("a real ticket carrying no milestone was not queued as an add: %+v", p)
@@ -60,7 +60,7 @@ func TestPlanFixVersionIsANoOpOnARerun(t *testing.T) {
 		map[string][]string{
 			"OR-100": {"v0.8.3"},
 			"OR-105": {"v0.8.3"},
-		})
+		}, nil)
 
 	if p.writes() != 0 {
 		t.Errorf("a re-run would write %d ticket(s); it must change nothing: %+v", p.writes(), p)
@@ -75,7 +75,7 @@ func TestPlanFixVersionIsANoOpOnARerun(t *testing.T) {
 // back.
 func TestPlanFixVersionLeavesATicketThatAlreadyCarriesTheTarget(t *testing.T) {
 	p := planFixVersion("v0.8.3", []string{"OR-100"},
-		map[string][]string{"OR-100": {"v0.8.2", "v0.8.3"}})
+		map[string][]string{"OR-100": {"v0.8.2", "v0.8.3"}}, nil)
 
 	if p.writes() != 0 || strings.Join(p.Already, ",") != "OR-100" {
 		t.Errorf("a ticket already on the target was queued for a write: %+v", p)
@@ -145,5 +145,94 @@ func TestPrintFixPlanListsEveryOutcome(t *testing.T) {
 			t.Errorf("the preview never mentions %q, so it cannot be read before "+
 				"the write:\n%s", want, out)
 		}
+	}
+}
+
+// OR-306 left an already-released v0.8.11 this way: the destination was
+// guarded, the SOURCE was not, so a ticket that had shipped was moved off the
+// milestone recording that it shipped. The changelog and the release notes
+// still named it, and Jira no longer did.
+func TestATicketThatAlreadyShippedIsNotMoved(t *testing.T) {
+	p := planFixVersion("v0.9.0", []string{"OR-306"},
+		map[string][]string{"OR-306": {"v0.8.11"}},
+		map[string]bool{"v0.8.11": true})
+
+	if len(p.Move) != 0 {
+		t.Errorf("a shipped ticket was planned as an ordinary move: %+v", p.Move)
+	}
+	if len(p.Shipped) != 1 || p.Shipped[0].Key != "OR-306" {
+		t.Fatalf("Shipped = %+v, want OR-306", p.Shipped)
+	}
+	if got := strings.Join(p.Shipped[0].From, ","); got != "v0.8.11" {
+		t.Errorf("From = %q, want the released milestone it would have left", got)
+	}
+	if !p.blocked() {
+		t.Error("the plan does not report itself as blocked")
+	}
+	// A refusal is not a write, or --force would be the only way to reach a
+	// no-op and the command would report "nothing to write" on a plan that
+	// is actually being refused.
+	if p.writes() != 0 {
+		t.Errorf("writes() = %d, want 0: a refusal is not a write", p.writes())
+	}
+}
+
+// An UNRELEASED milestone is still moved off, unchanged. The guard is about
+// public history, not about milestones in general -- planning is meant to be
+// rearranged.
+func TestAnUnreleasedMilestoneIsStillMovedOff(t *testing.T) {
+	p := planFixVersion("v0.9.0", []string{"OR-400"},
+		map[string][]string{"OR-400": {"v0.9.1"}},
+		map[string]bool{"v0.8.11": true})
+
+	if len(p.Shipped) != 0 {
+		t.Errorf("an unreleased milestone was refused: %+v", p.Shipped)
+	}
+	if len(p.Move) != 1 || p.Move[0].Key != "OR-400" {
+		t.Errorf("Move = %+v, want OR-400", p.Move)
+	}
+}
+
+// A ticket carrying both a shipped and an unshipped milestone is refused, and
+// names only the shipped one -- that is the part a --force would rewrite.
+func TestOnlyTheShippedMilestoneIsNamed(t *testing.T) {
+	p := planFixVersion("v0.9.0", []string{"OR-401"},
+		map[string][]string{"OR-401": {"v0.8.11", "v0.9.1"}},
+		map[string]bool{"v0.8.11": true})
+
+	if len(p.Shipped) != 1 {
+		t.Fatalf("Shipped = %+v, want one entry", p.Shipped)
+	}
+	if got := strings.Join(p.Shipped[0].From, ","); got != "v0.8.11" {
+		t.Errorf("From = %q, want only the released milestone", got)
+	}
+}
+
+// Nothing known to have shipped is the old behaviour exactly. A nil map must
+// not read as "everything shipped" and block every move.
+func TestNoReleasedMilestonesBehavesAsBefore(t *testing.T) {
+	p := planFixVersion("v0.9.0", []string{"OR-402"},
+		map[string][]string{"OR-402": {"v0.8.11"}}, nil)
+
+	if p.blocked() {
+		t.Error("a nil released-set blocked a move")
+	}
+	if len(p.Move) != 1 {
+		t.Errorf("Move = %+v, want the ordinary move", p.Move)
+	}
+}
+
+// Already-on-target still wins over the shipped check: a re-run of a command
+// that already succeeded must stay a no-op rather than becoming a refusal.
+func TestAlreadyOnTargetIsNotRefusedAsShipped(t *testing.T) {
+	p := planFixVersion("v0.9.0", []string{"OR-403"},
+		map[string][]string{"OR-403": {"v0.9.0", "v0.8.11"}},
+		map[string]bool{"v0.8.11": true})
+
+	if p.blocked() {
+		t.Errorf("a re-run was refused: %+v", p.Shipped)
+	}
+	if strings.Join(p.Already, ",") != "OR-403" {
+		t.Errorf("Already = %v, want OR-403", p.Already)
 	}
 }

@@ -69,7 +69,11 @@ func VerbFor(kind string) string {
 	switch kind {
 	case events.KindFailed, events.KindBlocked:
 		return VerbFail
-	case events.KindEscalate, events.KindRefuse, events.KindBudget:
+	case events.KindEscalate, events.KindRefuse, events.KindBudget,
+		events.KindAttribution:
+		// Attribution is only EMITTED when something is wrong with it -- a
+		// correctly attributed run says nothing at all -- so every stored
+		// event of this kind is one worth a look.
 		return VerbWarn
 	case events.KindCI:
 		return VerbWaiting
@@ -146,6 +150,30 @@ func iconFor(verb string) string {
 	}
 	return s
 }
+
+// Icon is the icon column for a status word, padded and coloured the way
+// the event lines colour it -- green ✓ for ok, red ✗ for failed, dim ○ for
+// pending -- with the same glyphs and ASCII fallbacks. Colour follows the
+// writer: none off a terminal or under NO_COLOR.
+func Icon(w io.Writer, verb string) string { return paint(w, statusColor(verb), iconFor(verb)) }
+
+// Spinner is frame i of the in-flight glyph: the working circle turning,
+// in the working colour, which is how a line that is still going says so
+// without a word. Padded like an icon so the columns behind it do not move
+// between frames.
+func Spinner(w io.Writer, i int) string {
+	set := spinASCII
+	if glyphs() {
+		set = spinGlyphs
+	}
+	s := set[i%len(set)]
+	return paint(w, statusColor(VerbWorking), s+strings.Repeat(" ", iconWidth-cells(s)))
+}
+
+var (
+	spinGlyphs = []string{"◐", "◓", "◑", "◒"}
+	spinASCII  = []string{"|", "/", "-", "\\"}
+)
 
 // cells is the terminal width of an icon. A table rather than a rune-range
 // guess: the set is six glyphs and only one of them is wide.

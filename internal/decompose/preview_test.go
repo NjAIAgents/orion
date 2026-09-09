@@ -36,13 +36,13 @@ func TestPreviewShowsTheWholeTreeAndWhatIsAlreadyThere(t *testing.T) {
 		t.Fatalf("walked %d items", lines)
 	}
 
-	if !strings.Contains(got, "= task  T001 Create the project structure per implementation plan (CAT-9)") {
+	if !strings.Contains(got, "= T001 Create the project structure per implementation plan (CAT-9)") {
 		t.Errorf("an item already in the tracker must be marked as linked, with its key:\n%s", got)
 	}
 	if !strings.Contains(got, "7 to create, 1 already in CAT") {
 		t.Errorf("the counts must state both halves:\n%s", got)
 	}
-	if !strings.Contains(got, "identity label: orion-spec-product-catalogue") {
+	if !strings.Contains(got, "(orion-spec-product-catalogue)") {
 		t.Errorf("the identity label is what makes a re-run safe; show it:\n%s", got)
 	}
 	if !strings.Contains(got, "[documentation]") {

@@ -310,3 +310,200 @@ func TestGateMessageNamesTheQuestionsAndTheWayOut(t *testing.T) {
 		t.Error("the message must say how to mark something answered")
 	}
 }
+
+// spec-kit's [NEEDS CLARIFICATION] marker is an open question in a different
+// spelling. AssessSpec counts both forms; a marker inside fenced code is an
+// example, not a question.
+func TestAssessSpecCountsMarkersAndOpenBullets(t *testing.T) {
+	a := AssessSpec(write(t, "# Spec\n\n"+
+		"- **FR-003**: retain data for [NEEDS CLARIFICATION: retention period not specified]\n"+
+		"- **FR-004**: auth via [NEEDS CLARIFICATION: SSO or password?]\n\n"+
+		"```\n- **FR-006**: [NEEDS CLARIFICATION: this is the template's example]\n```\n\n"+
+		"## Open questions\n- Which region ships first?\n- [x] Do adjusters need access?\n"))
+	if !a.Found {
+		t.Fatal("file should be found")
+	}
+	if a.Open != 3 {
+		t.Errorf("Open = %d, want 3 (two markers and one unanswered bullet; the fenced one is an example)", a.Open)
+	}
+	if a.Ready() {
+		t.Error("a spec with markers must block")
+	}
+	joined := ""
+	for _, q := range a.Questions {
+		joined += q.Text + "|"
+	}
+	for _, want := range []string{"retention period", "SSO or password", "Which region"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("questions %q do not carry %q", joined, want)
+		}
+	}
+}
+
+func TestAssessSpecWithNothingOpenIsReady(t *testing.T) {
+	a := AssessSpec(write(t, "# Spec\n\n- **FR-001**: System MUST do the thing.\n\n## Open questions\n- None\n"))
+	if !a.Ready() {
+		t.Errorf("a spec with no markers and no open bullets must be ready: %+v", a)
+	}
+}
+
+// Assess, the intent reader, keeps ignoring markers: an intent does not use
+// them, and a stray mention in prose must not block.
+func TestAssessDoesNotCountMarkers(t *testing.T) {
+	a := Assess(write(t, "# Intent\n\nspec-kit marks gaps as [NEEDS CLARIFICATION: x].\n\n## Open questions\n- None\n"))
+	if !a.Ready() {
+		t.Errorf("the intent reader counted a marker: %+v", a)
+	}
+}
+
+// Answer writes what Assess reads back: a bullet gets [x] and an Answer line
+// after its continuation lines; the rest of the file is untouched.
+func TestAnswerRoundTripsThroughAssess(t *testing.T) {
+	p := write(t, "# Intent\n\n## Open questions\n\n- Which region ships first?\n- How many accounts, and\n  under which payer?\n- [x] Already settled.\n\n---\nfooter\n")
+	a := Assess(p)
+	if a.Open != 2 {
+		t.Fatalf("Open = %d, want 2", a.Open)
+	}
+	// The multi-line one first, so the shift is exercised.
+	if err := Answer(p, a.Questions[1], "Twelve, one payer."); err != nil {
+		t.Fatal(err)
+	}
+	a = Assess(p)
+	if err := Answer(p, a.Questions[0], "eu-west-1"); err != nil {
+		t.Fatal(err)
+	}
+	a = Assess(p)
+	if a.Open != 0 {
+		t.Errorf("Open = %d after answering both: %+v", a.Open, a.Questions)
+	}
+	b, _ := os.ReadFile(p)
+	got := string(b)
+	for _, want := range []string{
+		"- [x] Which region ships first?\n  Answer: eu-west-1\n",
+		"- [x] How many accounts, and\n  under which payer?\n  Answer: Twelve, one payer.\n",
+		"- [x] Already settled.\n\n---\nfooter\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("file lacks %q:\n%s", want, got)
+		}
+	}
+}
+
+// A marker is answered by replacing it with the decision, in place.
+func TestAnswerReplacesAMarkerInPlace(t *testing.T) {
+	p := write(t, "# Spec\n\n- **FR-003**: retain data for [NEEDS CLARIFICATION: retention period not specified] after close.\n\n## Open questions\n- retention period not specified\n")
+	s := AssessSpec(p)
+	// Same text in the body and under Open questions: one question.
+	if s.Open != 1 {
+		t.Fatalf("Open = %d, want 1 (the marker and the bullet ask the same thing)", s.Open)
+	}
+	if err := Answer(p, s.Questions[0], "13 months"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), "retain data for 13 months after close.") {
+		t.Errorf("marker not replaced:\n%s", b)
+	}
+	if got := AssessSpec(p).Open; got != 0 {
+		t.Errorf("Open = %d after answering, want 0 (bullet ticked, marker replaced)", got)
+	}
+}
+
+func TestAnswerRefusesAnEmptyAnswerAndAMovedLine(t *testing.T) {
+	p := write(t, "## Open questions\n- One?\n")
+	q := Assess(p).Questions[0]
+	if err := Answer(p, q, "  "); err == nil {
+		t.Error("an empty answer was written")
+	}
+	q.Line = 9
+	if err := Answer(p, q, "x"); err == nil {
+		t.Error("a line past the end was accepted")
+	}
+}
+
+// A marker in the body and a bullet under Open questions that carry the
+// same identifier are one question, answered once, in both places.
+func TestAssessSpecMergesAMarkerAndItsBulletByID(t *testing.T) {
+	p := write(t, "# Spec\n\n- **FR-002**: accounts in scope [NEEDS CLARIFICATION: OQ-02 — How many accounts? Stand-in: 12.]\n\n"+
+		"Prose about `[NEEDS CLARIFICATION]` markers does not count.\n\n"+
+		"## Open questions\n\n- [ ] OQ-02 — How many accounts? *Stand-in: 12.* (FR-002)\n- [ ] OQ-09 — Case-fold tags? *No stand-in.*\n")
+	s := AssessSpec(p)
+	if s.Open != 2 {
+		t.Fatalf("Open = %d, want 2 (OQ-02 once, OQ-09 once, the prose marker never): %+v", s.Open, s.Questions)
+	}
+	var oq2 Question
+	for _, q := range s.Questions {
+		if q.ID == "OQ-02" {
+			oq2 = q
+		}
+		if strings.HasPrefix(q.Text, "[ ]") {
+			t.Errorf("the checkbox leaked into the question text: %q", q.Text)
+		}
+	}
+	if oq2.Line == 0 || len(oq2.Markers) != 1 {
+		t.Fatalf("OQ-02 should be the bullet carrying its marker's line: %+v", oq2)
+	}
+	if err := Answer(p, oq2, "12, one Organization"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	got := string(b)
+	if !strings.Contains(got, "accounts in scope 12, one Organization\n") {
+		t.Errorf("the body marker was not replaced:\n%s", got)
+	}
+	if !strings.Contains(got, "- [x] OQ-02 — How many accounts? *Stand-in: 12.* (FR-002)\n  Answer: 12, one Organization\n") {
+		t.Errorf("the bullet was not ticked and answered in place:\n%s", got)
+	}
+	if strings.Contains(got, "[x] [ ]") {
+		t.Error("a second checkbox was inserted")
+	}
+	if got := AssessSpec(p).Open; got != 1 {
+		t.Errorf("Open = %d after answering OQ-02, want 1", got)
+	}
+}
+
+// A marker with no bullet is still a question, on its own.
+func TestAMarkerWithoutABulletStandsAlone(t *testing.T) {
+	p := write(t, "# Spec\n\nRetain for [NEEDS CLARIFICATION: how long?].\n\n## Open questions\n- None\n")
+	if got := AssessSpec(p).Open; got != 1 {
+		t.Errorf("Open = %d, want 1", got)
+	}
+}
+
+// An answer that names no value is refused: it becomes the requirement's
+// text and ticks the box, so every later stage reads it as settled. Real
+// examples, from a real project.
+func TestAnswerRefusesAnAnswerThatNamesNoValue(t *testing.T) {
+	p := write(t, "## Open questions\n- Which cost basis is the bill?\n")
+	q := Assess(p).Questions[0]
+
+	for _, hedge := range []string{
+		"same as cloudhealth", "whaever broadcom cloudhealth does",
+		"again check broadcom cloudhealth", "not decided yet",
+		"TBD", "unknown", "N/A", "same", "yes",
+		"check what the finance team uses",
+	} {
+		if err := Answer(p, q, hedge); err == nil {
+			t.Errorf("%q was accepted as an answer", hedge)
+		}
+	}
+	// Still open: nothing was written.
+	if got := Assess(p).Open; got != 1 {
+		t.Errorf("Open = %d after refusals, want 1", got)
+	}
+
+	// And real answers are not refused, including ones that mention another
+	// system or open with a word a hedge also uses.
+	for _, real := range []string{
+		"Unblended cost per linked account per month, as Cost Explorer reports it, including tax and credits.",
+		"Twelve, all under one AWS Organization.",
+		"eu-west-1 only.",
+		"Yes: read-only access on the management account, granted on request.",
+		"Check-in happens weekly, and the figure is the month-end total.",
+	} {
+		p2 := write(t, "## Open questions\n- A question?\n")
+		if err := Answer(p2, Assess(p2).Questions[0], real); err != nil {
+			t.Errorf("a real answer was refused: %q\n  %v", real, err)
+		}
+	}
+}

@@ -52,8 +52,21 @@ stage asking which of them owns it and getting two answers.
   random suffix and two identical ideas still get two workspaces.
 - Re-running `orion plan` is not a way to retry a failed stage. Retrying a
   stage is `orion run <id> --stage <stage>`, in the workspace that already
-  exists.
+  exists. *(Superseded by the postscript below.)*
 - Two DIFFERENT projects whose names slugify alike collide on the second one.
   The refusal reads the existing workspace's recorded tracker binding and says
   which project actually owns it, so this reads as a name clash rather than as
   a repeated command.
+
+## Postscript, 2026-09-07
+
+**A second `orion plan` on the same key now resumes** (OR-371, under
+[0022](0022-per-project-toolkit-install-via-specify-init.md)'s chain). The
+reuse hazard above -- planning again into a half-finished workspace -- is
+gone: every step of the chain derives whether it is done from its own
+artifact and is skipped when it is, so a re-run picks up at the first
+unfinished step and prints where it is. `--from <step>` re-runs from a
+named step on purpose. The decision itself stands: one project, one
+workspace, no suffix. A DIFFERENT project whose name slugifies alike still
+refuses, naming the owner, and so does a workspace with no recorded
+binding.

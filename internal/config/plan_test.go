@@ -38,3 +38,20 @@ func TestPlanPathEndsInPlanExt(t *testing.T) {
 		t.Errorf("PlanPath(%q) = %q, want suffix %q", "thing", got, PlanExt)
 	}
 }
+
+// FeatureDir is the single spelling of where spec-kit's feature artifacts
+// live. The prompt, the artifact gate, the discovery gate, the environment
+// and the decompose step all resolve through it, so this pins the join.
+func TestFeatureDirJoinsThePinnedNumberAndSlugUnderSpecs(t *testing.T) {
+	cfg := Config{Paths: Paths{Specs: "specs"}}
+	if got, want := cfg.FeatureDir("thing"), "specs/001-thing"; got != want {
+		t.Errorf("FeatureDir(%q) = %q, want %q", "thing", got, want)
+	}
+	// A project's own specs directory is honoured -- it is Orion's setting,
+	// not the toolkit's -- and the result is repository spelling, forward
+	// slashes on every platform.
+	cfg = Config{Paths: Paths{Specs: "design/features"}}
+	if got, want := cfg.FeatureDir("my-task"), "design/features/001-my-task"; got != want {
+		t.Errorf("FeatureDir(%q) = %q, want %q", "my-task", got, want)
+	}
+}

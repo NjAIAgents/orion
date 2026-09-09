@@ -2,6 +2,7 @@ package hook
 
 import (
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 
@@ -105,17 +106,42 @@ func splitShellSegments(s string) []string {
 	})
 }
 
-// isInertCommand reports whether a segment merely prints or comments. These
-// cannot deploy anything, and blocking them makes the gate look stupid, which
-// is how a gate gets disabled.
+// isInertCommand reports whether a segment merely prints, reads or searches.
+// These cannot deploy anything, and blocking them makes the gate look stupid,
+// which is how a gate gets disabled.
+//
+// SEARCHING FOR THE WORD IS NOT DOING THE THING. The list below covers read
+// and search tools as well as printers, because the deploy vocabulary is
+// matched anywhere in a segment: `grep -rn "production deploy blocked"` has
+// both a prod word and a deploy verb in its ARGUMENT and was blocked. So was
+// every attempt to grep for the gate's own message while working on the gate,
+// which is exactly when it is needed.
+//
+// Safe because none of these executes what it finds. A pipeline that feeds
+// one into something that does -- `grep ... | sh` -- is split on the pipe
+// first, so the `sh` segment is still judged on its own.
 func isInertCommand(seg string) bool {
 	fields := strings.Fields(seg)
 	if len(fields) == 0 {
 		return true
 	}
 	switch strings.TrimPrefix(fields[0], "\\") {
-	case "echo", "printf", "cat", "true", "false", ":", "#":
+	case "echo", "printf", "cat", "true", "false", ":", "#",
+		// Search and read. They report what a file says; they do not run it.
+		"grep", "egrep", "fgrep", "rg", "ag", "ack",
+		"find", "fd", "ls", "tree", "stat", "file",
+		"head", "tail", "less", "more", "wc", "sed", "awk", "cut", "sort", "uniq",
+		"diff", "cmp", "jq", "yq", "basename", "dirname", "realpath", "readlink":
 		return true
+	}
+	// `git log --grep "deploy to prod"` and `git diff -- deploy/prod.yaml`
+	// read history and working tree. Only the read-only subcommands: `git
+	// push` is judged elsewhere, and this must not become a hole for it.
+	if strings.TrimPrefix(fields[0], "\\") == "git" && len(fields) > 1 {
+		switch fields[1] {
+		case "log", "diff", "show", "status", "grep", "blame", "ls-files", "cat-file":
+			return true
+		}
 	}
 	return strings.HasPrefix(fields[0], "#")
 }
@@ -161,10 +187,7 @@ func badPush(cmd, defaultBranch string) string {
 	if !regexp.MustCompile(`\bgit\s+push\b`).MatchString(cmd) {
 		return ""
 	}
-	if reForcePush.MatchString(cmd) {
-		return "force push blocked."
-	}
-	// Explicit refspec naming the default branch, e.g.
+	// Explicit refspec naming the branch, e.g.
 	//   git push origin main
 	//   git push origin HEAD:main
 	//   git push origin feature:main
@@ -173,10 +196,77 @@ func badPush(cmd, defaultBranch string) string {
 		`\bgit\s+push\b[^|;&]*\s` + db + `\s*($|[|;&])`, // ... origin main
 		`\bgit\s+push\b[^|;&]*:` + db + `\b`,            // ... HEAD:main
 	}
+	named := false
 	for _, p := range patterns {
 		if regexp.MustCompile(p).MatchString(cmd) {
-			return "direct push to " + defaultBranch + " blocked."
+			named = true
+			break
 		}
+	}
+	// A push with no refspec goes to the CURRENT branch, which the command
+	// text never mentions -- so standing on a protected branch and running
+	// `git push --force` would otherwise sail past a check that only reads
+	// the command.
+	if !named && !hasRefspec(cmd) && strings.EqualFold(currentBranch(), defaultBranch) {
+		named = true
+	}
+	if !named {
+		// Not this branch. A force push somewhere else is the author's
+		// business: main and develop reach their state through a reviewed
+		// pull request, and every other branch is the work in progress
+		// that leads to one -- rebasing and amending it is the normal way
+		// to arrive at a reviewable history.
+		//
+		// This used to block EVERY force push, before looking at where it
+		// went, and then reported "main is protected" whatever the target
+		// was. So force-pushing a feature branch was refused for a reason
+		// that named a branch the command never mentioned, which sends the
+		// reader looking in the wrong place (OR-420).
+		return ""
+	}
+	if reForcePush.MatchString(cmd) {
+		return "force push to " + defaultBranch + " blocked."
+	}
+	return "direct push to " + defaultBranch + " blocked."
+}
+
+// hasRefspec reports whether a push names a branch to push, rather than
+// relying on the current one. Anything after the remote that is not a flag
+// is a refspec.
+func hasRefspec(cmd string) bool {
+	fields := strings.Fields(cmd)
+	for i, f := range fields {
+		if f != "push" {
+			continue
+		}
+		n := 0
+		for _, a := range fields[i+1:] {
+			if strings.HasPrefix(a, "-") {
+				continue
+			}
+			if a == "|" || a == ";" || a == "&&" {
+				break
+			}
+			n++ // first is the remote, a second is the refspec
+			if n > 1 {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// currentBranch is the branch HEAD is on, or "" when there is no answer --
+// no repository, or a detached HEAD. Empty never matches a protected name,
+// so an unreadable HEAD leaves the command to the rules that read the text.
+func currentBranch() string {
+	out, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	if b := strings.TrimSpace(string(out)); b != "HEAD" {
+		return b
 	}
 	return ""
 }

@@ -326,3 +326,336 @@ func has(labels []string, want string) bool {
 	}
 	return false
 }
+
+// A tracker summary is a title, not the paragraph a /speckit.tasks line is.
+func TestATaskSummaryIsATitleNotTheWholeDescription(t *testing.T) {
+	long := "- [ ] T041 PRECONDITION (analyze C1, C2): OQ-07 records all three values -- the account, " +
+		"the region, and whether any third party may receive cost figures. Then write `deploy/terraform/kms.tf` " +
+		"and run terraform validate against the real export.\n"
+	tree, err := Parse("# Tasks: Thing\n\n## Phase 1: Setup\n\n"+long, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var task *Item
+	_ = tree.Walk(func(it, _ *Item) error {
+		if it.Kind == KindTask {
+			task = it
+		}
+		return nil
+	})
+	if task == nil {
+		t.Fatal("no task parsed")
+	}
+	if len(task.Summary) > summaryMax+8 {
+		t.Errorf("summary is %d characters, not a title:\n%s", len(task.Summary), task.Summary)
+	}
+	if !strings.HasPrefix(task.Summary, "T041 ") {
+		t.Errorf("the id leads the summary: %q", task.Summary)
+	}
+	// The detail is not lost: the body carries the description in full.
+	if !strings.Contains(task.Body, "terraform validate") {
+		t.Errorf("the body must keep what the summary drops:\n%s", task.Body)
+	}
+}
+
+// A heading that talks ABOUT a story does not name it, and never blanks a
+// name already known.
+func TestOnlyAPhaseHeadingNamesAStory(t *testing.T) {
+	src := "# Tasks: Thing\n\n" +
+		"## Phase 4: User Story 2 — See AWS cost by account (Priority: P2) 🎯 MVP\n\n" +
+		"- [ ] T001 [US2] Do the thing in a.go\n\n" +
+		"## Parallel example: User Story 2\n\nSome prose.\n"
+	tree, err := Parse(src, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var story *Item
+	_ = tree.Walk(func(it, _ *Item) error {
+		if it.Kind == KindStory {
+			story = it
+		}
+		return nil
+	})
+	if story == nil {
+		t.Fatal("no story parsed")
+	}
+	if story.Summary != "US2 See AWS cost by account" {
+		t.Errorf("story summary = %q; a documentation heading overwrote the phase heading's title", story.Summary)
+	}
+}
+
+// The epic is named by the `# Tasks:` heading and by no other `# ` line.
+func TestTheEpicIsNamedByTheTasksHeadingAlone(t *testing.T) {
+	src := "# Tasks: CloudLens — cost by account\n\n## Phase 1: Setup\n\n- [ ] T001 Do it in a.go\n\n" +
+		"# Dependencies\n\nThen T047, then T048.\n"
+	tree, err := Parse(src, "specs/001-cloudlens/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree.Epic.Summary != "CloudLens — cost by account" {
+		t.Errorf("epic = %q; a later heading renamed it", tree.Epic.Summary)
+	}
+	if !strings.HasPrefix(tree.Label(), "orion-spec-cloudlens") {
+		t.Errorf("the identity label follows the epic name, and a re-run reconciles by it: %q", tree.Label())
+	}
+}
+
+// A stated exit condition reaches the ticket verbatim, and one the artifact
+// omitted is derived from the line's own files and requirement ids -- marked
+// as derived, because a reader weighs the two differently.
+func TestATaskCarriesItsExitCondition(t *testing.T) {
+	src := "# Tasks: Thing\n\n## Phase 3: User Story 1 — Do the thing (Priority: P1)\n\n" +
+		"- [ ] T001 [US1] Write `internal/cost/reconcile.go` (FR-011, SC-004)\n" +
+		"  Done when: `go test ./internal/cost/` passes and the difference is shown on every row.\n" +
+		"- [ ] T002 [US1] Write `internal/cost/query.go` for FR-012\n" +
+		"- [ ] T003 [US1] Think about the shape of the thing\n"
+	tree, err := Parse(src, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]*Item{}
+	_ = tree.Walk(func(it, _ *Item) error {
+		if it.Kind == KindTask {
+			byID[it.ID] = it
+		}
+		return nil
+	})
+
+	stated := byID["T001"]
+	if stated.Derived || !strings.Contains(stated.DoneWhen, "go test ./internal/cost/") {
+		t.Errorf("a stated condition must survive verbatim and not be marked derived: %+v", stated.DoneWhen)
+	}
+	if !strings.Contains(stated.Body, "Done when:\n  `go test") {
+		t.Errorf("the body must carry it under its own heading:\n%s", stated.Body)
+	}
+
+	derived := byID["T002"]
+	if !derived.Derived {
+		t.Error("T002 stated no condition, so its own must be marked derived")
+	}
+	for _, want := range []string{"internal/cost/query.go", "exist and are committed", "FR-012"} {
+		if !strings.Contains(derived.DoneWhen, want) {
+			t.Errorf("derived condition lacks %q: %s", want, derived.DoneWhen)
+		}
+	}
+	if !strings.Contains(derived.Body, "derived by Orion") {
+		t.Errorf("the body must say the condition was derived:\n%s", derived.Body)
+	}
+
+	// Nothing on the line to derive from: say so rather than invent one.
+	if bare := byID["T003"]; !strings.Contains(bare.DoneWhen, "NOT STATED") {
+		t.Errorf("a line with no file and no requirement must admit it: %q", bare.DoneWhen)
+	}
+}
+
+// A story's acceptance criteria reach the ticket; a story without them says
+// so rather than implying none were needed.
+func TestAStoryCarriesItsAcceptanceCriteria(t *testing.T) {
+	src := "# Tasks: Thing\n\n## Phase 3: User Story 1 — Do the thing (Priority: P1)\n\n" +
+		"**Goal**: the thing is done\n\n" +
+		"**Acceptance criteria** (from spec.md US1 scenarios 1-2):\n\n" +
+		"1. **Given** no thing, **When** asked, **Then** refused.\n" +
+		"2. **Given** a thing, **When** asked,\n   **Then** shown.\n\n" +
+		"- [ ] T001 [US1] Write a.go\n\n" +
+		"## Phase 4: User Story 2 — Another thing (Priority: P2)\n\n" +
+		"- [ ] T002 [US2] Write b.go\n"
+	tree, err := Parse(src, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]*Item{}
+	_ = tree.Walk(func(it, _ *Item) error {
+		if it.Kind == KindStory {
+			byID[it.ID] = it
+		}
+		return nil
+	})
+
+	with := byID["US1"]
+	// The heading is followed by a blank line before the items, as real
+	// output writes it, and a criterion may wrap onto the next line.
+	if len(with.Criteria) != 2 || !strings.Contains(with.Criteria[0], "Then** refused") ||
+		!strings.Contains(with.Criteria[1], "**When** asked, **Then** shown") {
+		t.Fatalf("criteria = %#v", with.Criteria)
+	}
+	if !strings.Contains(with.Body, "Acceptance criteria:\n  - **Given** no thing") {
+		t.Errorf("the body must carry them:\n%s", with.Body)
+	}
+	// The block must not swallow the task lines that follow it.
+	if len(with.Children) != 1 {
+		t.Errorf("US1 has %d tasks, want 1 -- the criteria block ran on", len(with.Children))
+	}
+
+	if without := byID["US2"]; !strings.Contains(without.Body, "NONE STATED") {
+		t.Errorf("a story without criteria must say so:\n%s", without.Body)
+	}
+}
+
+// [HUMAN] is recorded and said plainly, so the queue can withhold the label
+// (OR-414) and a reader knows why.
+func TestAHumanTaskIsMarkedAsSuch(t *testing.T) {
+	src := "# Tasks: Thing\n\n## Phase 1: Setup\n\n" +
+		"- [ ] T001 [HUMAN] Register the OIDC client in the identity provider\n" +
+		"  Done when: the client id is recorded in the runbook.\n" +
+		"- [ ] T002 Write a.go\n"
+	tree, err := Parse(src, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]*Item{}
+	_ = tree.Walk(func(it, _ *Item) error {
+		if it.Kind == KindTask {
+			byID[it.ID] = it
+		}
+		return nil
+	})
+	human := byID["T001"]
+	if !human.Human || !strings.Contains(human.Body, "HUMAN:") {
+		t.Errorf("T001 must be marked human and say so:\n%s", human.Body)
+	}
+	if strings.Contains(human.Summary, "[HUMAN]") {
+		t.Errorf("the marker is metadata, not part of the title: %q", human.Summary)
+	}
+	if byID["T002"].Human {
+		t.Error("an ordinary task was marked human")
+	}
+}
+
+// The shape real output writes: the criteria heading, a BLANK LINE, the
+// numbered items, then the tasks. Closing the block on the blank read no
+// criteria at all; leaving it open let the first task line -- which also
+// starts with "- " -- be absorbed as a criterion.
+func TestACriteriaBlockSurvivesABlankLineAndReleasesTheTasks(t *testing.T) {
+	src := "# Tasks: Thing\n\n## Phase 3: User Story 1 — Do the thing (Priority: P1)\n\n" +
+		"**Goal**: the thing is done\n\n" +
+		"**Acceptance criteria** (from spec.md US1 scenarios 1-2):\n\n" +
+		"1. **Given** no thing, **When** asked, **Then** refused.\n" +
+		"2. **Given** a thing, **When** asked,\n   **Then** shown.\n\n" +
+		"- [ ] T001 [US1] Write a.go\n" +
+		"  Done when: `go test ./...` passes.\n" +
+		"- [ ] T002 [US1] Write b.go\n" +
+		"  Done when: b.go exists.\n"
+	tree, err := Parse(src, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var story *Item
+	var tasks int
+	_ = tree.Walk(func(it, _ *Item) error {
+		if it.Kind == KindStory {
+			story = it
+		}
+		if it.Kind == KindTask {
+			tasks++
+		}
+		return nil
+	})
+	if story == nil {
+		t.Fatal("no story")
+	}
+	if len(story.Criteria) != 2 {
+		t.Errorf("criteria = %#v, want 2 (a blank line after the heading does not close the block)", story.Criteria)
+	}
+	if tasks != 2 {
+		t.Errorf("%d tasks parsed, want 2 -- a task line is not a criterion, however it starts", tasks)
+	}
+	for _, c := range story.Criteria {
+		if strings.Contains(c, "Write a.go") {
+			t.Errorf("a task was absorbed as a criterion: %q", c)
+		}
+	}
+}
+
+// A task id may carry a letter suffix: T004a is one task inserted after
+// T004, not T004 followed by a description beginning "a". Reading it as the
+// latter put two tasks under one id and titled a ticket "a Run the ...".
+func TestATaskIdMayCarryALetterSuffix(t *testing.T) {
+	src := "# Tasks: Thing\n\n## Phase 1: Setup\n\n" +
+		"- [ ] T004 Create the export\n  Done when: it exists.\n" +
+		"- [ ] T004a Run the reconciliation spike\n  Done when: three accounts are compared.\n" +
+		"- [ ] T00A Record the conflicts\n  Done when: each has an answer.\n"
+	tree, err := Parse(src, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	byID := map[string]*Item{}
+	_ = tree.Walk(func(it, _ *Item) error {
+		if it.Kind == KindTask {
+			ids = append(ids, it.ID)
+			byID[it.ID] = it
+		}
+		return nil
+	})
+	if len(ids) != 3 {
+		t.Fatalf("ids = %v, want three distinct tasks", ids)
+	}
+	for _, want := range []string{"T004", "T004a", "T00A"} {
+		if byID[want] == nil {
+			t.Errorf("no task with id %q: %v", want, ids)
+		}
+	}
+	if got := byID["T004a"]; got != nil && !strings.HasPrefix(got.Summary, "T004a Run the reconciliation") {
+		t.Errorf("summary = %q; the suffix belongs to the id, not the description", got.Summary)
+	}
+}
+
+// The Dependencies section states order AND lists parallel opportunities.
+// Only the first is ordering: "T015, T016 in parallel after T014" says what
+// MAY run together, and reading it as a dependency produced an edge
+// pointing backwards through the file.
+func TestOnlyThePhaseDependenciesBecomeEdges(t *testing.T) {
+	src := "# Tasks: Thing\n\n" +
+		"## Phase 1: Setup\n\n- [ ] T001 Do a in a.go\n- [ ] T002 Do b in b.go\n\n" +
+		"## Phase 2: Build\n\n- [ ] T010 Do c in c.go\n- [ ] T011 Do d in d.go\n\n" +
+		"## Dependencies & Execution Order\n\n" +
+		"### Phase dependencies\n\n" +
+		"- **Phase 2 (Build)**: after T001.\n\n" +
+		"### Parallel opportunities\n\n" +
+		"- Phase 2: T011 in parallel after T010.\n"
+	tree, err := Parse(src, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range tree.Blocks {
+		if e.Blocker == "T010" {
+			t.Errorf("a parallel-opportunity line became an ordering edge: %s blocks %s", e.Blocker, e.Blocked)
+		}
+	}
+	if len(tree.Blocks) != 2 {
+		t.Fatalf("edges = %+v, want T001 blocking the two phase-2 tasks", tree.Blocks)
+	}
+	for _, e := range tree.Blocks {
+		if e.Blocker != "T001" {
+			t.Errorf("unexpected blocker %q", e.Blocker)
+		}
+		if e.Why == "" {
+			t.Error("an edge must carry the line it was read from")
+		}
+	}
+}
+
+// A clipped summary must not stop inside an open bracket: "run-rate
+// (linear" reads as broken rather than shortened (OR-415).
+func TestASummaryNeverEndsInsideAnOpenBracket(t *testing.T) {
+	long := "compute burn-down from the previous fourteen days of recorded " +
+		"spend per account (linear run-rate, no seasonality assumed)"
+
+	got := summarise(long)
+
+	if strings.ContainsAny(got, "([{") && !strings.ContainsAny(got, ")]}") {
+		t.Errorf("the summary stops inside an open bracket: %q", got)
+	}
+	if strings.HasSuffix(strings.TrimSuffix(got, "…"), "(") {
+		t.Errorf("the summary ends on a bare opener: %q", got)
+	}
+}
+
+// The whole-sentence path is untouched: a summary that already closes what
+// it opens keeps its brackets.
+func TestASummaryKeepsBracketsItCloses(t *testing.T) {
+	got := summarise("record the spend (per account) each night. Then report it.")
+	if !strings.Contains(got, "(per account)") {
+		t.Errorf("a closed bracket was dropped: %q", got)
+	}
+}

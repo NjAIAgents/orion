@@ -1,0 +1,35 @@
+Read docs/intent/thing.md.
+
+Use /speckit-constitution to write the project
+constitution: the principles every later stage -- spec, plan, tasks and the
+implementation -- is held to. Write EXACTLY this file, which is where
+spec-kit's other commands read it:
+
+  .specify/memory/constitution.md
+
+SEED IT FROM WHAT IS ALREADY DECIDED, and say in the text where each rule
+comes from, rather than inventing principles the project never chose:
+
+- Branch model: feature branches are cut from develop and merge
+  back by reviewed pull request; main is the release branch.
+  Both are protected; nothing pushes to either directly (orion.json vcs).
+- Tests are not edited while fixing the code they cover (gates.protect_tests_during_fix).
+- A production change needs explicit authorisation (gates.production_requires_authorization).
+- No direct push to the default branch (gates.block_direct_push_to_default_branch).
+
+Add the constraints the intent records -- compliance, platform, performance,
+budget, anything stated as a limit -- as principles or under an Additional
+Constraints section. What the intent leaves open stays open; do not settle
+it here.
+
+REPLACE EVERY TEMPLATE PLACEHOLDER. spec-kit's template ships as
+`# [PROJECT_NAME] Constitution` full of `[ALL_CAPS]` slots, and Orion's gate
+fails the stage naming any slot still in the file. Fewer principles, fully
+written, beat five slots half-filled. Commit the file.
+
+THIS RUN IS HEADLESS. Nothing will ever be announced back to you: a command
+run with run_in_background is never reported as finished, ScheduleWakeup does
+nothing, and no notification of any kind arrives. Run long commands in the
+FOREGROUND and wait for them there, however long they take. If you find
+yourself checking whether something has finished yet, you are already stuck --
+the breaker will stop you, and the work will be lost.

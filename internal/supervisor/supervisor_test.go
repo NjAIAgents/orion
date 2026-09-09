@@ -485,3 +485,23 @@ func TestNoEffortFlagWhenOptionsLeavesItEmpty(t *testing.T) {
 		t.Errorf("an unset Effort must not add --effort at all, got: %q", got)
 	}
 }
+
+// spec-kit's own scripts read SPECIFY_FEATURE_DIRECTORY first and otherwise
+// invent a feature name; Orion tells them the one name it already has.
+func TestChildEnvPublishesTheFeatureDirectory(t *testing.T) {
+	w := ws(t, "")
+	w.Task.Slug = "thing"
+	env := childEnv(w, &agentcfg.Run{}, events.ActorImplementer)
+	n := 0
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "SPECIFY_FEATURE_DIRECTORY=") {
+			n++
+			if kv != "SPECIFY_FEATURE_DIRECTORY=specs/001-thing" {
+				t.Errorf("got %q, want specs/001-thing", kv)
+			}
+		}
+	}
+	if n != 1 {
+		t.Errorf("SPECIFY_FEATURE_DIRECTORY appears %d times, want exactly once", n)
+	}
+}

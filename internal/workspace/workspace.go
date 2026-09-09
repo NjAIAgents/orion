@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/provision"
 )
 
@@ -52,6 +53,22 @@ type Task struct {
 	// as READ-ONLY; it is recorded so the copy can be fast-forwarded after a
 	// push, never written to during a run.
 	SourcePath string `json:"source_path,omitempty"`
+	// CheckoutPath is where the operator asked for their own clone of a NEW
+	// project's repository, answered during `orion new` and acted on once the
+	// planning chain has something worth cloning.
+	//
+	// Distinct from SourcePath, which is an EXISTING repository Orion was
+	// pointed at and treats as read-only. This is the opposite direction: the
+	// sandbox is the origin, and this is the copy made from it.
+	CheckoutPath string `json:"checkout_path,omitempty"`
+	// IdeaKey is the discovery idea this project came from, when there is
+	// one -- either the key `orion new` was given, or the idea it filed from
+	// an interview.
+	//
+	// Recorded so a stage can be TOLD it. Without it the intent stage was
+	// asked to fill in "the tracker's idea for this work" and spent ninety
+	// seconds reading orion's own help output looking for a key.
+	IdeaKey string `json:"idea_key,omitempty"`
 	// ResumeAt is set when a run stopped on a provider quota wall. It is a
 	// record, not a schedule: nothing sleeps on it, and the user or a cron
 	// decides when to actually come back.
@@ -59,13 +76,43 @@ type Task struct {
 	// Branches created at provisioning: main (release, protected) and
 	// develop (integration, the pull-request base).
 	Branches []string `json:"branches,omitempty"`
+	// PlanBranch is the branch the planning chain is standing on, recorded
+	// after each stage. A stage's model can check out another branch --
+	// nothing stops it -- and every stage after it would then commit
+	// somewhere the chain never chose. Recorded so the change is visible
+	// rather than silent (OR-405).
+	PlanBranch string `json:"plan_branch,omitempty"`
 	// Slack is the project's channel, when one was created. It is the medium
 	// the run reports into.
 	Slack *SlackChannel `json:"slack,omitempty"`
 	// Remote and Tracker are filled by the provision stage.
-	Remote  string          `json:"remote,omitempty"`
-	Tracker json.RawMessage `json:"tracker,omitempty"`
-	Runs    []RunRec        `json:"runs,omitempty"`
+	Remote string `json:"remote,omitempty"`
+	// RemoteOrg is the GitHub organisation the remote is created under, when
+	// one was asked for. Recorded so a resumed `orion plan` creates the same
+	// remote without being told --org again: the org is a property of this
+	// project's repository, not of the command that happened to run first.
+	RemoteOrg string          `json:"remote_org,omitempty"`
+	Tracker   json.RawMessage `json:"tracker,omitempty"`
+	// ReleaseVersion is the tracker version --release asked the tree to be
+	// attached to; Released is the version it was attached to, once the
+	// release step has run. Both on the task so a resume needs no flag and
+	// knows whether the step is done.
+	ReleaseVersion string   `json:"release_version,omitempty"`
+	Released       string   `json:"released,omitempty"`
+	Runs           []RunRec `json:"runs,omitempty"`
+}
+
+// TrackerKey is the tracker project this task is bound to, or "" when it
+// is not. Read from the raw binding so packages below tracker can name the
+// key in a message -- `orion plan KEY` is how a stopped chain resumes.
+func (t Task) TrackerKey() string {
+	var b struct {
+		Key string `json:"key"`
+	}
+	if len(t.Tracker) > 0 && json.Unmarshal(t.Tracker, &b) == nil {
+		return strings.ToUpper(strings.TrimSpace(b.Key))
+	}
+	return ""
 }
 
 // SlackChannel is a project's channel.
@@ -320,7 +367,23 @@ func initRepo(ws *Workspace, opts NewOptions) error {
 // orion.json so the first stage has somewhere to write.
 func scaffoldChain(ws *Workspace) error {
 	repo := ws.RepoDir()
-	for _, d := range []string{"intent", "specs", "plans", "evals"} {
+
+	// The config is written first, then READ BACK for the directory names.
+	//
+	// They were hardcoded here as "intent", while the config this same
+	// function writes says docs/intent -- so provisioning made a directory no
+	// stage would ever use, and the stage that read the config wrote into a
+	// second one beside it. Two directories, one of them always empty, and a
+	// .gitkeep in the wrong one.
+	if err := writeProjectConfig(repo); err != nil {
+		return err
+	}
+	cfg := config.Load(repo)
+
+	for _, d := range []string{cfg.Paths.Intent, cfg.Paths.Specs, cfg.Paths.Plans, cfg.Paths.Evals} {
+		if strings.TrimSpace(d) == "" {
+			continue
+		}
 		if err := os.MkdirAll(filepath.Join(repo, d), 0o755); err != nil {
 			return err
 		}
@@ -333,19 +396,57 @@ func scaffoldChain(ws *Workspace) error {
 			}
 		}
 	}
-	cfgPath := filepath.Join(repo, "orion.json")
-	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-		if err := os.WriteFile(cfgPath, []byte(defaultProjectConfig), 0o644); err != nil {
-			return err
-		}
-	}
 	gi := filepath.Join(repo, ".gitignore")
 	if _, err := os.Stat(gi); os.IsNotExist(err) {
 		if err := os.WriteFile(gi, []byte(".orion/\n"), 0o644); err != nil {
 			return err
 		}
 	}
+
+	// COMMIT IT. Writing these and leaving them untracked is what the comment
+	// above claims not to do -- "visible from the first commit" was never
+	// true, because nothing committed them. Every one of these files sat
+	// untracked until some later stage happened to commit, and the first
+	// stage that owed an artifact failed the tracked-file check on a
+	// repository where nothing at all was tracked.
+	return commitScaffold(repo)
+}
+
+// writeProjectConfig lays down orion.json, leaving an existing one alone.
+func writeProjectConfig(repo string) error {
+	cfgPath := filepath.Join(repo, "orion.json")
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		return os.WriteFile(cfgPath, []byte(defaultProjectConfig), 0o644)
+	}
 	return nil
+}
+
+// commitScaffold commits whatever the scaffold just wrote.
+//
+// Nothing to commit is a normal outcome, not a failure: provisioning an
+// existing workspace rewrites nothing, and `git commit` exits non-zero on an
+// empty index. Checked by asking git, rather than by reading its message.
+func commitScaffold(repo string) error {
+	if out, err := gitCmd(repo, "add", "-A"); err != nil {
+		return fmt.Errorf("staging the scaffold: %s", out)
+	}
+	if _, err := gitCmd(repo, "diff", "--cached", "--quiet"); err == nil {
+		return nil // nothing staged
+	}
+	if out, err := gitCmd(repo, "commit", "-m",
+		"chore: scaffold the artifact directories\n\n"+
+			"Written by Orion so the first stage has somewhere to write, and\n"+
+			"committed so the handoff between stages is a tracked file."); err != nil {
+		return fmt.Errorf("committing the scaffold: %s", out)
+	}
+	return nil
+}
+
+// gitCmd runs one git command in dir.
+func gitCmd(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
 }
 
 func (w *Workspace) SaveTask() error {
@@ -357,7 +458,19 @@ func (w *Workspace) SaveTask() error {
 	// Orion metadata: the idea, tracker binding and Slack channel. The
 	// 0700 tree already protects it; matching modes keeps the line clear
 	// between what is Orion's and what is the repository's.
-	return os.WriteFile(w.TaskPath(), b, PrivateFileMode)
+	//
+	// WRITTEN BESIDE, THEN RENAMED OVER. The chain saves this file after
+	// every step, and a kill mid-write used to leave a truncated task.json
+	// that Open reports as corrupt -- losing the slug, the tracker binding
+	// and the Slack channel, the one set of facts a resume cannot re-derive
+	// from the repository. A rename is atomic on every platform Go supports,
+	// so the previous file stays readable until the new one is whole.
+	tmp := w.TaskPath() + ".tmp"
+	_ = os.Remove(tmp) // a stale one from an earlier kill is not an error
+	if err := os.WriteFile(tmp, b, PrivateFileMode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, w.TaskPath())
 }
 
 // IDs lists provisioned workspace ids. Separated from List so a caller that

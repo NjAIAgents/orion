@@ -137,14 +137,25 @@ func Remote(opts Options) (*Result, error) {
 	}
 
 	args := []string{"repo", "create", target, visibility, "--source", opts.Dir, "--remote", "origin"}
-	if opts.Description != "" {
-		args = append(args, "--description", opts.Description)
+	if d := oneLine(opts.Description); d != "" {
+		args = append(args, "--description", d)
 	}
 	if out, err := exec.Command("gh", args...).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("gh repo create failed: %s", strings.TrimSpace(string(out)))
 	}
 	res.CreatedRemote = true
 	res.RemoteURL = existingRemote(opts.Dir)
+
+	// From here on the repository is addressed as OWNER/REPO. `gh repo
+	// create` accepts a bare name and infers the owner; nothing after it
+	// does -- `repo edit` refuses it outright, and `api repos/<name>/...`
+	// reads the name as the OWNER and returns a 404 for a repository that
+	// exists. FOUND ON A REAL PROJECT: develop was never made the default
+	// branch and neither branch was protected, each reported as "Not
+	// Found", on a repository the same run had just created.
+	if full := ownerRepo(opts.Dir, target); full != "" {
+		target = full
+	}
 
 	for _, b := range []string{opts.DefaultBranch, opts.WorkBranch} {
 		if out, err := git(opts.Dir, "push", "-u", "origin", b); err != nil {
@@ -324,4 +335,46 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n-1] + "…"
+}
+
+// oneLine makes a string GitHub will accept as a repository description.
+//
+// The description is whatever the tracker project says the work is, and a
+// tracker description is prose: it has paragraphs. GitHub refuses any
+// control character outright -- "Description control characters are not
+// allowed (createRepository)" -- and refuses it AFTER the repository name
+// is taken, so the failure costs the operator a confirmation and a
+// half-made remote. Every run of whitespace becomes one space, and what is
+// left is cut to GitHub's own limit at a word boundary.
+func oneLine(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	const max = 350
+	if len(s) <= max {
+		return s
+	}
+	cut := s[:max-1]
+	if i := strings.LastIndexByte(cut, ' '); i > max/2 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, " ,;") + "…"
+}
+
+// ownerRepo is the created repository as OWNER/REPO.
+//
+// Read back from the repository itself rather than assembled from a
+// configured owner: the owner of a repository created without --org is
+// whoever gh is authenticated as, which Orion never asked for and should
+// not have to guess. Falls back to "" when gh cannot say, and the caller
+// keeps what it had.
+func ownerRepo(dir, target string) string {
+	if strings.Contains(target, "/") {
+		return target
+	}
+	cmd := exec.Command("gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }

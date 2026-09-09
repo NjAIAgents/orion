@@ -106,3 +106,26 @@ func swapConfirmIn(t *testing.T, answer string) func() {
 	confirmIn = strings.NewReader(answer)
 	return func() { confirmIn = prev }
 }
+
+// tracker.provider has been settable since before this route existed and
+// nothing read it, so a project that wrote "linear" there got a Jira tree.
+// An unsupported provider is now refused, naming the way through (OR-303).
+func TestAnUnsupportedTrackerProviderIsRefusedRatherThanServedByJira(t *testing.T) {
+	_, err := backendFor("linear")
+	if err == nil {
+		t.Fatal("a linear project was handed a backend; decompose only speaks jira")
+	}
+	for _, want := range []string{"linear", "orion plan"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// An empty provider is the default, and means jira -- every project
+// predating the field has one, and refusing them all would be a regression.
+func TestAnEmptyTrackerProviderStillMeansJira(t *testing.T) {
+	if _, err := backendFor(""); err != nil && strings.Contains(err.Error(), "can only create") {
+		t.Errorf("an unset provider was refused as unsupported: %v", err)
+	}
+}

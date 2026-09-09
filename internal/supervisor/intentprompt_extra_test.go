@@ -31,18 +31,27 @@ func TestIntentPromptExtendsExistingCaptureRatherThanOverwriting(t *testing.T) {
 // rather than let it invent a location -- discovery.Assess and the PM role
 // in advise.Artifacts both read from exactly there.
 func TestIntentPromptNamesTheCapturePathAndLocation(t *testing.T) {
-	p, err := stagePrompt(ws(t, ""), "intent", config.Toolkit{})
+	w := ws(t, "")
+	w.Task.Slug = "thing"
+	p, err := stagePrompt(w, "intent", config.Toolkit{})
 	if err != nil {
 		t.Fatalf("intent: %v", err)
 	}
 	if !strings.Contains(p, "/capture-intent") {
 		t.Errorf("the intent prompt does not point the agent at the /capture-intent skill:\n%s", p)
 	}
-	if !strings.Contains(p, "docs/intent/<slug>.md") {
-		t.Errorf("the intent prompt does not name docs/intent/<slug>.md as the capture's path:\n%s", p)
+	// The RESOLVED path, not the "<slug>" placeholder this used to assert on.
+	// The placeholder was the defect: the prompt said docs/intent/<slug>.md
+	// without saying what the slug was, so an agent wrote a descriptive
+	// filename of its own and the artifact check reported nothing written.
+	if !strings.Contains(p, "docs/intent/thing.md") {
+		t.Errorf("the intent prompt does not name the exact file to write:\n%s", p)
 	}
-	if !strings.Contains(p, "do not") || !strings.Contains(p, "relocate the file") {
-		t.Errorf("the intent prompt does not forbid relocating the capture away from its contract path:\n%s", p)
+	if strings.Contains(p, "<slug>") {
+		t.Errorf("the intent prompt still leaves the slug for the agent to invent:\n%s", p)
+	}
+	if !strings.Contains(p, "character for character") {
+		t.Errorf("the intent prompt does not insist on that exact path:\n%s", p)
 	}
 }
 

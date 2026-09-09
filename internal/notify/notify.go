@@ -114,7 +114,7 @@ func Send(e Event) []error {
 	// (OR-189). It renders through internal/ui now, in the same columns as
 	// every other line, and the level is carried by the verb column -- which
 	// is the axis this renderer already has for exactly that question.
-	ui.Print(Out, ui.Line{
+	ui.Print(echoWriter(), ui.Line{
 		At: e.At, Key: e.Key, Actor: echoActor(e),
 		Verb: verbFor(e.Level),
 		// Prefixed, because the echo is not a status line: several callers
@@ -340,4 +340,15 @@ func appleQuote(s string) string {
 // psQuote escapes for PowerShell single-quoted strings.
 func psQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// echoWriter is where the echo goes: the console writer while something
+// owns it -- a live progress line, which clears itself before the echo and
+// redraws after, so the echo lands on its own line rather than inside it --
+// and Out otherwise, exactly as before.
+func echoWriter() io.Writer {
+	if ui.ConsoleEngaged() {
+		return ui.Console()
+	}
+	return Out
 }

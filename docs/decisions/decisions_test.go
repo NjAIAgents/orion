@@ -59,6 +59,18 @@ var expectedDecisions = []string{
 	// prompts.go has no way to know a config seam already exists in front of
 	// them.
 	"0019-toolkit-agnostic-nj-agents-is-the-default.md",
+	// OR-363. Load-bearing: without it, "spec-kit's workflow engine already
+	// does gates and resume, just call it" reads as removing duplication and
+	// hands sequencing to a second owner -- and "register Orion as a spec-kit
+	// extension" reads as the tidier integration when its hooks are prose the
+	// agent is asked to obey, not code that runs.
+	"0021-spec-kit-inside-stages.md",
+	// OR-364. Load-bearing: without it, "clone spec-kit into vendor/ like
+	// every other toolkit" reads as consistency with 0020 and produces a
+	// directory doctor grades and no stage can run; and leaving
+	// SPECIFY_FEATURE_DIRECTORY unset lets spec-kit name the feature itself,
+	// which is the second name 0009 exists to prevent.
+	"0022-per-project-toolkit-install-via-specify-init.md",
 }
 
 func TestEveryDecisionHasContextDecisionConsequences(t *testing.T) {

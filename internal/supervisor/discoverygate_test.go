@@ -94,3 +94,67 @@ func TestRunSkipsTheDiscoveryGateForTheIntentStageItself(t *testing.T) {
 		t.Fatal("the intent stage itself must not be gated by discovery")
 	}
 }
+
+func writeSpecFile(t *testing.T, w interface{ RepoDir() string }, body string) {
+	t.Helper()
+	dir := filepath.Join(w.RepoDir(), "specs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "thing.spec.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A stage that designs from the spec is blocked by a [NEEDS CLARIFICATION]
+// marker in it, with the intent clean -- the marker is spec-kit's spelling
+// of an open question, and a plan built on one inherits the guess.
+func TestRunBlocksAtTheGateOnASpecMarkerWithTheIntentClean(t *testing.T) {
+	w := ws(t, "")
+	w.Task.Slug = "thing"
+	writeIntentCapture(t, w, "# Intent\n\n## Open questions\n- None\n")
+	writeSpecFile(t, w, "# Spec\n\n- **FR-001**: auth via [NEEDS CLARIFICATION: SSO or password?]\n\n## Open questions\n- SSO or password?\n")
+	canary := fakeClaude(t)
+
+	_, err := Run(w, Options{Stage: "plan", Prompt: "do a thing", MaxMinutes: 1, MaxTurns: 1})
+	if err == nil || !strings.Contains(err.Error(), "discovery gate") || !strings.Contains(err.Error(), "SSO or password") {
+		t.Fatalf("plan was not blocked by the spec's marker, or the gate does not name it: %v", err)
+	}
+	if _, statErr := os.Stat(canary); statErr == nil {
+		t.Fatal("the agent was launched despite a marker in the spec")
+	}
+}
+
+// The spec stage itself is not blocked by markers in the spec: it is the
+// stage that writes them, and a re-run is how they get resolved.
+func TestTheSpecStageIsNotBlockedByItsOwnMarkers(t *testing.T) {
+	w := ws(t, "")
+	w.Task.Slug = "thing"
+	writeIntentCapture(t, w, "# Intent\n\n## Open questions\n- None\n")
+	writeSpecFile(t, w, "# Spec\n\n[NEEDS CLARIFICATION: anything]\n")
+	canary := fakeClaudeThatFinishes(t)
+
+	if _, err := Run(w, Options{Stage: "spec", Prompt: "do a thing", MaxMinutes: 1, MaxTurns: 1}); err != nil {
+		t.Fatalf("the spec stage was blocked by its own marker: %v", err)
+	}
+	if _, statErr := os.Stat(canary); statErr != nil {
+		t.Fatal("the agent was never launched")
+	}
+}
+
+// The constitution is seeded from the intent, so an open intent question
+// blocks it like every other stage that reads the intent.
+func TestTheConstitutionStageIsBlockedByAnOpenIntentQuestion(t *testing.T) {
+	w := ws(t, "")
+	w.Task.Slug = "thing"
+	writeIntentCapture(t, w, "# Intent\n\n## Open questions\n- Which region ships first?\n")
+	canary := fakeClaude(t)
+
+	_, err := Run(w, Options{Stage: "constitution", Prompt: "do a thing", MaxMinutes: 1, MaxTurns: 1})
+	if err == nil || !strings.Contains(err.Error(), "discovery gate") {
+		t.Fatalf("constitution was not blocked: %v", err)
+	}
+	if _, statErr := os.Stat(canary); statErr == nil {
+		t.Fatal("the agent was launched despite an open intent question")
+	}
+}

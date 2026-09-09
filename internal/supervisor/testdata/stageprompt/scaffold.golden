@@ -10,6 +10,10 @@ so the stack choice follows the design rather than a default.
 Work on a branch cut from develop. Do not commit to develop or main directly;
 the gate will refuse it and the refusal is correct.
 
+COMMIT README.md. It is the artifact this stage owes: Orion checks that it
+is there, not empty and tracked, and fails the stage otherwise. If something
+stops you laying out the repository, say so there rather than exiting quietly.
+
 THIS RUN IS HEADLESS. Nothing will ever be announced back to you: a command
 run with run_in_background is never reported as finished, ScheduleWakeup does
 nothing, and no notification of any kind arrives. Run long commands in the

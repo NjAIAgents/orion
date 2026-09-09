@@ -93,8 +93,15 @@ gate "gofmt -l ."     gofmt_clean
 # The build, vet and gofmt steps above stay. They are seconds, they catch a
 # dirty or half-merged tree, and they are the part a local gate is actually
 # good for.
+
+# How long the gate waits for a run that is already in flight. Generous
+# because the full matrix includes Windows, which is 5-6x the Linux leg
+# (OR-292) and has taken ~600s on its own.
+: "${CI_WAIT_SECONDS:=1800}"
+: "${CI_POLL_SECONDS:=20}"
+
 ci_green_for_head() {
-  local sha state
+  local sha
   sha="$(git rev-parse HEAD)"
   # A release is cut from a branch CI builds on push. No answer at all is a
   # refusal, not a pass: an unbuilt commit is exactly what this gate exists
@@ -104,20 +111,53 @@ ci_green_for_head() {
     echo "Install gh, or run the suite by hand and re-run with ORION_SKIP_CI_CHECK=1."
     return 1
   fi
-  state="$(gh run list --commit "$sha" --json conclusion,name \
-    --jq '[.[] | select(.name == "ci")] | first | .conclusion // ""' 2>/dev/null || true)"
-  case "$state" in
-    success) return 0 ;;
-    "")
-      echo "CI has reported nothing for $sha."
-      echo "It may still be running -- check: gh run list --commit $sha"
-      return 1
-      ;;
-    *)
-      echo "CI reported '$state' for $sha; a release needs a green build."
-      return 1
-      ;;
-  esac
+  # A run that is STILL RUNNING is waited for, not refused.
+  #
+  # .conclusion is empty for both "no run exists" and "a run is in flight",
+  # so reading it alone cannot tell those apart -- and they need opposite
+  # answers. That cost a release: the promotion merge triggered CI, this gate
+  # read the empty conclusion 17 seconds later, and refused a build that was
+  # running and went on to pass. Reading .status is what separates them.
+  #
+  # The wait is bounded. At the ceiling it refuses, because a release that
+  # blocks forever on a stuck run is worse than one that says so.
+  local waited=0 runstatus runconc
+  while :; do
+    read -r runstatus runconc <<EOF
+$(gh run list --commit "$sha" --json status,conclusion,name \
+  --jq '[.[] | select(.name == "ci")] | first | "\(.status // "none") \(.conclusion // "none")"' 2>/dev/null || echo "none none")
+EOF
+    case "$runstatus" in
+      completed)
+        [ "$runconc" = success ] && return 0
+        echo "CI reported '$runconc' for $sha; a release needs a green build."
+        return 1
+        ;;
+      queued | in_progress | waiting | requested | pending)
+        if [ "$waited" -ge "$CI_WAIT_SECONDS" ]; then
+          echo "CI has been $runstatus for $sha for ${waited}s without finishing."
+          echo "Check it, then re-run: gh run list --commit $sha"
+          return 1
+        fi
+        # Announced once, on the TERMINAL rather than on stdout. gate()
+        # runs this in a command substitution and prints what it captured
+        # only when the step fails, so a progress line written normally is
+        # invisible during exactly the wait it exists to explain -- leaving
+        # a silent gate that looks hung for up to CI_WAIT_SECONDS.
+        if [ "$waited" -eq 0 ]; then
+          echo "    CI is $runstatus for $sha -- waiting up to ${CI_WAIT_SECONDS}s" >/dev/tty 2>/dev/null ||
+            echo "    CI is $runstatus for $sha -- waiting up to ${CI_WAIT_SECONDS}s" >&2
+        fi
+        sleep "$CI_POLL_SECONDS"
+        waited=$((waited + CI_POLL_SECONDS))
+        ;;
+      *)
+        echo "CI has reported nothing for $sha."
+        echo "It may not have been triggered -- check: gh run list --commit $sha"
+        return 1
+        ;;
+    esac
+  done
 }
 
 if [ "${ORION_SKIP_CI_CHECK:-}" = "1" ]; then

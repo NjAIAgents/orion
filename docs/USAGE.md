@@ -156,6 +156,25 @@ orion run <id> --stage pr          # /pr-describe, PR into develop
 orion status <id>
 ```
 
+**`orion plan <KEY>` runs the planning chain itself**, pausing after each step
+so you can read what one wrote before paying for the next. **It resumes.** A
+chain that stopped -- a gate that blocked, a stage that failed, a Ctrl-C, a
+declined prompt -- is continued by running the same command again: every step
+derives whether its work is already there from its own artifact (a committed
+spec, a recorded remote, a completed run), prints `= done` for those, and
+picks up at the first that is not. Nothing is re-spent for a step that is
+done. To rebuild on purpose -- you edited the spec by hand and want the plan,
+the tasks and the tree regenerated from it -- name the step to start from:
+
+```bash
+orion plan <KEY>                   # resume: skips what is done
+orion plan <KEY> --from spec       # re-run spec and everything after it, done or not
+orion plan <KEY> --dry-run         # say which steps are done and which would run
+```
+
+A different project whose name slugifies to the same workspace still refuses,
+naming the owner ([decisions/0012](decisions/0012-one-workspace-per-tracker-project.md)).
+
 ### Why the questions are asked now
 
 Every stage after `new` runs through `claude -p` and **cannot ask you
@@ -415,29 +434,73 @@ with no command declared runs Orion's own built-in prompt.
 }
 ```
 
-A team with its own skill repository points Orion at it without a Go change:
+A team with its own skill repository points Orion at it without a Go change.
+Stages left out keep Orion's built-in prompt, so a toolkit may fill some
+stages and leave the rest alone:
 
 ```jsonc
 {
   "toolkit": {
     "repo": "https://github.com/github/spec-kit.git",
     "stages": {
-      "intent": "/specify",
-      "spec": "/plan",
-      "plan": "/tasks",
-      "decompose": "/breakdown",
-      "review": "/analyze"
+      "spec": "/speckit-specify",
+      "plan": "/speckit-plan"
     }
   }
 }
 ```
 
+The command names are the ones the toolkit actually publishes, and they are
+not always what its documentation prose calls them. spec-kit's README writes
+`/speckit.specify`, while its Claude integration installs the skill as
+`speckit-specify` — a hyphen, not a dot. A command a stage cannot resolve is a
+stage that does something other than what you configured, so read what the
+installer actually put on disk rather than inferring a name.
+
+**Installing spec-kit.** Cloning the repository is not enough: it is a Python
+CLI, and its commands live in `templates/commands/` as inputs to its own
+installer rather than as skills. **The planning chain installs it for you**:
+`orion plan <KEY>`'s first step runs `specify init` inside the workspace
+repository when any stage names a `speckit-*` command, from templates bundled
+in the CLI, and commits what it wrote
+([decisions/0022](decisions/0022-per-project-toolkit-install-via-specify-init.md)).
+The only thing you install by hand is the CLI itself:
+
+```bash
+uv tool install specify-cli --from git+https://github.com/github/spec-kit.git@v1.0.4
+```
+
+Orion pins spec-kit to one release (`provision.SpecKitTag`, v1.0.4 today): the
+skill names, the `[NEEDS CLARIFICATION]` marker, the `Critical Issues Count`
+line and the constitution template's slots are all read from what that release
+installs, and `go test ./internal/provision/` checks them against the real CLI
+whenever `specify` is on PATH. `orion doctor` prints the installed version
+beside the pin. To move to a newer spec-kit, change the pin and run that test;
+an existing workspace keeps the templates it was initialised with until
+`specify integration upgrade` is run inside it — the `orion` preset survives
+that, and the chain re-applies it if it ever does not.
+
+To do the project step by hand instead -- an existing repository, say -- run
+the same command the chain does:
+
+```bash
+cd <repo> && specify init --here --force --non-interactive --integration claude
+```
+
+That writes `.claude/skills/speckit-*/SKILL.md`, which is the layout Orion and
+Claude Code both read. `orion doctor` finds a toolkit installed inside the
+project on its own, grades every `toolkit.stages` command against a file that
+is really there, and reports the `specify` version and the features the chain
+needs -- with `uv tool upgrade specify-cli` when one is missing. A stage whose
+command has no file FAILs naming the stage; it does not fall back silently.
+`orion doctor --fix` never clones spec-kit: a clone is not an install.
+
 Orion clones a toolkit it manages into `<ORION_HOME>/vendor/<repo-name>` —
 `vendor/spec-kit` above, `vendor/nj-agents` for the default — so two toolkits
 never land on the same directory. `toolkit.dir` overrides that entirely.
 
-**Stage names.** Only the stages Orion runs: `intent`, `spec` (or `design`),
-`plan`, `ticket`, `scaffold`, `decompose`, `build` (or `implement`), `verify`
+**Stage names.** Only the stages Orion runs: `intent`, `constitution`, `spec`
+(or `design`), `plan`, `analyze`, `ticket`, `scaffold`, `decompose`, `build` (or `implement`), `verify`
 (or `test`), `review`, `pr` (or `ship`). Either spelling of a pair means the
 same stage. Naming a stage twice with two different commands is refused, with
 both keys quoted, rather than one being picked silently; so is a stage name
@@ -453,7 +516,7 @@ so the rule holds by shape rather than by prose.
 
 ### Creating the tracker tree from a spec-kit task list
 
-If your `plan` stage runs spec-kit's `/speckit.tasks`, the artifact it leaves
+If your `plan` stage runs spec-kit's `/speckit-tasks`, the artifact it leaves
 behind — `specs/<nnn-feature>/tasks.md` — is a phased task list with `[P]`
 parallel markers, `[USn]` story groups and exact file paths. `orion decompose`
 turns that into the tracker tree itself, without a skill in the middle:
@@ -477,11 +540,24 @@ the tree's identity label (`orion-spec-<feature>`), links what is there and
 creates only the rest — so a run that failed halfway is resumed by running the
 same command again, and it reports the item it stopped at.
 
-**This is opt-in and Jira-only for now.** The `decompose` STAGE still runs
-whatever your toolkit block names (`/pm-plan` by default), on any tracker, and
-that path is unchanged — a project with no spec-kit output decomposes exactly as
-it did before. The tracker-neutral seam that would let this reach Linear, Notion
-and GitHub Issues is tracked as OR-303.
+**`orion plan` runs this for you.** When the plan stage left
+`<FeatureDir>/tasks.md`, the chain's `decompose` step creates the tree natively
+— the same code as the command above — and stamps the queue label (`ORION` by
+default, `tracker.queue_label` in orion.json) on every story and every
+epic-level task, so `orion watch` can claim each exactly once. Not on the epic,
+which would make the whole project one claim; not on a story's sub-tasks, which
+the story works itself. With no tasks.md the `decompose` STAGE runs whatever
+your toolkit block names (`/pm-plan` by default), on any tracker, exactly as
+before. `orion plan KEY --release v1.0.0` adds a step after decompose that
+creates the version and attaches every ticket in the tree to it, so
+`orion release status` never reports the tree as orphans; without the flag the
+step is skipped.
+
+**Jira-only for now.** Jira is the only backend shipped behind the native
+route's tracker seam; Linear, Notion and GitHub Issues are tracked as OR-303.
+A project whose `tracker.provider` names one of them is refused rather than
+handed a Jira tree, and told to decompose through the stage instead -- the
+`/pm-plan` fallback works on any tracker.
 
 ---
 
