@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -123,6 +124,22 @@ type Tree struct {
 	// Coupled are the sibling pairs whose declared scopes overlap. Reported,
 	// never resolved: see couplings.
 	Coupled []Coupling
+	// Blocks are the ordering edges the Dependencies section states, as
+	// task ids: Blocks[i] says "Blocker must finish before Blocked starts".
+	// Prose until now, pasted into the epic body, which meant the queue saw
+	// none of it and admitted every task at once (docs/decisions/0023).
+	Blocks []Edge
+}
+
+// Edge is one ordering statement: Blocker must finish before Blocked can
+// start. Ids are the artifact's own (T012, T041), resolved to tracker keys
+// at creation.
+type Edge struct {
+	Blocker string
+	Blocked string
+	// Why is the line the edge was read from, so a person looking at a link
+	// in the tracker can find the sentence that put it there.
+	Why string
 }
 
 // Label is the identity label every item created from this tree carries.
@@ -287,6 +304,13 @@ func Parse(text, source string) (*Tree, error) {
 		}
 		if _, ok := heading(line, "### "); ok {
 			lastTask, inCriteria = nil, false
+			// Inside the Dependencies section a sub-heading is part of what
+			// the section says -- "### Parallel opportunities" changes the
+			// meaning of every bullet under it -- so it is carried with the
+			// body rather than swallowed here.
+			if inDepends {
+				depends = append(depends, line)
+			}
 			continue
 		}
 		if inDepends {
@@ -460,6 +484,7 @@ func Parse(text, source string) (*Tree, error) {
 		st := storyByNum[num]
 		st.Body = storyBody(st, storyGoal[num], tree.Coupled)
 	}
+	tree.Blocks = dependencyEdges(depends, tree)
 	epic.Body = epicBody(tree, phases, depends)
 
 	label(tree)
@@ -780,4 +805,126 @@ func summarise(desc string) string {
 		cut = cut[:i]
 	}
 	return strings.TrimRight(cut, " ,;:-") + "…"
+}
+
+// afterTask reads "after T012" / "after T000" from a dependency line.
+var afterTask = regexp.MustCompile(`(?i)\bafter\s+(T\d+[a-zA-Z]?)\b`)
+
+// afterPhase reads "after Phase 3" from a dependency line.
+var afterPhase = regexp.MustCompile(`(?i)\bafter\s+Phase\s+(\d+)`)
+
+// phaseOf reads the phase number a heading opens with: "Phase 3: ..." -> 3.
+var phaseNum = regexp.MustCompile(`(?i)^\s*\**\s*Phase\s+(\d+)`)
+
+// dependencyLine is one bullet of the Dependencies section, naming the
+// phase it constrains: "- **Phase 2 (Setup)**: after T012."
+var dependencyLine = regexp.MustCompile(`(?i)^\s*[-*]\s*\**\s*Phase\s+(\d+)`)
+
+// dependencyEdges turns the Dependencies section's prose into ordering
+// edges between tasks.
+//
+// The section is written for a person -- "Phase 2 (Setup): after T012",
+// "Phase 4 (US2): after Phase 3" -- and every reader before the tracker had
+// to take it on trust. Two shapes are read, both of which the template
+// documents and real output uses: a phase that follows a NAMED TASK, and a
+// phase that follows another PHASE (whose last task is the one to wait on).
+//
+// WHAT IS NOT INFERRED: anything the section only implies. "Independent of
+// Phases 4-5 at the code level, but quickstart B3 is only meaningful after
+// B1" is a sentence about judgement, and turning it into a hard link would
+// order work the artifact did not order. Prose that states no dependency
+// produces no edge, and the epic body still carries the whole section for a
+// person to read.
+func dependencyEdges(depends []string, t *Tree) []Edge {
+	if t == nil || t.Epic == nil || len(depends) == 0 {
+		return nil
+	}
+	// Every task, and the phase number its heading carries.
+	type placed struct {
+		id    string
+		phase int
+	}
+	var all []placed
+	_ = t.Walk(func(it, _ *Item) error {
+		if it.Kind != KindTask || it.ID == "" {
+			return nil
+		}
+		n := 0
+		if m := phaseNum.FindStringSubmatch(it.Phase); m != nil {
+			n, _ = strconv.Atoi(m[1])
+		}
+		all = append(all, placed{it.ID, n})
+		return nil
+	})
+	if len(all) == 0 {
+		return nil
+	}
+	inPhase := func(n int) []string {
+		var out []string
+		for _, p := range all {
+			if p.phase == n {
+				out = append(out, p.id)
+			}
+		}
+		return out
+	}
+
+	var edges []Edge
+	seen := map[string]bool{}
+	add := func(blocker, blocked, why string) {
+		if blocker == "" || blocked == "" || blocker == blocked {
+			return
+		}
+		k := blocker + ">" + blocked
+		if seen[k] {
+			return
+		}
+		seen[k] = true
+		edges = append(edges, Edge{Blocker: blocker, Blocked: blocked, Why: strings.TrimSpace(why)})
+	}
+
+	// ONLY THE PHASE-DEPENDENCY BULLETS. The section also carries a
+	// "Parallel opportunities" list -- "Phase 2: T015, T016, T017, T019 in
+	// parallel after T014" -- which says what MAY run together, not what
+	// must wait. Reading it as ordering produced "T014 blocks T013", an
+	// edge pointing backwards through the file and stating the opposite of
+	// what the line means (FOUND ON A REAL PROJECT).
+	inParallel := false
+	for _, line := range depends {
+		if h := strings.TrimSpace(strings.ToLower(line)); strings.HasPrefix(h, "###") {
+			inParallel = strings.Contains(h, "parallel")
+			continue
+		}
+		if inParallel {
+			continue
+		}
+		m := dependencyLine.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		target, _ := strconv.Atoi(m[1])
+		blocked := inPhase(target)
+		if len(blocked) == 0 {
+			continue
+		}
+		// "after T012": that task blocks every task of this phase.
+		for _, am := range afterTask.FindAllStringSubmatch(line, -1) {
+			for _, b := range blocked {
+				add(am[1], b, line)
+			}
+		}
+		// "after Phase 3": that phase's LAST task blocks this phase's
+		// first. One edge rather than a cross product -- the phases are
+		// already sequential within themselves, and N x M links on a
+		// ninety-task tree is a board nobody can read.
+		for _, pm := range afterPhase.FindAllStringSubmatch(line, -1) {
+			n, _ := strconv.Atoi(pm[1])
+			prev := inPhase(n)
+			if len(prev) == 0 {
+				continue
+			}
+			add(prev[len(prev)-1], blocked[0], line)
+		}
+	}
+	return edges
 }

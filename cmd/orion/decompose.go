@@ -142,7 +142,17 @@ func decomposeTree(out io.Writer, root, project, path string, ask confirmer) err
 			"  and creates only what is missing.\n")
 		return fmt.Errorf("%w: %v", errTreeStopped, applyErr)
 	}
-	fmt.Fprintf(out, "\n  %d created, %d already there.\n", len(res.Created), len(res.Linked))
+	fmt.Fprintf(out, "\n  %d created, %d already there", len(res.Created), len(res.Linked))
+	if res.Links > 0 {
+		fmt.Fprintf(out, ", %d ordering link(s)", res.Links)
+	}
+	fmt.Fprintln(out, ".")
+	// An ordering statement that could not be made is said plainly: the
+	// tree exists either way, but the queue will start work the artifact
+	// meant to hold back, and that is the operator's to know.
+	for _, f := range res.LinkFailed {
+		ui.Warn(out, "%s", f)
+	}
 	return nil
 }
 

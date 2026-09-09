@@ -19,6 +19,7 @@ import (
 type fakeBackend struct {
 	have    map[string]string
 	created []decompose.CreateRequest
+	links   []string
 	n       int
 }
 
@@ -30,6 +31,11 @@ func (f *fakeBackend) Existing(string, string) (map[string]string, error) {
 	}
 	return out, nil
 }
+func (f *fakeBackend) Link(blocker, blocked string) error {
+	f.links = append(f.links, blocker+">"+blocked)
+	return nil
+}
+
 func (f *fakeBackend) Create(r decompose.CreateRequest) (string, error) {
 	f.n++
 	key := fmt.Sprintf("%s-%d", r.Project, f.n)

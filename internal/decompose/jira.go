@@ -32,6 +32,7 @@ type JiraClient interface {
 	Search(jql string, maxResults int) ([]tracker.Issue, error)
 	IssueTypes(project string) ([]tracker.IssueType, error)
 	CreateIssue(in tracker.NewIssue) (string, error)
+	LinkBlocks(blocker, blocked string) error
 }
 
 // JiraBackend adapts the Jira client to Backend.
@@ -194,4 +195,10 @@ func names(types []tracker.IssueType) string {
 		out = append(out, t.Name)
 	}
 	return strings.Join(out, ", ")
+}
+
+// Link records that one issue blocks another, which is what the queue reads
+// to decide whether a ticket is startable (internal/tracker/depends.go).
+func (b *JiraBackend) Link(blocker, blocked string) error {
+	return b.c.LinkBlocks(blocker, blocked)
 }

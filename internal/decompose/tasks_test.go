@@ -599,3 +599,38 @@ func TestATaskIdMayCarryALetterSuffix(t *testing.T) {
 		t.Errorf("summary = %q; the suffix belongs to the id, not the description", got.Summary)
 	}
 }
+
+// The Dependencies section states order AND lists parallel opportunities.
+// Only the first is ordering: "T015, T016 in parallel after T014" says what
+// MAY run together, and reading it as a dependency produced an edge
+// pointing backwards through the file.
+func TestOnlyThePhaseDependenciesBecomeEdges(t *testing.T) {
+	src := "# Tasks: Thing\n\n" +
+		"## Phase 1: Setup\n\n- [ ] T001 Do a in a.go\n- [ ] T002 Do b in b.go\n\n" +
+		"## Phase 2: Build\n\n- [ ] T010 Do c in c.go\n- [ ] T011 Do d in d.go\n\n" +
+		"## Dependencies & Execution Order\n\n" +
+		"### Phase dependencies\n\n" +
+		"- **Phase 2 (Build)**: after T001.\n\n" +
+		"### Parallel opportunities\n\n" +
+		"- Phase 2: T011 in parallel after T010.\n"
+	tree, err := Parse(src, "specs/001-thing/tasks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range tree.Blocks {
+		if e.Blocker == "T010" {
+			t.Errorf("a parallel-opportunity line became an ordering edge: %s blocks %s", e.Blocker, e.Blocked)
+		}
+	}
+	if len(tree.Blocks) != 2 {
+		t.Fatalf("edges = %+v, want T001 blocking the two phase-2 tasks", tree.Blocks)
+	}
+	for _, e := range tree.Blocks {
+		if e.Blocker != "T001" {
+			t.Errorf("unexpected blocker %q", e.Blocker)
+		}
+		if e.Why == "" {
+			t.Error("an edge must carry the line it was read from")
+		}
+	}
+}

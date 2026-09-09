@@ -56,6 +56,7 @@ func Preview(w io.Writer, p *Plan) {
 	if n := humanCount(p); n > 0 {
 		fmt.Fprintf(w, "  %d of them are [human]: created as tickets, never offered to an agent.\n", n)
 	}
+	previewBlocks(w, p.Tree.Blocks)
 	previewCoupled(w, p.Tree.Coupled)
 }
 
@@ -123,4 +124,38 @@ func humanCount(p *Plan) int {
 		}
 	}
 	return n
+}
+
+// previewBlocks says what the queue will be able to read, before anything
+// is created: which task waits on which, from the artifact's own
+// Dependencies section.
+func previewBlocks(w io.Writer, edges []Edge) {
+	if len(edges) == 0 {
+		fmt.Fprintf(w, "\n  No ordering links: the task list states no dependencies, so every\n"+
+			"  item is startable at once.\n")
+		return
+	}
+	// Grouped by blocker, which is how a reader thinks about it: "what does
+	// T012 hold up".
+	order := []string{}
+	by := map[string][]string{}
+	for _, e := range edges {
+		if _, ok := by[e.Blocker]; !ok {
+			order = append(order, e.Blocker)
+		}
+		by[e.Blocker] = append(by[e.Blocker], e.Blocked)
+	}
+	fmt.Fprintf(w, "\n  %d ordering link(s), from the task list's Dependencies section --\n"+
+		"  the queue will not start a task while its blocker is open:\n", len(edges))
+	for _, blocker := range order {
+		fmt.Fprintf(w, "    %s blocks %s\n", blocker, joinCapped(by[blocker], 6))
+	}
+}
+
+// joinCapped lists ids, naming a few and counting the rest.
+func joinCapped(ids []string, n int) string {
+	if len(ids) <= n {
+		return strings.Join(ids, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(ids[:n], ", "), len(ids)-n)
 }
