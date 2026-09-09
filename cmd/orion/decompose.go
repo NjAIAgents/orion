@@ -28,12 +28,34 @@ import (
 
 // decomposeBackend opens the tracker the tree is created in. A variable so
 // the chain's tests can stand in a fake and create nothing real.
-var decomposeBackend = func() (decompose.Backend, error) {
-	jira, err := tracker.NewJiraFromEnv()
-	if err != nil {
-		return nil, err
+var decomposeBackend = func(root string) (decompose.Backend, error) {
+	return backendFor(config.Load(root).Tracker.Provider)
+}
+
+// backendFor picks the backend the project's orion.json asks for.
+//
+// A CONFIGURED PROVIDER WITH NO BACKEND IS REFUSED, not quietly served by
+// Jira. tracker.provider has been a settable field since before this route
+// existed and nothing read it, so a project that had written "linear" there
+// got a Jira tree built against Jira credentials -- either a confusing
+// failure or, with both configured, a tree in the wrong tracker. Jira is
+// the only backend shipped, and the refusal says so and names the way
+// through (OR-303).
+func backendFor(provider string) (decompose.Backend, error) {
+	switch p := strings.ToLower(strings.TrimSpace(provider)); p {
+	case "", "jira":
+		jira, err := tracker.NewJiraFromEnv()
+		if err != nil {
+			return nil, err
+		}
+		return decompose.NewJiraBackend(jira), nil
+	default:
+		return nil, fmt.Errorf(
+			"tracker.provider is %q, and decompose can only create a tree in jira.\n"+
+				"  Decompose through the stage instead, which works on any tracker:\n"+
+				"    orion plan <KEY>   (the chain falls back to the stage without a tasks.md)\n"+
+				"  Or set tracker.provider to \"jira\" in orion.json to use this route.", p)
 	}
-	return decompose.NewJiraBackend(jira), nil
 }
 
 // errDeclined is the answer "no" to the one confirmation: nothing was
@@ -101,7 +123,7 @@ func decomposeTree(out io.Writer, root, project, path string, ask confirmer) err
 	}
 	tree.Queue(queue)
 
-	backend, err := decomposeBackend()
+	backend, err := decomposeBackend(root)
 	if err != nil {
 		return err
 	}

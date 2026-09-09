@@ -48,7 +48,7 @@ func swapBackend(t *testing.T) *fakeBackend {
 	t.Helper()
 	f := &fakeBackend{have: map[string]string{}}
 	orig := decomposeBackend
-	decomposeBackend = func() (decompose.Backend, error) { return f, nil }
+	decomposeBackend = func(string) (decompose.Backend, error) { return f, nil }
 	t.Cleanup(func() { decomposeBackend = orig })
 	return f
 }

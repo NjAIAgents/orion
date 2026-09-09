@@ -92,7 +92,7 @@ func treePlan(ws *workspace.Workspace) (*decompose.Plan, bool) {
 	if err != nil {
 		return nil, true
 	}
-	b, err := decomposeBackend()
+	b, err := decomposeBackend(ws.RepoDir())
 	if err != nil {
 		return nil, true
 	}

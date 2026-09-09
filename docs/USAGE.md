@@ -553,9 +553,11 @@ creates the version and attaches every ticket in the tree to it, so
 `orion release status` never reports the tree as orphans; without the flag the
 step is skipped.
 
-**Jira-only for now.** The tracker-neutral seam that would let the native route
-reach Linear, Notion and GitHub Issues is tracked as OR-303; the `/pm-plan`
-fallback works on any tracker.
+**Jira-only for now.** Jira is the only backend shipped behind the native
+route's tracker seam; Linear, Notion and GitHub Issues are tracked as OR-303.
+A project whose `tracker.provider` names one of them is refused rather than
+handed a Jira tree, and told to decompose through the stage instead -- the
+`/pm-plan` fallback works on any tracker.
 
 ---
 
