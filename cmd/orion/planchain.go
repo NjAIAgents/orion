@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -269,7 +270,9 @@ func runPlanChainWith(out io.Writer, ws *workspace.Workspace, run stageRunner, a
 			}
 		}
 
+		before := headBranch(ws.RepoDir())
 		res, err := run(ws, s.Stage)
+		noteBranchChange(out, ws, s.Stage, before)
 		if res != nil {
 			fmt.Fprintf(out, "  exit %d  %s  %s\n",
 				res.ExitCode, res.Duration.Round(time.Second), res.LogPath)
@@ -320,4 +323,41 @@ func askYesNo(r *bufio.Reader, out io.Writer, prompt string) bool {
 		return true
 	}
 	return false
+}
+
+// headBranch is the branch the sandbox is standing on, or "" when the
+// question has no answer -- no repository yet, or a detached HEAD.
+func headBranch(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	if b := strings.TrimSpace(string(out)); b != "HEAD" {
+		return b
+	}
+	return ""
+}
+
+// noteBranchChange says when a stage moved the sandbox onto another branch,
+// and records where it left it.
+//
+// Nothing stops a stage's model from checking out a branch of its own, and
+// until this existed nothing noticed either: every stage after it committed
+// somewhere the chain never chose, and the first sign was a pull request
+// from a branch nobody recognised (OR-405).
+func noteBranchChange(out io.Writer, ws *workspace.Workspace, stage, before string) {
+	after := headBranch(ws.RepoDir())
+	if after == "" {
+		return
+	}
+	if before != "" && before != after {
+		ui.Warn(out, "%s left the sandbox on %s, not %s", stage, after, before)
+		fmt.Fprintf(out, "  %s\n", ui.Dim(out, fmt.Sprintf(
+			"every stage after this one commits there: git -C %s checkout %s to put it back",
+			ws.RepoDir(), before)))
+	}
+	if ws.Task.PlanBranch != after {
+		ws.Task.PlanBranch = after
+		_ = ws.SaveTask()
+	}
 }

@@ -76,6 +76,12 @@ type Task struct {
 	// Branches created at provisioning: main (release, protected) and
 	// develop (integration, the pull-request base).
 	Branches []string `json:"branches,omitempty"`
+	// PlanBranch is the branch the planning chain is standing on, recorded
+	// after each stage. A stage's model can check out another branch --
+	// nothing stops it -- and every stage after it would then commit
+	// somewhere the chain never chose. Recorded so the change is visible
+	// rather than silent (OR-405).
+	PlanBranch string `json:"plan_branch,omitempty"`
 	// Slack is the project's channel, when one was created. It is the medium
 	// the run reports into.
 	Slack *SlackChannel `json:"slack,omitempty"`

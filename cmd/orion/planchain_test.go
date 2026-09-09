@@ -802,3 +802,45 @@ func TestCloneStepReportsDegradedWithNoOneToAsk(t *testing.T) {
 		t.Errorf("the fix does not name the command: %q", deg.Fix)
 	}
 }
+
+// A stage's model can check out a branch of its own, and nothing stops it.
+// The chain says so and records where the stage left the sandbox, rather
+// than letting every later stage commit somewhere nobody chose (OR-405).
+func TestAStageThatChangesTheBranchIsReported(t *testing.T) {
+	ws := chainWS(t)
+	repo := ws.RepoDir()
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=o", "GIT_AUTHOR_EMAIL=o@l",
+			"GIT_COMMITTER_NAME=o", "GIT_COMMITTER_EMAIL=o@l")
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable: %v\n%s", err, b)
+		}
+	}
+	git("init", "-b", "develop")
+	git("commit", "--allow-empty", "-m", "x")
+
+	withPlanStages(t, []planStage{{Stage: "spec", Actor: "architect", What: "the spec"}})
+	var out bytes.Buffer
+	wandered := func(_ *workspace.Workspace, _ string) (*supervisor.Result, error) {
+		git("checkout", "-q", "-b", "somewhere-else")
+		return &supervisor.Result{}, nil
+	}
+
+	runPlanChain(&out, ws, wandered, func(string) bool { return true })
+
+	got := out.String()
+	for _, want := range []string{"somewhere-else", "develop"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the warning does not name %q:\n%s", want, got)
+		}
+	}
+	if ws.Task.PlanBranch != "somewhere-else" {
+		t.Errorf("the branch the stage left behind was not recorded: %q", ws.Task.PlanBranch)
+	}
+}
