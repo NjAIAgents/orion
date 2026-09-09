@@ -902,3 +902,24 @@ func mustGit(t *testing.T, dir string, args ...string) {
 		t.Skipf("git unavailable: %v\n%s", err, b)
 	}
 }
+
+// The copy usually lands at <recorded path>/<id>, because the path someone
+// gives is the folder they keep code in. A Done that looked only at the
+// recorded path would report the step unfinished forever and clone again
+// on every resume (OR-418).
+func TestCloneIsDoneWhenTheCopyIsInsideTheFolderYouNamed(t *testing.T) {
+	ws := chainWS(t)
+	parent := t.TempDir()
+	ws.Task.CheckoutPath = parent
+
+	if cloneDone(ws) {
+		t.Fatal("reported done with no copy anywhere")
+	}
+	inside := filepath.Join(parent, ws.ID, ".git")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !cloneDone(ws) {
+		t.Errorf("a copy at %s was not recognised", inside)
+	}
+}

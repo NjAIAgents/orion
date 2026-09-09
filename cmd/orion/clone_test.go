@@ -252,3 +252,56 @@ func gitLineIn(t *testing.T, dir string, args ...string) string {
 	}
 	return strings.TrimSpace(string(b))
 }
+
+// The copy opens on the branch the chain committed to. Cloning leaves you
+// on the repository default -- develop, which has none of the planning
+// artifacts -- so the work looks lost until you check what branch you are
+// on (OR-418).
+func TestCloneChecksOutTheBranchTheChainWorkedOn(t *testing.T) {
+	src := gitRepoForClone(t)
+	runGitOrSkip(t, src, "checkout", "-q", "-b", "orion/001-thing")
+	runGitOrSkip(t, src, "commit", "--allow-empty", "-m", "the planning work")
+	runGitOrSkip(t, src, "checkout", "-q", "main")
+
+	ws := &workspace.Workspace{ID: "thing", Dir: t.TempDir()}
+	ws.Task.Remote = src
+	ws.Task.PlanBranch = "orion/001-thing"
+	dest := filepath.Join(t.TempDir(), "copy")
+
+	var out bytes.Buffer
+	if err := cloneWorkspace(&out, ws, dest); err != nil {
+		t.Fatalf("clone failed: %v\n%s", err, out.String())
+	}
+	if got := gitLineIn(t, dest, "rev-parse", "--abbrev-ref", "HEAD"); got != "orion/001-thing" {
+		t.Errorf("the copy opened on %q, want the branch the chain worked on", got)
+	}
+}
+
+// A recorded branch the source does not have must not cost the copy: the
+// clone is what was asked for, so it is made without one.
+func TestCloneStillCopiesWhenTheRecordedBranchIsGone(t *testing.T) {
+	src := gitRepoForClone(t)
+	ws := &workspace.Workspace{ID: "thing", Dir: t.TempDir()}
+	ws.Task.Remote = src
+	ws.Task.PlanBranch = "orion/never-pushed"
+	dest := filepath.Join(t.TempDir(), "copy")
+
+	var out bytes.Buffer
+	if err := cloneWorkspace(&out, ws, dest); err != nil {
+		t.Fatalf("a missing branch cost the whole copy: %v\n%s", err, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(dest, ".git")); err != nil {
+		t.Errorf("nothing was cloned: %v", err)
+	}
+}
+
+func runGitOrSkip(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=o", "GIT_AUTHOR_EMAIL=o@l",
+		"GIT_COMMITTER_NAME=o", "GIT_COMMITTER_EMAIL=o@l")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("git unavailable: %v\n%s", err, b)
+	}
+}

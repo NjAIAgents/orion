@@ -80,9 +80,27 @@ func cloneWorkspace(out io.Writer, ws *workspace.Workspace, dest string) error {
 		return err
 	}
 
-	cmd := exec.Command("git", "clone", src, dest)
-	if outBytes, err := cmd.CombinedOutput(); err != nil {
+	// ON THE BRANCH THE CHAIN WORKED ON, not the repository's default.
+	// Cloning leaves you on the default branch, which is develop and has
+	// none of the planning artifacts on it -- so the copy opens on an
+	// empty tree and the work looks lost until someone thinks to check
+	// what branch they are on (FOUND ON A REAL PROJECT).
+	branch := strings.TrimSpace(ws.Task.PlanBranch)
+	outBytes, err := gitClone(src, dest, branch)
+	if err != nil && branch != "" {
+		// A branch the source does not have is not worth failing over: the
+		// copy is what was asked for, so it is made without one. Clear
+		// anything the failed attempt left, or the retry refuses its own
+		// half-written directory.
+		_ = os.RemoveAll(dest)
+		branch = ""
+		outBytes, err = gitClone(src, dest, "")
+	}
+	if err != nil {
 		return fmt.Errorf("cloning %s to %s: %v\n%s", ws.ID, dest, err, strings.TrimSpace(string(outBytes)))
+	}
+	if branch != "" {
+		from += ", on " + branch
 	}
 
 	ui.Ok(out, "cloned", "%s -> %s", ws.ID, dest)
@@ -129,4 +147,13 @@ func expandPath(p string) (string, error) {
 		p = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
 	}
 	return filepath.Abs(p)
+}
+
+// gitClone runs one clone, optionally checking out a named branch.
+func gitClone(src, dest, branch string) ([]byte, error) {
+	args := []string{"clone"}
+	if branch != "" {
+		args = append(args, "--branch", branch)
+	}
+	return exec.Command("git", append(args, src, dest)...).CombinedOutput()
 }

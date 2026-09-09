@@ -161,8 +161,17 @@ func cloneDone(ws *workspace.Workspace) bool {
 	if p, err := expandPath(dest); err == nil {
 		dest = p
 	}
-	_, err := os.Stat(filepath.Join(dest, ".git"))
-	return err == nil
+	// EITHER SHAPE, because the answer to "where do you want your copy" is
+	// usually the folder someone keeps code in, and the copy then lands at
+	// <folder>/<id> rather than at the path itself (OR-418). Checking only
+	// the recorded path would report the step unfinished forever and clone
+	// again on every resume.
+	for _, p := range []string{dest, filepath.Join(dest, ws.ID)} {
+		if _, err := os.Stat(filepath.Join(p, ".git")); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // runPlanChain runs the planning stages in order, pausing after each.
@@ -395,4 +404,12 @@ func pushPlanBranch(out io.Writer, ws *workspace.Workspace) {
 		return
 	}
 	ui.Ok(out, "pushed", "%s -> origin", branch)
+	// So the copy made next opens on it. Recorded here rather than left to
+	// noteBranchChange, which only runs after a SUPERVISED stage: a chain
+	// whose branch was set at provisioning and never changed has no record
+	// at all, and the copy would open on the repository default.
+	if ws.Task.PlanBranch != branch {
+		ws.Task.PlanBranch = branch
+		_ = ws.SaveTask()
+	}
 }
