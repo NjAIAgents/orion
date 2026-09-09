@@ -2,6 +2,8 @@ package hook
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -111,9 +113,12 @@ func TestGatePushProtection(t *testing.T) {
 		"git push origin develop",
 		"git push origin HEAD:develop",
 		"git push origin orion/thing:develop",
-		"git push --force origin feature",
-		"git push -f origin feature",
-		"git push --force-with-lease origin feature",
+		// Forcing AT a protected branch is still refused -- that is what
+		// protection means.
+		"git push --force origin main",
+		"git push -f origin develop",
+		"git push --force-with-lease origin HEAD:main",
+		"git push --force origin feature:develop",
 	}
 	for _, c := range blocked {
 		t.Run("blocks/"+c, func(t *testing.T) {
@@ -139,6 +144,17 @@ func TestGatePushProtection(t *testing.T) {
 		"git log --oneline main",
 		"git push origin developer-notes", // near-miss on "develop"
 		"git push origin dev-tools",
+		// A FORCE PUSH TO A FEATURE BRANCH IS THE AUTHOR'S BUSINESS.
+		// main and develop reach their state through a reviewed pull
+		// request; every other branch is the work in progress that leads
+		// to one, and rebasing or amending it is how a reviewable history
+		// gets made. This used to be blocked, and the refusal read "main
+		// is protected" whatever branch the command actually named, which
+		// sends the reader looking in the wrong place (OR-420).
+		"git push --force origin feature",
+		"git push -f origin orion/or-347-release-notes",
+		"git push --force-with-lease origin orion/thing",
+		"git push --force-with-lease=orion/x:abc123 origin orion/x",
 	}
 	for _, c := range allowed {
 		t.Run("allows/"+c, func(t *testing.T) {
@@ -168,5 +184,44 @@ func TestGateIgnoresNonPreToolUse(t *testing.T) {
 	in.HookEventName = "PostToolUse"
 	if d := Gate(in, cfg); d.Blocked() {
 		t.Error("gate is a PreToolUse control; blocking after the fact is meaningless")
+	}
+}
+
+// A push with no refspec goes to the branch you are standing on, and the
+// command text never says which that is. Standing on a protected branch it
+// is still a push at that branch; standing anywhere else it is not (OR-420).
+func TestGateReadsTheCurrentBranchForARefspecLessPush(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		c.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=o", "GIT_AUTHOR_EMAIL=o@l",
+			"GIT_COMMITTER_NAME=o", "GIT_COMMITTER_EMAIL=o@l")
+		if b, err := c.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable: %v\n%s", err, b)
+		}
+	}
+	run("init", "-b", "main")
+	run("commit", "--allow-empty", "-m", "x")
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Defaults()
+	forced := "git " + "push --force"
+	if d := Gate(bash(forced), cfg); !d.Blocked() {
+		t.Error("a bare force push while standing on main was allowed")
+	}
+
+	run("checkout", "-q", "-b", "orion/thing")
+	if d := Gate(bash(forced), cfg); d.Blocked() {
+		t.Errorf("a bare force push on a feature branch was blocked: %s", d.Msg)
 	}
 }

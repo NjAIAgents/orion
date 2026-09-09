@@ -2,6 +2,7 @@ package hook
 
 import (
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 
@@ -186,10 +187,7 @@ func badPush(cmd, defaultBranch string) string {
 	if !regexp.MustCompile(`\bgit\s+push\b`).MatchString(cmd) {
 		return ""
 	}
-	if reForcePush.MatchString(cmd) {
-		return "force push blocked."
-	}
-	// Explicit refspec naming the default branch, e.g.
+	// Explicit refspec naming the branch, e.g.
 	//   git push origin main
 	//   git push origin HEAD:main
 	//   git push origin feature:main
@@ -198,10 +196,77 @@ func badPush(cmd, defaultBranch string) string {
 		`\bgit\s+push\b[^|;&]*\s` + db + `\s*($|[|;&])`, // ... origin main
 		`\bgit\s+push\b[^|;&]*:` + db + `\b`,            // ... HEAD:main
 	}
+	named := false
 	for _, p := range patterns {
 		if regexp.MustCompile(p).MatchString(cmd) {
-			return "direct push to " + defaultBranch + " blocked."
+			named = true
+			break
 		}
+	}
+	// A push with no refspec goes to the CURRENT branch, which the command
+	// text never mentions -- so standing on a protected branch and running
+	// `git push --force` would otherwise sail past a check that only reads
+	// the command.
+	if !named && !hasRefspec(cmd) && strings.EqualFold(currentBranch(), defaultBranch) {
+		named = true
+	}
+	if !named {
+		// Not this branch. A force push somewhere else is the author's
+		// business: main and develop reach their state through a reviewed
+		// pull request, and every other branch is the work in progress
+		// that leads to one -- rebasing and amending it is the normal way
+		// to arrive at a reviewable history.
+		//
+		// This used to block EVERY force push, before looking at where it
+		// went, and then reported "main is protected" whatever the target
+		// was. So force-pushing a feature branch was refused for a reason
+		// that named a branch the command never mentioned, which sends the
+		// reader looking in the wrong place (OR-420).
+		return ""
+	}
+	if reForcePush.MatchString(cmd) {
+		return "force push to " + defaultBranch + " blocked."
+	}
+	return "direct push to " + defaultBranch + " blocked."
+}
+
+// hasRefspec reports whether a push names a branch to push, rather than
+// relying on the current one. Anything after the remote that is not a flag
+// is a refspec.
+func hasRefspec(cmd string) bool {
+	fields := strings.Fields(cmd)
+	for i, f := range fields {
+		if f != "push" {
+			continue
+		}
+		n := 0
+		for _, a := range fields[i+1:] {
+			if strings.HasPrefix(a, "-") {
+				continue
+			}
+			if a == "|" || a == ";" || a == "&&" {
+				break
+			}
+			n++ // first is the remote, a second is the refspec
+			if n > 1 {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// currentBranch is the branch HEAD is on, or "" when there is no answer --
+// no repository, or a detached HEAD. Empty never matches a protected name,
+// so an unreadable HEAD leaves the command to the rules that read the text.
+func currentBranch() string {
+	out, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	if b := strings.TrimSpace(string(out)); b != "HEAD" {
+		return b
 	}
 	return ""
 }
