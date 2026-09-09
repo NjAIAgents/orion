@@ -749,11 +749,17 @@ func TestDecliningAfterADegradedStepStopsTheChain(t *testing.T) {
 	}
 }
 
-// A clone onto a path that is already taken used to warn and report the
+// A clone onto a path that cannot be used used to warn and report the
 // step done. It now offers another path, and takes it (OR-408).
 func TestCloneStepOffersAnotherPathWhenTheFirstIsTaken(t *testing.T) {
 	ws := chainWS(t)
-	ws.Task.CheckoutPath = t.TempDir() // exists, so the first try refuses
+	// A FILE, not a directory: a directory that exists is now a parent to
+	// clone into (OR-418), so it is no longer a refusal at all.
+	taken := filepath.Join(t.TempDir(), "in-the-way")
+	if err := os.WriteFile(taken, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws.Task.CheckoutPath = taken
 
 	// Point the second answer at a git repo we can actually clone.
 	src := ws.RepoDir()
@@ -789,7 +795,11 @@ func TestCloneStepOffersAnotherPathWhenTheFirstIsTaken(t *testing.T) {
 // rather than claiming the copy was made.
 func TestCloneStepReportsDegradedWithNoOneToAsk(t *testing.T) {
 	ws := chainWS(t)
-	ws.Task.CheckoutPath = t.TempDir()
+	taken := filepath.Join(t.TempDir(), "in-the-way")
+	if err := os.WriteFile(taken, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws.Task.CheckoutPath = taken
 
 	var out bytes.Buffer
 	err := cloneStep(&stepIO{Out: &out}, ws)
@@ -842,5 +852,53 @@ func TestAStageThatChangesTheBranchIsReported(t *testing.T) {
 	}
 	if ws.Task.PlanBranch != "somewhere-else" {
 		t.Errorf("the branch the stage left behind was not recorded: %q", ws.Task.PlanBranch)
+	}
+}
+
+// The remote step pushes main and develop and returns; every stage after
+// it commits to the sandbox only. So the clone step sends the branch the
+// chain has been committing to before making the copy -- otherwise the
+// copy has none of the work in it (OR-418).
+func TestCloneStepSendsTheChainsWorkBeforeCopyingIt(t *testing.T) {
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	mustGit(t, "", "init", "--bare", "-b", "main", bare)
+
+	ws := chainWS(t)
+	repo := ws.RepoDir()
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init", "-b", "main")
+	mustGit(t, repo, "remote", "add", "origin", bare)
+	mustGit(t, repo, "commit", "--allow-empty", "-m", "what the stages committed")
+	ws.Task.Remote = bare
+	ws.Task.CheckoutPath = filepath.Join(t.TempDir(), "copy")
+
+	var out bytes.Buffer
+	if err := cloneStep(&stepIO{Out: &out}, ws); err != nil {
+		t.Fatalf("clone step failed: %v\n%s", err, out.String())
+	}
+
+	got := gitLineIn(t, bare, "log", "--oneline", "-1", "main")
+	if !strings.Contains(got, "what the stages committed") {
+		t.Errorf("the chain's commit never reached the remote: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(ws.Task.CheckoutPath, ".git")); err != nil {
+		t.Errorf("no copy was made: %v", err)
+	}
+}
+
+// mustGit runs one git command, skipping the test when git is unusable.
+func mustGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	if dir != "" {
+		args = append([]string{"-C", dir}, args...)
+	}
+	cmd := exec.Command("git", args...)
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=o", "GIT_AUTHOR_EMAIL=o@l",
+		"GIT_COMMITTER_NAME=o", "GIT_COMMITTER_EMAIL=o@l")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("git unavailable: %v\n%s", err, b)
 	}
 }

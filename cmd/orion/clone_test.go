@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,17 +76,49 @@ func TestTildeAndRelativePathsAreExpanded(t *testing.T) {
 	}
 }
 
-// Cloning ONTO an existing directory is how someone loses uncommitted work in
-// it. "It already exists" is recoverable; an overwrite is not.
-func TestCloningOntoAnExistingDirectoryIsRefused(t *testing.T) {
+// Cloning ONTO an existing directory is how someone loses uncommitted work
+// in it, and an overwrite is not recoverable. The directory is treated as a
+// parent and the copy goes inside it (OR-418) -- what must never happen is
+// git writing into the directory itself.
+func TestCloningNeverWritesIntoAnExistingDirectoryItself(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "repo")
 	gitInit(t, src)
-	dest := t.TempDir() // exists
+	dest := t.TempDir()
+	keep := filepath.Join(dest, "someone-elses-work.txt")
+	if err := os.WriteFile(keep, []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	ws := stubWorkspace(t, src)
+	if err := cloneWorkspace(os.Stdout, ws, dest); err != nil {
+		t.Fatalf("cloning into an existing folder failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dest, ".git")); err == nil {
+		t.Error("git wrote into the directory itself, over what was already there")
+	}
+	if b, err := os.ReadFile(keep); err != nil || string(b) != "mine" {
+		t.Errorf("the file that was already there did not survive: %v %q", err, b)
+	}
+	if _, err := os.Stat(filepath.Join(dest, ws.ID, ".git")); err != nil {
+		t.Errorf("the copy is not in <dir>/<id>: %v", err)
+	}
+}
+
+// A copy already at <dir>/<id> is still refused, because that IS the target
+// and cloning onto it would overwrite a checkout someone may have work in.
+func TestASecondCloneToTheSamePlaceIsRefused(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "repo")
+	gitInit(t, src)
+	dest := t.TempDir()
+
+	ws := stubWorkspace(t, src)
+	if err := cloneWorkspace(os.Stdout, ws, dest); err != nil {
+		t.Fatal(err)
+	}
 	err := cloneWorkspace(os.Stdout, ws, dest)
 	if err == nil {
-		t.Fatal("cloning onto an existing directory was allowed")
+		t.Fatal("a second clone overwrote the first")
 	}
 	if !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("the error does not say why: %v", err)
@@ -131,4 +164,91 @@ func TestACloneCarriesTheCommittedWork(t *testing.T) {
 	if !strings.Contains(string(out), filepath.Base(src)) {
 		t.Errorf("origin is not the sandbox: %s", out)
 	}
+}
+
+// "~/Desktop/github/me" is a folder someone keeps repositories in, and it
+// is the honest answer to "where do you want your copy". The copy goes
+// inside it under the workspace's own name rather than being refused,
+// which named no way forward (OR-418).
+func TestCloneIntoADirectoryYouAlreadyKeepCodeIn(t *testing.T) {
+	src := gitRepoForClone(t)
+	ws := &workspace.Workspace{ID: "cloudlens", Dir: t.TempDir()}
+	ws.Task.Remote = src
+	parent := t.TempDir() // exists, holds other repositories
+
+	var out bytes.Buffer
+	if err := cloneWorkspace(&out, ws, parent); err != nil {
+		t.Fatalf("cloning into an existing folder failed: %v\n%s", err, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(parent, "cloudlens", ".git")); err != nil {
+		t.Errorf("the copy is not at <parent>/cloudlens: %v", err)
+	}
+}
+
+// A copy is made from the REMOTE when there is one. A clone of the sandbox
+// has a directory under ~/.orion as its origin, which `orion rm` deletes
+// and which no pull request can be opened from (OR-418).
+func TestCloneUsesTheRemoteRatherThanTheSandbox(t *testing.T) {
+	remote := gitRepoForClone(t)
+	ws := &workspace.Workspace{ID: "cloudlens", Dir: t.TempDir()}
+	ws.Task.Remote = remote
+	dest := filepath.Join(t.TempDir(), "copy")
+
+	var out bytes.Buffer
+	if err := cloneWorkspace(&out, ws, dest); err != nil {
+		t.Fatalf("clone failed: %v\n%s", err, out.String())
+	}
+	got := gitLineIn(t, dest, "remote", "get-url", "origin")
+	if got != remote {
+		t.Errorf("origin is %q, want the remote %q", got, remote)
+	}
+	if strings.Contains(got, ".orion") {
+		t.Errorf("the copy points back into the sandbox: %q", got)
+	}
+}
+
+// A workspace with no remote still gets a copy: the sandbox is the only
+// source there is, and refusing would be worse than a local origin.
+func TestCloneFallsBackToTheSandboxWithoutARemote(t *testing.T) {
+	ws := &workspace.Workspace{ID: "cloudlens", Dir: t.TempDir()}
+	if err := os.MkdirAll(filepath.Dir(ws.RepoDir()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(gitRepoForClone(t), ws.RepoDir()); err != nil {
+		t.Skip("symlink unavailable")
+	}
+	dest := filepath.Join(t.TempDir(), "copy")
+
+	var out bytes.Buffer
+	if err := cloneWorkspace(&out, ws, dest); err != nil {
+		t.Fatalf("clone from the sandbox failed: %v\n%s", err, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(dest, ".git")); err != nil {
+		t.Errorf("nothing was cloned: %v", err)
+	}
+}
+
+// gitRepoForClone makes a repository with one commit, to clone from.
+func gitRepoForClone(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{{"init", "-b", "main"}, {"commit", "--allow-empty", "-m", "x"}} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=o", "GIT_AUTHOR_EMAIL=o@l",
+			"GIT_COMMITTER_NAME=o", "GIT_COMMITTER_EMAIL=o@l")
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable: %v\n%s", err, b)
+		}
+	}
+	return dir
+}
+
+func gitLineIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	b, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(b))
 }

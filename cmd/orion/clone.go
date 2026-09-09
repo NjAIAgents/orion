@@ -27,8 +27,13 @@ import (
 //
 // A CLONE, NOT A MOVE. The sandbox stays where the stages expect it; moving it
 // would break every worktree cut from it and every path recorded in task.json.
-// What you get is an ordinary git repository whose origin is the sandbox, so
-// `git pull` brings across whatever the stages have committed since.
+//
+// FROM THE REMOTE, when the workspace has one. A copy whose origin is the
+// sandbox can only push into a directory ~/.orion/rm deletes, and no pull
+// request can be opened from it; what people want is an ordinary checkout of
+// the GitHub repository. The chain's clone step sends the branch it has been
+// committing to up first, so the copy has the work in it (OR-418). Without a
+// remote the sandbox is the only source there is, and stays the fallback.
 
 func runClone(args []string) {
 	if len(args) < 2 {
@@ -49,18 +54,30 @@ func cloneWorkspace(out io.Writer, ws *workspace.Workspace, dest string) error {
 		return err
 	}
 
-	// REFUSED RATHER THAN MERGED INTO. Cloning onto an existing directory is
-	// how someone loses uncommitted work in it, and "it already exists" is a
-	// recoverable annoyance where an overwrite is not.
-	if _, err := os.Stat(dest); err == nil {
-		return fmt.Errorf("%s already exists.\n"+
-			"  Pick another path, or pull into the one you have: git -C %s pull", dest, dest)
+	// A DIRECTORY YOU ALREADY KEEP CODE IN IS A PARENT, NOT THE TARGET.
+	// "~/Desktop/github/me" is where someone's repositories live, and the
+	// answer to "where do you want your copy" is nearly always that rather
+	// than the repository directory itself -- which does not exist yet, so
+	// it cannot be typed with any confidence. Cloning INTO it under the
+	// workspace's own name is what was meant; refusing was a dead end that
+	// named no way forward (FOUND ON A REAL PROJECT: the chain asked, the
+	// operator gave their github folder, and the step failed).
+	if info, err := os.Stat(dest); err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("%s exists and is not a directory.\n"+
+				"  Pick another path.", dest)
+		}
+		inside := filepath.Join(dest, ws.ID)
+		if _, err := os.Stat(inside); err == nil {
+			return fmt.Errorf("%s already exists.\n"+
+				"  Pick another path, or pull into the one you have: git -C %s pull", inside, inside)
+		}
+		dest = inside
 	}
 
-	src := ws.RepoDir()
-	if _, err := os.Stat(filepath.Join(src, ".git")); err != nil {
-		return fmt.Errorf("%s has no repository yet at %s.\n"+
-			"  Run the planning stages first: orion plan <KEY>", ws.ID, src)
+	src, from, err := cloneSource(ws)
+	if err != nil {
+		return err
 	}
 
 	cmd := exec.Command("git", "clone", src, dest)
@@ -69,9 +86,29 @@ func cloneWorkspace(out io.Writer, ws *workspace.Workspace, dest string) error {
 	}
 
 	ui.Ok(out, "cloned", "%s -> %s", ws.ID, dest)
-	fmt.Fprintf(out, "  %s\n", ui.Dim(out,
-		"its origin is the sandbox, so `git pull` brings across what the stages commit next"))
+	fmt.Fprintf(out, "  %s\n", ui.Dim(out, from))
 	return nil
+}
+
+// cloneSource is what the copy is made from, and the line explaining it.
+//
+// THE REMOTE WHEN THERE IS ONE. A clone of the sandbox has the sandbox as
+// its origin, so `git push` from it goes to a directory under ~/.orion that
+// `orion rm` deletes, and a pull request cannot be opened from it at all.
+// What people want from their own copy is an ordinary checkout of the
+// GitHub repository (OR-418). The sandbox stays the fallback for a
+// workspace with no remote, where it is the only source there is.
+func cloneSource(ws *workspace.Workspace) (src, from string, err error) {
+	if remote := strings.TrimSpace(ws.Task.Remote); remote != "" {
+		return remote, "its origin is " + remote, nil
+	}
+	dir := ws.RepoDir()
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		return "", "", fmt.Errorf("%s has no repository yet at %s.\n"+
+			"  Run the planning stages first: orion plan <KEY>", ws.ID, dir)
+	}
+	return dir, "this workspace has no remote, so its origin is the sandbox: " +
+		"`git pull` brings across what the stages commit next", nil
 }
 
 // expandPath resolves ~ and makes the path absolute.

@@ -88,7 +88,10 @@ func askCheckoutPath(out io.Writer, ask func(string) string) string {
 	fmt.Fprintln(out, "Orion works in its own sandbox, which keeps a bad run out of your files.")
 	fmt.Fprintln(out, "It can also put an ordinary clone wherever you keep your code.")
 	fmt.Fprintln(out)
-	answer := strings.TrimSpace(ask("Where? (e.g. ~/code/thing -- blank to stay in the sandbox)"))
+	fmt.Fprintln(out, ui.Dim(out,
+		"A folder you already keep code in works: the copy goes inside it, named for the project."))
+	fmt.Fprintln(out)
+	answer := strings.TrimSpace(ask("Where? (e.g. ~/code -- blank to stay in the sandbox)"))
 	if answer == "" {
 		return ""
 	}
@@ -113,6 +116,14 @@ func cloneStep(sio *stepIO, ws *workspace.Workspace) error {
 	if dest == "" {
 		return nil
 	}
+	// PUSH BEFORE CLONING. The remote step pushes main and develop and then
+	// returns; every stage after it -- spec, plan, tasks, scaffold --
+	// commits to the sandbox and nothing sends those anywhere. Cloning
+	// from the remote at that point hands over a repository with none of
+	// the work in it, so the branch the chain has been committing to goes
+	// up first (OR-418).
+	pushPlanBranch(sio.Out, ws)
+
 	// A path already taken is the ordinary failure here, and the operator
 	// is standing right there: ask for another rather than warning about
 	// it and calling the step done (OR-408). Up to three tries, because a
@@ -360,4 +371,28 @@ func noteBranchChange(out io.Writer, ws *workspace.Workspace, stage, before stri
 		ws.Task.PlanBranch = after
 		_ = ws.SaveTask()
 	}
+}
+
+// pushPlanBranch sends the branch the chain committed to up to the remote.
+//
+// Best effort and reported, never fatal: the commits are safe in the sandbox
+// either way, and a workspace with no remote has nowhere to send them. What
+// it prevents is the clone that follows handing over a repository missing
+// every artifact the chain just produced (OR-418).
+func pushPlanBranch(out io.Writer, ws *workspace.Workspace) {
+	if strings.TrimSpace(ws.Task.Remote) == "" {
+		return
+	}
+	branch := headBranch(ws.RepoDir())
+	if branch == "" {
+		return
+	}
+	cmd := exec.Command("git", "-C", ws.RepoDir(), "push", "-u", "origin", branch)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		ui.Warn(out, "could not send %s to the remote: %s", branch, strings.TrimSpace(string(b)))
+		fmt.Fprintf(out, "  %s\n", ui.Dim(out,
+			"your copy will not have what the stages committed until it gets there"))
+		return
+	}
+	ui.Ok(out, "pushed", "%s -> origin", branch)
 }
