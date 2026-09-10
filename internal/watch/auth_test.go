@@ -22,9 +22,25 @@ import (
 func TestAnEnvironmentalFaultHoldsTheQueueRatherThanDrainingIt(t *testing.T) {
 	home := t.TempDir()
 	s := &spy{
-		queued:    issues("OR-1", "OR-2", "OR-3", "OR-4"),
-		outcome:   work.OutcomeHeld,
-		maxSleeps: 6,
+		queued:  issues("OR-1", "OR-2", "OR-3", "OR-4"),
+		outcome: work.OutcomeHeld,
+		// A CEILING, NOT A BUDGET (OR-430).
+		//
+		// Six was a guess at how many ticks it takes for a dispatched job's
+		// goroutine to file its fault and for the loop to print it. On a
+		// loaded CI runner it is not enough: the run ended after ONE tick
+		// having printed only "claimed", and the assertion below read output
+		// the watcher had not finished producing. It failed twice on macOS
+		// and passed thirty times locally -- the signature of a fixed tick
+		// budget, not of a wrong watcher.
+		//
+		// The property under test -- the fault is named, and the queue is not
+		// drained -- says nothing about how many ticks it took to get there.
+		// So the number is now high enough that a loaded runner reaches the
+		// condition, and still bounded so a real regression fails the test
+		// rather than hanging it: a 1ms interval plus the spy's own 1ms pause
+		// puts 400 sleeps under a second of wall time.
+		maxSleeps: 400,
 	}
 	d := s.deps()
 	inner := d.Work
