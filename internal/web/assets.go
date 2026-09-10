@@ -40,6 +40,12 @@ import (
 //go:embed static
 var assets embed.FS
 
+// The front end answers on "/", registered the way every other page will be
+// (server.go): from an init in the file that owns the handler, so nothing
+// has to edit a shared list. Without this, `orion web` (OR-61) prints an
+// address whose root is a 404.
+func init() { Handle("/", Assets()) }
+
 // Assets is the front end, ready to mount: the server skeleton gives it "/",
 // and a browser asking for the root gets static/index.html.
 //

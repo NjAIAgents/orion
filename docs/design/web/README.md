@@ -38,5 +38,6 @@ Sample data uses the shipped roster; names are operator-configurable, so treat t
 
 ## Status
 
-Mockups only. Nothing here is wired to a server, and `orion web` does not exist yet.
+Mockups only. Nothing here is wired to a server. `orion web` exists (OR-61) and serves
+the committed placeholder page; the front end these mockups describe is not built yet.
 Once OR-50/OR-51 land, `/claude-design-pull` can hold the built page to these as a parity gate.
