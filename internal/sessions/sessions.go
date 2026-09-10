@@ -22,12 +22,42 @@
 package sessions
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 
 	"github.com/orion-sdlc/orion/internal/registry"
 )
+
+// validID reports whether id is safe to join onto the projects directory.
+//
+// Every workspace id Orion creates comes out of workspace.Slugify, optionally
+// with a hex suffix, so this alphabet is the whole legal set rather than a
+// restriction invented here. The registry is a plain JSON file a person can
+// edit, though, and nothing between that file and this join checks what it
+// says: an entry whose workspace is "../.." resolves Session.Dir outside the
+// projects tree entirely, and Dir is carried precisely so callers can reach
+// .orion/events.jsonl inside it. Refusing the id costs one pass over a short
+// string; trusting the join costs a read wherever the traversal points.
+//
+// Directory names read back off the filesystem do NOT go through this. A
+// ReadDir entry is a single path component by construction and cannot
+// traverse, and rejecting one for its charset would hide a real workspace
+// somebody created by hand.
+func validID(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
 
 // Session is one workspace: where it is, and what it is bound to.
 type Session struct {
@@ -61,6 +91,12 @@ type Session struct {
 // registry.Prune already sets the rule for this tree -- report what is
 // missing, never quietly forget a binding -- and dropping the entry here
 // would make a vanished workspace look like one that was never bound.
+//
+// A registry entry whose workspace id could not name a directory under
+// projects fails the whole scan, the way registry.Load refuses a corrupt
+// file rather than starting empty. Skipping it quietly would be the one
+// outcome worse than either alternative: a binding silently forgotten, and
+// the traversal that provoked it never reported. See validID.
 func Scan(home string) ([]Session, error) {
 	reg, err := registry.Load(home)
 	if err != nil {
@@ -73,6 +109,14 @@ func Scan(home string) ([]Session, error) {
 
 	for _, key := range reg.Keys() {
 		e := reg.Repos[key]
+		if !validID(e.Workspace) {
+			return nil, fmt.Errorf("project %s is bound to workspace %q, which is not a workspace id.\n"+
+				"  An id is lowercase letters, digits and hyphens; %q joined onto %s\n"+
+				"  could resolve outside the projects tree, and every caller follows that path\n"+
+				"  to .orion/events.jsonl inside it.\n"+
+				"  Fix the entry in %s, or run: orion unbind %s",
+				key, e.Workspace, e.Workspace, projects, filepath.Join(home, "repos.json"), key)
+		}
 		claimed[e.Workspace] = true
 		out = append(out, Session{
 			ID:  e.Workspace,
