@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -159,5 +160,40 @@ func TestEnsureSandboxDunInstrumentsEveryWorktree(t *testing.T) {
 	wt := addWorktree(t, clone)
 	if !DunLook(wt).Instrumented {
 		t.Fatalf("worktree %s reports not instrumented after the clone was", wt)
+	}
+}
+
+// A test must never register a throwaway repository in the operator's real
+// whodunit registry.
+//
+// `dun init` registers a path in ~/.whodunit permanently, and
+// EnsureSandboxDun runs on every supervised job -- so under test, where the
+// sandbox clone is a t.TempDir(), every run left an entry behind for a
+// directory that no longer exists. Measured before the fix: 8,782 registered
+// repositories, seven of which existed (OR-421).
+//
+// This asserts the guarantee at the seam rather than the symptom: the command
+// carries a WHODUNIT_HOME that is not the operator's own.
+func TestDunInitDoesNotWriteToTheRealRegistryUnderTest(t *testing.T) {
+	cmd := dunInit("dun", t.TempDir())
+
+	var home string
+	for _, kv := range cmd.Env {
+		if rest, ok := strings.CutPrefix(kv, "WHODUNIT_HOME="); ok {
+			home = rest
+		}
+	}
+	if home == "" {
+		t.Fatal("dun init ran with no WHODUNIT_HOME, so it would register in the operator's own registry")
+	}
+	if !strings.HasPrefix(home, os.TempDir()) {
+		t.Errorf("WHODUNIT_HOME is %q, which is not under the temp dir", home)
+	}
+
+	// The real home must be exactly what it is NOT.
+	if real, err := os.UserHomeDir(); err == nil {
+		if home == filepath.Join(real, ".whodunit") {
+			t.Error("the test registry is the operator's own registry")
+		}
 	}
 }

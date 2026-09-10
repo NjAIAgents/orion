@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orion web mockup — 09 ask broker</title>
+<style>
+:root{
+  --ink:#e6e6e6; --ink-dim:#9aa0a6; --ink-faint:#6b7178;
+  --bg:#0b0d10; --panel:#12161b; --panel2:#161b22; --line:#242a33; --line-soft:rgba(36,42,51,.6);
+  --ok:#4bb543; --fail:#e05252; --warn:#d6a231; --wait:#4f8ff0; --work:#2fb3c4;
+  --t-orange:#d98a3d; --t-violet:#b58cf0; --amber:#dcb67a;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:12px;}
+.app{display:flex;flex-direction:column;height:960px;}
+.topbar{display:flex;align-items:center;gap:16px;padding:0 18px;height:44px;
+  border-bottom:1px solid var(--line);background:var(--panel);flex:none;}
+.brand{font-weight:600;font-size:13px;} .brand .dot{color:var(--work);}
+.crumb{color:var(--ink-faint);font-size:11.5px;}
+.spacer{flex:1;}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:4px;
+  border:1px solid var(--line);color:var(--ink-dim);font-size:11px;}
+.chip.amber{border-color:rgba(214,162,49,.35);color:var(--warn);background:rgba(214,162,49,.07);}
+.dotlive{width:6px;height:6px;border-radius:50%;background:var(--warn);animation:blink 2s ease-in-out infinite;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+
+.canvas{flex:1;position:relative;overflow:hidden;
+  background-image:radial-gradient(circle, rgba(255,255,255,.055) 1px, transparent 1px);
+  background-size:22px 22px;background-position:-1px -1px;}
+svg.edges{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none;}
+.e{fill:none;stroke-width:1.7;}
+.e.ask{stroke:rgba(220,182,122,.6);}
+.e.route{stroke:rgba(107,113,120,.5);stroke-dasharray:4 4;}
+.e.inv{stroke:rgba(181,140,240,.6);}
+.e.refuse{stroke:rgba(214,162,49,.6);stroke-dasharray:6 4;}
+.e.ans{stroke:rgba(75,181,67,.6);}
+.e.idle{stroke:rgba(107,113,120,.28);stroke-dasharray:2 6;}
+.elab{font-size:9.5px;font-family:var(--mono);fill:var(--ink-faint);}
+.elab.amber{fill:var(--amber);} .elab.violet{fill:var(--t-violet);}
+.elab.warn{fill:var(--warn);} .elab.ok{fill:var(--ok);}
+.num{font-size:9px;font-weight:600;font-family:var(--mono);}
+
+.n{position:absolute;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px 12px;}
+.nh{display:flex;align-items:center;gap:8px;margin-bottom:5px;}
+.av{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:10px;font-weight:600;flex:none;}
+.ntitle{font-size:11.5px;font-weight:600;}
+.nsub{font-size:9.5px;color:var(--ink-faint);line-height:1.55;}
+.nfoot{display:flex;align-items:center;gap:7px;margin-top:8px;padding-top:7px;
+  border-top:1px solid var(--line-soft);font-size:9.5px;color:var(--ink-faint);}
+.nfoot .r{margin-left:auto;color:var(--ink-dim);}
+.port{position:absolute;width:7px;height:7px;border-radius:50%;background:var(--panel);
+  border:1.5px solid var(--line);}
+
+/* ravi: idle */
+.n.ravi{left:44px;top:340px;width:196px;border-color:rgba(220,182,122,.35);}
+.n.ravi .av{background:rgba(220,182,122,.16);color:var(--amber);}
+.n.ravi .ntitle{color:var(--amber);}
+.idlebadge{display:inline-flex;align-items:center;gap:5px;font-size:9px;padding:2px 7px;
+  border-radius:3px;background:rgba(107,113,120,.16);color:var(--ink-faint);}
+.zz{animation:zz 2.4s ease-in-out infinite;}
+@keyframes zz{0%,100%{opacity:.35}50%{opacity:.85}}
+
+/* orion hub */
+.n.orion{left:392px;top:318px;width:216px;border-color:rgba(47,179,196,.5);
+  box-shadow:0 0 0 1px rgba(47,179,196,.16),0 0 30px rgba(47,179,196,.12);}
+.n.orion .av{background:rgba(47,179,196,.16);color:var(--work);}
+.n.orion .ntitle{color:var(--work);}
+.hubpulse{position:absolute;inset:-5px;border-radius:11px;border:1px solid var(--work);
+  opacity:.35;animation:hp 2.2s ease-out infinite;pointer-events:none;}
+@keyframes hp{0%{transform:scale(.99);opacity:.4}70%{transform:scale(1.04);opacity:0}100%{opacity:0}}
+.steps{display:flex;gap:3px;margin-top:9px;}
+.st{flex:1;height:3px;border-radius:2px;background:var(--line);}
+.st.on{background:var(--work);} .st.done{background:var(--ok);} .st.warnb{background:var(--warn);}
+
+/* router */
+.n.router{left:392px;top:170px;width:216px;border-color:rgba(201,160,220,.3);}
+.n.router .av{background:rgba(201,160,220,.16);color:#c9a0dc;}
+
+/* advisors */
+.n.adv{width:206px;}
+.n.adv .av{background:rgba(181,140,240,.16);color:var(--t-violet);}
+.n.adv .ntitle{color:var(--t-violet);}
+.n.arch{left:800px;top:196px;border-color:rgba(214,162,49,.42);background:rgba(214,162,49,.035);}
+.n.arch .ntitle{color:var(--warn);}
+.n.arch .av{background:rgba(214,162,49,.16);color:var(--warn);}
+.n.pm{left:800px;top:432px;border-color:rgba(75,181,67,.42);background:rgba(75,181,67,.03);}
+.n.pm .ntitle{color:var(--ok);}
+.n.pm .av{background:rgba(75,181,67,.16);color:var(--ok);}
+.spinring{position:absolute;top:10px;right:11px;width:11px;height:11px;border-radius:50%;
+  border:1.5px solid transparent;border-top-color:var(--ok);animation:spin 1s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.verdict{font-size:9px;padding:2px 7px;border-radius:3px;display:inline-block;margin-top:7px;}
+.verdict.ref{background:rgba(214,162,49,.14);color:var(--warn);}
+.verdict.ansv{background:rgba(75,181,67,.14);color:var(--ok);}
+
+.legend{position:absolute;left:14px;top:14px;background:rgba(7,9,11,.82);border:1px solid var(--line);
+  border-radius:7px;padding:10px 12px;display:flex;flex-direction:column;gap:7px;}
+.lg{display:flex;align-items:center;gap:9px;font-size:9.5px;color:var(--ink-faint);}
+.lgl{width:22px;height:0;border-top:1.7px solid;flex:none;}
+.callout{position:absolute;background:rgba(7,9,11,.9);border:1px solid var(--line);border-radius:7px;
+  padding:9px 12px;font-size:9.5px;color:var(--ink-faint);line-height:1.65;max-width:238px;}
+.callout b{color:var(--ink-dim);}
+.callout.w{border-color:rgba(214,162,49,.28);} .callout.w b{color:var(--warn);}
+.controls{position:absolute;left:14px;bottom:14px;display:flex;flex-direction:column;
+  border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--panel);}
+.ctl{width:28px;height:26px;display:flex;align-items:center;justify-content:center;
+  color:var(--ink-faint);font-size:12px;border-bottom:1px solid var(--line);}
+.ctl:last-child{border-bottom:none;}
+.hint{position:absolute;left:50%;transform:translateX(-50%);bottom:16px;font-size:10px;
+  color:var(--ink-faint);background:rgba(7,9,11,.82);border:1px solid var(--line);
+  border-radius:5px;padding:5px 12px;}
+</style>
+</head><body>
+<div class="app">
+  <div class="topbar">
+    <div class="brand">orion<span class="dot">·</span>web</div>
+    <div class="crumb">run / OR-272 / implementing / ask 1</div>
+    <div class="spacer"></div>
+    <div class="chip amber"><span class="dotlive"></span>ask in flight</div>
+    <div class="chip">ask 1 of 5</div>
+  </div>
+
+  <div class="canvas">
+    <svg class="edges">
+      <!-- 1 ask: ravi -> orion -->
+      <path class="e ask" d="M 247 392 C 310 392, 330 380, 392 378"/>
+      <circle r="3" fill="var(--amber)"><animateMotion dur="3s" repeatCount="indefinite"
+        path="M 247 392 C 310 392, 330 380, 392 378"/></circle>
+      <text class="num" x="286" y="370" fill="var(--amber)">1</text>
+      <text class="elab amber" x="258" y="424">“which store owns</text>
+      <text class="elab amber" x="258" y="436">the gate list?”</text>
+
+      <!-- 2 route: orion -> router -> orion -->
+      <path class="e route" d="M 470 318 C 470 288, 470 266, 470 232"/>
+      <path class="e route" d="M 530 232 C 530 266, 530 288, 530 318"/>
+      <circle r="2.6" fill="var(--ink-faint)"><animateMotion dur="3s" repeatCount="indefinite"
+        path="M 470 318 C 470 288, 470 266, 470 232"/></circle>
+      <text class="num" x="444" y="280" fill="var(--ink-faint)">2</text>
+      <text class="elab" x="548" y="282">→ architect</text>
+
+      <!-- 3 invoke architect -->
+      <path class="e inv" d="M 615 350 C 700 350, 720 254, 800 250"/>
+      <circle r="3" fill="var(--t-violet)"><animateMotion dur="3s" begin="0.4s" repeatCount="indefinite"
+        path="M 615 350 C 700 350, 720 254, 800 250"/></circle>
+      <text class="num" x="690" y="296" fill="var(--t-violet)">3</text>
+      <text class="elab violet" x="640" y="326">invoke · with artifacts</text>
+
+      <!-- 4 refuse back -->
+      <path class="e refuse" d="M 800 292 C 716 300, 700 372, 615 376"/>
+      <circle r="3" fill="var(--warn)"><animateMotion dur="3s" begin="1.2s" repeatCount="indefinite"
+        path="M 800 292 C 716 300, 700 372, 615 376"/></circle>
+      <text class="num" x="706" y="352" fill="var(--warn)">4</text>
+      <text class="elab warn" x="636" y="398">refused · artifacts silent</text>
+
+      <!-- 5 invoke pm -->
+      <path class="e inv" d="M 615 404 C 700 410, 716 482, 800 486"/>
+      <circle r="3" fill="var(--t-violet)"><animateMotion dur="3s" begin="1.8s" repeatCount="indefinite"
+        path="M 615 404 C 700 410, 716 482, 800 486"/></circle>
+      <text class="num" x="690" y="456" fill="var(--t-violet)">5</text>
+      <text class="elab violet" x="628" y="440">forwarded once</text>
+
+      <!-- 6 answer back -->
+      <path class="e ans" d="M 800 528 C 700 534, 660 440, 615 424"/>
+      <circle r="3" fill="var(--ok)"><animateMotion dur="3s" begin="2.2s" repeatCount="indefinite"
+        path="M 800 528 C 700 534, 660 440, 615 424"/></circle>
+      <text class="num" x="690" y="512" fill="var(--ok)">6</text>
+      <text class="elab ok" x="634" y="540">answer + grounding</text>
+
+      <!-- 7 back to ravi -->
+      <path class="e ans" d="M 392 410 C 330 416, 310 420, 247 420"/>
+      <circle r="3" fill="var(--ok)"><animateMotion dur="3s" begin="2.6s" repeatCount="indefinite"
+        path="M 392 410 C 330 416, 310 420, 247 420"/></circle>
+      <text class="num" x="312" y="446" fill="var(--ok)">7</text>
+      <text class="elab ok" x="258" y="462">resumes · same session</text>
+    </svg>
+
+    <div class="n ravi">
+      <span class="port" style="right:-4px;top:48px;border-color:rgba(220,182,122,.5)"></span>
+      <span class="port" style="right:-4px;top:76px;border-color:rgba(75,181,67,.5)"></span>
+      <div class="nh"><span class="av">R</span><span class="ntitle">Ravi</span></div>
+      <div class="nsub">backend developer · opus<br>holds the worktree</div>
+      <div style="margin-top:9px"><span class="idlebadge"><span class="zz">●</span> idle 14s · $0.00</span></div>
+      <div class="nfoot">blocked on ask 1<span class="r">$2.06 so far</span></div>
+    </div>
+
+    <div class="n router">
+      <span class="port" style="left:74px;bottom:-4px"></span>
+      <span class="port" style="left:134px;bottom:-4px"></span>
+      <div class="nh"><span class="av">S</span><span class="ntitle" style="color:#c9a0dc">Sam · dispatcher</span></div>
+      <div class="nsub">haiku · one cheap call<br>decides whose question this is</div>
+      <div class="nfoot">routed to the architect<span class="r">$0.01</span></div>
+    </div>
+
+    <div class="n orion">
+      <span class="hubpulse"></span>
+      <span class="port" style="left:-4px;top:60px;border-color:rgba(220,182,122,.5)"></span>
+      <span class="port" style="left:-4px;top:92px;border-color:rgba(75,181,67,.5)"></span>
+      <span class="port" style="right:-4px;top:32px;border-color:rgba(181,140,240,.5)"></span>
+      <span class="port" style="right:-4px;top:58px;border-color:rgba(214,162,49,.5)"></span>
+      <span class="port" style="right:-4px;top:86px;border-color:rgba(181,140,240,.5)"></span>
+      <span class="port" style="right:-4px;top:106px;border-color:rgba(75,181,67,.5)"></span>
+      <div class="nh"><span class="av">O</span><span class="ntitle">Orion</span></div>
+      <div class="nsub">Go, not a model · spends nothing<br>holds the question and brokers it</div>
+      <div class="steps">
+        <span class="st done"></span><span class="st done"></span><span class="st warnb"></span>
+        <span class="st done"></span><span class="st on"></span>
+      </div>
+      <div class="nfoot">took · routed · refused · forwarded · returning<span class="r">14s</span></div>
+    </div>
+
+    <div class="n adv arch">
+      <span class="port" style="left:-4px;top:54px;border-color:rgba(181,140,240,.5)"></span>
+      <span class="port" style="left:-4px;top:96px;border-color:rgba(214,162,49,.5)"></span>
+      <div class="nh"><span class="av">N</span><span class="ntitle">Navjyot · architect</span></div>
+      <div class="nsub">sonnet · read-only · given the ticket's artifacts</div>
+      <span class="verdict ref">refused — the artifacts are silent</span>
+      <div class="nfoot">names the doc to amend<span class="r">$0.06</span></div>
+    </div>
+
+    <div class="n adv pm">
+      <span class="spinring"></span>
+      <span class="port" style="left:-4px;top:54px;border-color:rgba(181,140,240,.5)"></span>
+      <span class="port" style="left:-4px;top:96px;border-color:rgba(75,181,67,.5)"></span>
+      <div class="nh"><span class="av">P</span><span class="ntitle">Priya · product manager</span></div>
+      <div class="nsub">sonnet · read-only · the one forward</div>
+      <span class="verdict ansv">answering — with grounding</span>
+      <div class="nfoot">the run resumes on this<span class="r">$0.12</span></div>
+    </div>
+
+    <div class="legend">
+      <div class="lg"><span class="lgl" style="border-color:rgba(220,182,122,.6)"></span>question</div>
+      <div class="lg"><span class="lgl" style="border-color:rgba(107,113,120,.5);border-top-style:dashed"></span>routing · haiku</div>
+      <div class="lg"><span class="lgl" style="border-color:rgba(181,140,240,.6)"></span>invoke advisor</div>
+      <div class="lg"><span class="lgl" style="border-color:rgba(214,162,49,.6);border-top-style:dashed"></span>refusal</div>
+      <div class="lg"><span class="lgl" style="border-color:rgba(75,181,67,.6)"></span>answer</div>
+    </div>
+
+    <div class="callout" style="left:46px;top:520px">
+      <b>Ravi never meets an advisor.</b> He asked one question and will get one answer — he does not learn that
+      two were consulted. That is what keeps the advisor's reading out of his context.
+    </div>
+    <div class="callout w" style="left:1042px;top:200px;max-width:210px">
+      <b>A refusal never escalates the model.</b> Silence in the artifacts is not something a stronger model
+      finds — only something it answers more confidently. It moves sideways, still sonnet.
+    </div>
+    <div class="callout" style="left:1042px;top:436px;max-width:210px">
+      <b>One forward, then a person.</b> Not a broadcast — asking every advisor in turn would pay the full price
+      of the ambiguity every time the artifacts are silent.
+    </div>
+
+    <div class="controls">
+      <div class="ctl">+</div><div class="ctl">−</div><div class="ctl">⤢</div>
+    </div>
+    <div class="hint">ask 1 of 5 allowed · the sixth stops the run and reaches your gate board</div>
+  </div>
+</div>
+</body></html>

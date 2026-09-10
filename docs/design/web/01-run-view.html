@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orion web mockup — 01 run view</title>
+<style>
+:root{
+  --ink:#e6e6e6; --ink-dim:#9aa0a6; --ink-faint:#6b7178;
+  --bg:#0b0d10; --panel:#12161b; --panel2:#161a20; --line:#242a33; --line-soft:rgba(36,42,51,.55);
+  --ok:#4bb543; --fail:#e05252; --warn:#d6a231; --wait:#4f8ff0; --work:#2fb3c4; --dimc:#6b7178;
+  --t-orange:#d98a3d; --t-violet:#b58cf0; --t-teal:#4fc7c7; --t-rose:#e08fb0;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:12px;}
+a{color:var(--wait);} a:hover{color:#7db0ff;}
+.app{display:flex;flex-direction:column;height:900px;}
+.topbar{display:flex;align-items:center;gap:16px;padding:0 18px;height:44px;
+  border-bottom:1px solid var(--line);background:var(--panel);flex:none;}
+.brand{font-weight:600;font-size:13px;}
+.brand .dot{color:var(--work);}
+.nav{display:flex;gap:2px;}
+.nav .item{padding:5px 11px;border-radius:5px;color:var(--ink-faint);font-size:11.5px;}
+.nav .item.on{background:rgba(47,179,196,.12);color:var(--work);}
+.spacer{flex:1;}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:4px;
+  border:1px solid var(--line);color:var(--ink-dim);font-size:11px;}
+.dotlive{width:6px;height:6px;border-radius:50%;background:var(--ok);}
+.body{display:flex;flex:1;min-height:0;}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;}
+.head{display:flex;align-items:baseline;gap:12px;padding:18px 20px 12px;}
+.h1{font-size:14px;font-weight:600;}
+.head .sub{color:var(--ink-faint);font-size:11.5px;}
+.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:4px 20px 18px;
+  align-content:start;overflow:auto;flex:1;}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:13px 14px;
+  display:flex;flex-direction:column;gap:9px;position:relative;overflow:hidden;}
+.card.active{border-color:rgba(47,179,196,.42);}
+.card .rail{position:absolute;left:0;top:0;bottom:0;width:2px;}
+.crow{display:flex;align-items:center;gap:8px;}
+.key{font-weight:600;font-size:12px;letter-spacing:.01em;}
+.status{display:inline-flex;align-items:center;gap:5px;font-size:11px;}
+.summary{color:#c8ccd1;font-size:11.5px;line-height:1.5;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.who{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--ink-dim);}
+.model{color:var(--ink-faint);font-size:10.5px;padding:1px 6px;border:1px solid var(--line);border-radius:3px;}
+.meta{display:flex;gap:14px;font-size:10.5px;color:var(--ink-faint);border-top:1px solid var(--line-soft);
+  padding-top:8px;margin-top:auto;}
+.meta b{font-weight:600;color:var(--ink-dim);}
+.steps{display:flex;gap:3px;align-items:center;}
+.step{width:11px;height:3px;border-radius:1px;background:var(--line);}
+.step.done{background:var(--ok);} .step.now{background:var(--work);}
+.gate{background:rgba(214,162,49,.09);border:1px solid rgba(214,162,49,.3);border-radius:5px;
+  padding:7px 9px;font-size:10.5px;color:#e7d3a8;line-height:1.5;}
+.log{width:430px;flex:none;border-left:1px solid var(--line);background:var(--panel);
+  display:flex;flex-direction:column;min-height:0;}
+.logtop{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line);}
+.logtop .t{font-size:11.5px;font-weight:600;}
+.filter{display:flex;gap:4px;flex-wrap:wrap;padding:9px 14px;border-bottom:1px solid var(--line);}
+.f{padding:2.5px 8px;border-radius:4px;border:1px solid var(--line);color:var(--ink-faint);font-size:10.5px;}
+.f.on{background:rgba(47,179,196,.13);border-color:rgba(47,179,196,.35);color:var(--work);}
+.lines{flex:1;overflow:auto;padding:10px 0 14px;font-size:11px;line-height:1.75;min-height:0;}
+.ln{display:flex;gap:8px;padding:1px 14px;white-space:nowrap;}
+.ln:hover{background:rgba(255,255,255,.025);}
+.ts{color:var(--ink-faint);flex:none;}
+.lk{flex:none;width:52px;}
+.lv{flex:none;width:74px;}
+.la{flex:none;width:150px;overflow:hidden;text-overflow:ellipsis;}
+.lm{flex:none;width:48px;color:var(--ink-faint);}
+.lg{color:#c8ccd1;overflow:hidden;text-overflow:ellipsis;}
+.stagerow{display:flex;gap:8px;padding:4px 14px;white-space:nowrap;align-items:baseline;}
+.rule{color:var(--ink-faint);}
+.stagenames{font-weight:600;}
+.logfoot{border-top:1px solid var(--line);padding:8px 14px;display:flex;align-items:center;gap:10px;
+  font-size:10.5px;color:var(--ink-faint);}
+.pausebtn{margin-left:auto;padding:3px 9px;border:1px solid var(--line);border-radius:4px;color:var(--ink-dim);}
+</style>
+</head><body>
+
+<div class="app">
+  <div class="topbar">
+    <div class="brand">orion<span class="dot">·</span>web</div>
+    <div class="nav">
+      <div class="item">gate board</div>
+      <div class="item on">run</div>
+      <div class="item">history</div>
+      <div class="item">agents</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="chip"><span class="dotlive"></span>watcher live · 4s ago</div>
+    <div class="chip">orion</div>
+  </div>
+
+  <div class="body">
+    <div class="main">
+      <div class="head">
+        <div class="h1">Running 5 agents</div>
+        <div class="sub">2 done · 2 working · 1 waiting — since 13:31:04</div>
+      </div>
+
+      <div class="cards">
+        <div class="card">
+          <div class="rail" style="background:var(--t-violet)"></div>
+          <div class="crow">
+            <span class="key" style="color:var(--t-violet)">OR-183</span>
+            <span class="spacer"></span>
+            <span class="status ok">✓ ok</span>
+          </div>
+          <div class="summary">Explore answers one narrow question about a repository the asking run has not read</div>
+          <div class="who"><span style="color:#dcb67a">Ravi · backend developer</span><span class="model">opus</span></div>
+          <div class="meta">
+            <span><b>3</b> steps</span><span><b>4m 12s</b></span><span><b>$1.84</b></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="rail" style="background:var(--t-teal)"></div>
+          <div class="crow">
+            <span class="key" style="color:var(--t-teal)">OR-266</span>
+            <span class="spacer"></span>
+            <span class="status ok">✓ ok</span>
+          </div>
+          <div class="summary">Authentication for the write-capable local surface</div>
+          <div class="who"><span style="color:#7ec9d8">Anita · QA engineer</span><span class="model">sonnet</span></div>
+          <div class="meta">
+            <span><b>7</b> steps</span><span><b>6m 02s</b></span><span><b>$0.91</b></span>
+          </div>
+        </div>
+
+        <div class="card active">
+          <div class="rail" style="background:var(--t-orange)"></div>
+          <div class="crow">
+            <span class="key" style="color:var(--t-orange)">OR-272</span>
+            <span class="spacer"></span>
+            <span class="status work">◐ working</span>
+          </div>
+          <div class="summary">The gate board: everything waiting on me, across projects</div>
+          <div class="who"><span style="color:#dcb67a">Ravi · backend developer</span><span class="model">opus</span></div>
+          <div class="steps">
+            <span class="step done"></span><span class="step done"></span><span class="step done"></span>
+            <span class="step now"></span><span class="step"></span><span class="step"></span>
+            <span class="dim" style="margin-left:6px">editing internal/web/board.go</span>
+          </div>
+          <div class="meta">
+            <span><b>4</b> steps</span><span><b>2m 18s</b></span><span><b>$2.06</b></span>
+          </div>
+        </div>
+
+        <div class="card active">
+          <div class="rail" style="background:var(--t-rose)"></div>
+          <div class="crow">
+            <span class="key" style="color:var(--t-rose)">OR-281</span>
+            <span class="spacer"></span>
+            <span class="status work">◐ working</span>
+          </div>
+          <div class="summary">Respond to a gate from the board</div>
+          <div class="who"><span style="color:#9fd6a0">Zoya · code explorer</span><span class="model">haiku</span></div>
+          <div class="steps">
+            <span class="step done"></span><span class="step now"></span>
+            <span class="step"></span><span class="step"></span>
+            <span class="dim" style="margin-left:6px">searching code</span>
+          </div>
+          <div class="meta">
+            <span><b>2</b> steps</span><span><b>0m 41s</b></span><span><b>$0.08</b></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="rail" style="background:var(--wait)"></div>
+          <div class="crow">
+            <span class="key" style="color:#7bb6f0">OR-279</span>
+            <span class="spacer"></span>
+            <span class="status wait">⏳ waiting</span>
+          </div>
+          <div class="summary">Per-stage model legend on the board</div>
+          <div class="who"><span class="dim">ci</span><span class="model">-</span></div>
+          <div class="gate">pull request #482 opened, awaiting CI — no agent is running</div>
+          <div class="meta">
+            <span><b>9</b> steps</span><span><b>11m 30s</b></span><span><b>$3.12</b></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="rail" style="background:var(--warn)"></div>
+          <div class="crow">
+            <span class="key" style="color:#d6a231">OR-290</span>
+            <span class="spacer"></span>
+            <span class="status warn">⚠ warning</span>
+          </div>
+          <div class="summary">Re-derive the heartbeat sweep without the read-only premise</div>
+          <div class="who"><span style="color:#c9a0dc">Sam · dispatcher</span><span class="model">haiku</span></div>
+          <div class="gate">escalated to you — the ticket cites a premise that OR-286 is rewriting</div>
+          <div class="meta">
+            <span><b>1</b> step</span><span><b>0m 09s</b></span><span><b>$0.01</b></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="log">
+      <div class="logtop">
+        <div class="t">log</div>
+        <span class="dim">· orion logs -f</span>
+        <div class="spacer"></div>
+        <span class="chip">all tickets</span>
+      </div>
+      <div class="filter">
+        <span class="f on">all</span><span class="f">ok</span><span class="f">working</span>
+        <span class="f">waiting</span><span class="f">warning</span><span class="f">failed</span>
+        <span class="f">trace</span>
+      </div>
+      <div class="lines">
+        <div class="ln"><span class="ts">13:34:48</span><span class="lk" style="color:var(--t-violet)">OR-183</span><span class="lv ok">✓ ok</span><span class="la" style="color:#dcb67a">Ravi · backend dev</span><span class="lm">opus</span><span class="lg">2 commit(s) on orion/or-183</span></div>
+        <div class="stagerow"><span class="ts">13:34:52</span><span class="lk" style="color:var(--t-violet)">OR-183</span><span class="rule">══ stage ══</span><span class="stagenames">implementing → qa</span></div>
+        <div class="ln"><span class="ts"></span><span class="lk"></span><span class="lv"></span><span class="la"></span><span class="lm"></span><span class="lg dim">Ravi hands to Anita · QA engineer</span></div>
+        <div class="ln"><span class="ts">13:34:53</span><span class="lk" style="color:var(--t-violet)">OR-183</span><span class="lv work">◐ working</span><span class="la" style="color:#7ec9d8">Anita · QA engineer</span><span class="lm">sonnet</span><span class="lg">verifying acceptance criteria</span></div>
+        <div class="ln"><span class="ts">13:35:01</span><span class="lk" style="color:var(--t-teal)">OR-266</span><span class="lv ok">✓ ok</span><span class="la" style="color:#7ec9d8">Anita · QA engineer</span><span class="lm">sonnet</span><span class="lg">7 case(s) derived from acceptance criteria</span></div>
+        <div class="ln"><span class="ts">13:35:14</span><span class="lk" style="color:var(--t-orange)">OR-272</span><span class="lv work">◐ working</span><span class="la" style="color:#dcb67a">Ravi · backend dev</span><span class="lm">opus</span><span class="lg">reading internal/tracker/issues.go</span></div>
+        <div class="ln"><span class="ts">13:35:18</span><span class="lk" style="color:var(--t-orange)">OR-272</span><span class="lv work">◐ working</span><span class="la"></span><span class="lm"></span><span class="lg">deriving board columns from the label state machine</span></div>
+        <div class="ln"><span class="ts">13:35:22</span><span class="lk" style="color:#7bb6f0">OR-279</span><span class="lv wait">⏳ waiting</span><span class="la dim">ci</span><span class="lm">-</span><span class="lg">pull request #482 opened, awaiting CI</span></div>
+        <div class="ln"><span class="ts">13:35:29</span><span class="lk" style="color:var(--t-rose)">OR-281</span><span class="lv work">◐ working</span><span class="la" style="color:#9fd6a0">Zoya · code explorer</span><span class="lm">haiku</span><span class="lg">searching code for existing shell-out helpers</span></div>
+        <div class="ln"><span class="ts">13:35:33</span><span class="lk" style="color:#d6a231">OR-290</span><span class="lv warn">⚠ warning</span><span class="la" style="color:#c9a0dc">Sam · dispatcher</span><span class="lm">haiku</span><span class="lg">escalated: ticket cites the read-only premise</span></div>
+        <div class="stagerow"><span class="ts">13:35:40</span><span class="lk" style="color:#d6a231">OR-290</span><span class="rule">══ stage ══</span><span class="stagenames">implementing → blocked</span></div>
+        <div class="ln"><span class="ts"></span><span class="lk"></span><span class="lv"></span><span class="la"></span><span class="lm"></span><span class="lg dim">Sam hands to you; no agent is running</span></div>
+        <div class="ln"><span class="ts">13:35:44</span><span class="lk" style="color:var(--t-orange)">OR-272</span><span class="lv work">◐ working</span><span class="la" style="color:#dcb67a">Ravi · backend dev</span><span class="lm">opus</span><span class="lg">editing internal/web/board.go</span></div>
+      </div>
+      <div class="logfoot">
+        <span>following · 1,284 lines</span>
+        <span class="pausebtn">pause on scroll-up</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body></html>

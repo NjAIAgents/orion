@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orion web mockup — 02 gate board</title>
+<style>
+:root{
+  --ink:#e6e6e6; --ink-dim:#9aa0a6; --ink-faint:#6b7178;
+  --bg:#0b0d10; --panel:#12161b; --line:#242a33; --line-soft:rgba(36,42,51,.55);
+  --ok:#4bb543; --fail:#e05252; --warn:#d6a231; --wait:#4f8ff0; --work:#2fb3c4; --dimc:#6b7178;
+  --t-orange:#d98a3d; --t-violet:#b58cf0; --t-teal:#4fc7c7; --t-rose:#e08fb0; --t-sky:#7bb6f0;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:12px;}
+a{color:var(--wait);} a:hover{color:#7db0ff;}
+.app{display:flex;flex-direction:column;height:900px;}
+.topbar{display:flex;align-items:center;gap:16px;padding:0 18px;height:44px;
+  border-bottom:1px solid var(--line);background:var(--panel);flex:none;}
+.brand{font-weight:600;font-size:13px;} .brand .dot{color:var(--work);}
+.nav{display:flex;gap:2px;}
+.nav .item{padding:5px 11px;border-radius:5px;color:var(--ink-faint);font-size:11.5px;}
+.nav .item.on{background:rgba(47,179,196,.12);color:var(--work);}
+.spacer{flex:1;}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:4px;
+  border:1px solid var(--line);color:var(--ink-dim);font-size:11px;}
+.dotlive{width:6px;height:6px;border-radius:50%;background:var(--ok);}
+.head{padding:20px 22px 6px;display:flex;align-items:baseline;gap:14px;}
+.h1{font-size:15px;font-weight:600;}
+.head .sub{color:var(--ink-faint);font-size:11.5px;}
+.views{display:flex;gap:4px;padding:6px 22px 14px;}
+.v{padding:4px 11px;border-radius:5px;border:1px solid var(--line);color:var(--ink-faint);font-size:11px;}
+.v.on{background:rgba(79,143,240,.13);border-color:rgba(79,143,240,.36);color:var(--wait);}
+.scroll{flex:1;overflow:auto;padding:0 22px 24px;min-height:0;}
+.proj{margin:0 0 26px;}
+.projhead{display:flex;align-items:center;gap:10px;padding:0 0 10px;
+  border-bottom:1px solid var(--line);margin-bottom:12px;}
+.projname{font-size:12px;font-weight:600;}
+.count{color:var(--ink-faint);font-size:11px;}
+.rows{display:flex;flex-direction:column;gap:9px;}
+.row{background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:12px 14px;
+  display:flex;gap:14px;align-items:flex-start;position:relative;overflow:hidden;}
+.row .rail{position:absolute;left:0;top:0;bottom:0;width:2px;}
+.rowmain{flex:1;min-width:0;display:flex;flex-direction:column;gap:7px;}
+.rowtop{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.key{font-weight:600;}
+.state{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;padding:2px 8px;border-radius:4px;}
+.state.blocked{background:rgba(224,82,82,.12);color:var(--fail);}
+.state.question{background:rgba(214,162,49,.12);color:var(--warn);}
+.state.approval{background:rgba(75,181,67,.12);color:var(--ok);}
+.state.plan{background:rgba(79,143,240,.12);color:var(--wait);}
+.label{font-size:10px;color:var(--ink-faint);padding:1.5px 6px;border:1px solid var(--line);border-radius:3px;}
+.title{color:#c8ccd1;font-size:11.5px;line-height:1.5;}
+.ask{background:rgba(255,255,255,.028);border-left:2px solid var(--line);
+  padding:8px 11px;border-radius:0 5px 5px 0;color:#c8ccd1;font-size:11px;line-height:1.6;}
+.ask .from{color:var(--ink-faint);display:block;margin-bottom:3px;font-size:10.5px;}
+.rowmeta{display:flex;gap:14px;font-size:10.5px;color:var(--ink-faint);}
+.acts{display:flex;flex-direction:column;gap:6px;flex:none;width:158px;}
+.btn{padding:6px 10px;border-radius:5px;border:1px solid var(--line);text-align:center;
+  font-size:11px;color:var(--ink-dim);}
+.btn.primary{background:rgba(75,181,67,.13);border-color:rgba(75,181,67,.4);color:var(--ok);}
+.btn.warnb{background:rgba(214,162,49,.1);border-color:rgba(214,162,49,.34);color:var(--warn);}
+.btn.ghost{color:var(--ink-faint);}
+.answer{display:flex;gap:7px;align-items:center;}
+.inp{flex:1;border:1px solid var(--line);border-radius:5px;padding:6px 9px;color:var(--ink-faint);
+  font-size:11px;background:rgba(0,0,0,.25);}
+.empty{border:1px dashed var(--line);border-radius:7px;padding:18px;text-align:center;
+  color:var(--ink-faint);font-size:11.5px;line-height:1.7;}
+</style>
+</head><body>
+
+<div class="app">
+  <div class="topbar">
+    <div class="brand">orion<span class="dot">·</span>web</div>
+    <div class="nav">
+      <div class="item on">gate board</div>
+      <div class="item">run</div>
+      <div class="item">history</div>
+      <div class="item">agents</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="chip"><span class="dotlive"></span>3 watchers live</div>
+    <div class="chip">4 waiting on you</div>
+  </div>
+
+  <div class="head">
+    <div class="h1">Waiting on you</div>
+    <div class="sub">4 gates across 2 projects · nothing is being spent while these sit</div>
+  </div>
+  <div class="views">
+    <div class="v on">waiting on me</div>
+    <div class="v">in flight</div>
+    <div class="v">everything</div>
+    <div class="v">by batch</div>
+  </div>
+
+  <div class="scroll">
+    <div class="proj">
+      <div class="projhead">
+        <span class="projname">orion</span>
+        <span class="count">3 gates</span>
+        <span class="spacer"></span>
+        <span class="label">orion-working ×2</span>
+        <span class="label">orion-failed ×1</span>
+      </div>
+      <div class="rows">
+
+        <div class="row">
+          <div class="rail" style="background:var(--fail)"></div>
+          <div class="rowmain">
+            <div class="rowtop">
+              <span class="key" style="color:var(--t-rose)">OR-281</span>
+              <span class="state blocked">✗ blocked</span>
+              <span class="label">orion-failed</span>
+              <span class="label">orion-stage-implementer</span>
+            </div>
+            <div class="title">Respond to a gate from the board</div>
+            <div class="ask">
+              <span class="from">Ravi · backend developer, an Orion agent — 14m ago</span>
+              The shell-out helper needs a closed command allowlist. Should `prioritise` accept an arbitrary
+              rank integer from the browser, or only the four relative moves (top, up, down, bottom)?
+            </div>
+            <div class="rowmeta"><span>fix loop 2 of 3</span><span>$4.12 spent</span><span>blocked 14m</span></div>
+          </div>
+          <div class="acts">
+            <div class="btn warnb">answer</div>
+            <div class="btn ghost">request changes</div>
+            <div class="btn ghost">open ticket</div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="rail" style="background:var(--ok)"></div>
+          <div class="rowmain">
+            <div class="rowtop">
+              <span class="key" style="color:var(--t-teal)">OR-266</span>
+              <span class="state approval">✓ awaiting approval</span>
+              <span class="label">orion-ready</span>
+            </div>
+            <div class="title">Authentication for the write-capable local surface</div>
+            <div class="ask">
+              <span class="from">Hema · delivery triage, an Orion agent — checks green</span>
+              Genuinely done. Token is per-process and header-only; the origin and Host checks are additive,
+              and the read-only allowlist is explicit. PR #479 · 12 files · +486 −31.
+            </div>
+            <div class="rowmeta"><span>ci passed</span><span>$6.90 spent</span><span>ready 3m</span></div>
+          </div>
+          <div class="acts">
+            <div class="btn primary">approve</div>
+            <div class="btn ghost">request changes</div>
+            <div class="btn ghost">view diff</div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="rail" style="background:var(--warn)"></div>
+          <div class="rowmain">
+            <div class="rowtop">
+              <span class="key" style="color:#d6a231">OR-290</span>
+              <span class="state question">⚠ question</span>
+              <span class="label">orion-working</span>
+              <span class="label">orion-stage-router</span>
+            </div>
+            <div class="title">Re-derive the heartbeat sweep without the read-only premise</div>
+            <div class="ask">
+              <span class="from">Sam · dispatcher, an Orion agent — 2m ago</span>
+              This ticket's acceptance criteria assume the surface is read-only. OR-286 is rewriting that
+              premise. Proceed against the current text, or hold until OR-287 lands?
+            </div>
+            <div class="answer">
+              <span class="inp">hold until OR-287 lands — then re-derive</span>
+              <span class="btn primary" style="width:64px">send</span>
+            </div>
+            <div class="rowmeta"><span>1 step</span><span>$0.01 spent</span><span>asked 2m</span></div>
+          </div>
+          <div class="acts">
+            <div class="btn warnb">answer</div>
+            <div class="btn ghost">prioritise</div>
+            <div class="btn ghost">open ticket</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="proj">
+      <div class="projhead">
+        <span class="projname">whodunit</span>
+        <span class="count">1 gate</span>
+        <span class="spacer"></span>
+        <span class="label">orion-ci-wait ×1</span>
+      </div>
+      <div class="rows">
+        <div class="row">
+          <div class="rail" style="background:var(--wait)"></div>
+          <div class="rowmain">
+            <div class="rowtop">
+              <span class="key" style="color:var(--t-sky)">WHO-215</span>
+              <span class="state plan">⏳ plan confirmation</span>
+              <span class="label">orion-working</span>
+              <span class="label">orion-stage-architect</span>
+            </div>
+            <div class="title">Correlation panels should be XY scatters once there are 20+ weeks</div>
+            <div class="ask">
+              <span class="from">Navjyot · architect, an Orion agent — 31m ago</span>
+              Plan proposes replacing the panel type rather than adding a second panel. That changes the saved
+              dashboard JSON for existing installs. Confirm before implementation starts.
+            </div>
+            <div class="rowmeta"><span>plan drafted</span><span>$1.20 spent</span><span>waiting 31m</span></div>
+          </div>
+          <div class="acts">
+            <div class="btn primary">confirm plan</div>
+            <div class="btn warnb">request changes</div>
+            <div class="btn ghost">read plan</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="empty">
+      Nothing else is waiting on you.<br>
+      <span style="color:var(--ink-dim)">6 tickets are in flight · 14 queued · open the run view to watch them</span>
+    </div>
+  </div>
+</div>
+
+</body></html>
