@@ -68,11 +68,18 @@ type Session struct {
 	// "qa", "ci") -- the stable key, matched against internal/events' Actor
 	// constants.
 	Actor string
-	// Role is what a person reads: "Ravi · backend developer", from
-	// actors.Display. Carried alongside Actor rather than looked up at draw
-	// time because names are operator-configurable, and a page rendering a
-	// snapshot from an older log must show the names that log was written
-	// under.
+	// Role is what a person reads -- an operator's chosen name joined to the
+	// job title, whatever actors.Display returns for Actor at the time.
+	//
+	// Carried alongside Actor rather than looked up at draw time because
+	// names are operator-configurable, and a page rendering a snapshot from
+	// an older log must show the names that log was written under.
+	//
+	// No example is written here on purpose. Every shipped default name is
+	// renameable, so a name frozen into a comment eventually points at
+	// somebody this build no longer has -- which is the same rule
+	// internal/actors enforces across the tree, and it enforces it on
+	// comments too.
 	Role string
 	// Model is what actually ran, taken from the agent's own frames rather
 	// than from what Orion asked for: --model is a request, and a fallback
