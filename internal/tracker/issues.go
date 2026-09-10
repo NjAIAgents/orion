@@ -711,10 +711,54 @@ func (i Issue) Resolved() bool {
 	return strings.EqualFold(strings.TrimSpace(i.StatusCategory), StatusCategoryDone)
 }
 
+// QueueState is one state of the label state machine: the name Orion reports
+// it by, and the label that puts a ticket in it.
+type QueueState struct {
+	// Name is the word State returns for this state -- "queued", "working".
+	Name string
+	// Label is the tracker label that carries it.
+	Label string
+}
+
+// QueueStates is the state machine itself, in PIPELINE order: the order a
+// ticket travels, not the order State reads them in (that one is precedence,
+// urgent first, which is a different question and deliberately a different
+// list).
+//
+// This is the single declaration of what the states ARE. Managed derives from
+// it, and so does the web board's column set (OR-273) -- a surface that
+// declared its own list would be correct until the machine changed and then
+// silently wrong, which is the failure OR-54 names for config. A state added
+// here reaches every one of them without another edit.
+//
+// Done is absent on purpose, and is not an omission: done is the ABSENCE of
+// all of these, for the reason the block above gives.
+//
+// An empty queueLabel falls back to QueueLabelDefault, the same way the
+// watcher and the scheduler do, so a caller that never resolved config gets
+// the shared label rather than a state with no label at all.
+func QueueStates(queueLabel string) []QueueState {
+	if queueLabel == "" {
+		queueLabel = QueueLabelDefault
+	}
+	return []QueueState{
+		{Name: "queued", Label: queueLabel},
+		{Name: "working", Label: LabelWorking},
+		{Name: "ci-wait", Label: LabelCIWait},
+		{Name: "ready", Label: LabelReady},
+		{Name: "failed", Label: LabelFailed},
+	}
+}
+
 // Managed are every label Orion owns, for the queue query and for clearing
 // state when a ticket is finished or requeued.
 func Managed(queueLabel string) []string {
-	return []string{queueLabel, LabelWorking, LabelCIWait, LabelReady, LabelFailed}
+	states := QueueStates(queueLabel)
+	out := make([]string, 0, len(states))
+	for _, s := range states {
+		out = append(out, s.Label)
+	}
+	return out
 }
 
 // PreFailure are the states a ticket can be in at the moment it fails, and
