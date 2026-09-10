@@ -115,3 +115,79 @@ func TestTheSnapshotVocabularyIsWhatTheEpicWasToldToExpect(t *testing.T) {
 		t.Fatalf("a Snapshot holds its Cards: got %d", len(snap.Cards))
 	}
 }
+
+// A Session that never started reports zero, not the span since the zero
+// time -- a stored-and-defaulted field would give a huge, wrong number.
+func TestSessionElapsedIsZeroForUninitializedSession(t *testing.T) {
+	if got := (Session{}).Elapsed(); got != 0 {
+		t.Errorf("Elapsed() on an uninitialized Session = %s, want 0", got)
+	}
+}
+
+// The grid is the whole point of Snapshot: one card per ticket, drawn in the
+// order the reader hands them. A field that only ever holds one Card would
+// still compile against every other test here, so this asserts the plural.
+func TestSnapshotCardsHoldsMultipleCards(t *testing.T) {
+	cards := []Card{
+		{Key: "OR-55"},
+		{Key: "OR-56"},
+		{Key: "OR-57"},
+	}
+	snap := Snapshot{Cards: cards}
+
+	if got, want := len(snap.Cards), 3; got != want {
+		t.Fatalf("Snapshot.Cards len = %d, want %d", got, want)
+	}
+	for i, want := range []string{"OR-55", "OR-56", "OR-57"} {
+		if got := snap.Cards[i].Key; got != want {
+			t.Errorf("Snapshot.Cards[%d].Key = %q, want %q", i, got, want)
+		}
+	}
+}
+
+// Verb is a plain string, not an enum -- internal/ui's five outcome words are
+// the contract, not a constant this package imports. Each must round-trip
+// through the field unchanged.
+func TestCardVerbAcceptsTheFiveOutcomeWords(t *testing.T) {
+	for _, verb := range []string{"ok", "working", "waiting", "warning", "failed"} {
+		card := Card{Verb: verb}
+		if got := card.Verb; got != verb {
+			t.Errorf("Card{Verb: %q}.Verb = %q, want %q", verb, got, verb)
+		}
+	}
+}
+
+// Gate explains a waiting card; a card with an agent on it has nothing to
+// explain. Both are valid states of the same string field.
+func TestCardGateCanBeEmptyOrHoldAWaitingReason(t *testing.T) {
+	active := Card{Verb: "working", Gate: ""}
+	if got := active.Gate; got != "" {
+		t.Errorf("active Card.Gate = %q, want empty", got)
+	}
+
+	waiting := Card{Verb: "waiting", Gate: "pull request #482 opened, awaiting CI -- no agent is running"}
+	if got, want := waiting.Gate, "pull request #482 opened, awaiting CI -- no agent is running"; got != want {
+		t.Errorf("waiting Card.Gate = %q, want %q", got, want)
+	}
+}
+
+// Actor is the stable key matched against internal/events' Actor constants --
+// it must survive independently of Role, which is only what a person reads.
+func TestSessionActorIsTheStableEventLogIdentifier(t *testing.T) {
+	s := Session{Actor: "implementer", Role: "backend developer"}
+	if got, want := s.Actor, "implementer"; got != want {
+		t.Errorf("Session.Actor = %q, want %q", got, want)
+	}
+}
+
+// Role is the display name, carried alongside Actor rather than looked up at
+// draw time, and it must not collapse to (or overwrite) Actor.
+func TestSessionRoleIsTheDisplayNameDistinctFromActor(t *testing.T) {
+	s := Session{Actor: "qa", Role: "QA engineer"}
+	if got, want := s.Role, "QA engineer"; got != want {
+		t.Errorf("Session.Role = %q, want %q", got, want)
+	}
+	if s.Role == s.Actor {
+		t.Errorf("Session.Role (%q) must be distinct from Session.Actor (%q)", s.Role, s.Actor)
+	}
+}
