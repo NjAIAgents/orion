@@ -1539,6 +1539,24 @@ type LockAPI interface {
 	SetLabels(key string, add, remove []string) error
 }
 
+// workspaceOf is the workspace directory for the project a ticket belongs
+// to, or "" when there is nothing registered to read.
+//
+// Empty is a real answer and must stay one: a ticket whose project is not
+// registered has no log to reconcile from, and guessing a path would be a
+// worse failure than declining to reconcile.
+func workspaceOf(home, key string) string {
+	f, err := registry.Load(home)
+	if err != nil {
+		return ""
+	}
+	e, ok := f.Repos[strings.ToUpper(registry.ProjectOf(key))]
+	if !ok {
+		return ""
+	}
+	return e.Workspace
+}
+
 // InFlight returns the tickets currently claimed, in the tracker's order.
 //
 // A LIST rather than a yes/no. With one job at a time "is anything running"
@@ -1607,6 +1625,39 @@ func InFlight(j LockAPI, home string, projects []string, w io.Writer) ([]string,
 				ui.Say(w, i.Key, events.ActorOrion, ui.VerbOK,
 					"released: the run holding this ended without finishing%s. "+
 						"Re-label it %s to pick it up again", where, tracker.QueueLabelDefault)
+				continue
+			}
+			// THE HOLDER IS ALIVE, BUT IS THE WORK? (OR-429)
+			//
+			// claim.Dead answered honestly above: the process is up and
+			// heartbeating. That is the right answer to the question it was
+			// asked, and it is the wrong question when the AGENT finished and
+			// the label did not follow.
+			//
+			// OR-269 sat here for twelve hours. Its work was pushed at 00:49
+			// and readyForBatch's label swap reached Jira as a 2xx that
+			// changed nothing -- no error, so no warning, so nothing to retry
+			// on. collect reads labels rather than branches, so the finished
+			// work was invisible, and two tickets on the same file queued
+			// behind a slot nobody was using.
+			//
+			// Reconciled from the ticket's OWN log rather than inferred: the
+			// pipeline records its terminal boundary, and a ticket carrying
+			// it is finished by the pipeline's account of itself.
+			if ws := workspaceOf(home, i.Key); ws != "" && finishedWork(ws, i.Key) {
+				if err := j.SetLabels(i.Key,
+					[]string{tracker.LabelReady},
+					append([]string{tracker.LabelWorking}, actors.StageLabels()...)); err != nil {
+					ui.Say(w, i.Key, events.ActorOrion, ui.VerbWarn,
+						"its work is finished but the label could not be moved: %v", err)
+					running = append(running, i.Key)
+					continue
+				}
+				_ = claim.Release(home, i.Key)
+				ui.Say(w, i.Key, events.ActorOrion, ui.VerbOK,
+					"its work finished but the ticket still said %s; moved it to %s "+
+						"so the integration queue can see it",
+					tracker.LabelWorking, tracker.LabelReady)
 				continue
 			}
 			running = append(running, i.Key)
