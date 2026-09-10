@@ -98,6 +98,11 @@ type Options struct {
 	// clamped to the same ceiling, so a caller cannot widen the control by
 	// passing a number the config file would have refused.
 	MaxConcurrent int
+
+	// NoProgressMinutes is how long the watcher may cycle without achieving
+	// anything before it stops and says so (OR-428). Zero means the shipped
+	// default; negative disables the breaker.
+	NoProgressMinutes int
 	// WorkOpts are passed through to each job.
 	MaxMinutes int
 	MaxTurns   int
@@ -185,6 +190,7 @@ func Run(opts Options, deps Deps) error {
 		deps.Sleep = sleepInterruptible
 	}
 	opts.MaxConcurrent = config.Limits{MaxConcurrentTickets: opts.MaxConcurrent}.ConcurrentTickets()
+	noProgressWindow := config.Limits{NoProgressMinutes: opts.NoProgressMinutes}.NoProgress()
 
 	// Every job writes its progress to the same terminal from its own
 	// goroutine. Serialised so a line is whole: two agents' output interleaves
@@ -260,6 +266,9 @@ func Run(opts Options, deps Deps) error {
 	// moment; without this each would independently decide to sleep, and the
 	// pause would be re-derived n times from n copies of the same reading.
 	var pausedUntil time.Time
+	// The no-progress breaker (OR-428). Outside the loop: its whole job is
+	// to remember across ticks.
+	stall := newNoProgress(noProgressWindow)
 
 	for tick := 1; ; tick++ {
 		if stopping.Load() {
@@ -271,7 +280,9 @@ func Run(opts Options, deps Deps) error {
 		// rate-limit verdict that decides whether anything starts at all.
 		jobsUnfinished := false
 		faulted := ""
+		reaped := 0
 		for _, r := range p.reap() {
+			reaped++
 			reportFinished(w, r)
 			// Remembered, not acted on here: the check belongs after the whole
 			// batch has been reaped, or a second job finishing in the same tick
@@ -356,8 +367,8 @@ func Run(opts Options, deps Deps) error {
 			s.free = 0
 		}
 
-		unfinished, err := oneTick(opts, deps, w, s, p)
-		unfinished = unfinished || jobsUnfinished || p.len() > 0
+		tk, err := oneTick(opts, deps, w, s, p)
+		unfinished := tk.Unfinished || jobsUnfinished || p.len() > 0
 		if err != nil {
 			// A misconfiguration will NEVER fix itself, so retrying it every
 			// two minutes forever is not resilience -- it is a watcher that
@@ -418,6 +429,25 @@ func Run(opts Options, deps Deps) error {
 						"starting nothing more, but staying up until they finish", started)
 			}
 		}
+		// THE NO-PROGRESS BREAKER (OR-428). Checked here, after the tick has
+		// been accounted for and before the sleep, so the window measures
+		// wall-clock time spent getting nowhere rather than a tick count.
+		//
+		// A finished job counts as movement even when it failed: a ticket
+		// that reached a verdict moved, and the fix loop that follows is
+		// bounded by its own attempt ceiling.
+		if tk.Moved || reaped > 0 {
+			stall.progressed()
+		} else if stall.idled(deps.Now()) {
+			// Printed and returned, the same way the max-jobs stop and a
+			// permanent fault already end a run. Deliberately NOT a Slack
+			// call from here: the watcher has no Slack dependency, collect
+			// and work own that seam, and reaching around them for one
+			// message would put a second notifier in the system.
+			ui.Say(w, "", events.ActorOrion, ui.VerbFail, "%s",
+				stall.reason(deps.Now(), tk.Stuck))
+			return nil
+		}
 		if !deps.Sleep(opts.Interval) {
 			break
 		}
@@ -451,7 +481,23 @@ func permanent(err error) bool {
 // The unfinished flag is what lets the loop know it must not exit yet. A
 // ticket that has been pushed and is awaiting CI is Orion's responsibility
 // until it merges or fails, and nothing else in the system will pick it up.
-func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished bool, err error) {
+// tickOutcome is what one cycle achieved, for the no-progress breaker
+// (OR-428). A third bool return would have done, and would have made the
+// call site read `unfinished, moved, err` -- three unlabelled results whose
+// order is the only thing telling them apart.
+type tickOutcome struct {
+	// Unfinished means work is still owed: exiting now would strand it.
+	Unfinished bool
+	// Moved means SOMETHING happened -- a merge, a failure, a reconcile that
+	// changed state, a job started. Waiting on CI is not movement, which is
+	// the distinction the whole breaker rests on.
+	Moved bool
+	// Stuck are the keys that are owed and did not move, for the message the
+	// operator reads. Best effort: a name is a courtesy, not the verdict.
+	Stuck []string
+}
+
+func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (out tickOutcome, err error) {
 	// 1. Finish what is already in flight. Cheap, and it can free the job
 	// slot this tick is about to look for.
 	//
@@ -473,7 +519,29 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 			// and a human has not approved yet. Both are work this watcher
 			// still owes, and exiting on either strands the ticket.
 			if r.Verdict == collect.VerdictPending || r.Verdict == collect.VerdictPassing {
-				unfinished = true
+				out.Unfinished = true
+				// Owed and not moving. Named for the breaker's message, so
+				// an operator woken at 06:00 reads which tickets were stuck
+				// rather than only that something was (OR-428).
+				out.Stuck = append(out.Stuck, r.Key)
+			}
+			// PROGRESS (OR-428). A terminal verdict means the ticket moved,
+			// and Changed means collect did work whatever the outcome. Both
+			// reset the no-progress clock.
+			//
+			// Pending and Passing are deliberately absent: the first is CI
+			// working elsewhere and the second is a person holding the door,
+			// and treating either as movement would make the breaker
+			// unable to see the exact loop it exists for -- a batch that
+			// re-assembles and re-tests forever is Pending on every tick.
+			switch r.Verdict {
+			case collect.VerdictMerged, collect.VerdictFailing,
+				collect.VerdictClosed, collect.VerdictStale,
+				collect.VerdictConflicted:
+				out.Moved = true
+			}
+			if r.Changed {
+				out.Moved = true
 			}
 			// Only PENDING counts as "in CI" for the live header. A passing
 			// pull request is waiting on a person, and counting it as CI
@@ -499,7 +567,7 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 	if deps.InFlight != nil {
 		keys, err := deps.InFlight(opts.Home, opts.Projects)
 		if err != nil {
-			return unfinished, err
+			return out, err
 		}
 		s.elsewhere = claimedElsewhere(keys, p.keys())
 		s.free -= len(s.elsewhere)
@@ -510,7 +578,7 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 	// others run still has a row to keep current (OR-325).
 	q, err := deps.Queued(opts.Home, opts.Projects, opts.QueueLabel)
 	if err != nil {
-		return unfinished, err
+		return out, err
 	}
 	ui.LiveQueue(queueRows(q.All))
 
@@ -524,7 +592,7 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 				"%s; starting nothing else", s)
 			ui.Say(w, s.elsewhere[0], events.ActorOrion, ui.VerbWarn, residueHint)
 		}
-		return unfinished, nil
+		return out, nil
 	}
 
 	// 3. Start the next tickets.
@@ -534,12 +602,12 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 	reportHeld(w, q.Held)
 	queued := q.Ready
 	if len(queued) == 0 {
-		return unfinished, nil
+		return out, nil
 	}
 
 	if opts.DryRun {
 		rehearse(w, opts, queued)
-		return unfinished, nil
+		return out, nil
 	}
 
 	next, basis := pick(queued, s.free)
@@ -566,7 +634,12 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 		ui.Say(w, key, events.ActorOrion, ui.VerbWorking, "claimed")
 		p.dispatch(deps, opts, w, key)
 	}
-	return unfinished, nil
+	// Starting an agent is progress by definition: an LLM is now running and
+	// the spend breaker owns what happens next (OR-428).
+	if len(next) > 0 {
+		out.Moved = true
+	}
+	return out, nil
 }
 
 // reportHeld names the labelled tickets the queue refused, and why.
