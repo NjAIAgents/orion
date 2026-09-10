@@ -25,13 +25,21 @@ type rankTicket struct {
 }
 
 // fakeRankJira answers the surface `orion prioritise` uses: fetching an issue
-// and the agile ranking endpoint.
+// and the agile ranking endpoint. It also answers the surface `orion queue`
+// (the list view) uses -- the JQL search and the project's versions -- so a
+// test can run prioritise and then queue against the SAME fake tracker and
+// see whether the reorder actually shows up, rather than trusting that a rank
+// call happened.
 type fakeRankJira struct {
 	tickets map[string]*rankTicket
 	// ranks is one entry per rank call: "MOVED after TARGET".
 	ranks []string
 	// rankStatus, when set, is the status every rank call answers with.
 	rankStatus int
+	// order is the queue's backlog order, keys only. A rank call moves the
+	// issue within this slice, and Search returns issues in this order --
+	// the same field a real Jira instance would be ordering by.
+	order []string
 }
 
 func (f *fakeRankJira) server(t *testing.T) *httptest.Server {
@@ -50,6 +58,7 @@ func (f *fakeRankJira) server(t *testing.T) *httptest.Server {
 				_, _ = w.Write([]byte(`{"errorMessages":["nope"]}`))
 				return
 			}
+			f.reorder(body.Issues, body.RankAfterIssue)
 			w.WriteHeader(204)
 
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/rest/api/3/issue/"):
@@ -73,12 +82,63 @@ func (f *fakeRankJira) server(t *testing.T) *httptest.Server {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"key": key, "fields": fields})
 
+		case r.Method == "GET" && r.URL.Path == "/rest/api/3/search/jql":
+			var issues []map[string]any
+			for _, key := range f.order {
+				tk, ok := f.tickets[key]
+				if !ok {
+					continue
+				}
+				fields := map[string]any{
+					"summary": "x",
+					"labels":  tk.labels,
+					"status": map[string]any{
+						"name":           "To Do",
+						"statusCategory": map[string]any{"key": "new"},
+					},
+				}
+				if tk.priority != "" {
+					fields["priority"] = map[string]any{"name": tk.priority}
+				}
+				issues = append(issues, map[string]any{"key": key, "fields": fields})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"issues": issues})
+
+		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/versions"):
+			// No open milestones -- the queue is unscheduled and unheld,
+			// which keeps this fake out of the hold-reason path entirely.
+			_ = json.NewEncoder(w).Encode([]map[string]any{})
+
 		default:
 			w.WriteHeader(404)
 		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// reorder applies one rank call to f.order the way a real backlog would: the
+// moved key ends up immediately after the target, keeping every other key's
+// relative order.
+func (f *fakeRankJira) reorder(moved []string, after string) {
+	if len(moved) != 1 {
+		return
+	}
+	key := moved[0]
+	kept := make([]string, 0, len(f.order))
+	for _, k := range f.order {
+		if k != key {
+			kept = append(kept, k)
+		}
+	}
+	out := make([]string, 0, len(kept)+1)
+	for _, k := range kept {
+		out = append(out, k)
+		if k == after {
+			out = append(out, key)
+		}
+	}
+	f.order = out
 }
 
 // runPrioritiseCmd invokes `orion prioritise ...` as a subprocess against a
@@ -221,5 +281,63 @@ func TestCLIPrioritiseRefusesASingleTicket(t *testing.T) {
 	}
 	if len(f.ranks) != 0 {
 		t.Errorf("it wrote something for a single ticket: %v", f.ranks)
+	}
+}
+
+// A key naming no ticket must stop the whole run before the first write --
+// same rule as a ticket outside the queue, but this time nothing was ever
+// found to write in the first place.
+func TestCLIPrioritiseWritesNothingWhenAKeyNamesNoTicket(t *testing.T) {
+	bin := orionBinary(t)
+	f := &fakeRankJira{tickets: map[string]*rankTicket{
+		"OR-100": inQueue("Medium"),
+		"OR-142": inQueue("Medium"),
+	}}
+	srv := f.server(t)
+
+	out, errOut, code := runPrioritiseCmd(t, bin, srv.URL, queueProject(t),
+		"OR-100", "OR-999", "OR-142")
+	combined := out + errOut
+	if code == 0 {
+		t.Fatalf("an ordering naming a missing ticket exited 0: %s", combined)
+	}
+	if len(f.ranks) != 0 {
+		t.Errorf("it ranked %v before refusing: %s", f.ranks, combined)
+	}
+	if !strings.Contains(combined, "no such ticket: OR-999") {
+		t.Errorf("the refusal does not name the missing ticket: %s", combined)
+	}
+}
+
+// The reordering is not just reported -- it has to be the order the very next
+// `orion queue` shows, because that is the one thing an operator actually
+// checks after running this command.
+func TestCLIPrioritiseReorderIsVisibleInQueue(t *testing.T) {
+	bin := orionBinary(t)
+	f := &fakeRankJira{
+		tickets: map[string]*rankTicket{
+			"OR-100": inQueue("Medium"),
+			"OR-140": inQueue("Medium"),
+			"OR-142": inQueue("Medium"),
+		},
+		order: []string{"OR-100", "OR-140", "OR-142"},
+	}
+	srv := f.server(t)
+	dir := queueProject(t)
+
+	out, errOut, code := runPrioritiseCmd(t, bin, srv.URL, dir, "OR-142", "OR-100", "OR-140")
+	if code != 0 {
+		t.Fatalf("expected success, got exit %d: %s%s", code, out, errOut)
+	}
+
+	qOut, qErr, qCode := runQueueCmd(t, bin, srv.URL, dir)
+	if qCode != 0 {
+		t.Fatalf("orion queue exited %d: %s%s", qCode, qOut, qErr)
+	}
+	at142 := strings.Index(qOut, "OR-142")
+	at100 := strings.Index(qOut, "OR-100")
+	at140 := strings.Index(qOut, "OR-140")
+	if at142 < 0 || at100 < 0 || at140 < 0 || !(at142 < at100 && at100 < at140) {
+		t.Errorf("`orion queue` does not show the reordered queue (OR-142, OR-100, OR-140): %s", qOut)
 	}
 }
