@@ -103,6 +103,15 @@ RUNNING
                               requeue a failed ticket and return it to To Do)
   orion queue remove <KEY>... take tickets out of the queue; status and
                               fixVersion are left alone
+  orion prioritise <KEY>...   reorder the queue: the tickets named are worked in
+                              the order given (--project KEY). Refuses tickets
+                              that are not queued, and a set whose priorities
+                              differ, rather than writing an order the queue
+                              would not show
+  orion request-plan-changes <KEY> <text>
+                              record what you want changed about the plan; the
+                              plan stage reads it on its next run. Everything
+                              after the key is the feedback, verbatim
   orion dashboard             whether coding is outrunning integration: queue
                               depth, batch cost, CI runs saved (read-only)
   orion web [--port N]        serve the run view on 127.0.0.1 and print its URL
@@ -292,6 +301,16 @@ func main() {
 		} else {
 			runQueue(os.Args[2:])
 		}
+	case "prioritise", "prioritize":
+		// Both spellings, because the queue is reordered by whoever is at the
+		// keyboard and a command that exists under one spelling only is a
+		// command half the operators cannot find (OR-280).
+		runPrioritise(os.Args[2:])
+	case "request-plan-changes":
+		// No mustArg: its own parser reports what is missing, and it must
+		// take everything after the key as literal text rather than letting
+		// a shared usage check decide what looks like a flag.
+		runRequestPlanChanges(os.Args[2:])
 	case "decompose":
 		mustArg(os.Args, 2, "orion decompose <KEY> [path/to/tasks.md]")
 		runDecompose(os.Args[2:])
