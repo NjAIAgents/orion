@@ -518,6 +518,19 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		return res
 	}
 
+	// STUCK MEANS STOP (OR-427). Bisection has already proven it cannot
+	// convict anyone in this exact set on this exact base, so another pass
+	// buys four CI runs and the same non-verdict. Said once per pass rather
+	// than silently skipped: a batch that never assembles and never explains
+	// itself is the failure OR-261 named, wearing different clothes.
+	if stuck, keys := knownStuck(ws.Dir, cfg.VCS.WorkBranch, g, members); stuck {
+		ui.Warn(w, "%s is stuck: red as a set, green in every part, so no single "+
+			"branch can be ejected. %s need a person -- fix one, or take one out "+
+			"of the queue, and the next pass will try the rest",
+			ref, strings.Join(keys, " "))
+		return nil
+	}
+
 	known := knownRed(ws.Dir, cfg.VCS.WorkBranch, g, members)
 	if known {
 		ui.Say(w, "", events.ActorOrion, ui.VerbWorking,
@@ -694,6 +707,27 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 			res.Changed = false
 		}
 		out = append(out, res)
+	}
+	// AN INTERACTION FAULT IS A STOP, NOT A RETRY (OR-427).
+	//
+	// Recorded as stuck so the next pass declines to spend on this exact set
+	// rather than isolating it again. Without the record, knownRed sends the
+	// same members back into the same search every tick: four CI runs to
+	// reach the same non-verdict, which is the loop that cost 91 runs and
+	// 13.5 hours.
+	//
+	// The members and the base are kept in the record on purpose. A person
+	// changes something -- a fix pushed, a member ejected, a different set
+	// assembled -- and the record no longer matches, so it stops applying
+	// without anybody having to clear it.
+	if errors.Is(err, ErrInteractionFault) {
+		if serr := saveBatchState(ws.Dir, batchState{
+			Ref: ref, Base: cfg.VCS.WorkBranch, Members: keysOf(members),
+			Status: batchStuck, BaseSHA: b.BaseSHA, PRURL: batchPR(),
+		}); serr != nil {
+			ui.Warn(w, "the batch is stuck but its record could not be written (%v); "+
+				"the next pass will isolate it again", serr)
+		}
 	}
 	if err != nil {
 		ui.Warn(w, "the batch did not complete: %v", err)
@@ -929,6 +963,30 @@ func failCulprit(res Result, m Member, ref string, cfg config.Config, opts Optio
 		FailedOn: ref,
 		Detail:   "convicted by the batch's isolation: " + detail}
 	return failing(res, m.Key, pr, cfg, m.Branch, opts, deps, ws, log, w)
+}
+
+// knownStuck reports whether the record says this exact set on this exact
+// base has already been proven unconvictable, and which members those are
+// (OR-427).
+//
+// The same five conditions knownRed uses, and for the same reason: a record
+// that does not describe THIS set on THIS base says nothing about it. A
+// member added or removed, or a new commit on the work branch, and the
+// verdict no longer applies -- which is what lets an operator clear this by
+// fixing something rather than by deleting a file.
+func knownStuck(wsDir, base string, g repoGit, members []Member) (bool, []string) {
+	st, ok := loadBatchState(wsDir)
+	if !ok || st.Status != batchStuck || st.Base != base || st.BaseSHA == "" {
+		return false, nil
+	}
+	baseSHA, err := g.SHAOf(base)
+	if err != nil || baseSHA != st.BaseSHA {
+		return false, nil
+	}
+	if !sameMembers(st.Members, members) {
+		return false, nil
+	}
+	return true, st.Members
 }
 
 // knownRed reports whether the record says this exact set on this exact base
