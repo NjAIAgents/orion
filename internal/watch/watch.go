@@ -726,6 +726,17 @@ func reportFinished(w io.Writer, r work.Result) {
 		ui.Say(w, r.Key, events.ActorOrion, ui.VerbWarn,
 			"not started; waiting rather than retrying immediately")
 	}
+	// A held ticket's cause and fix are named HERE, the moment the result is
+	// in hand -- not left for work.Release to rediscover from holds.json on a
+	// later tick. Release still runs every tick and is what keeps saying it
+	// while the hold stands, but it is a tick behind: this result is reaped
+	// (mid-loop, or in the shutdown drain) before that next tick's Release
+	// call happens, and a watcher that stops right there -- --once, the last
+	// tick of --max-jobs, ctrl-c -- would otherwise file the fault correctly
+	// and never say why to the person reading the terminal.
+	if r.Outcome == work.OutcomeHeld && r.Note != "" {
+		ui.Say(w, r.Key, events.ActorOrion, ui.VerbFail, "%s", r.Note)
+	}
 }
 
 // limitPause turns one run's rate-limit verdict into a time the watcher will

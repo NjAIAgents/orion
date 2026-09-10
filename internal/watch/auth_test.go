@@ -24,7 +24,7 @@ func TestAnEnvironmentalFaultHoldsTheQueueRatherThanDrainingIt(t *testing.T) {
 	s := &spy{
 		queued:    issues("OR-1", "OR-2", "OR-3", "OR-4"),
 		outcome:   work.OutcomeHeld,
-		maxSleeps: 6,
+		maxSleeps: 1,
 	}
 	d := s.deps()
 	inner := d.Work
