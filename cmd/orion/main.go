@@ -105,6 +105,8 @@ RUNNING
                               fixVersion are left alone
   orion dashboard             whether coding is outrunning integration: queue
                               depth, batch cost, CI runs saved (read-only)
+  orion web [--port N]        serve the run view on 127.0.0.1 and print its URL
+                              (default port 7061; --port 0 asks for a free one)
   orion routes                which marker sends a ticket to which actor, and
                               which actors are reached another way (read-only)
   orion watch [PROJECT...]    run the queue by itself: work, collect, repeat
@@ -293,6 +295,8 @@ func main() {
 	case "decompose":
 		mustArg(os.Args, 2, "orion decompose <KEY> [path/to/tasks.md]")
 		runDecompose(os.Args[2:])
+	case "web":
+		runWeb(os.Args[2:])
 	case "routes":
 		runRoutes()
 	case "repos":
