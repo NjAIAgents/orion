@@ -204,3 +204,120 @@ func TestScanFailsOnACorruptRegistry(t *testing.T) {
 		t.Error("Scan accepted a corrupt registry; every bound workspace would read as unregistered")
 	}
 }
+
+// Registry entries sort by the uppercased key, not by bind order or raw
+// input casing. A board reading these top to bottom needs A-Z, not "whatever
+// order orion init happened to run in".
+func TestScanRegistryEntriesSortedByUppercaseKey(t *testing.T) {
+	home := t.TempDir()
+	bind(t, home, "zz", "zz-ws")
+	bind(t, home, "aa", "aa-ws")
+	bind(t, home, "mm", "mm-ws")
+
+	got, err := Scan(home)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d session(s) %v, want 3", len(got), ids(got))
+	}
+	wantKeys := []string{"AA", "MM", "ZZ"}
+	for i, w := range wantKeys {
+		if got[i].Key != w {
+			t.Errorf("session %d has key %q, want %q (sorted A-Z regardless of bind order/case)", i, got[i].Key, w)
+		}
+	}
+}
+
+// Unregistered workspaces sort by their id, independent of the registered
+// entries interleaved ahead of them and independent of directory-listing
+// order.
+func TestScanUnregisteredWorkspacesSortedByID(t *testing.T) {
+	home := t.TempDir()
+	bind(t, home, "OR", "orion-83d87b")
+	for _, id := range []string{"delta-4", "bravo-2", "echo-5", "alpha-1", "charlie-3"} {
+		mkws(t, home, id)
+	}
+
+	got, err := Scan(home)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 6 {
+		t.Fatalf("got %d session(s) %v, want 6", len(got), ids(got))
+	}
+	// Registered entry first, then orphans in id order.
+	wantOrphans := []string{"alpha-1", "bravo-2", "charlie-3", "delta-4", "echo-5"}
+	for i, w := range wantOrphans {
+		if got[i+1].ID != w {
+			t.Fatalf("unregistered order is %v, want %v after the registered entry", ids(got)[1:], wantOrphans)
+		}
+	}
+}
+
+// Session.ID is exactly the workspace directory's own name -- not the
+// registry key, not a derived slug -- because `orion open`/`status`/`rm`
+// take this value straight to filepath.Join(projects, id).
+func TestScanSessionIDIsTheWorkspaceDirName(t *testing.T) {
+	home := t.TempDir()
+	bind(t, home, "OR", "orion-83d87b")
+	mkws(t, home, "freestanding-ab12")
+
+	got, err := Scan(home)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	for _, s := range got {
+		dirName := filepath.Base(s.Dir)
+		if s.ID != dirName {
+			t.Errorf("session %+v: ID != workspace dir name %q", s, dirName)
+		}
+	}
+	if got[0].ID != "orion-83d87b" {
+		t.Errorf("registered session ID is %q, want the workspace name orion-83d87b", got[0].ID)
+	}
+	if got[1].ID != "freestanding-ab12" {
+		t.Errorf("orphan session ID is %q, want the directory name freestanding-ab12", got[1].ID)
+	}
+}
+
+// Session.Dir is the absolute path to <home>/projects/<ID>, for both a
+// registered entry and an orphan -- callers join .orion/events.jsonl onto
+// this directly, so a relative or mis-joined path breaks every one of them.
+func TestScanSessionDirIsAbsolutePathUnderProjects(t *testing.T) {
+	home := t.TempDir()
+	bind(t, home, "OR", "orion-83d87b")
+	mkws(t, home, "orphan-9z")
+
+	got, err := Scan(home)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	byID := map[string]Session{}
+	for _, s := range got {
+		byID[s.ID] = s
+	}
+
+	registered, ok := byID["orion-83d87b"]
+	if !ok {
+		t.Fatalf("registered workspace missing from %v", ids(got))
+	}
+	if want := filepath.Join(home, "projects", "orion-83d87b"); registered.Dir != want {
+		t.Errorf("registered Dir is %q, want %q", registered.Dir, want)
+	}
+	if !filepath.IsAbs(registered.Dir) {
+		t.Errorf("registered Dir %q is not absolute", registered.Dir)
+	}
+
+	orphan, ok := byID["orphan-9z"]
+	if !ok {
+		t.Fatalf("orphan workspace missing from %v", ids(got))
+	}
+	if want := filepath.Join(home, "projects", "orphan-9z"); orphan.Dir != want {
+		t.Errorf("orphan Dir is %q, want %q", orphan.Dir, want)
+	}
+	if !filepath.IsAbs(orphan.Dir) {
+		t.Errorf("orphan Dir %q is not absolute", orphan.Dir)
+	}
+}
