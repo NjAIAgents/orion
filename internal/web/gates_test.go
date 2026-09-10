@@ -117,3 +117,36 @@ func TestTheTwoAccountLevelGatesAreRecordedAsGaps(t *testing.T) {
 		}
 	}
 }
+
+// An unmapped gate with no reason is indistinguishable from an oversight --
+// this is the half of TestEveryGateIsEitherMappedOrExplained that pins the
+// empty-State side on its own, so a regression here reads as exactly what
+// broke rather than as one of three possible clauses.
+func TestEveryUnmappedGateExplainsWhy(t *testing.T) {
+	for _, g := range Gates {
+		if g.State == "" && strings.TrimSpace(g.Why) == "" {
+			t.Errorf("%s: State is empty but Why does not say why", g.Kind)
+		}
+	}
+}
+
+// A gate mapped to a board state carries no gap reason -- Why is reserved for
+// the gates the board cannot draw, and a mapped gate with one would read as a
+// mapping the author was not sure of.
+func TestEveryMappedGateHasNoWhy(t *testing.T) {
+	for _, g := range Gates {
+		if g.State != "" && strings.TrimSpace(g.Why) != "" {
+			t.Errorf("%s: mapped to %q but still carries a Why of %q", g.Kind, g.State, g.Why)
+		}
+	}
+}
+
+// Every gate, mapped or not, has to tell the operator what clears it -- that
+// is the answer to "what do I type" whether or not the board is up.
+func TestEveryGateHasNonEmptyClears(t *testing.T) {
+	for _, g := range Gates {
+		if strings.TrimSpace(g.Clears) == "" {
+			t.Errorf("%s: Clears is empty -- does not say what a person does about it", g.Kind)
+		}
+	}
+}
