@@ -55,6 +55,86 @@ now refuses to do**.
   declined; installation is per project; a spec is a living document — are ADRs 0021,
   0022 and 0023. The chain steps that use them land under OR-355.
 
+## v0.9.1 — 2026-09-09
+
+### Added
+
+- **`orion new` accepts a tracker key.** `orion new PRIOR-3` reads an idea already
+  written down -- a Jira Product Discovery idea, or any issue -- and skips the
+  interview, because the questions it would ask have already been answered. The
+  idea's own words go into the project description verbatim rather than
+  paraphrased, and the new project key is commented back onto the idea so a
+  reader of one can find the other. Since nothing needs typing, this path works
+  from a script, where `orion new` previously required a terminal.
+
+  An idea that is still the unfilled template is refused rather than planned
+  from: a description reading "Define customer problems, why they're urgent"
+  would otherwise be designed against as if it were the problem statement. Orion
+  says which idea is empty and interviews instead.
+
+### Changed
+
+- **`orion new` with no idea now asks for one** instead of printing a usage error.
+  The command's job is to interview, so a missing idea is its first question
+  rather than a mistake. It is asked after the tracker permission check, so a run
+  that cannot create a project fails before anything is typed. With no terminal
+  attached the command still refuses rather than waiting on a prompt nobody can
+  answer.
+
+- **A run says what the attribution hook recorded, while you are still watching it.**
+  whodunit stamps each commit with an `AI-Attribution` trailer and says nothing on the
+  way past -- it is a git hook, and its output goes nowhere a supervised run can see. So
+  the one record of whether an agent's work was attributed sat unread in a commit message
+  until someone ran a report weeks later. Orion now reads that trailer off the commits a
+  run produced and reports it in the run output, in `orion log` and in `orion watch`. A
+  correctly attributed run says nothing: the reader is watching a run, not auditing a
+  ledger.
+
+  The case worth surfacing is a commit stamped `unassisted` -- a positive claim that no
+  AI was involved, made over work an agent wrote end to end, and indistinguishable in the
+  data from the truth. It happens when whodunit cannot find the run's transcript at all:
+  it sees a repository with no agent sessions and concludes, correctly from what it can
+  see, that a human wrote the code. That is now reported as wrong rather than passing as
+  a finding.
+
+### Changed
+
+- **A pull request runs macOS and Windows; Linux runs where work lands.** The split is
+  by what breaks rather than by what is cheap. Windows produced a week of real platform
+  defects and is worth waiting for on every attempt. macOS is the platform Orion is
+  developed on, so a break there is felt immediately by everyone working on the repo --
+  worth its 1.6-2.6x cost over Linux, measured across 200 runs. Linux is the leg that
+  can wait: a POSIX assumption holding on macOS almost always holds there too. Pushes to
+  `develop` and `main` still run all three, so nothing reaches a release tag without a
+  verdict from every platform.
+
+### Fixed
+
+- **A release no longer refuses a CI run that is still going.** The gate read only
+  the run's conclusion, which is empty both for "no run exists" and for "a run is in
+  flight" -- two states needing opposite answers. A promotion merge triggered CI and
+  the gate refused it seventeen seconds later, on a build that was running and went
+  on to pass. It now reads the run's status too and waits, bounded, refusing only if
+  the run never finishes or never started.
+
+### Added
+
+- **`orion` can correct a tracker project's description.** It carries the answers given
+  to `orion new` and is what `orion plan` designs from, so a typo in it mattered more
+  than it looked -- and Jira will not let you delete a project to start over.
+
+- **`orion release add` refuses to move a ticket off a milestone that already shipped.**
+  Adding *to* a released milestone was already blocked; moving *off* one was not, so a
+  ticket could silently leave the release that records it -- leaving the changelog and
+  the release notes naming a version Jira no longer did. Overridable with `--force`.
+
+- **A gate test no longer depends on which branch you are standing on.** A
+  refspec-less `git push` resolves against the checked-out branch, and
+  `TestGatePushProtection` ran without a fixture repository -- so it inherited the
+  developer's own working tree, passed on a feature branch, and failed on CI, which
+  checks out `develop`. It now stands in a throwaway repository on a branch no gate
+  protects.
+
 ## v0.9.0
 
 ### Added
