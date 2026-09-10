@@ -1,5 +1,7 @@
 package web
 
+import "github.com/orion-sdlc/orion/internal/tracker"
+
 // Gates is the survey OR-274 asked for: every place Orion stops and waits for a
 // PERSON, and which of the gate board's states each one is drawn as.
 //
@@ -103,13 +105,14 @@ var Gates = []Gate{
 		Clears: "approve on the request message in Slack",
 	},
 	{
-		// The agent stopped rather than guess. The ticket wears orion-failed
-		// and leaves the queue, so nothing retries it until a person answers
-		// and requeues -- the mockup's blocked row, down to the label.
+		// The agent stopped rather than guess. The ticket wears the failed
+		// label and leaves the queue, so nothing retries it until a person
+		// answers and requeues -- the mockup's blocked row, down to the label.
 		Kind:   "agent-blocked",
 		State:  GateBlocked,
 		Source: "internal/work/slackmsg.go",
-		Clears: "answer, then remove orion-failed and add ORION",
+		Clears: "answer, then remove " + tracker.LabelFailed +
+			" and add " + tracker.QueueLabelDefault,
 	},
 	{
 		// The breaker trip. plans/BLOCKED.md is the account of it, written into
