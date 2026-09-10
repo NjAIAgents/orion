@@ -75,6 +75,20 @@ func TestScanOverFixtureLogs(t *testing.T) {
 		{At: base.Add(4 * time.Minute), Kind: events.KindRunEnd, Key: "OR-59", Run: "r1"},
 	}
 
+	// One run whose log picked up a corrupted line partway through -- not
+	// the truncated-tail case below, where the cut is at EOF, but a
+	// complete line of garbage a hand-edit or a partial overwrite can leave
+	// mid-file. events.Read must skip it like any other malformed line, and
+	// Scan must still assemble a card from what did parse.
+	malformedHead := []events.Event{
+		{At: base, Kind: events.KindRunStart, Key: "OR-59", Run: "r1"},
+		{At: base.Add(time.Minute), Kind: events.KindTool, Key: "OR-59", Run: "r1", Msg: "Read internal/web/cards.go"},
+	}
+	malformedTail := []events.Event{
+		{At: base.Add(2 * time.Minute), Kind: events.KindTool, Key: "OR-59", Run: "r1", Msg: "Edit internal/web/cards.go"},
+		{At: base.Add(3 * time.Minute), Kind: events.KindRunEnd, Key: "OR-59", Run: "r1"},
+	}
+
 	cases := []struct {
 		name string
 		// write lays the workspace's log out at path. Nil writes nothing --
@@ -156,6 +170,25 @@ func TestScanOverFixtureLogs(t *testing.T) {
 			activity: "Edit internal/web/timing.go",
 			started:  3 * time.Minute,
 			elapsed:  time.Minute,
+		}},
+	}, {
+		// The corrupted line sits between two otherwise-valid events, with a
+		// newline of its own -- a complete line, unlike the truncated tail
+		// above. Only it should vanish; both halves of the run must survive
+		// and fold into one card.
+		name: "malformed JSON mid-file",
+		write: func(t *testing.T, path string) {
+			writeRunLog(t, path, malformedHead)
+			appendRaw(t, path, "not json at all\n")
+			writeRunLog(t, path, malformedTail)
+		},
+		want: []wantCard{{
+			key:      "OR-59",
+			steps:    2,
+			done:     true,
+			activity: "Edit internal/web/cards.go",
+			started:  0,
+			elapsed:  3 * time.Minute,
 		}},
 	}}
 
