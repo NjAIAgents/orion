@@ -18,6 +18,7 @@ package web
 // conflicts with it.
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -89,4 +90,20 @@ func (s *Server) Addr() string { return s.ln.Addr().String() }
 func (s *Server) Serve() error { return s.srv.Serve(s.ln) }
 
 // Close stops serving and releases the port.
-func (s *Server) Close() error { return s.srv.Close() }
+//
+// It closes the listener itself as well as the server, because http.Server
+// only closes listeners Serve handed it -- and Listen deliberately binds
+// before Serve runs, so a caller can print the address and then decide not to
+// serve after all. Closed that way, srv.Close has nothing to close and the
+// port would stay bound for the life of the process.
+//
+// A listener already closed by Serve's own shutdown reports net.ErrClosed,
+// which is the expected state on that path and not something a caller can act
+// on.
+func (s *Server) Close() error {
+	err := s.srv.Close()
+	if cerr := s.ln.Close(); cerr != nil && !errors.Is(cerr, net.ErrClosed) {
+		err = errors.Join(err, cerr)
+	}
+	return err
+}
