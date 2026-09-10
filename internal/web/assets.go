@@ -33,6 +33,8 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"path"
+	"strings"
 )
 
 //go:embed static
@@ -40,6 +42,22 @@ var assets embed.FS
 
 // Assets is the front end, ready to mount: the server skeleton gives it "/",
 // and a browser asking for the root gets static/index.html.
+//
+// http.FileServer does the serving -- content type, ETag, Range, HEAD and
+// conditional requests are all its work, and none of that is worth
+// reimplementing. It is wrapped rather than returned directly because two of
+// its defaults are wrong for a read-only tree compiled into a binary:
+//
+//   - It answers every method. A POST or DELETE to "/" is served exactly like
+//     a GET, which tells a client that a write reached something. Nothing here
+//     is writable, so anything but GET or HEAD is 405 with an Allow header.
+//   - It canonicalises any path ending in "/index.html" to its directory with
+//     a 301 BEFORE it checks whether the file exists. So a request for
+//     /static/index.html -- the embedded path, which fs.Sub has already
+//     stripped out of the URL space -- redirected instead of 404ing, and the
+//     redirect implied a static/ directory that is not there. Missing is
+//     missing: the existence check happens first here, and only a path that
+//     resolves is handed on.
 func Assets() http.Handler {
 	// Strip the static/ prefix, so a request for "/" resolves to index.html
 	// rather than needing "/static/index.html". fs.Sub fails only on a
@@ -49,5 +67,36 @@ func Assets() http.Handler {
 	if err != nil {
 		panic("web: embedded static/ is unreachable: " + err.Error())
 	}
-	return http.FileServer(http.FS(sub))
+	files := http.FileServer(http.FS(sub))
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if _, err := fs.Stat(sub, name(r.URL.Path)); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		files.ServeHTTP(w, r)
+	})
+}
+
+// name turns a URL path into the fs.FS name it addresses: rooted, cleaned,
+// and with the leading slash removed, because an fs.FS name is relative and
+// "/index.html" is not a valid one. The empty path and "/" both become ".",
+// the embedded root, which is how a bare "/" reaches index.html.
+//
+// path.Clean is what disposes of traversal: "/../assets.go" cleans to
+// "/assets.go", which names nothing in the embedded tree.
+func name(urlPath string) string {
+	if !strings.HasPrefix(urlPath, "/") {
+		urlPath = "/" + urlPath
+	}
+	cleaned := strings.TrimPrefix(path.Clean(urlPath), "/")
+	if cleaned == "" {
+		return "."
+	}
+	return cleaned
 }
