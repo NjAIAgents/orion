@@ -264,8 +264,11 @@ func supersedesOf(links []issueLink) []string {
 
 // GetIssue fetches one issue.
 func (j *Jira) GetIssue(key string) (*Issue, error) {
+	// priority is fetched because the queue orders by it before Rank, so
+	// `orion prioritise` cannot tell whether ranking will deliver the order
+	// it was asked for without knowing it (OR-280).
 	code, body, err := j.do("GET", "/rest/api/3/issue/"+url.PathEscape(key)+
-		"?fields=summary,description,status,labels,issuetype,components,fixVersions", nil)
+		"?fields=summary,description,status,labels,issuetype,components,fixVersions,priority", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -296,6 +299,9 @@ func (j *Jira) GetIssue(key string) (*Issue, error) {
 			FixVersions []struct {
 				Name string `json:"name"`
 			} `json:"fixVersions"`
+			Priority struct {
+				Name string `json:"name"`
+			} `json:"priority"`
 		} `json:"fields"`
 	}
 	if err := json.Unmarshal(body, &i); err != nil {
@@ -311,6 +317,7 @@ func (j *Jira) GetIssue(key string) (*Issue, error) {
 		IssueType:      i.Fields.IssueType.Name,
 		Components:     namesOf(i.Fields.Components),
 		FixVersions:    namesOf(i.Fields.FixVersions),
+		Priority:       i.Fields.Priority.Name,
 		URL:            j.BaseURL + "/browse/" + i.Key,
 	}, nil
 }
