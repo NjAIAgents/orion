@@ -831,7 +831,14 @@ func resumeTesting(st batchState, members []Member, cfg config.Config, opts Opti
 				"no check result for %s after %s", st.Ref, batchCheckDeadline)}}
 		}
 		waited := time.Since(st.TestingSince).Round(time.Minute)
-		ui.Ok(w, "ci", "%s: %d branch(es), %s elapsed", st.Ref, len(members), waited)
+		// The KEYS, not just how many. This line repeats once a minute for
+		// as long as CI runs, and "3 branch(es)" for six minutes tells a
+		// reader nothing they can act on: not what is at risk, and -- when
+		// the batch goes red -- not which tickets to go and look at. The
+		// count without the names is the one thing already visible from the
+		// queue, and the names are the thing that is not.
+		ui.Ok(w, "ci", "%s: %s, %s elapsed",
+			st.Ref, strings.Join(keysOf(members), " "), waited)
 		return pendingResults(members)
 
 	case err != nil:
