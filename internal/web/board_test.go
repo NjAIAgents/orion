@@ -65,6 +65,37 @@ func TestAnUnresolvedQueueLabelFallsBackToTheDefault(t *testing.T) {
 	}
 }
 
+// Done is not a column. The state machine records completion by the ABSENCE
+// of every managed label rather than by adding a fifth one, so a finished
+// ticket -- once Orion has cleared its own labels off it -- carries none of
+// the labels any column matches, and the board has nowhere to draw it. A
+// sixth column named "done" would be a state the tracker never declares.
+func TestDoneIsNotABoardColumn(t *testing.T) {
+	for _, c := range Columns(tracker.QueueLabelDefault) {
+		if strings.EqualFold(c.Name, "done") || strings.EqualFold(c.Label, "done") {
+			t.Errorf("the board has a done column %+v; done is the absence of every label, not one of them", c)
+		}
+	}
+
+	done := tracker.Issue{
+		Key:            "OR-1",
+		StatusCategory: tracker.StatusCategoryDone,
+		// No labels: exactly what a ticket looks like once Orion's own
+		// closing path (work.release / alreadyResolved) has cleared its
+		// managed labels off a finished ticket.
+	}
+	if !done.Resolved() {
+		t.Fatal("test setup: the fixture issue must read as resolved")
+	}
+	for _, s := range tracker.QueueStates(tracker.QueueLabelDefault) {
+		for _, l := range done.Labels {
+			if strings.EqualFold(l, s.Label) {
+				t.Errorf("a done ticket carries %q, the label for column %q", l, s.Name)
+			}
+		}
+	}
+}
+
 // Nothing in the web package names a label of the state machine.
 //
 // The same enforcement TestNoRoleModelIsDeclaredInTheWebPackage makes for the
