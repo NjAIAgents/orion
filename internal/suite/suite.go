@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -104,6 +105,44 @@ func ScriptCommand(path string) []string {
 		return []string{"bash", path}
 	}
 	return []string{path}
+}
+
+// DetectScoped is Detect, narrowed to the packages a change can actually
+// break (OR-425).
+//
+// WHY THIS EXISTS. Seven concurrent agents each ran the whole 54-package
+// suite. -p bounds packages WITHIN a run; nothing bounded the runs against
+// each other, so they starved one another and the packages that lost were
+// the ones with a clock in them. Three of six tickets went red on a timeout
+// and then passed on retry reporting "0 fix round(s)" -- nothing had been
+// repaired, because nothing was broken.
+//
+// Falls back to the unscoped command whenever the scope is not trustworthy:
+// a full-suite verdict from ScopeFor, an empty package list, or a repository
+// shape this does not recognise. Running too much is slow; running too
+// little is wrong, and the fallback direction has to be the slow one.
+func DetectScoped(dir, base string, procs int) ([]string, Scope, error) {
+	sc := ScopeFor(dir, base)
+	argv, err := Detect(dir, procs)
+	if err != nil || sc.Full || len(sc.Packages) == 0 {
+		return argv, sc, err
+	}
+	if script := filepath.Join(dir, "scripts", "test.sh"); statOK(script) {
+		// The script's own flag, so the repository keeps deciding what a
+		// scoped run means -- including that its coverage floor does not
+		// apply to one.
+		return append(argv, "--scope="+strings.Join(sc.Packages, " ")), sc, nil
+	}
+	// The bare go.mod shape: replace ./... with the packages themselves.
+	out := make([]string, 0, len(argv)+len(sc.Packages))
+	for _, a := range argv {
+		if a == "./..." {
+			out = append(out, sc.Packages...)
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, sc, nil
 }
 
 // Detect returns the command that runs this repository's suite, or

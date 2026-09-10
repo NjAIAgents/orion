@@ -177,7 +177,14 @@ func runAuthoredSuite(job qaJob, cfg config.Config, log *events.Log, w io.Writer
 	}
 	dir := job.WS.RepoDir()
 
-	argv, err := suite.Detect(dir, cfg.QA.Procs())
+	// SCOPED TO WHAT THIS BRANCH TOUCHED (OR-425).
+	//
+	// BaseSHA is the commit this branch was cut from, so the diff against it
+	// is exactly this ticket's own change. DetectScoped falls back to the
+	// full suite whenever the scope is not trustworthy -- no base, an
+	// unreadable repository, a build-affecting file -- because running too
+	// much is slow and running too little is wrong.
+	argv, sc, err := suite.DetectScoped(dir, job.BaseSHA, cfg.QA.Procs())
 	if err != nil {
 		ui.Say(w, key, events.ActorQA, ui.VerbOK,
 			"no suite Orion can run here, so QA runs the tests itself")
@@ -187,7 +194,16 @@ func runAuthoredSuite(job qaJob, cfg config.Config, log *events.Log, w io.Writer
 	}
 
 	ui.LiveActivityNote(key, events.ActorQA, "running the suite")
-	ui.Say(w, key, events.ActorQA, ui.VerbWorking, "running %s", argv[0])
+	// The scope is SAID, always. A narrowed check that does not announce
+	// itself is unauditable, and "the suite passed" means something different
+	// for four packages than for fifty-four.
+	if sc.Full {
+		ui.Say(w, key, events.ActorQA, ui.VerbWorking,
+			"running %s over everything: %s", argv[0], sc.Why)
+	} else {
+		ui.Say(w, key, events.ActorQA, ui.VerbWorking,
+			"running %s over %d package(s): %s", argv[0], len(sc.Packages), sc.Why)
+	}
 
 	res := suite.Run(dir, argv, suiteTimeout)
 

@@ -189,3 +189,85 @@ func contains(hay []string, needle string) bool {
 	}
 	return false
 }
+
+// DetectScoped hands the script the packages rather than letting it run
+// everything (OR-425). The script's own --scope flag, so the repository keeps
+// deciding what a scoped run means.
+func TestDetectScopedPassesTheScopeToTheScript(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "scripts/test.sh", "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(filepath.Join(dir, "scripts", "test.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "internal/thing/thing.go", "package thing\n")
+	commit(t, dir, "base")
+	base := head(t, dir)
+	write(t, dir, "internal/thing/thing.go", "package thing\n\nfunc F() {}\n")
+
+	argv, sc, err := DetectScoped(dir, base, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Full {
+		t.Fatalf("expected a scoped run: %s", sc.Why)
+	}
+	last := argv[len(argv)-1]
+	if !strings.HasPrefix(last, "--scope=") {
+		t.Fatalf("the script was not told the scope; argv = %v", argv)
+	}
+	if !strings.Contains(last, "internal/actors") {
+		t.Errorf("the always-run invariants must reach the script: %s", last)
+	}
+}
+
+// A full-suite verdict must NOT be narrowed. Running too much is slow;
+// running too little is wrong.
+func TestDetectScopedFallsBackToEverythingOnAFullVerdict(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "scripts/test.sh", "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(filepath.Join(dir, "scripts", "test.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "internal/thing/thing.go", "package thing\n")
+	commit(t, dir, "base")
+	base := head(t, dir)
+	// A build-affecting change: the scope must widen.
+	write(t, dir, "scripts/test.sh", "#!/bin/sh\necho changed\nexit 0\n")
+
+	argv, sc, err := DetectScoped(dir, base, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sc.Full {
+		t.Fatal("a build-affecting change must widen to the full suite")
+	}
+	for _, a := range argv {
+		if strings.HasPrefix(a, "--scope=") {
+			t.Errorf("a full run must not be narrowed; argv = %v", argv)
+		}
+	}
+}
+
+// No base to diff against is not a licence to guess.
+func TestDetectScopedWithNoBaseRunsEverything(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "scripts/test.sh", "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(filepath.Join(dir, "scripts", "test.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "internal/thing/thing.go", "package thing\n")
+	commit(t, dir, "base")
+
+	argv, sc, err := DetectScoped(dir, "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sc.Full {
+		t.Errorf("with no base, the honest answer is everything: %s", sc.Why)
+	}
+	for _, a := range argv {
+		if strings.HasPrefix(a, "--scope=") {
+			t.Errorf("argv must not carry a scope; got %v", argv)
+		}
+	}
+}
