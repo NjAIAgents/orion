@@ -29,6 +29,88 @@ func fixtureLog(t *testing.T, lines string) []events.Event {
 	return evs
 }
 
+// An empty log has no runs in it, so it must produce no cards -- not a nil
+// panic, not a placeholder.
+func TestScanOfEmptyLogReturnsEmptyCardList(t *testing.T) {
+	got := Scan(nil)
+	if len(got) != 0 {
+		t.Fatalf("got %d cards, want 0: %+v", len(got), got)
+	}
+}
+
+// One event for one (key, run) is still a run: it gets a card, and that
+// card's step count is the one event that made it.
+func TestSingleEventProducesOneCardWithStepCountOne(t *testing.T) {
+	got := Scan([]events.Event{
+		{At: at(1), Kind: events.KindClaimed, Key: "OR-57", Run: "r1"},
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("got %d cards, want 1: %+v", len(got), got)
+	}
+	if got[0].Key != "OR-57" || got[0].Run != "r1" || got[0].Steps != 1 {
+		t.Errorf("card = %+v, want key OR-57, run r1, 1 step", got[0])
+	}
+}
+
+// Every event for the same (key, run) is another line in that run's log, so
+// the step count tracks the event count exactly, however many there are.
+func TestMultipleEventsForSameKeyAndRunProduceOneCardWithMatchingStepCount(t *testing.T) {
+	got := Scan([]events.Event{
+		{At: at(1), Kind: events.KindClaimed, Key: "OR-57", Run: "r1"},
+		{At: at(2), Kind: events.KindRunStart, Key: "OR-57", Run: "r1"},
+		{At: at(3), Kind: events.KindSay, Key: "OR-57", Run: "r1"},
+		{At: at(4), Kind: events.KindRunEnd, Key: "OR-57", Run: "r1"},
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("got %d cards, want 1: %+v", len(got), got)
+	}
+	if got[0].Steps != 4 {
+		t.Errorf("steps = %d, want 4 (one per event)", got[0].Steps)
+	}
+}
+
+// Distinct (key, run) pairs are distinct runs, so each gets exactly one
+// card of its own -- no merging across tickets, no merging across runs.
+func TestMultipleDistinctKeyRunPairsEachProduceExactlyOneCard(t *testing.T) {
+	got := Scan([]events.Event{
+		{At: at(1), Kind: events.KindClaimed, Key: "OR-1", Run: "r1"},
+		{At: at(2), Kind: events.KindClaimed, Key: "OR-2", Run: "r1"},
+		{At: at(3), Kind: events.KindClaimed, Key: "OR-1", Run: "r2"},
+	})
+
+	if len(got) != 3 {
+		t.Fatalf("got %d cards, want 3 (one per distinct key/run pair): %+v", len(got), got)
+	}
+	seen := map[[2]string]bool{}
+	for _, c := range got {
+		seen[[2]string{c.Key, c.Run}] = true
+	}
+	for _, want := range [][2]string{{"OR-1", "r1"}, {"OR-2", "r1"}, {"OR-1", "r2"}} {
+		if !seen[want] {
+			t.Errorf("missing card for key=%s run=%s in %+v", want[0], want[1], got)
+		}
+	}
+}
+
+// An event with no Key names no ticket, so it is attributable to no card --
+// it must not create a stray card of its own, and it must not inflate the
+// step count of a real one just because it shares a run id.
+func TestEventMissingKeyIsNotIncludedInAnyCardOrStepCount(t *testing.T) {
+	got := Scan([]events.Event{
+		{At: at(1), Kind: events.KindClaimed, Key: "OR-57", Run: "r1"},
+		{At: at(2), Kind: events.KindNote, Run: "r1"}, // no Key
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("got %d cards, want 1: %+v", len(got), got)
+	}
+	if got[0].Steps != 1 {
+		t.Errorf("steps = %d, want 1: the keyless event must not count", got[0].Steps)
+	}
+}
+
 // The done-when, read off a file: one card per (key, run), each carrying its
 // step count, its latest activity and its model.
 func TestScanReturnsOneCardPerKeyAndRun(t *testing.T) {
@@ -158,5 +240,96 @@ func TestCardsWithTheSameLatestActivityHaveAStableOrder(t *testing.T) {
 		if c != first[i] {
 			t.Fatalf("second scan differs at %d: %+v vs %+v", i, c, first[i])
 		}
+	}
+}
+
+// The Model field comes off the most recent event that named one -- a run
+// that only ever names one model reports that model.
+func TestModelComesFromTheMostRecentEventThatNamesOne(t *testing.T) {
+	got := Scan([]events.Event{
+		{At: at(1), Kind: events.KindRunStart, Key: "OR-1", Run: "r1", Model: "opus"},
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("got %d cards, want 1: %+v", len(got), got)
+	}
+	if got[0].Model != "opus" {
+		t.Errorf("model = %q, want opus", got[0].Model)
+	}
+}
+
+// A CI verdict or a human escalation names no model. It is still a step and
+// still activity, but it must not blank a model the run already reported --
+// that would read as a run with no agent when the truth is a line that had
+// nothing to say about one.
+func TestEventWithoutAModelDoesNotBlankThePreviouslyCapturedModel(t *testing.T) {
+	got := Scan([]events.Event{
+		{At: at(1), Kind: events.KindRunStart, Key: "OR-1", Run: "r1", Model: "opus"},
+		{At: at(2), Kind: events.KindCI, Key: "OR-1", Run: "r1", Actor: events.ActorCI},
+		{At: at(3), Kind: events.KindEscalate, Key: "OR-1", Run: "r1", Actor: events.ActorHuman},
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("got %d cards, want 1: %+v", len(got), got)
+	}
+	if got[0].Model != "opus" {
+		t.Errorf("model = %q, want opus to survive the model-less events", got[0].Model)
+	}
+	if got[0].Steps != 3 {
+		t.Errorf("steps = %d, want 3: the model-less events still count as steps", got[0].Steps)
+	}
+}
+
+// If nothing in the group ever names a model -- a run that is all CI verdicts
+// and escalations -- there is no model to report, and the field stays empty
+// rather than being guessed at.
+func TestModelIsEmptyWhenNoEventInTheGroupNamesOne(t *testing.T) {
+	got := Scan([]events.Event{
+		{At: at(1), Kind: events.KindClaimed, Key: "OR-1", Run: "r1", Actor: events.ActorOrion},
+		{At: at(2), Kind: events.KindCI, Key: "OR-1", Run: "r1", Actor: events.ActorCI},
+		{At: at(3), Kind: events.KindEscalate, Key: "OR-1", Run: "r1", Actor: events.ActorHuman},
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("got %d cards, want 1: %+v", len(got), got)
+	}
+	if got[0].Model != "" {
+		t.Errorf("model = %q, want empty: no event in the group named one", got[0].Model)
+	}
+}
+
+// A ticket can be worked by several models over one run -- a fix round that
+// hands off from one agent to another. The card reports the latest one, not
+// the first or a concatenation of both.
+func TestMultipleDifferentModelsInOneGroupShowTheLatestOne(t *testing.T) {
+	got := Scan([]events.Event{
+		{At: at(1), Kind: events.KindRunStart, Key: "OR-1", Run: "r1", Model: "haiku"},
+		{At: at(2), Kind: events.KindRunStart, Key: "OR-1", Run: "r1", Model: "sonnet"},
+		{At: at(3), Kind: events.KindRunEnd, Key: "OR-1", Run: "r1", Model: "opus"},
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("got %d cards, want 1: %+v", len(got), got)
+	}
+	if got[0].Model != "opus" {
+		t.Errorf("model = %q, want opus (the latest of three)", got[0].Model)
+	}
+}
+
+// The Model field updates ONLY when a later event that names a model is
+// encountered. An event that names a model but is older than the one already
+// captured -- because the log carries it out of chronological order -- must
+// not overwrite the newer, correct answer.
+func TestModelUpdatesOnlyWhenALaterEventNamesOne(t *testing.T) {
+	got := Scan([]events.Event{
+		{At: at(5), Kind: events.KindRunStart, Key: "OR-1", Run: "r1", Model: "opus"},
+		{At: at(2), Kind: events.KindRunStart, Key: "OR-1", Run: "r1", Model: "haiku"}, // older, but seen second
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("got %d cards, want 1: %+v", len(got), got)
+	}
+	if got[0].Model != "opus" {
+		t.Errorf("model = %q, want opus: an out-of-order older event must not overwrite it", got[0].Model)
 	}
 }
