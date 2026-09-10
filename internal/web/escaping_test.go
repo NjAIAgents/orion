@@ -107,6 +107,31 @@ func TestATicketSummaryContainingMarkupRendersAsLiteralText(t *testing.T) {
 	}
 }
 
+// The render test above proves the rule for Title, Gate and Activity, but
+// leaves Key untested with the payload -- Scan fills it from the tracker key
+// ("OR-276"), so a card built from a live event never carries the payload
+// there. Key is exactly as untrusted as the rest (model.go says so directly),
+// and it sits in its own element, "<h2>{{.Key}}</h2>", so a template safe for
+// Title says nothing about whether Key is escaped too.
+func TestATicketKeyContainingMarkupRendersAsLiteralText(t *testing.T) {
+	card := Card{Key: escapePayload}
+
+	var buf bytes.Buffer
+	if err := cardTemplate.Execute(&buf, card); err != nil {
+		t.Fatalf("render card: %v", err)
+	}
+	out := buf.String()
+
+	for _, raw := range []string{"<img", `onerror="alert(1)"`, "<script"} {
+		if strings.Contains(out, raw) {
+			t.Errorf("rendered card contains %q, so the Key payload reached the browser as markup:\n%s", raw, out)
+		}
+	}
+	if !strings.Contains(html.UnescapeString(out), escapePayload) {
+		t.Errorf("Key payload does not appear as literal text; rendered card:\n%s", out)
+	}
+}
+
 // The escape hatch, closed. The render test proves html/template escapes; it
 // cannot prove the board still asks it to, because a value converted to
 // template.HTML before it is rendered is emitted verbatim by exactly the same
