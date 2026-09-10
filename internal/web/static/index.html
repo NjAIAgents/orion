@@ -1,0 +1,43 @@
+<!doctype html>
+<!--
+  The committed placeholder behind //go:embed static (OR-64).
+
+  It exists so the binary builds and serves something on a machine with no
+  front-end toolchain. OR-51's build writes the run view into this directory
+  and replaces it; until then, this is what "/" returns. Do not delete it as
+  cleanup -- an empty static/ is a build error, not an empty page.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>orion web</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #12141a;
+        color: #e6e6e6;
+        font: 16px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      main { max-width: 34rem; padding: 2rem; }
+      h1 { font-size: 1.15rem; margin: 0 0 1rem; font-weight: 600; }
+      p { margin: 0 0 1rem; color: #9aa0aa; }
+      code { color: #e6e6e6; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>orion web &mdash; not built yet</h1>
+      <p>
+        The server is up and serving the page compiled into this binary. The
+        run view has not been built into it yet (OR-51).
+      </p>
+      <p>
+        Mockups for this surface are in <code>docs/design/web/</code>.
+      </p>
+    </main>
+  </body>
+</html>
