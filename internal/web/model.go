@@ -12,6 +12,14 @@
 // below exists because that page shows it; a field the page does not show is
 // not here yet.
 //
+// EVERY STRING BELOW IS UNTRUSTED (OR-276). Title is whatever a tracker
+// accepted, Activity and Gate come off logs agents and other tooling write,
+// and the board is the control plane once the write endpoints exist. So they
+// are plain strings and stay plain strings: rendered through html/template's
+// contextual escaping, never converted to template.HTML/JS/URL, which say
+// "already escaped" about the one kind of value that never is. escaping_test.go
+// holds both halves of that.
+//
 // NOTHING HERE READS A CLOCK OR A FILE. A snapshot is derived from the event
 // log the same way internal/dashboard derives its view (OR-254): every
 // timestamp came out of an event, so the same log always produces the same
