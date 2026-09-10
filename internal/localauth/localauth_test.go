@@ -268,3 +268,79 @@ func TestHostIsMatchedExactlyAndNeverResolved(t *testing.T) {
 		}), "/api/runs")
 	}
 }
+
+// A restart is nothing more than a fresh call to New from the process's point
+// of view -- there is no on-disk or environment state for the token to read
+// back. So "does not persist across restart" is "a new instance never reuses
+// the old value", checked here against many prior tokens rather than one, and
+// against acceptance by the OLD instance's guard rather than just string
+// inequality.
+func TestTokenDoesNotPersistAcrossRestart(t *testing.T) {
+	before, err := New(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{before.Token(): true}
+
+	for i := 0; i < 10; i++ {
+		after, err := New(port) // simulates the process restarting
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seen[after.Token()] {
+			t.Fatalf("restart %d minted a token seen before; it persisted", i)
+		}
+		seen[after.Token()] = true
+
+		if after.token == before.token {
+			t.Fatalf("restart %d's guard accepted the pre-restart token", i)
+		}
+	}
+}
+
+// A token that is wrong for reasons other than a truncated prefix or a single
+// flipped byte -- full length, valid hex, just a different value entirely.
+// The prefix and single-byte-off cases already guard against a comparison
+// bug that only checks part of the string; this guards against one that
+// somehow always returns true for same-length input.
+func TestWriteEndpointRejectsAnIncorrectTokenOfTheRightShape(t *testing.T) {
+	s := newSurface(t, "/api/runs")
+
+	other, err := New(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.Token() == s.guard.Token() {
+		t.Fatal("two independently minted tokens collided; cannot exercise this case")
+	}
+
+	s.mustReject(t, s.do("POST", "/api/gates/approve", func(r *http.Request) {
+		r.Header.Set(HeaderName, other.Token())
+	}), "a different, well-formed token")
+}
+
+// subtle.ConstantTimeCompare -- not ==, not bytes.Equal -- is what stands
+// between an on-machine attacker with local-socket round-trip times and a
+// byte-at-a-time guess of the token. A wall-clock timing test would be
+// flaky; what is checked here instead is the behavioral signature a
+// short-circuiting comparison would leak and ConstantTimeCompare does not:
+// every length and every mismatch position is rejected identically (403,
+// handler never runs), so nothing downstream of the compare can observe
+// where or whether the values diverged.
+func TestTokenComparisonRejectsUniformlyRegardlessOfWhereOrHowMuchItDiffers(t *testing.T) {
+	s := newSurface(t, "/api/runs")
+	real := s.guard.Token()
+
+	cases := map[string]string{
+		"shorter than the real token":           real[:len(real)/2],
+		"longer than the real token":            real + "00",
+		"same length, differs at byte 0":        "0" + real[1:],
+		"same length, differs at the last byte": real[:len(real)-1] + map[bool]string{true: "0", false: "1"}[strings.HasSuffix(real, "1")],
+		"same length, every byte differs":       strings.Repeat("f", len(real)),
+	}
+	for name, wrong := range cases {
+		s.mustReject(t, s.do("POST", "/api/gates/approve", func(r *http.Request) {
+			r.Header.Set(HeaderName, wrong)
+		}), name)
+	}
+}
