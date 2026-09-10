@@ -13,7 +13,7 @@ import (
 // itself (OR-53, OR-54), distinct from the one in server_test.go so these
 // cases don't share state with it.
 func init() {
-	Handle("/or-60-routes-reach", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	HandleReadOnly("/or-60-routes-reach", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, "reached")
 	}))
 }

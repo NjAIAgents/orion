@@ -44,7 +44,11 @@ var assets embed.FS
 // (server.go): from an init in the file that owns the handler, so nothing
 // has to edit a shared list. Without this, `orion web` (OR-61) prints an
 // address whose root is a 404.
-func init() { Handle("/", Assets()) }
+//
+// HandleReadOnly rather than Handle because an embedded tree is exactly what
+// the read-only allowlist is for: the handler below already refuses every
+// write method, and this states the same fact where the gate can enforce it.
+func init() { HandleReadOnly("/", Assets()) }
 
 // Assets is the front end, ready to mount: the server skeleton gives it "/",
 // and a browser asking for the root gets static/index.html.

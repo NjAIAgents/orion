@@ -26,10 +26,12 @@ import (
 	"time"
 )
 
-// route is one registered page: the pattern it answers on and what answers.
+// route is one registered page: the pattern it answers on, what answers, and
+// whether it is on the read-only allowlist the gate in guard.go consults.
 type route struct {
-	pattern string
-	handler http.Handler
+	pattern  string
+	handler  http.Handler
+	readOnly bool
 }
 
 // routes is every route registered so far, in registration order. Package
@@ -43,11 +45,29 @@ var routes []route
 //
 //	func init() { Handle("/ticket/", http.HandlerFunc(ticketPage)) }
 //
+// A route registered this way is REFUSED by the gate (guard.go) until the
+// request can authenticate itself, and nothing here can yet -- so a page that
+// only reads wants HandleReadOnly instead. That is the default-deny half of
+// OR-269: forgetting to think about the gate costs a 403 on the first
+// request, not an endpoint nobody knew was open.
+//
 // Registering the same pattern twice panics when Listen builds the mux --
 // at startup, where it is one obvious failure, rather than on whichever
 // request happens to find the collision.
 func Handle(pattern string, handler http.Handler) {
 	routes = append(routes, route{pattern: pattern, handler: handler})
+}
+
+// HandleReadOnly registers handler for pattern the way Handle does, and puts
+// pattern on the read-only allowlist: GET and HEAD reach the handler, and
+// every other method is refused before it does.
+//
+// This is the deliberate exemption default-deny is built around. It says
+// "this route only reads" in the file that owns the route, where the claim
+// can be checked against the handler right below it, rather than in a list in
+// server.go that a reviewer would have to go and look up.
+func HandleReadOnly(pattern string, handler http.Handler) {
+	routes = append(routes, route{pattern: pattern, handler: handler, readOnly: true})
 }
 
 // Server is a bound loopback listener and the routes registered by the time
@@ -70,12 +90,18 @@ func Listen(port int) (*Server, error) {
 	}
 
 	mux := http.NewServeMux()
+	readOnly := make(map[string]bool, len(routes))
 	for _, r := range routes {
 		mux.Handle(r.pattern, r.handler)
+		if r.readOnly {
+			readOnly[r.pattern] = true
+		}
 	}
 
 	return &Server{ln: ln, srv: &http.Server{
-		Handler: mux,
+		// Every route is served through the gate, never beside it: there is
+		// no second place to register a handler that would miss it.
+		Handler: guard(mux, readOnly),
 		// A request whose headers never finish arriving would otherwise hold
 		// its connection open indefinitely.
 		ReadHeaderTimeout: 10 * time.Second,

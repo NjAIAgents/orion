@@ -167,8 +167,13 @@ func TestWebSubcommand404sUnknownPathsAndStaysReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("POST / = %d, want %d -- the served tree must stay read-only", resp.StatusCode, http.StatusMethodNotAllowed)
+	// 403 rather than the 405 Assets() returns on its own: since OR-269 the
+	// mux is wrapped in a default-deny gate, and this POST names no Origin at
+	// all, so it is refused as unproven before the embedded tree is ever
+	// consulted. Either way the write does not reach anything -- and refusing
+	// it a layer earlier is the point of the gate.
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("POST / = %d, want %d -- the served tree must stay read-only", resp.StatusCode, http.StatusForbidden)
 	}
 }
 

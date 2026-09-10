@@ -14,7 +14,7 @@ import (
 // standing in for a page file is the point -- if adding a route needed an
 // edit to a list somewhere else, this init could not work on its own.
 func init() {
-	Handle("/or-60-seam", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	HandleReadOnly("/or-60-seam", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, "served")
 	}))
 }

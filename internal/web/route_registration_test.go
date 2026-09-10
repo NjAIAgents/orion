@@ -14,13 +14,13 @@ import (
 // be listed in server.go. Distinct patterns from server_test.go/routes_test.go
 // so this file's cases don't share state with theirs.
 func init() {
-	Handle("/or-60-reg-a", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	HandleReadOnly("/or-60-reg-a", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, "a")
 	}))
 }
 
 func init() {
-	Handle("/or-60-reg-b", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	HandleReadOnly("/or-60-reg-b", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, "b")
 	}))
 }
