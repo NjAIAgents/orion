@@ -76,3 +76,60 @@ func TestRouteRegisteredElsewhereIsServed(t *testing.T) {
 		t.Errorf("body = %q, want %q -- the registered handler did not answer", got, "served")
 	}
 }
+
+// Serve must actually accept connections once running -- a listener that
+// exists but never serves is indistinguishable from a bug until a client
+// tries to talk to it.
+func TestServeAcceptsHTTPConnections(t *testing.T) {
+	s, err := Listen(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	go s.Serve()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("http://" + s.Addr() + "/or-60-seam")
+	if err != nil {
+		t.Fatalf("connection to a serving listener failed: %v", err)
+	}
+	resp.Body.Close()
+}
+
+// Close must release the port: a caller that closed the server and expects
+// the address free (or the process to exit cleanly) would otherwise find a
+// listener still quietly answering.
+func TestCloseStopsAcceptingNewConnections(t *testing.T) {
+	s, err := Listen(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := s.Addr()
+	go s.Serve()
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	if _, err := client.Get("http://" + addr + "/or-60-seam"); err == nil {
+		t.Error("connection after Close succeeded, want refused")
+	}
+}
+
+// Close is idempotent: shutdown paths call it defensively (defer plus an
+// explicit call on an error branch, say), and a second call must not panic.
+func TestCloseIsIdempotent(t *testing.T) {
+	s, err := Listen(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go s.Serve()
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
