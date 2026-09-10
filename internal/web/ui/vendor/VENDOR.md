@@ -51,6 +51,25 @@ If hooks become genuinely necessary later, the honest options are an import map 
 served HTML or a rewritten specifier — both are a decision to take deliberately, with
 this note updated to record it, rather than a file quietly added.
 
+## The one rule that keeps this safe (OR-289)
+
+**`dangerouslySetInnerHTML` is banned in `internal/web/ui/**`.**
+
+The runtime escapes by construction, not by care. `htm.module.js` contains no
+DOM-writing code at all — it parses a tagged template into vdom, and an interpolated
+value becomes a vdom *child*, never markup. In `preact.module.js` every `innerHTML`
+write sits inside the `dangerouslySetInnerHTML` branch (keyed on `__html`); text
+children go through `createTextNode` and `.data=`, which cannot execute markup.
+
+So `${summary}` holding `<img src=x onerror=…>` renders as literal text — and that
+matters here, because ticket summaries and event payloads come from a tracker other
+people can write to, and this page is the control plane once the write endpoints exist.
+
+That leaves exactly one way to reintroduce the risk: reaching for the escape hatch.
+Nothing this UI draws needs it. Server-rendered paths are covered separately by
+OR-276 (`html/template`, no `template.HTML` on scanned values) and OR-285 (stderr
+scrubbed, capped, rendered as text).
+
 ## Upgrading
 
 Fetch the new version, recompute both checksums, and update the table in the same
