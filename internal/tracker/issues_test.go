@@ -433,3 +433,72 @@ func TestStaleLocksIgnoresLabelCase(t *testing.T) {
 		t.Errorf("StaleLocks = %v; the lock was missed on case alone", got)
 	}
 }
+
+// SetDescription reads first so the caller can report what was replaced --
+// a human's prose is not git-tracked, so the previous text is the only
+// record of it once this call returns.
+func TestSetDescriptionReturnsWhatItReplaced(t *testing.T) {
+	var putBody map[string]any
+	j := fakeJira(t, func(method, path string, body []byte) (int, string) {
+		switch {
+		case method == "GET" && strings.Contains(path, "/issue/"):
+			return 200, `{"key":"OR-77","fields":{"description":` +
+				`{"type":"doc","version":1,"content":[{"type":"paragraph",` +
+				`"content":[{"type":"text","text":"old text"}]}]}}}`
+		case method == "PUT":
+			_ = json.Unmarshal(body, &putBody)
+			return 204, `{}`
+		}
+		return 500, `{}`
+	})
+	was, err := j.SetDescription("OR-77", "new text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(was, "old text") {
+		t.Errorf("expected the previous description back, got %q", was)
+	}
+	fields, ok := putBody["fields"].(map[string]any)
+	if !ok {
+		t.Fatalf("PUT payload has no fields block: %v", putBody)
+	}
+	if _, isSet := fields["description"]; !isSet {
+		t.Error("the description field was not sent")
+	}
+	if _, labelsTouched := fields["labels"]; labelsTouched {
+		t.Error("SetDescription must not touch labels")
+	}
+}
+
+// An empty description is refused rather than applied, because a blank body
+// is far more likely to be a template that failed to render than an
+// operator's actual intention -- and there is no undo once it lands.
+func TestSetDescriptionRefusesAnEmptyBody(t *testing.T) {
+	called := false
+	j := fakeJira(t, func(method, path string, body []byte) (int, string) {
+		called = true
+		return 204, `{}`
+	})
+	if _, err := j.SetDescription("OR-77", "   "); err == nil {
+		t.Fatal("expected a refusal on a blank description")
+	}
+	if called {
+		t.Error("a refused write must not reach the network at all")
+	}
+}
+
+// A read failure stops the write. Overwriting a description without being
+// able to report what was lost is the exact case this method exists to
+// prevent.
+func TestSetDescriptionStopsIfTheReadFails(t *testing.T) {
+	j := fakeJira(t, func(method, path string, body []byte) (int, string) {
+		if method == "GET" {
+			return 404, `{}`
+		}
+		t.Fatal("the PUT must never be reached when the read failed")
+		return 500, `{}`
+	})
+	if _, err := j.SetDescription("OR-77", "new text"); err == nil {
+		t.Fatal("expected an error when the prior description could not be read")
+	}
+}
