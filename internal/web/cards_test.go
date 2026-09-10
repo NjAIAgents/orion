@@ -333,3 +333,103 @@ func TestModelUpdatesOnlyWhenALaterEventNamesOne(t *testing.T) {
 		t.Errorf("model = %q, want opus: an out-of-order older event must not overwrite it", got[0].Model)
 	}
 }
+
+// Cards sort by Latest descending: the grid leads with whichever run is
+// freshest, whatever order the file (or the map iteration behind it) happens
+// to produce them in.
+func TestCardsAreSortedByLatestDescending(t *testing.T) {
+	got := Scan([]events.Event{
+		{At: at(3), Kind: events.KindSay, Key: "OR-1", Run: "r1"},
+		{At: at(1), Kind: events.KindSay, Key: "OR-2", Run: "r2"},
+		{At: at(9), Kind: events.KindSay, Key: "OR-3", Run: "r3"},
+		{At: at(5), Kind: events.KindSay, Key: "OR-4", Run: "r4"},
+	})
+
+	var latest []time.Time
+	for _, c := range got {
+		latest = append(latest, c.Latest)
+	}
+	want := []time.Time{at(9), at(5), at(3), at(1)}
+	if len(latest) != len(want) {
+		t.Fatalf("got %d cards, want %d: %+v", len(latest), len(want), got)
+	}
+	for i := range want {
+		if latest[i] != want[i] {
+			t.Errorf("card %d latest = %v, want %v (descending order): %+v", i, latest[i], want[i], got)
+		}
+	}
+}
+
+// Same Latest, different Key: the tie breaks on Key ascending, not on
+// whatever order the events arrived in.
+func TestCardsWithSameLatestBreakTiesByKeyAscending(t *testing.T) {
+	got := Scan([]events.Event{
+		{At: at(1), Kind: events.KindSay, Key: "OR-9", Run: "r1"},
+		{At: at(1), Kind: events.KindSay, Key: "OR-2", Run: "r2"},
+		{At: at(1), Kind: events.KindSay, Key: "OR-5", Run: "r3"},
+	})
+
+	var keys []string
+	for _, c := range got {
+		keys = append(keys, c.Key)
+	}
+	want := []string{"OR-2", "OR-5", "OR-9"}
+	if len(keys) != len(want) {
+		t.Fatalf("got %d cards, want %d: %+v", len(keys), len(want), got)
+	}
+	for i := range want {
+		if keys[i] != want[i] {
+			t.Errorf("order = %v, want %v (key ascending)", keys, want)
+		}
+	}
+}
+
+// Same Latest and same Key -- two runs of one ticket, tied at the same
+// activity time -- break the tie on Run ascending, so the order is total even
+// when neither Latest nor Key can decide it.
+func TestCardsWithSameLatestAndKeyBreakTiesByRunAscending(t *testing.T) {
+	got := Scan([]events.Event{
+		{At: at(1), Kind: events.KindSay, Key: "OR-1", Run: "r9"},
+		{At: at(1), Kind: events.KindSay, Key: "OR-1", Run: "r2"},
+		{At: at(1), Kind: events.KindSay, Key: "OR-1", Run: "r5"},
+	})
+
+	var runs []string
+	for _, c := range got {
+		runs = append(runs, c.Run)
+	}
+	want := []string{"r2", "r5", "r9"}
+	if len(runs) != len(want) {
+		t.Fatalf("got %d cards, want %d: %+v", len(runs), len(want), got)
+	}
+	for i := range want {
+		if runs[i] != want[i] {
+			t.Errorf("order = %v, want %v (run ascending)", runs, want)
+		}
+	}
+}
+
+// The same input must always produce cards in the same order: repeated scans
+// of an identical, fully-tied event set (same Latest, same Key, same Run
+// pairs) cannot reshuffle just because a map iterated differently this time.
+func TestRepeatedScansOfTheSameInputProduceTheSameOrder(t *testing.T) {
+	evs := []events.Event{
+		{At: at(1), Kind: events.KindSay, Key: "OR-3", Run: "r1"},
+		{At: at(1), Kind: events.KindSay, Key: "OR-1", Run: "r2"},
+		{At: at(1), Kind: events.KindSay, Key: "OR-2", Run: "r1"},
+		{At: at(1), Kind: events.KindSay, Key: "OR-1", Run: "r1"},
+	}
+
+	first := Scan(evs)
+	for i := 0; i < 10; i++ {
+		got := Scan(evs)
+		if len(got) != len(first) {
+			t.Fatalf("run %d: got %d cards, want %d", i, len(got), len(first))
+		}
+		for j := range first {
+			if got[j] != first[j] {
+				t.Fatalf("run %d differs at %d: %+v vs %+v", i, j, got[j], first[j])
+			}
+		}
+	}
+}
