@@ -71,8 +71,10 @@ var exemptFields = map[string]string{
 }
 
 var exemptJSON = map[string]string{
-	"orion.json.budget.weekly_tokens":                 "as above",
-	"orion.json (round-tripped).budget.weekly_tokens": "as above",
+	"orion.json.budget.weekly_tokens":                                     "as above",
+	"orion.json (round-tripped).budget.weekly_tokens":                     "as above",
+	"orion.json (Defaults round trip).budget.weekly_tokens":               "as above",
+	"orion.json (Defaults round trip, re-marshaled).budget.weekly_tokens": "as above",
 }
 
 // words splits a Go field name or a json tag into lowercase words.
@@ -85,15 +87,21 @@ func words(s string) []string {
 			cur.Reset()
 		}
 	}
+	runes := []rune(s)
 	prevUpper := false
-	for _, r := range s {
+	for i, r := range runes {
 		switch {
 		case r == '_' || r == '-' || r == ' ':
 			flush()
 		case r >= 'A' && r <= 'Z':
 			// Split camelCase, but keep an acronym together: JiraURL is
-			// "jira", "url", not "j", "i", "r", "a".
-			if !prevUpper {
+			// "jira", "url", not "j", "i", "r", "a". An acronym immediately
+			// followed by another capitalized word (APIToken) still needs a
+			// split before this letter -- it is the first letter of that next
+			// word, not the acronym's last -- so also flush when the next
+			// rune is lowercase.
+			nextLower := i+1 < len(runes) && runes[i+1] >= 'a' && runes[i+1] <= 'z'
+			if !prevUpper || nextLower {
 				flush()
 			}
 			cur.WriteRune(r)

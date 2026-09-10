@@ -28,11 +28,20 @@ func TestCredentialShapedCatchesCompositeCredentialNames(t *testing.T) {
 }
 
 // OR-278 case 14: "project_key" (the tracker's public project key, not a
-// cryptographic one) and "weekly_tokens" (a spend limit in model tokens, not
-// an auth token) must NOT be flagged -- these are the two false positives
-// the word-boundary + qualifier design exists to exempt.
+// cryptographic one) must NOT be flagged -- credentialShaped's word-boundary
+// + qualifier design exempts it generically, because "key" only reads as a
+// credential when preceded by a qualifier like "api" or "private".
+//
+// "weekly_tokens" is deliberately NOT a case here. An earlier version of
+// this test also asserted credentialShaped("weekly_tokens") == false, but
+// TestExemptJSONMatchesTheFullLabelNotJustTheLeafKey (exemptionscope_test.go,
+// added in the same change) pins the opposite: exempting "weekly_tokens" at
+// the word level would exempt it under ANY label or path, defeating the
+// per-(label, path) design that test exists to protect. The one known
+// legitimate "weekly_tokens" -- config.Config.Budget.WeeklyTokens -- stays
+// exempt through exemptFields/exemptJSON instead, scoped to its exact path.
 func TestCredentialShapedExemptsKnownFalsePositives(t *testing.T) {
-	cases := []string{"project_key", "ProjectKey", "weekly_tokens", "WeeklyTokens"}
+	cases := []string{"project_key", "ProjectKey"}
 	for _, name := range cases {
 		if word, bad := credentialShaped(name); bad {
 			t.Errorf("credentialShaped(%q) = true (word %q), want false (known false positive)", name, word)
