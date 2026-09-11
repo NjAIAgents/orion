@@ -27,6 +27,17 @@
         --work: #2fb3c4;
         --dimc: #6b7178;
         --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        /* The ticket-identity palette (docs/design/web/01-run-view.html and
+           friends): a colour PER TICKET, distinct from the five outcome
+           colours above -- --ok/--fail/--warn/--wait/--work say how a run
+           went, this says WHICH ticket a card or log line belongs to, so
+           the two axes must never share a hue or a card that failed would
+           read as "this is ticket X" and "this went wrong" at once. */
+        --t-orange: #d98a3d;
+        --t-violet: #b58cf0;
+        --t-teal: #4fc7c7;
+        --t-rose: #e08fb0;
+        --t-sky: #7bb6f0;
       }
       * { box-sizing: border-box; }
       html, body {
@@ -79,8 +90,15 @@
         display: flex;
         flex-direction: column;
         gap: 9px;
+        position: relative;
+        overflow: hidden;
       }
       .card.active { border-color: rgba(47, 179, 196, 0.42); }
+      /* The ticket-identity stripe (docs/design/web/01-run-view.html): a
+         positioned overlay, not a border -- a border-left would add to the
+         card's own 1px border rather than sitting distinct from it, and
+         would shift the card's content by its own width. */
+      .card .rail { position: absolute; left: 0; top: 0; bottom: 0; width: 2px; }
       .crow { display: flex; align-items: center; gap: 8px; }
       .key { font-weight: 600; font-size: 12px; letter-spacing: 0.01em; }
       .status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; }

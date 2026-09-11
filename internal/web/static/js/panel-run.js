@@ -34,6 +34,31 @@ function verbIcon(verb) {
   return ICONS[verb] || "○"; // iconPending: a verb this page does not recognise yet
 }
 
+// The ticket-identity palette (docs/design/web/01-run-view.html and every
+// page that shares its CSS variables): a colour axis distinct from the
+// five verb colours above, so a card or log line reading "this is ticket
+// X" and "this run failed" never collide on one hue.
+//
+// NOT internal/ui's ticketColor: that assigns first-come-first-served over
+// a process's lifetime (internal/ui/event.go), which needs the terminal's
+// own sequential history of which ticket it saw first -- history a browser
+// loading one snapshot never has. A deterministic hash of the key gives
+// every card a STABLE colour across reloads and polls without needing that
+// history, at the cost of not matching the terminal's own assignment for
+// the same ticket in the same run. Matching that exactly would mean the
+// server serving a colour per ticket, which is real scope this port did
+// not take on.
+const TICKET_COLORS = ["--t-orange", "--t-violet", "--t-teal", "--t-rose", "--t-sky"];
+
+function ticketColorVar(key) {
+  if (!key) return null;
+  let h = 0;
+  for (let i = 0; i < key.length; i++) {
+    h = (h * 31 + key.charCodeAt(i)) | 0;
+  }
+  return TICKET_COLORS[Math.abs(h) % TICKET_COLORS.length];
+}
+
 // verbFor ports internal/ui's VerbFor (internal/ui/event.go) exactly: the
 // same event Kind must map to the same verb on both surfaces, or the
 // browser and the terminal disagree about what a run looks like -- the one
@@ -108,10 +133,12 @@ class Card extends Component {
     // before any ticket was claimed, say) has nothing to link to, so it
     // stays a plain div rather than a link that would 404.
     const href = card.Run ? `#detail/${encodeURIComponent(card.Key)}/${encodeURIComponent(card.Run)}` : null;
+    const colorVar = ticketColorVar(card.Key);
     return html`
       <a href=${href} class="card ${active ? "active" : ""}" style="text-decoration:none;color:inherit;${href ? "cursor:pointer" : "cursor:default"}">
+        ${colorVar ? html`<div class="rail" style="background:var(${colorVar})"></div>` : null}
         <div class="crow">
-          <span class="key">${card.Key}</span>
+          <span class="key" style=${colorVar ? `color:var(${colorVar})` : ""}>${card.Key}</span>
           <span class="spacer" style="flex:1"></span>
           <span class="status ${card.Verb}">${verbIcon(card.Verb)} ${card.Verb}</span>
         </div>
