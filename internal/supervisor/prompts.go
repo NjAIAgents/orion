@@ -580,6 +580,27 @@ const intentNone = "- None"
 // defect this exists to fix.
 const NoopMarker = "NOTHING TO DO"
 
+// DescProposalStart and DescProposalEnd bracket a proposed replacement for
+// THIS issue's own Jira description, when the ticket's done-when is to
+// rewrite one (OR-288/OR-431).
+//
+// A DELIMITED BLOCK rather than a one-line marker like NoopMarker: a
+// description is prose, often several paragraphs, and a single sentinel
+// line has nowhere to put the text it is naming. The end marker exists so
+// the parser does not have to guess where the agent's prose stops and its
+// own closing remarks begin.
+//
+// This does not write anything. It only lets Orion recognise "here is the
+// text I am proposing" and route it into the description-approval gate
+// (internal/collect/descapproval.go) instead of an ordinary blocked
+// question -- the write still waits on a human labelling the ticket in
+// Jira. An agent that composes this block has NOT changed the ticket; it
+// has drafted a change for a person to accept or reject.
+const (
+	DescProposalStart = "DESCRIPTION PROPOSAL:"
+	DescProposalEnd   = "END DESCRIPTION PROPOSAL"
+)
+
 func join(lines ...string) string { return strings.Join(lines, "\n") }
 
 func quote(s string) string {
@@ -1204,6 +1225,18 @@ func TicketPromptWithChildren(key, summary, description, url, repoPath string,
 		"That line is how Orion tells 'there was nothing to do' from 'I could not do",
 		"it'. Without it an idempotent run is recorded as a failure. Write it only",
 		"when you are confident, and ask instead when you are not.",
+		"",
+		"IF THIS ISSUE'S DONE-WHEN IS A JIRA DESCRIPTION REWRITE",
+		"You cannot write to Jira. If the change this issue asks for IS a",
+		"description on this or another ticket, do not invent an ADR or a repo file",
+		"instead -- that satisfies a different done-when than the one you were given.",
+		"Compose the full replacement text and end your closing message with:",
+		"  "+DescProposalStart,
+		"  <the complete proposed description, nothing else>",
+		"  "+DescProposalEnd,
+		"A person reviews the before/after in Jira and approves or rejects it; you",
+		"are drafting, not deciding. Make no commits for this path -- there is",
+		"nothing in the repository for the rewrite itself to touch.",
 		"",
 		"EVIDENCE",
 		"Add or extend tests that would FAIL if this behaviour regressed. 'I added",

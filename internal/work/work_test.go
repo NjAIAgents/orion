@@ -30,6 +30,7 @@ type fakeJira struct {
 	labelCalls  []string // "add:X remove:Y"
 	transitions []string
 	comments    []string
+	description string
 	// children maps a key to its sub-tasks. Nil in every existing test,
 	// which is the flat ticket the rest of this file describes.
 	children map[string][]tracker.Issue
@@ -72,6 +73,11 @@ func (f *fakeJira) TransitionTo(key, status string) error {
 func (f *fakeJira) Comment(key, text string) error {
 	f.comments = append(f.comments, text)
 	return nil
+}
+func (f *fakeJira) SetDescription(key, text string) (string, error) {
+	was := f.description
+	f.description = text
+	return was, nil
 }
 func (f *fakeJira) labelLog() string { return strings.Join(f.labelCalls, " | ") }
 

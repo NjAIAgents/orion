@@ -186,6 +186,10 @@ type TrackerAPI interface {
 	AssignSelf(key string) error
 	TransitionTo(key, status string) error
 	Comment(key, text string) error
+	// SetDescription replaces an issue's description. Only called from the
+	// description-proposal path (OR-288/OR-431), and only via the approval
+	// gate in internal/collect -- never directly from an agent's output.
+	SetDescription(key, text string) (was string, err error)
 }
 
 // Options for one invocation.
@@ -819,6 +823,14 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if commits == 0 {
 		if why, ok := noopDeclared(tailOf(runRes)); ok {
 			return noChange(res, key, actorID, why, cfg, opts, deps, ws, log, w)
+		}
+		// A drafted description is a DECISION for a human, not a question for
+		// the advisor (OR-288/OR-431). Routing it to an architect would pay
+		// for an answer nobody asked for and then block the ticket on a reply
+		// to a question that was never open -- the proposal already IS the
+		// answer, waiting on approval rather than on advice.
+		if proposed, ok := descProposalDeclared(tailOf(runRes)); ok {
+			return descProposed(res, key, actorID, proposed, deps, ws, log, w)
 		}
 	}
 
