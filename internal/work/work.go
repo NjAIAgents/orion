@@ -1250,18 +1250,33 @@ func branchFor(prefix, key string) string {
 	return prefix + strings.ToLower(key)
 }
 
-// commitsOn counts IMPLEMENTATION commits: those touching anything outside
-// docs/decisions.
+// decisionCommitGrep matches CommitDecision's own subject lines exactly
+// (see decisions.go) -- "record the <role> decision" / "record an
+// unanswered question" -- so only the advisor loop's own bookkeeping
+// commits are excluded, never a ticket's real work.
+const decisionCommitGrep = `^docs\([^)]*\): record (the .+ decision|an unanswered question)$`
+
+// commitsOn counts IMPLEMENTATION commits: those that are not one of the
+// advisor loop's own decision-record commits.
 //
-// Excluding the decision records is not tidiness. Orion commits one per
-// question, so an agent that only ever asks produces five commits and no
-// code -- and a plain count would read that as work, push it, and open a
-// pull request whose entire content is a record of not having decided
-// anything. Caught by TestTheAdvisorLoopIsCapped.
+// Excluding those is not tidiness. Orion commits one per question, so an
+// agent that only ever asks produces five commits and no code -- and a
+// plain count would read that as work, push it, and open a pull request
+// whose entire content is a record of not having decided anything. Caught
+// by TestTheAdvisorLoopIsCapped.
+//
+// Matched by commit SUBJECT, not by path (OR-329): excluding the whole
+// docs/decisions/ path made any commit that only touched that directory
+// invisible to this count, even when the commit was real, ticket-assigned
+// work rather than the advisor loop's bookkeeping -- so a run that wrote
+// and committed its artifact there read as commits == 0, got routed to
+// noChange, and closed Done with the work stranded, unpushed, in the
+// worktree.
 func commitsOn(dir, base string) (int, error) {
 	args := func(ref string) []string {
-		return []string{"-C", dir, "rev-list", "--count", ref + "..HEAD",
-			"--", ".", ":(exclude)docs/decisions"}
+		return []string{"-C", dir, "rev-list", "--count",
+			"--invert-grep", "--extended-regexp", "--grep=" + decisionCommitGrep,
+			ref + "..HEAD"}
 	}
 	out, err := exec.Command("git", args("origin/"+base)...).CombinedOutput()
 	if err != nil {
