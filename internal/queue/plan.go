@@ -255,6 +255,15 @@ func decide(f Facts, i tracker.Issue, obsolete map[string]string) Decision {
 		}
 	}
 
+	// A dependency stated only in the ticket's own text (OR-424): every
+	// check above is link-based, and a hand-written or pre-OR-413 ticket
+	// can name a real dependency that was never recorded as one. Checked
+	// last, after the real link check, because a link that already covers
+	// the same sentence must not double-hold the ticket.
+	if dep, held := proseBlockedBy(i); held {
+		return Decision{Key: i.Key, Verdict: Hold, Rule: "prose-dependency", Reason: dep.reason()}
+	}
+
 	return Decision{Key: i.Key, Verdict: Admit, Rule: "ready", Reason: "ready"}
 }
 
