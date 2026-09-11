@@ -12,11 +12,11 @@
 // summary, an activity line, or a log message is text from a tracker or an
 // agent other people can write to; it renders as text, never as markup,
 // because nothing here asks it to be anything else.
-import { Component } from "/vendor/preact.module.js";
+import { Component, h } from "/vendor/preact.module.js";
 import htm from "/vendor/htm.module.js";
 import { registerPanel } from "./panels.js";
 
-const html = htm.bind(Component.prototype.constructor);
+const html = htm.bind(h);
 
 // The five verbs internal/ui renders, and no others (internal/ui/event.go).
 // The browser and the terminal must not disagree about what a run looks
