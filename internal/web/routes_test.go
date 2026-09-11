@@ -29,7 +29,12 @@ func TestRouteResponseReachesClient(t *testing.T) {
 	go s.Serve()
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://" + s.Addr() + "/or-60-routes-reach")
+	req, err := http.NewRequest(http.MethodGet, "http://"+s.Addr()+"/or-60-routes-reach", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setLocalAuthHeaders(req, s)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +143,15 @@ func TestRouteRegisteredAfterListenIsNotServedOnThatServer(t *testing.T) {
 	}))
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://" + s.Addr() + "/or-60-registered-too-late")
+	req, err := http.NewRequest(http.MethodGet, "http://"+s.Addr()+"/or-60-registered-too-late", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A valid token, so this request reaches the mux -- otherwise the guard's
+	// own denial of an unrecognised path would be indistinguishable from the
+	// mux's 404, and this test would stop proving what it says it proves.
+	setLocalAuthHeaders(req, s)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -59,7 +59,12 @@ func TestRouteRegisteredElsewhereIsServed(t *testing.T) {
 	go s.Serve()
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://" + s.Addr() + "/or-60-seam")
+	req, err := http.NewRequest(http.MethodGet, "http://"+s.Addr()+"/or-60-seam", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setLocalAuthHeaders(req, s)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

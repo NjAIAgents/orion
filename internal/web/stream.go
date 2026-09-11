@@ -27,7 +27,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
-func init() { Handle("/api/stream", http.HandlerFunc(streamHandler)) }
+func init() { HandleReadOnly("/api/stream", http.HandlerFunc(streamHandler)) }
 
 // followInterval is how often Follow re-checks a log for new lines. Short
 // enough that a line reaches the page while whoever is watching still

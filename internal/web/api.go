@@ -25,7 +25,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/workspace"
 )
 
-func init() { Handle("/api/snapshot", http.HandlerFunc(snapshotHandler)) }
+func init() { HandleReadOnly("/api/snapshot", http.HandlerFunc(snapshotHandler)) }
 
 // snapshotHandler serves the current Snapshot as JSON.
 //

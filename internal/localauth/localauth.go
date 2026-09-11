@@ -127,7 +127,7 @@ func (g *Guard) check(r *http.Request) error {
 
 	// The exemption is per path AND per method. A POST to a read-only path is
 	// still a write, so it still needs the token.
-	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && g.readOnly[r.URL.Path] {
+	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && g.readOnlyMatch(r.URL.Path) {
 		return nil
 	}
 
@@ -138,6 +138,32 @@ func (g *Guard) check(r *http.Request) error {
 		return fmt.Errorf("localauth: missing or invalid %s header", HeaderName)
 	}
 	return nil
+}
+
+// readOnlyMatch reports whether path is covered by a registered read-only
+// pattern, using the same subtree rule net/http.ServeMux uses: a pattern
+// ending in "/" matches itself and everything under it ("/vendor/" matches
+// "/vendor/preact.module.js"); any other pattern matches only itself
+// ("/api/snapshot" matches nothing else).
+//
+// This is a longest-prefix match over registered patterns, not a lookup of
+// the raw request path in the allowlist -- readOnly is keyed by the PATTERN
+// a route was registered under (server.go's HandleReadOnly), and a subtree
+// pattern's pattern is never equal to most of the paths it serves.
+func (g *Guard) readOnlyMatch(path string) bool {
+	if g.readOnly[path] {
+		return true
+	}
+	best := ""
+	for pattern := range g.readOnly {
+		if !strings.HasSuffix(pattern, "/") {
+			continue
+		}
+		if strings.HasPrefix(path, pattern) && len(pattern) > len(best) {
+			best = pattern
+		}
+	}
+	return best != ""
 }
 
 // hostAllowed matches the Host header against the allowlist by exact string,
