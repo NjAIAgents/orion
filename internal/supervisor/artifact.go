@@ -104,6 +104,24 @@ func planArtifact(cfg config.Config, slug string) string {
 	return filepath.ToSlash(filepath.Join(cfg.Paths.Plans, slug+".plan.md"))
 }
 
+// PlanFeedbackArtifact is where an operator's requested changes to the plan
+// are recorded, so the plan stage can read them on its next run (OR-280).
+//
+// Beside the plan and derived from it, so it follows the same two layouts as
+// everything else in the chain: plans/<slug>.plan-feedback.md for a built-in
+// plan stage, <FeatureDir>/plan-feedback.md for a delegated one. A path of
+// its own would be a third place a project has to configure, and a path
+// that did not follow the layout would put the feedback somewhere the stage
+// running under the other layout never looks.
+//
+// NOT an artifact the gate demands: a stage that was never sent feedback owes
+// no feedback file. It is an INPUT, and the only one that comes from a person
+// after the chain has already run.
+func PlanFeedbackArtifact(cfg config.Config, slug string) string {
+	p := planArtifact(cfg, slug)
+	return strings.TrimSuffix(p, path.Ext(p)) + "-feedback.md"
+}
+
 // tasksArtifact is the task list a delegated plan stage also owes, or ""
 // when the plan is built in: Orion's own plan prompt writes no separate
 // task list, and the decompose stage reads the plan itself.
