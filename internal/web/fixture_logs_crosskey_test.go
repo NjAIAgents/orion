@@ -38,7 +38,7 @@ func crossKeyFixture(t *testing.T, path string) []events.Event {
 // Scan's documented total order -- not by which run started first.
 func TestScanCrossKeyEventsProduceOneCardPerKey(t *testing.T) {
 	evs := crossKeyFixture(t, events.Path(t.TempDir()))
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	if got, want := len(cards), 2; got != want {
 		t.Fatalf("Scan returned %d cards, want %d (one per ticket key)", got, want)
@@ -56,7 +56,7 @@ func TestScanCrossKeyEventsProduceOneCardPerKey(t *testing.T) {
 // be the tell that grouping crossed tickets instead of just runs.
 func TestScanCrossKeyEventsHaveNoCrosstalkBetweenKeys(t *testing.T) {
 	evs := crossKeyFixture(t, events.Path(t.TempDir()))
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	or59, or61 := cards[0], cards[1]
 
@@ -134,7 +134,7 @@ func TestScanScrambledOrderReadPreservesFileOrder(t *testing.T) {
 // Steps counts every tool call regardless of where in the file it sits.
 func TestScanScrambledOrderStepCountIsUnaffected(t *testing.T) {
 	evs := scrambledOrderFixture(t, events.Path(t.TempDir()))
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	if got, want := len(cards), 1; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
@@ -149,7 +149,7 @@ func TestScanScrambledOrderStepCountIsUnaffected(t *testing.T) {
 // carries the newest timestamp and its last line the oldest.
 func TestScanScrambledOrderTimingComesFromTimestampsNotFilePosition(t *testing.T) {
 	evs := scrambledOrderFixture(t, events.Path(t.TempDir()))
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	if got, want := cards[0].Session.Started, base; !got.Equal(want) {
 		t.Errorf("cards[0].Session.Started = %s, want %s (the oldest timestamp, even though it is the third line)", got, want)
@@ -169,7 +169,7 @@ func TestScanScrambledOrderTimingComesFromTimestampsNotFilePosition(t *testing.T
 // wrong one.
 func TestScanScrambledOrderActivityComesFromNewestTimestampNotLastLine(t *testing.T) {
 	evs := scrambledOrderFixture(t, events.Path(t.TempDir()))
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	if got, want := cards[0].Session.Activity, "Edit internal/web/cards.go"; got != want {
 		t.Errorf("cards[0].Session.Activity = %q, want %q (the tool call at the later timestamp, even though it was written earlier in the file)", got, want)

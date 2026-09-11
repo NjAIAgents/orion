@@ -14,7 +14,7 @@ import (
 func TestScanOneEventForOneKeyRunProducesOneCard(t *testing.T) {
 	cards := Scan([]events.Event{
 		ev(0, events.KindTool, "OR-57", "r1"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 1; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
@@ -31,7 +31,7 @@ func TestScanMultipleEventsForSameKeyRunProduceOneCard(t *testing.T) {
 		ev(time.Minute, events.KindTool, "OR-57", "r1"),
 		ev(2*time.Minute, events.KindTool, "OR-57", "r1"),
 		ev(3*time.Minute, events.KindRunEnd, "OR-57", "r1"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 1; got != want {
 		t.Fatalf("four events on one (key, run) gave %d cards, want %d", got, want)
@@ -43,7 +43,7 @@ func TestScanSameKeyDifferentRunsProduceSeparateCards(t *testing.T) {
 	cards := Scan([]events.Event{
 		ev(0, events.KindTool, "OR-57", "r1"),
 		ev(time.Minute, events.KindTool, "OR-57", "r2"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 2; got != want {
 		t.Fatalf("one key with two runs gave %d cards, want %d", got, want)
@@ -59,7 +59,7 @@ func TestScanDifferentKeysSameRunIDProduceSeparateCards(t *testing.T) {
 	cards := Scan([]events.Event{
 		ev(0, events.KindTool, "OR-57", "shared"),
 		ev(time.Minute, events.KindTool, "OR-58", "shared"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 2; got != want {
 		t.Fatalf("two keys sharing a run ID gave %d cards, want %d", got, want)
@@ -78,7 +78,7 @@ func TestScanProducesNoDuplicateCardsForTheSamePair(t *testing.T) {
 		ev(2*time.Minute, events.KindTool, "OR-58", "r2"),
 	}
 
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 	if got, want := len(cards), 2; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
 	}

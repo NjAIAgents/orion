@@ -15,10 +15,14 @@ package web
 //
 // A CARD FROM HERE IS THE PROGRESS HALF, NOT A FINISHED CARD. Key, and the
 // session's timing, step count, activity and model come off the log. Title
-// comes from the tracker, and Verb and Gate are an outcome judgement -- none of
-// the three is in the event stream this reads, and each is its own ticket. They
-// are left zero rather than guessed, because a run with a failed event rendered
-// "working" by a default is worse than one rendered blank.
+// comes from the tracker (OR-77, not yet consumed here).
+//
+// VERB WAS ONCE LEFT ZERO ON PURPOSE: a run with a failed event rendered
+// "working" by a default is worse than one rendered blank, and until OR-52
+// nothing distinguished "still running" from "abandoned two weeks ago" --
+// the newest event's own Kind cannot tell you that a process that would have
+// written the next one no longer exists. OR-52's session records close that
+// gap: Live (below) is real evidence, not a guess, so Verb is derived now.
 //
 // NEWEST BY TIMESTAMP, NOT BY FILE POSITION, for the same reason Timing takes
 // the minimum and maximum rather than the first and last line: a log is a file,
@@ -31,10 +35,20 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/session"
+	"github.com/orion-sdlc/orion/internal/ui"
 )
 
 // Scan groups a log into cards: one per (key, run) pair, ordered by key, then
 // by when the run started, then by run id.
+//
+// live names every ticket key a currently-beating KindWork session claims to
+// be working (session.Record.Projects, for that Kind, is exactly opts.Keys
+// from internal/work.Run) -- the set this function needs to tell "still
+// running" from "stopped without finishing". A KindWatch session's own
+// Projects is project-scoped, not ticket-scoped, and says nothing about
+// which ticket inside it is live, so it plays no part in this check; the
+// watcher merely being alive does not make any one ticket's run current.
 //
 // A TOTAL ORDER, not the order the lines happened to arrive in, because the
 // surface reading this draws a grid and a grid that reshuffles between two
@@ -44,7 +58,7 @@ import (
 // An event with no key is skipped. It is real -- supervisor lines are emitted
 // before any ticket is claimed -- but there is no ticket to draw it on, and a
 // card keyed on the empty string is a card nobody can click.
-func Scan(evs []events.Event) []Card {
+func Scan(evs []events.Event, live map[string]bool) []Card {
 	type runID struct{ key, run string }
 
 	groups := map[runID][]events.Event{}
@@ -61,8 +75,10 @@ func Scan(evs []events.Event) []Card {
 	}
 
 	sessions := make(map[runID]Session, len(groups))
+	verbs := make(map[runID]string, len(groups))
 	for id, g := range groups {
 		sessions[id] = sessionOf(g)
+		verbs[id] = verbOf(g, sessions[id], live[id.key])
 	}
 
 	sort.Slice(ids, func(a, b int) bool {
@@ -79,9 +95,73 @@ func Scan(evs []events.Event) []Card {
 
 	out := make([]Card, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, Card{Key: id.key, Session: sessions[id]})
+		out = append(out, Card{Key: id.key, Verb: verbs[id], Session: sessions[id]})
 	}
 	return out
+}
+
+// verbOf is one run's outcome word: one of internal/ui's five, matching
+// exactly what the terminal would show for the same events -- the browser
+// and the console must not disagree about what a run looks like, which is
+// the rule OR-69's log panel already follows for individual lines.
+//
+// FAILED IS STICKY; EVERYTHING ELSE IS NEWEST-WINS. internal/dashboard sets
+// this precedent already (its own state map holds "fixing" from a
+// KindFailed/KindBlocked seen ANYWHERE in the run, not just the latest
+// line): a run that hit a real failure and then wrote a housekeeping
+// run-end has not un-failed. VerbFor gives run-end no case of its own, so it
+// falls to the same "ok" bucket as commit/push/merge -- exactly right for a
+// run that never failed, and exactly wrong as a way to erase one that did.
+// So failed/blocked is checked across the WHOLE run first; only once that
+// comes back clean does newest-timestamp decide among the rest.
+//
+// A run with NO run-end is either genuinely still going (live is true, the
+// composition rule OR-52's own doc states: session present and beating ->
+// that process is alive) or it stopped without finishing (live is false --
+// killed, crashed, laptop closed) and OR-52 says exactly what that state is
+// called: STOPPED, read here as VerbFail, because a card silently reading
+// "working" for a run nothing is running is the misleading state this
+// exists to fix.
+func verbOf(evs []events.Event, s Session, live bool) string {
+	if !s.Done && !live {
+		return ui.VerbFail
+	}
+	for _, e := range evs {
+		if ui.VerbFor(e.Kind) == ui.VerbFail {
+			return ui.VerbFail
+		}
+	}
+
+	verb := ui.VerbOK
+	var at time.Time
+	for _, e := range evs {
+		if e.At.Before(at) {
+			continue
+		}
+		verb, at = ui.VerbFor(e.Kind), e.At
+	}
+	return verb
+}
+
+// liveWorkKeys is every ticket key any currently-beating KindWork session
+// claims, across every session record under home -- what Scan's live
+// parameter is built from at the one call site (buildSnapshot) that reads
+// from disk rather than from a fixture.
+func liveWorkKeys(home string, now time.Time) (map[string]bool, error) {
+	records, err := session.Enumerate(home, now)
+	if err != nil {
+		return nil, err
+	}
+	keys := make(map[string]bool)
+	for _, r := range records {
+		if r.Kind != session.KindWork {
+			continue
+		}
+		for _, k := range r.Projects {
+			keys[k] = true
+		}
+	}
+	return keys, nil
 }
 
 // sessionOf derives one run's session from that run's events: timing from

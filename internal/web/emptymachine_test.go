@@ -107,7 +107,7 @@ func TestOnAFreshInstallTheProjectsDirectoryDoesNotExistEither(t *testing.T) {
 	restoreHome := setTestHome(t, home)
 	defer restoreHome()
 
-	snap, err := buildSnapshot(home)
+	snap, err := buildSnapshot(home, time.Now())
 	if err != nil {
 		t.Fatalf("no projects directory at all must still be a normal state: %v", err)
 	}
