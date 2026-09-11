@@ -16,8 +16,15 @@ const html = htm.bind(h);
 // registered -- an empty hash on first load, a typo, or a panel that was
 // since removed all read the same way: show the default rather than a
 // blank page with no explanation.
+//
+// ONLY THE FIRST SEGMENT NAMES THE PANEL. "#detail/OR-1/r1" is a parameterised
+// route (OR-53's ticket-detail page, reached by clicking a card rather than
+// a nav item): the panel name is "detail", and everything after the first
+// "/" is that panel's own business to parse from location.hash itself --
+// this function's only job is picking which Component renders, never what
+// it does with the rest of the hash.
 function currentName(panels) {
-  const wanted = location.hash.replace(/^#/, "");
+  const wanted = location.hash.replace(/^#/, "").split("/")[0];
   if (panels.some((p) => p.name === wanted)) return wanted;
   return panels.length > 0 ? panels[0].name : "";
 }
@@ -50,12 +57,17 @@ class App extends Component {
     }
     const active = panels.find((p) => p.name === current) || panels[0];
     const Panel = active.Component;
+    // Filtered from the same registry listPanels() returned, never a second
+    // hardcoded list: navPanels excludes only what a panel itself marked
+    // inNav: false (OR-53's ticket-detail page, reached from a card rather
+    // than a tab).
+    const navPanels = panels.filter((p) => p.inNav !== false);
     return html`
       <div class="app">
         <div class="topbar">
           <div class="brand">orion<span class="dot">&middot;</span>web</div>
           <div class="nav">
-            ${panels.map(
+            ${navPanels.map(
               (p) => html`
                 <a
                   key=${p.name}

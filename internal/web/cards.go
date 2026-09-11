@@ -95,7 +95,7 @@ func Scan(evs []events.Event, live map[string]bool) []Card {
 
 	out := make([]Card, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, Card{Key: id.key, Verb: verbs[id], Session: sessions[id]})
+		out = append(out, Card{Key: id.key, Run: id.run, Verb: verbs[id], Session: sessions[id]})
 	}
 	return out
 }

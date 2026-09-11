@@ -46,8 +46,13 @@ func TestAppJSBuildsNavFromTheRegistry(t *testing.T) {
 		t.Fatal("app.js does not call listPanels(); the nav has nothing to draw from " +
 			"but a hardcoded list")
 	}
-	if !strings.Contains(src, "panels.map(") {
+	if !strings.Contains(src, "navPanels.map(") {
 		t.Error("app.js does not map over the registered panels to build the nav")
+	}
+	if !strings.Contains(src, "panels.filter(") {
+		t.Error("app.js does not filter the registry (OR-53's detail panel excludes " +
+			"itself from the nav via inNav: false); a nav built straight from listPanels() " +
+			"with no filter would put a tab on a parameterised, destination-only route")
 	}
 }
 

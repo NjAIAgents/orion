@@ -22,11 +22,19 @@
 // which is what "run" being first and on by default depends on.
 const panels = [];
 
-// registerPanel adds one page. name is the URL hash fragment ("run",
-// "gates"); title is the nav label; Component is a class component (no
-// hooks -- VENDOR.md rules them out) that receives no props and renders the
-// whole page body for that route.
-export function registerPanel(name, title, Component) {
+// registerPanel adds one page. name is the URL hash fragment's first
+// segment ("run", "detail" -- app.js's currentName only ever looks at the
+// part before the first "/", so a panel that parses more out of the hash
+// itself, like detail's "#detail/<key>/<run>", still routes correctly);
+// title is the nav label; Component is a class component (no hooks --
+// VENDOR.md rules them out) that receives no props and renders the whole
+// page body for that route.
+//
+// inNav (default true) controls whether the panel gets a tab. false is for
+// a DESTINATION, not a page someone opens cold -- OR-53's ticket detail is
+// reached by clicking a card, never by a nav item, and a tab for it would
+// invite opening it with no key/run to show.
+export function registerPanel(name, title, Component, inNav = true) {
   if (panels.some((p) => p.name === name)) {
     // A DUPLICATE NAME IS A BUG WORTH FAILING LOUDLY ON, the same reasoning
     // Handle's own doc gives for why registering the same server pattern
@@ -35,7 +43,7 @@ export function registerPanel(name, title, Component) {
     // and leave a reader wondering why clicking one does nothing.
     throw new Error(`panel "${name}" is already registered`);
   }
-  panels.push({ name, title, Component });
+  panels.push({ name, title, Component, inNav });
 }
 
 // listPanels returns the registered set, in registration order. A copy, so
