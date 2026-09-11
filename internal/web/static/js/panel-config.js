@@ -42,7 +42,7 @@ class Row extends Component {
     return html`
       <tr>
         <td class="nm">
-          ${entry.Name || html`<span class="dash">&mdash;</span>`}
+          ${entry.Name || html`<span class="dash">—</span>`}
           ${tag(o.Name)}
           <div class="id">${entry.ID}</div>
         </td>
@@ -50,11 +50,11 @@ class Row extends Component {
         <td>
           ${entry.Model
             ? html`<span class="mdl ${modelClass(entry.Model)}">${entry.Model}</span>`
-            : html`<span class="dash">&mdash;</span>`}
+            : html`<span class="dash">—</span>`}
           ${tag(o.Model)}
         </td>
         <td>
-          ${entry.Effort || html`<span class="dash">&mdash;</span>`}
+          ${entry.Effort || html`<span class="dash">—</span>`}
           ${tag(o.Effort)}
         </td>
       </tr>
@@ -83,7 +83,7 @@ class ConfigPanel extends Component {
       return html`<div class="empty">could not reach the server: ${error}</div>`;
     }
     if (!view) {
-      return html`<div class="empty">loading&hellip;</div>`;
+      return html`<div class="empty">loading…</div>`;
     }
     const roster = view.Roster || [];
     if (roster.length === 0) {

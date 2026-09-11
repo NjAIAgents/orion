@@ -65,7 +65,7 @@ class App extends Component {
     return html`
       <div class="app">
         <div class="topbar">
-          <div class="brand">orion<span class="dot">&middot;</span>web</div>
+          <div class="brand">orion<span class="dot">·</span>web</div>
           <div class="nav">
             ${navPanels.map(
               (p) => html`

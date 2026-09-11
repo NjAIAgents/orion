@@ -170,7 +170,7 @@ class CardGrid extends Component {
       return html`<div class="empty">could not reach the server: ${error}</div>`;
     }
     if (!snapshot) {
-      return html`<div class="empty">loading&hellip;</div>`;
+      return html`<div class="empty">loading…</div>`;
     }
     const cards = snapshot.Cards || [];
     if (cards.length === 0) {
@@ -185,7 +185,7 @@ class CardGrid extends Component {
       <div>
         <div class="head">
           <div class="h1">Running ${cards.length} agent${cards.length === 1 ? "" : "s"}</div>
-          <div class="sub">${done} done &middot; ${active} active</div>
+          <div class="sub">${done} done · ${active} active</div>
         </div>
         <div class="cards">
           ${cards.map((c) => html`<${Card} key=${c.Key} card=${c} />`)}
@@ -414,7 +414,7 @@ class LogPanel extends Component {
       <div class="log">
         <div class="logtop">
           <div class="t">log</div>
-          <span class="dim">&middot; ${connected ? "live" : "reconnecting&hellip;"}</span>
+          <span class="dim">· ${connected ? "live" : "reconnecting…"}</span>
           <span class="spacer" style="flex:1"></span>
           <span class="chip">all tickets</span>
         </div>
@@ -433,7 +433,7 @@ class LogPanel extends Component {
           )}
         </div>
         <div class="logfoot">
-          <span>${paused ? "paused" : "following"} &middot; ${lines.length} line${lines.length === 1 ? "" : "s"}</span>
+          <span>${paused ? "paused" : "following"} · ${lines.length} line${lines.length === 1 ? "" : "s"}</span>
           <button class="pausebtn ${paused ? "paused" : ""}" onClick=${() => this.togglePause()}>
             ${paused ? "resume" : "pause on scroll-up"}
           </button>
