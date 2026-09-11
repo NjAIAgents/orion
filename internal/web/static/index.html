@@ -29,13 +29,15 @@
         --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
       }
       * { box-sizing: border-box; }
-      body {
+      html, body {
         margin: 0;
+        height: 100%;
         background: var(--bg);
         color: var(--ink);
         font-family: var(--mono);
         font-size: 12px;
       }
+      .app { display: flex; flex-direction: column; height: 100vh; }
       .topbar {
         display: flex;
         align-items: center;
@@ -44,11 +46,14 @@
         height: 44px;
         border-bottom: 1px solid var(--line);
         background: var(--panel);
+        flex: none;
       }
       .brand { font-weight: 600; font-size: 13px; }
       .brand .dot { color: var(--work); }
       .spacer { flex: 1; }
-      .head { padding: 18px 20px 12px; }
+      .body { display: flex; flex: 1; min-height: 0; }
+      .main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+      .head { padding: 18px 20px 12px; flex: none; }
       .h1 { font-size: 14px; font-weight: 600; }
       .sub { color: var(--ink-faint); font-size: 11.5px; margin-top: 4px; }
       .cards {
@@ -109,13 +114,82 @@
         font-size: 12px;
         text-align: center;
       }
+      /* The log panel (OR-69): docked right, matching the mockup 1:1. */
+      .log {
+        width: 430px;
+        flex: none;
+        border-left: 1px solid var(--line);
+        background: var(--panel);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .logtop { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+      .logtop .t { font-size: 11.5px; font-weight: 600; }
+      .dim { color: var(--ink-faint); }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 9px;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        color: var(--ink-dim);
+        font-size: 11px;
+      }
+      .filter { display: flex; gap: 4px; flex-wrap: wrap; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+      .f {
+        padding: 2.5px 8px;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        color: var(--ink-faint);
+        font-size: 10.5px;
+        cursor: pointer;
+        background: none;
+        font-family: inherit;
+      }
+      .f.on { background: rgba(47, 179, 196, 0.13); border-color: rgba(47, 179, 196, 0.35); color: var(--work); }
+      .lines { flex: 1; overflow: auto; padding: 10px 0 14px; font-size: 11px; line-height: 1.75; min-height: 0; }
+      .ln { display: flex; gap: 8px; padding: 1px 14px; white-space: nowrap; }
+      .ts { color: var(--ink-faint); flex: none; width: 58px; }
+      .lk { flex: none; width: 52px; overflow: hidden; text-overflow: ellipsis; }
+      .lv { flex: none; width: 74px; }
+      .lv.ok { color: var(--ok); }
+      .lv.working { color: var(--work); }
+      .lv.waiting { color: var(--wait); }
+      .lv.warning { color: var(--warn); }
+      .lv.failed { color: var(--fail); }
+      .la { flex: none; width: 150px; overflow: hidden; text-overflow: ellipsis; }
+      .lm { flex: none; width: 48px; color: var(--ink-faint); }
+      .lg { color: #c8ccd1; overflow: hidden; text-overflow: ellipsis; }
+      .stagerow { display: flex; gap: 8px; padding: 4px 14px; white-space: nowrap; align-items: baseline; }
+      .rule { color: var(--ink-faint); }
+      .stagenames { font-weight: 600; }
+      .logfoot {
+        border-top: 1px solid var(--line);
+        padding: 8px 14px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 10.5px;
+        color: var(--ink-faint);
+        flex: none;
+      }
+      .pausebtn {
+        margin-left: auto;
+        padding: 3px 9px;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        color: var(--ink-dim);
+        cursor: pointer;
+        background: none;
+        font-family: inherit;
+        font-size: inherit;
+      }
+      .pausebtn.paused { background: rgba(214, 162, 49, 0.13); border-color: rgba(214, 162, 49, 0.35); color: var(--warn); }
     </style>
   </head>
   <body>
-    <div class="topbar">
-      <div class="brand">orion<span class="dot">&middot;</span>web</div>
-      <div class="spacer"></div>
-    </div>
     <div id="app"></div>
     <script type="module" src="js/app.js"></script>
   </body>
