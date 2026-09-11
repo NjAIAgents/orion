@@ -61,6 +61,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/fanout"
 	"github.com/orion-sdlc/orion/internal/queue"
 	"github.com/orion-sdlc/orion/internal/registry"
+	"github.com/orion-sdlc/orion/internal/session"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
@@ -191,6 +192,15 @@ func Run(opts Options, deps Deps) error {
 	}
 	opts.MaxConcurrent = config.Limits{MaxConcurrentTickets: opts.MaxConcurrent}.ConcurrentTickets()
 	noProgressWindow := config.Limits{NoProgressMinutes: opts.NoProgressMinutes}.NoProgress()
+
+	// This process's liveness record (OR-52): a bare `orion watch` covers
+	// every project, so an empty Projects list here means exactly that --
+	// the dashboard shows the scope this watcher was actually given, not a
+	// guess at what "every project" expands to. Start degrades to a no-op
+	// heartbeat on failure (its own doc comment); nothing here checks its
+	// error, the same posture as events.Log.Emit.
+	sess := session.Start(opts.Home, session.KindWatch, opts.Projects)
+	defer sess.Stop()
 
 	// Every job writes its progress to the same terminal from its own
 	// goroutine. Serialised so a line is whole: two agents' output interleaves
