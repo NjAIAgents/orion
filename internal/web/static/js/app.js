@@ -4,12 +4,12 @@
 // Class components only, no hooks -- VENDOR.md is explicit about why: the
 // hooks build needs a bare "preact" specifier the browser cannot resolve
 // without a bundler or an import map, and OR-66 ruled both out.
-import { render, Component } from "/vendor/preact.module.js";
+import { render, Component, h } from "/vendor/preact.module.js";
 import htm from "/vendor/htm.module.js";
 import { listPanels } from "./panels.js";
 import "./panels-registered.js";
 
-const html = htm.bind(Component.prototype.constructor);
+const html = htm.bind(h);
 
 // currentName reads the active panel out of location.hash ("#run" -> "run"),
 // falling back to the FIRST registered panel when the hash names nothing
