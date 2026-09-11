@@ -41,7 +41,7 @@ class StepRow extends Component {
       <tr>
         <td class="desig">${fmtClock(step.At)}</td>
         <td class="nm">${step.Actor}</td>
-        <td>${step.Model || html`<span class="dash">&mdash;</span>`}</td>
+        <td>${step.Model || html`<span class="dash">—</span>`}</td>
         <td class="why" style="max-width:600px;-webkit-line-clamp:2">${step.Text}</td>
       </tr>
     `;
@@ -101,7 +101,7 @@ class DetailPanel extends Component {
       return html`<div class="empty">${error}</div>`;
     }
     if (!detail) {
-      return html`<div class="empty">loading&hellip;</div>`;
+      return html`<div class="empty">loading…</div>`;
     }
     const steps = detail.Steps || [];
     const asks = detail.Asks || [];
@@ -110,7 +110,7 @@ class DetailPanel extends Component {
       <div class="main">
         <div class="head">
           <div class="h1">${key}</div>
-          <div class="sub"><a href="#run">&larr; back to run</a></div>
+          <div class="sub"><a href="#run">← back to run</a></div>
         </div>
         <div class="scroll">
           ${detail.PR

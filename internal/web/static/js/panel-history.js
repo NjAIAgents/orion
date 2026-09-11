@@ -105,7 +105,7 @@ class HistoryPanel extends Component {
       return html`<div class="empty">could not reach the server: ${error}</div>`;
     }
     if (!rows) {
-      return html`<div class="empty">loading&hellip;</div>`;
+      return html`<div class="empty">loading…</div>`;
     }
     if (rows.length === 0) {
       // A MACHINE WHERE NOTHING HAS EVER RUN IS A NORMAL STATE, the same
