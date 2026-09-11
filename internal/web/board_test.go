@@ -107,11 +107,24 @@ func TestDoneIsNotABoardColumn(t *testing.T) {
 // internal/ui's five outcome verbs, which a card legitimately carries and
 // model.go legitimately writes down; a scan for those words would report that
 // vocabulary as a copy of this one. A label is Orion's own and has no second
-// meaning, so its presence here is unambiguous.
+// meaning -- with one exception, carved out below rather than weakening the
+// \b-word-boundary match every other label relies on.
+//
+// "queued"'s label is tracker.QueueLabelDefault, and its value is "ORION":
+// the project's own name, in a config field that happens to default to it.
+// Every other label here (orion-working, orion-failed, ...) is Orion's own
+// vocabulary and nothing else; "ORION" bare is also just the product's name,
+// legitimately spelled in a doc comment, a page title, a banner string, or a
+// User-Agent -- none of which is the copy this test exists to catch. Skipped
+// entirely rather than scanned for, so a future all-caps mention of the
+// product in this package's prose does not fail a test about queue labels.
 func TestNoQueueStateIsDeclaredInTheWebPackage(t *testing.T) {
 	var pats []*regexp.Regexp
 	var names []string
 	for _, s := range tracker.QueueStates(tracker.QueueLabelDefault) {
+		if s.Label == tracker.QueueLabelDefault {
+			continue
+		}
 		pats = append(pats, regexp.MustCompile(`\b`+regexp.QuoteMeta(s.Label)+`\b`))
 		names = append(names, s.Label)
 	}
