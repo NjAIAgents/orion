@@ -15,14 +15,23 @@ import (
 	"testing"
 )
 
-func appJS(t *testing.T) string {
+func servedFile(t *testing.T, path string) string {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	Assets().ServeHTTP(rec, httptest.NewRequest("GET", "/js/app.js", nil))
+	Assets().ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
 	if rec.Code != 200 {
-		t.Fatalf("GET /js/app.js = %d", rec.Code)
+		t.Fatalf("GET %s = %d", path, rec.Code)
 	}
 	return rec.Body.String()
+}
+
+// appJS reads the run panel's own module (OR-70 moved the run view's code
+// out of app.js and into panel-run.js, registered rather than hardcoded) --
+// kept under this name because every OR-67/OR-69 test below is checking the
+// run panel's behaviour, and renaming forty call sites to reread would not
+// make any of them clearer.
+func appJS(t *testing.T) string {
+	return servedFile(t, "/js/panel-run.js")
 }
 
 // DONE-WHEN, CLAUSE ONE (streamed lines): the panel connects to the real

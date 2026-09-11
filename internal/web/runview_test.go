@@ -43,19 +43,17 @@ func TestIndexReferencesAScriptThatExists(t *testing.T) {
 // actually serve both files OR-66 committed, or the page's very first
 // import throws and nothing renders.
 func TestAppJSImportsAreServed(t *testing.T) {
-	rec := httptest.NewRecorder()
-	Assets().ServeHTTP(rec, httptest.NewRequest("GET", "/js/app.js", nil))
-	src := rec.Body.String()
+	src := servedFile(t, "/js/panel-run.js")
 
 	for _, want := range []string{`/vendor/preact.module.js`, `/vendor/htm.module.js`} {
 		if !strings.Contains(src, want) {
-			t.Errorf("app.js does not import %s", want)
+			t.Errorf("panel-run.js does not import %s", want)
 			continue
 		}
 		vrec := httptest.NewRecorder()
 		Vendored().ServeHTTP(vrec, httptest.NewRequest("GET", want, nil))
 		if vrec.Code != 200 {
-			t.Errorf("app.js imports %s, but /vendor/ returns %d for it", want, vrec.Code)
+			t.Errorf("panel-run.js imports %s, but /vendor/ returns %d for it", want, vrec.Code)
 		}
 	}
 }
@@ -66,23 +64,25 @@ func TestAppJSImportsAreServed(t *testing.T) {
 // and htm/preact escape by construction only as long as nothing routes
 // around that.
 func TestAppJSNeverUsesDangerouslySetInnerHTML(t *testing.T) {
-	rec := httptest.NewRecorder()
-	Assets().ServeHTTP(rec, httptest.NewRequest("GET", "/js/app.js", nil))
-	src := rec.Body.String()
-	// The property USE, not the bare word: this file's own doc comment
-	// names the banned API to explain why it is absent, which a substring
-	// match on the word alone would misread as a violation.
-	for _, line := range strings.Split(src, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "//") {
-			continue
-		}
-		if strings.Contains(line, "dangerouslySetInnerHTML=") ||
-			strings.Contains(line, "dangerouslySetInnerHTML:") {
-			t.Errorf("app.js uses dangerouslySetInnerHTML -- OR-289 bans this escape "+
-				"hatch across internal/web/ui/**, and the same reasoning applies here: "+
-				"a ticket summary or activity line is text from a tracker other people "+
-				"write to. Line: %s", trimmed)
+	// Every module the run page loads, not just one file: OR-70 split what
+	// used to be one file into app.js (the shell) plus one module per
+	// panel, and the ban applies to all of internal/web/ui/** -- checked
+	// per file below the shell has no page content, but the guard should
+	// not quietly stop covering the real content because it moved files.
+	for _, path := range []string{"/js/app.js", "/js/panel-run.js"} {
+		src := servedFile(t, path)
+		for _, line := range strings.Split(src, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") {
+				continue
+			}
+			if strings.Contains(line, "dangerouslySetInnerHTML=") ||
+				strings.Contains(line, "dangerouslySetInnerHTML:") {
+				t.Errorf("%s uses dangerouslySetInnerHTML -- OR-289 bans this escape "+
+					"hatch across internal/web/ui/**, and the same reasoning applies here: "+
+					"a ticket summary or activity line is text from a tracker other people "+
+					"write to. Line: %s", path, trimmed)
+			}
 		}
 	}
 }
@@ -93,12 +93,10 @@ func TestAppJSNeverUsesDangerouslySetInnerHTML(t *testing.T) {
 // access being updated alongside it, since the two are not otherwise
 // connected by the compiler.
 func TestAppJSRequestsTheRealSnapshotShape(t *testing.T) {
-	rec := httptest.NewRecorder()
-	Assets().ServeHTTP(rec, httptest.NewRequest("GET", "/js/app.js", nil))
-	src := rec.Body.String()
+	src := servedFile(t, "/js/panel-run.js")
 
 	if !strings.Contains(src, `fetch("/api/snapshot")`) {
-		t.Fatal("app.js does not fetch /api/snapshot")
+		t.Fatal("panel-run.js does not fetch /api/snapshot")
 	}
 
 	snap := Snapshot{Cards: []Card{{
@@ -130,9 +128,7 @@ func TestAppJSRequestsTheRealSnapshotShape(t *testing.T) {
 // app.js must render Verb (which carries "ok" for a finished card) rather
 // than filtering finished cards out of the list before drawing it.
 func TestCompletedCardsAreNotFilteredOut(t *testing.T) {
-	rec := httptest.NewRecorder()
-	Assets().ServeHTTP(rec, httptest.NewRequest("GET", "/js/app.js", nil))
-	src := rec.Body.String()
+	src := servedFile(t, "/js/panel-run.js")
 
 	// The thing OR-67's done-when actually forbids: whatever list is handed
 	// to the per-card render call (".map(") must be the plain card list, not
