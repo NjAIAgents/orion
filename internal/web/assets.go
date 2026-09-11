@@ -40,11 +40,25 @@ import (
 //go:embed static
 var assets embed.FS
 
+// The vendored runtime (OR-66) lives outside static/, in the directory its
+// own VENDOR.md checksums -- a page needing it is one bare `import` away
+// from a wrong file, and moving preact.module.js and htm.module.js under
+// static/ would mean two copies to keep byte-identical to that checksum, or
+// one broken by a future edit made in the wrong tree. Embedded and served
+// from its own route instead, so the pin OR-66 committed to stays the only
+// copy that exists.
+//
+//go:embed ui/vendor
+var vendored embed.FS
+
 // The front end answers on "/", registered the way every other page will be
 // (server.go): from an init in the file that owns the handler, so nothing
 // has to edit a shared list. Without this, `orion web` (OR-61) prints an
 // address whose root is a 404.
-func init() { Handle("/", Assets()) }
+func init() {
+	Handle("/", Assets())
+	Handle("/vendor/", Vendored())
+}
 
 // Assets is the front end, ready to mount: the server skeleton gives it "/",
 // and a browser asking for the root gets static/index.html.
@@ -64,6 +78,24 @@ func init() { Handle("/", Assets()) }
 //     redirect implied a static/ directory that is not there. Missing is
 //     missing: the existence check happens first here, and only a path that
 //     resolves is handed on.
+//
+// Vendored serves the runtime OR-66 committed -- preact.module.js and
+// htm.module.js -- at /vendor/, exactly as VENDOR.md's own import example
+// names them: `./vendor/preact.module.js` resolves correctly from a page
+// served at "/".
+//
+// No method guard and no existence pre-check the way Assets has both: this
+// tree holds exactly two files, both named in VENDOR.md, and
+// http.FileServer's own 404 is already the right answer for anything else
+// requested under this prefix.
+func Vendored() http.Handler {
+	sub, err := fs.Sub(vendored, "ui/vendor")
+	if err != nil {
+		panic("web: embedded ui/vendor is unreachable: " + err.Error())
+	}
+	return http.StripPrefix("/vendor/", http.FileServer(http.FS(sub)))
+}
+
 func Assets() http.Handler {
 	// Strip the static/ prefix, so a request for "/" resolves to index.html
 	// rather than needing "/static/index.html". fs.Sub fails only on a
