@@ -439,6 +439,61 @@ func (j *Jira) Comment(key, text string) error {
 	return nil
 }
 
+// SetDescription replaces an issue's description.
+//
+// WHY THIS EXISTS, and why it is the only field-editing method here. Orion
+// brokers every tracker write an agent needs: the agent has no credential, no
+// MCP server and no network egress, because "a sandboxed workspace can be
+// deleted; issues in a shared tracker are seen" (internal/supervisor/prompts).
+// Labels, comments and transitions were enough until a ticket arrived whose
+// DELIVERABLE was tracker text -- the OR-286 family, rewriting issues that
+// cite a premise later decisions overturned. OR-288 spent an opus run
+// reaching the correct refusal, three times, because the one capability it
+// needed was the one nobody had.
+//
+// DESTRUCTIVE, unlike everything else on this type. A label is additive, a
+// comment is additive, a transition is reversible; this overwrites prose a
+// person may have written and git does not hold a copy. So:
+//
+//   - the previous description is returned, so a caller can record what it
+//     replaced and a human can put it back
+//   - an empty description is refused rather than treated as "clear it",
+//     because a blank body is far more likely to be a template that failed to
+//     render than an intention
+//
+// ADF, via the same adfParagraphs the comment path uses. A description sent
+// as a bare string is accepted by some Jira deployments and silently dropped
+// by others, which is the worst of both.
+func (j *Jira) SetDescription(key, text string) (was string, err error) {
+	if strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("refusing to blank %s's description: an empty body "+
+			"is more often a template that did not render than an intention", key)
+	}
+	// Read first, so the caller can say what was replaced. A failure here
+	// stops the write: overwriting prose without being able to report what
+	// was lost is the case this method must not make easy.
+	prev, err := j.GetIssue(key)
+	if err != nil {
+		return "", fmt.Errorf("reading %s before replacing its description: %w", key, err)
+	}
+	if prev != nil {
+		was = prev.Description
+	}
+
+	payload := map[string]any{
+		"fields": map[string]any{"description": adfParagraphs(text)},
+	}
+	code, body, err := j.do("PUT", "/rest/api/3/issue/"+url.PathEscape(key), payload)
+	if err != nil {
+		return was, err
+	}
+	if code >= 400 {
+		return was, fmt.Errorf("replacing the description on %s: %d %s",
+			key, code, snippet(body))
+	}
+	return was, nil
+}
+
 // Transitions lists the moves available from the issue's current status.
 type Transition struct {
 	ID   string
@@ -614,6 +669,24 @@ const (
 	// queue.
 	LabelReady  = "orion-ready"
 	LabelFailed = "orion-failed"
+
+	// LabelDescPending marks a ticket whose description an agent has drafted
+	// a replacement for, posted as a before/after comment, and is now
+	// waiting on a human to approve or reject in Jira (OR-431).
+	//
+	// A DESCRIPTION REWRITE IS DESTRUCTIVE in a way a label or a comment is
+	// not: it overwrites prose a person may have written, and nothing in git
+	// holds a copy of what Jira held. So unlike every other write an agent
+	// drafts through Orion, this one does not apply on the agent's say-so --
+	// it waits.
+	//
+	// The gate lives in Jira itself, not Slack, because the thing being
+	// approved IS the ticket: the reviewer is already looking at it, the
+	// before/after comment is already there to compare against, and no
+	// second surface has to agree with a first about what was proposed.
+	LabelDescPending  = "orion-desc-pending"
+	LabelDescApproved = "orion-desc-approved"
+	LabelDescRejected = "orion-desc-rejected"
 )
 
 // StatusCategoryDone is Jira's terminal category. Every workflow has one,
