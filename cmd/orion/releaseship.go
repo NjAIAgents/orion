@@ -49,6 +49,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/changelog"
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
@@ -215,6 +216,7 @@ func shipProduction(root string, cfg config.Config, in promote.ShipInputs,
 	}
 	switch pr.Verdict {
 	case collect.VerdictUnknown, collect.VerdictClosed:
+		collateChangelog(root, in.WorkBranch, in.Version, log, w)
 		title, body := promotionDescription(root, in)
 		url, err := openPR(root, in.WorkBranch, title, body, release)
 		if err != nil {
@@ -618,6 +620,80 @@ func msgReleaseApproval(in promote.ShipInputs, pr collect.PR, approvers []string
 		"_Declining changes nothing: the pull request is kept and no tag is pushed._",
 	}, "\n")
 	return title, body
+}
+
+// collateChangelog folds pending .changelog.d/ fragments into CHANGELOG.md
+// and pushes that commit onto workBranch, before the promotion pull request
+// is opened, so the entry rides in the same PR and gets the same review the
+// promotion itself gets (OR-422).
+//
+// `orion changelog` never auto-commits -- "a changelog is the one artifact
+// whose whole purpose is to be read before it is believed" -- and this does
+// not relax that: it does not run unread. The promotion PR already carries
+// the release through checks and a Slack approval (steps 2-3 below) before
+// anything merges, so folding the entry in here means it is read in exactly
+// the review that was already going to happen, not skipped past it.
+//
+// Two releases in a row (v0.9.0, v0.9.1) shipped with no CHANGELOG section
+// at all because nothing in this command ever called Collate -- the fragments
+// sat in .changelog.d/ until someone noticed and collated them by hand,
+// after the fact. This is that call.
+//
+// Best-effort: a release is not blocked on the changelog. No fragments is
+// the common case and not a failure; a collation or push failure is reported
+// and shipping continues, because the alternative -- refusing to release
+// over a missing paragraph of prose -- is a worse outcome than the one this
+// exists to fix.
+func collateChangelog(root, workBranch, version string, log *events.Log, w io.Writer) {
+	frags, err := changelog.Load(root)
+	if err != nil {
+		ui.Warn(w, "could not read %s/: %v", changelog.Dir, err)
+		return
+	}
+	if len(frags) == 0 {
+		return
+	}
+
+	if out, err := gitIn(root, "checkout", workBranch); err != nil {
+		ui.Warn(w, "changelog: could not check out %s: %s", workBranch, firstLineOf(out))
+		return
+	}
+	if out, err := gitIn(root, "pull", "--ff-only", "origin", workBranch); err != nil {
+		ui.Warn(w, "changelog: could not fast-forward %s: %s", workBranch, firstLineOf(out))
+		return
+	}
+
+	seen := changelog.TicketKeys(root)
+	res, err := changelog.Collate(root, version)
+	if err != nil {
+		ui.Warn(w, "changelog: %v", err)
+		return
+	}
+
+	if out, err := gitIn(root, "add", "CHANGELOG.md", changelog.Dir); err != nil {
+		ui.Warn(w, "changelog: could not stage the collated entry: %s", firstLineOf(out))
+		return
+	}
+	msg := fmt.Sprintf("docs(changelog): collate %s into %s", strings.Join(res.Keys, ", "), version)
+	if out, err := gitIn(root, "commit", "-q", "-m", msg); err != nil {
+		ui.Warn(w, "changelog: could not commit the collated entry: %s", firstLineOf(out))
+		return
+	}
+	if out, err := gitIn(root, "push", "origin", workBranch); err != nil {
+		ui.Warn(w, "changelog: could not push the collated entry: %s", firstLineOf(out))
+		return
+	}
+
+	log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorOrion,
+		Msg: fmt.Sprintf("collated %d changelog fragment(s) into %s: %s",
+			len(res.Keys), version, strings.Join(res.Keys, ", "))})
+	ui.Ok(w, "changelog", "collated %d fragment(s) into %s: %s",
+		len(res.Keys), version, strings.Join(res.Keys, ", "))
+
+	if missing := changelog.Unrecorded(seen, res.Keys); len(missing) > 0 {
+		ui.Warn(w, "no changelog fragment for %s; the entry may be incomplete",
+			strings.Join(missing, ", "))
+	}
 }
 
 // promotionDescription writes the promotion pull request's title and body.
