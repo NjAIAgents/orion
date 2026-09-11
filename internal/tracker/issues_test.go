@@ -408,6 +408,84 @@ func TestManagedCoversEveryOrionLabel(t *testing.T) {
 	}
 }
 
+// Managed is the state machine's labels and nothing else (OR-273). Two lists
+// would drift the first time a state was added to one of them, and the half
+// that missed it is either a query that skips those tickets or a requeue that
+// leaves a label behind.
+func TestManagedIsDerivedFromTheQueueStates(t *testing.T) {
+	states := QueueStates("ORION")
+	m := Managed("ORION")
+	if len(m) != len(states) {
+		t.Fatalf("Managed() = %v (%d) for %d state(s): %+v", m, len(m), len(states), states)
+	}
+	for i, s := range states {
+		if m[i] != s.Label {
+			t.Errorf("Managed()[%d] = %q, want %q from state %q", i, m[i], s.Label, s.Name)
+		}
+	}
+}
+
+// Every state names itself and carries a label, and the order is the order a
+// ticket travels -- the board draws these left to right, so a state machine
+// that returned them in some other order would draw a pipeline that runs
+// backwards.
+func TestQueueStatesAreOrderedAndComplete(t *testing.T) {
+	got := QueueStates("ORION")
+	want := []QueueState{
+		{Name: "queued", Label: "ORION"},
+		{Name: "working", Label: LabelWorking},
+		{Name: "ci-wait", Label: LabelCIWait},
+		{Name: "ready", Label: LabelReady},
+		{Name: "failed", Label: LabelFailed},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("QueueStates() = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("QueueStates()[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// A state name is the word State already reports for that label, not a second
+// vocabulary: a board column headed "ci-wait" has to match what every other
+// surface prints for the ticket sitting in it.
+//
+// orion-ready is EXCLUDED here, and the exclusion is a finding rather than a
+// convention: State has no case for it and reports "" for a ready ticket,
+// which predates this test (OR-253 added the label to Managed and not to
+// State). Fixing that is not OR-273's change -- the column set does not read
+// State -- so this test asserts the agreement that holds today rather than
+// asserting a gap away.
+func TestEveryQueueStateNameIsWhatStateReports(t *testing.T) {
+	for _, s := range QueueStates("ORION") {
+		if s.Label == LabelReady {
+			continue
+		}
+		if got := State([]string{s.Label}, "ORION"); got != s.Name {
+			t.Errorf("a ticket labelled %q reports State %q, but its state is named %q",
+				s.Label, got, s.Name)
+		}
+	}
+}
+
+// A caller that never resolved config gets the label a watcher spanning
+// projects expects, the same fallback Schedules.HoldReason makes -- not a
+// state with no label, which would query for the empty string.
+func TestQueueStatesFallBackToTheDefaultLabel(t *testing.T) {
+	got := QueueStates("")
+	want := QueueStates(QueueLabelDefault)
+	if len(got) != len(want) {
+		t.Fatalf("QueueStates(\"\") = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("QueueStates(\"\")[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
 // A finished ticket still holding the claim lock stops the whole queue and
 // looks exactly like a job that is genuinely running. `orion queue` has to
 // name that rather than print a "working" line whose status reads Done and
