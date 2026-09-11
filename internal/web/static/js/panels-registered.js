@@ -10,3 +10,6 @@
 // nothing about panel-run.js or any other panel changes when they do,
 // which is the collision this ticket exists to prevent.
 import "./panel-run.js";
+import "./panel-config.js";
+import "./panel-history.js";
+import "./panel-detail.js";

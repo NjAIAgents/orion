@@ -101,8 +101,15 @@ class Card extends Component {
   render({ card }) {
     const s = card.Session || {};
     const active = card.Verb === "working" || card.Verb === "waiting";
+    // The detail panel (OR-53, panel-detail.js) is reached from here: a
+    // card names its own (Key, Run) pair, which is exactly what
+    // /api/detail needs and what no other surface can supply. A card with
+    // no Run (an event with a key but never a run id -- a supervisor line
+    // before any ticket was claimed, say) has nothing to link to, so it
+    // stays a plain div rather than a link that would 404.
+    const href = card.Run ? `#detail/${encodeURIComponent(card.Key)}/${encodeURIComponent(card.Run)}` : null;
     return html`
-      <div class="card ${active ? "active" : ""}">
+      <a href=${href} class="card ${active ? "active" : ""}" style="text-decoration:none;color:inherit;${href ? "cursor:pointer" : "cursor:default"}">
         <div class="crow">
           <span class="key">${card.Key}</span>
           <span class="spacer" style="flex:1"></span>
@@ -123,7 +130,7 @@ class Card extends Component {
             ? html`<span><b>${fmtElapsed(s.Started, s.Last)}</b></span>`
             : null}
         </div>
-      </div>
+      </a>
     `;
   }
 }

@@ -196,6 +196,61 @@
         font-size: inherit;
       }
       .pausebtn.paused { background: rgba(214, 162, 49, 0.13); border-color: rgba(214, 162, 49, 0.35); color: var(--warn); }
+
+      /* The config panel (OR-54, OR-81) and history panel (OR-54, OR-83)
+         share this table styling -- one role/run per row, matching the
+         mockups' own layout (docs/design/web/04-agents.html). */
+      .scroll { flex: 1; overflow: auto; padding: 0 20px 24px; min-height: 0; }
+      table { width: 100%; border-collapse: collapse; }
+      th {
+        text-align: left;
+        font-size: 10px;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        font-weight: 600;
+        padding: 0 14px 9px 0;
+        border-bottom: 1px solid var(--line);
+        position: sticky;
+        top: 0;
+        background: var(--bg);
+      }
+      td { padding: 10px 14px 10px 0; border-bottom: 1px solid var(--line-soft); vertical-align: top; font-size: 11.5px; }
+      .nm { color: var(--ink); white-space: nowrap; }
+      .desig { color: var(--ink-dim); white-space: nowrap; }
+      .id { color: var(--ink-faint); font-size: 10.5px; }
+      .mdl { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10.5px; }
+      .mdl.opus { background: rgba(224, 138, 61, 0.14); color: #e0a06a; }
+      .mdl.sonnet { background: rgba(79, 143, 240, 0.13); color: #7bb6f0; }
+      .mdl.haiku { background: rgba(75, 181, 67, 0.12); color: #7cc47a; }
+      .dash { color: var(--ink-faint); }
+      .ovr {
+        display: inline-block;
+        font-size: 9.5px;
+        padding: 1.5px 6px;
+        border-radius: 3px;
+        background: rgba(214, 162, 49, 0.13);
+        color: var(--warn);
+        margin-left: 7px;
+      }
+      .sect {
+        font-size: 10.5px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        padding: 22px 0 9px;
+        font-weight: 600;
+      }
+      .why {
+        color: var(--ink-faint);
+        font-size: 10.5px;
+        line-height: 1.6;
+        max-width: 430px;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
     </style>
   </head>
   <body>

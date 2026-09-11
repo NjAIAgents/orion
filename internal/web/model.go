@@ -49,6 +49,11 @@ type Card struct {
 	// by: internal/ui gives each ticket its own colour and the browser reuses
 	// the same axis so the two surfaces never disagree.
 	Key string
+	// Run is the run id this card summarises (cards.go groups by (Key, Run),
+	// one card per pair). Carried so a click on a card can ask /api/detail
+	// for exactly this run -- without it, the detail page for a ticket
+	// worked more than once would have no way to say which run it means.
+	Run string
 	// Title is the ticket's summary, as the tracker states it.
 	Title string
 	// Verb is the outcome word, one of internal/ui's five and no others: ok,
