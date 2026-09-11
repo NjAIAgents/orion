@@ -17,7 +17,7 @@ func TestScanSetsDoneWhenRunEndEventPresent(t *testing.T) {
 		ev(0, events.KindRunStart, "OR-57", "r1"),
 		ev(time.Minute, events.KindTool, "OR-57", "r1"),
 		ev(2*time.Minute, events.KindRunEnd, "OR-57", "r1"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 1; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
@@ -33,7 +33,7 @@ func TestScanDoneFalseWhenNoRunEndEvent(t *testing.T) {
 	cards := Scan([]events.Event{
 		ev(0, events.KindRunStart, "OR-57", "r1"),
 		ev(time.Minute, events.KindTool, "OR-57", "r1"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 1; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
@@ -46,11 +46,11 @@ func TestScanDoneFalseWhenNoRunEndEvent(t *testing.T) {
 // A machine where nothing has run yet is a normal state, not an error: no
 // events in, no cards out, no panic.
 func TestScanEmptyLogReturnsZeroCards(t *testing.T) {
-	if got := Scan(nil); len(got) != 0 {
+	if got := Scan(nil, nil); len(got) != 0 {
 		t.Errorf("Scan(nil) returned %d cards, want 0", len(got))
 	}
-	if got := Scan([]events.Event{}); len(got) != 0 {
-		t.Errorf("Scan([]events.Event{}) returned %d cards, want 0", len(got))
+	if got := Scan([]events.Event{}, nil); len(got) != 0 {
+		t.Errorf("Scan([]events.Event{}, nil) returned %d cards, want 0", len(got))
 	}
 }
 
@@ -68,7 +68,7 @@ func TestScanActivityAndModelSurviveEventsOutOfFileOrder(t *testing.T) {
 	newest.Msg = "writing the done-flag test"
 
 	// Written out of timestamp order: newest first, then oldest, then middle.
-	cards := Scan([]events.Event{newest, oldest, middle})
+	cards := Scan([]events.Event{newest, oldest, middle}, nil)
 
 	if got, want := len(cards), 1; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)

@@ -71,7 +71,7 @@ func TestScanPreservesActivityAsPlainStringWithoutConversion(t *testing.T) {
 	cards := Scan([]events.Event{
 		{At: base, Kind: events.KindRunStart, Key: "OR-276", Run: "r1"},
 		{At: base.Add(time.Minute), Kind: events.KindSay, Key: "OR-276", Run: "r1", Msg: raw},
-	})
+	}, nil)
 	if got, want := len(cards), 1; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
 	}

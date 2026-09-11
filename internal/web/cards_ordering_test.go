@@ -24,7 +24,7 @@ func TestScanSelectsModelByEventTimestampNotFilePosition(t *testing.T) {
 		ev(0, events.KindRunStart, "OR-57", "r1"),
 		newer,
 		older,
-	})
+	}, nil)
 
 	if got, want := cards[0].Session.Model, "sonnet"; got != want {
 		t.Errorf("Model = %q, want %q: the later timestamp must win over the later file position", got, want)
@@ -37,7 +37,7 @@ func TestScanOrdersCardsByKeyAscending(t *testing.T) {
 		ev(0, events.KindTool, "OR-58", "r1"),
 		ev(time.Minute, events.KindTool, "OR-56", "r1"),
 		ev(2*time.Minute, events.KindTool, "OR-57", "r1"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 3; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
@@ -60,7 +60,7 @@ func TestScanOrdersSameKeyCardsByRunStartTimeAscending(t *testing.T) {
 
 		ev(0, events.KindRunStart, "OR-57", "r1"),
 		ev(time.Minute, events.KindTool, "OR-57", "r1"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 2; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
@@ -86,7 +86,7 @@ func TestScanOrdersSameKeySameStartCardsByRunIDAscending(t *testing.T) {
 
 	// Both runs start at the same instant; written in descending run-ID
 	// order so a passing test can't be an accident of input order.
-	cards := Scan([]events.Event{runR2, runR1})
+	cards := Scan([]events.Event{runR2, runR1}, nil)
 
 	if got, want := len(cards), 2; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)

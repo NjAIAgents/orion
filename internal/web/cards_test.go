@@ -49,7 +49,7 @@ func TestScanDerivesACardPerRunFromAFixtureLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fixture log: %v", err)
 	}
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	if got, want := len(cards), 2; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
@@ -102,7 +102,7 @@ func TestScanSplitsOneKeyIntoOneCardPerRun(t *testing.T) {
 		ev(3*time.Minute, events.KindRunStart, "OR-57", "r2"),
 		ev(4*time.Minute, events.KindTool, "OR-57", "r2"),
 		ev(5*time.Minute, events.KindTool, "OR-57", "r2"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 2; got != want {
 		t.Fatalf("two runs of one key gave %d cards, want %d", got, want)
@@ -130,7 +130,7 @@ func TestScanKeepsTwoKeysApartWhenTheyShareARunID(t *testing.T) {
 	cards := Scan([]events.Event{
 		ev(0, events.KindTool, "OR-57", "r1"),
 		ev(time.Minute, events.KindTool, "OR-58", "r1"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 2; got != want {
 		t.Fatalf("two keys sharing run %q gave %d cards, want %d", "r1", got, want)
@@ -151,7 +151,7 @@ func TestScanCountsToolCallsAsStepsAndNothingElse(t *testing.T) {
 		ev(4*time.Minute, events.KindStage, "OR-57", "r1"),
 		ev(5*time.Minute, events.KindTool, "OR-57", "r1"),
 		ev(6*time.Minute, events.KindRunEnd, "OR-57", "r1"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 1; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
@@ -172,7 +172,7 @@ func TestScanTakesActivityFromTheAgentsNewestOwnLine(t *testing.T) {
 	ended := ev(3*time.Minute, events.KindRunEnd, "OR-57", "r1")
 	ended.Msg = "exit 0"
 
-	cards := Scan([]events.Event{ev(0, events.KindRunStart, "OR-57", "r1"), first, said, ended})
+	cards := Scan([]events.Event{ev(0, events.KindRunStart, "OR-57", "r1"), first, said, ended}, nil)
 	if got, want := cards[0].Session.Activity, "writing the card derivation"; got != want {
 		t.Errorf("Activity = %q, want %q", got, want)
 	}
@@ -184,7 +184,7 @@ func TestScanLeavesActivityEmptyWhenTheAgentHasNotSpoken(t *testing.T) {
 	started := ev(0, events.KindRunStart, "OR-57", "r1")
 	started.Msg = "session open: 12 tools"
 
-	cards := Scan([]events.Event{started})
+	cards := Scan([]events.Event{started}, nil)
 	if got := cards[0].Session.Activity; got != "" {
 		t.Errorf("Activity = %q, want empty", got)
 	}
@@ -199,7 +199,7 @@ func TestScanTakesTheNewestModelAndSilenceDoesNotClearIt(t *testing.T) {
 	fell := ev(time.Minute, events.KindTool, "OR-57", "r1")
 	fell.Model = "sonnet"
 
-	cards := Scan([]events.Event{start, fell, ev(2*time.Minute, events.KindCommit, "OR-57", "r1")})
+	cards := Scan([]events.Event{start, fell, ev(2*time.Minute, events.KindCommit, "OR-57", "r1")}, nil)
 	if got, want := cards[0].Session.Model, "sonnet"; got != want {
 		t.Errorf("Model = %q, want %q", got, want)
 	}
@@ -214,7 +214,7 @@ func TestScanReadsActivityAndModelByTimestampNotByFilePosition(t *testing.T) {
 	older := ev(time.Minute, events.KindTool, "OR-57", "r1")
 	older.Msg, older.Model = "Read internal/web/model.go", "opus"
 
-	cards := Scan([]events.Event{newer, older})
+	cards := Scan([]events.Event{newer, older}, nil)
 	if got, want := cards[0].Session.Activity, "Edit internal/web/cards.go"; got != want {
 		t.Errorf("Activity = %q, want %q", got, want)
 	}
@@ -230,7 +230,7 @@ func TestScanSkipsEventsThatBelongToNoTicket(t *testing.T) {
 	cards := Scan([]events.Event{
 		ev(0, events.KindNote, "", ""),
 		ev(time.Minute, events.KindTool, "OR-57", "r1"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 1; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
@@ -262,7 +262,7 @@ func TestScanOrdersCardsByKeyThenStart(t *testing.T) {
 	}
 
 	for attempt := 0; attempt < 5; attempt++ {
-		cards := Scan(evs)
+		cards := Scan(evs, nil)
 		if got := len(cards); got != len(want) {
 			t.Fatalf("Scan returned %d cards, want %d", got, len(want))
 		}
@@ -290,7 +290,7 @@ func TestScanBreaksAStartedTieOnTheRunID(t *testing.T) {
 	}
 
 	for attempt := 0; attempt < 5; attempt++ {
-		cards := Scan(evs)
+		cards := Scan(evs, nil)
 		if got, want := len(cards), 2; got != want {
 			t.Fatalf("Scan returned %d cards, want %d", got, want)
 		}
@@ -304,7 +304,7 @@ func TestScanBreaksAStartedTieOnTheRunID(t *testing.T) {
 // An empty log is a machine where nothing has run, which is a normal state and
 // not an error: no cards, no panic.
 func TestScanOnAnEmptyLogReturnsNoCards(t *testing.T) {
-	if got := Scan(nil); len(got) != 0 {
+	if got := Scan(nil, nil); len(got) != 0 {
 		t.Errorf("Scan(nil) returned %d cards, want 0", len(got))
 	}
 }

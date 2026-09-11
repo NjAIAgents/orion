@@ -207,7 +207,7 @@ func TestScanOverFixtureLogs(t *testing.T) {
 				t.Fatalf("events.Read(%s) = %v, want the log to read cleanly", path, err)
 			}
 
-			cards := Scan(evs)
+			cards := Scan(evs, nil)
 			if got, want := len(cards), len(tc.want); got != want {
 				t.Fatalf("Scan returned %d cards, want %d: %+v", got, want, cards)
 			}

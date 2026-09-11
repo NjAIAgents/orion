@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/orion-sdlc/orion/internal/events"
 )
@@ -15,7 +16,7 @@ import (
 // rule, exercised at this ticket's boundary). The handler answers 200 with
 // an empty body rather than an error page.
 func TestSnapshotOnAnEmptyMachineIsEmptyButValid(t *testing.T) {
-	snap, err := buildSnapshot(t.TempDir())
+	snap, err := buildSnapshot(t.TempDir(), time.Now())
 	if err != nil {
 		t.Fatalf("an empty machine must not be an error: %v", err)
 	}
@@ -31,7 +32,7 @@ func TestSnapshotChangesBetweenTwoCallsAcrossAnAppendedEvent(t *testing.T) {
 	home := t.TempDir()
 	ws := mkTestWorkspace(t, home, "proj-a")
 
-	first, err := buildSnapshot(home)
+	first, err := buildSnapshot(home, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +44,7 @@ func TestSnapshotChangesBetweenTwoCallsAcrossAnAppendedEvent(t *testing.T) {
 		Kind: events.KindRunStart, Key: "OR-1", Actor: "implementer", Run: "r1",
 	})
 
-	second, err := buildSnapshot(home)
+	second, err := buildSnapshot(home, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +66,7 @@ func TestAnUnreadableWorkspaceIsSkippedNotFatal(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, "projects", "half-init"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildSnapshot(home); err != nil {
+	if _, err := buildSnapshot(home, time.Now()); err != nil {
 		t.Fatalf("one unreadable workspace must not fail the whole snapshot: %v", err)
 	}
 }

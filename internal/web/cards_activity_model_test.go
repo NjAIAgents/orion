@@ -19,7 +19,7 @@ func TestScanLeavesActivityEmptyWhenNoToolOrSayEvents(t *testing.T) {
 		ev(time.Minute, events.KindCommit, "OR-57", "r1"),
 		ev(2*time.Minute, events.KindStage, "OR-57", "r1"),
 		ev(3*time.Minute, events.KindRunEnd, "OR-57", "r1"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 1; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
@@ -42,7 +42,7 @@ func TestScanActivitySelectedByTimestampNotFilePosition(t *testing.T) {
 		writtenLastButNewer,
 		ev(0, events.KindRunStart, "OR-57", "r1"),
 		writtenFirstButOlder,
-	})
+	}, nil)
 
 	if got, want := cards[0].Session.Activity, "wiring up activity"; got != want {
 		t.Errorf("Activity = %q, want %q: the newer event by timestamp, not the one written last", got, want)
@@ -59,7 +59,7 @@ func TestScanModelIsLatestNonEmptyValueFromEvents(t *testing.T) {
 	third := ev(2*time.Minute, events.KindTool, "OR-57", "r1")
 	third.Model = "haiku"
 
-	cards := Scan([]events.Event{first, second, third})
+	cards := Scan([]events.Event{first, second, third}, nil)
 	if got, want := cards[0].Session.Model, "haiku"; got != want {
 		t.Errorf("Model = %q, want %q: the newest non-empty model value", got, want)
 	}
@@ -72,7 +72,7 @@ func TestScanModelEmptyWhenNoEventCarriesModel(t *testing.T) {
 		ev(0, events.KindRunStart, "OR-57", "r1"),
 		ev(time.Minute, events.KindTool, "OR-57", "r1"),
 		ev(2*time.Minute, events.KindRunEnd, "OR-57", "r1"),
-	})
+	}, nil)
 
 	if got := cards[0].Session.Model; got != "" {
 		t.Errorf("Model = %q, want empty: no event carried a model value", got)
@@ -91,7 +91,7 @@ func TestScanSilenceDoesNotClearAnExistingModel(t *testing.T) {
 		ev(time.Minute, events.KindTool, "OR-57", "r1"),
 		ev(2*time.Minute, events.KindSay, "OR-57", "r1"),
 		ev(3*time.Minute, events.KindRunEnd, "OR-57", "r1"),
-	})
+	}, nil)
 
 	if got, want := cards[0].Session.Model, "opus"; got != want {
 		t.Errorf("Model = %q, want %q: later modelless events must not clear it", got, want)

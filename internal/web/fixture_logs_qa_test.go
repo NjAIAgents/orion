@@ -50,7 +50,7 @@ func TestScanTruncatedFinalLineIsNotIncludedInScanResult(t *testing.T) {
 // tail would throw away everything the run did up to the moment it died.
 func TestScanTruncatedFinalLineCompleteEventsBeforeItProduceCorrectCard(t *testing.T) {
 	evs := truncatedFixture(t, events.Path(t.TempDir()))
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	if got, want := len(cards), 1; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
@@ -68,7 +68,7 @@ func TestScanTruncatedFinalLineCompleteEventsBeforeItProduceCorrectCard(t *testi
 // the card's activity, since that string names no file that exists.
 func TestScanTruncatedFinalLineActivityShowsLastCompleteEvent(t *testing.T) {
 	evs := truncatedFixture(t, events.Path(t.TempDir()))
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	if got, want := cards[0].Session.Activity, "Edit internal/web/cards.go"; got != want {
 		t.Errorf("cards[0].Session.Activity = %q, want %q (the truncated line, not the last complete one)", got, want)
@@ -81,7 +81,7 @@ func TestScanTruncatedFinalLineActivityShowsLastCompleteEvent(t *testing.T) {
 // time the log never established.
 func TestScanTruncatedFinalLineElapsedReflectsOnlyCompleteEvents(t *testing.T) {
 	evs := truncatedFixture(t, events.Path(t.TempDir()))
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	if got, want := cards[0].Session.Elapsed(), 2*time.Minute; got != want {
 		t.Errorf("cards[0].Session.Elapsed() = %s, want %s (bounded by the last complete event, not the truncated one)", got, want)
@@ -148,7 +148,7 @@ func TestScanConcurrentRunsEventsFromBothRunsAreInterleavedInOneLogFile(t *testi
 // three steps.
 func TestScanConcurrentRunsInOneWorkspaceProduceTwoSeparateCardsNotMerged(t *testing.T) {
 	evs := concurrentFixture(t, events.Path(t.TempDir()))
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	if got, want := len(cards), 2; got != want {
 		t.Fatalf("Scan returned %d cards, want %d (the two runs must not merge into one)", got, want)
@@ -162,7 +162,7 @@ func TestScanConcurrentRunsInOneWorkspaceProduceTwoSeparateCardsNotMerged(t *tes
 // would be the tell that grouping folded the runs together.
 func TestScanConcurrentRunsEachCardHasIndependentStepCount(t *testing.T) {
 	evs := concurrentFixture(t, events.Path(t.TempDir()))
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	if got, want := cards[0].Session.Steps, 1; got != want {
 		t.Errorf("cards[0].Session.Steps = %d, want %d (r1 took one tool call)", got, want)
@@ -177,7 +177,7 @@ func TestScanConcurrentRunsEachCardHasIndependentStepCount(t *testing.T) {
 // run is still what r2 alone spans.
 func TestScanConcurrentRunsEachCardHasIndependentTiming(t *testing.T) {
 	evs := concurrentFixture(t, events.Path(t.TempDir()))
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	if got, want := cards[0].Session.Started, base; !got.Equal(want) {
 		t.Errorf("cards[0].Session.Started = %s, want %s", got, want)
@@ -200,7 +200,7 @@ func TestScanConcurrentRunsEachCardHasIndependentTiming(t *testing.T) {
 // count.
 func TestScanConcurrentRunsEachCardShowsOnlyItsOwnActivityAndState(t *testing.T) {
 	evs := concurrentFixture(t, events.Path(t.TempDir()))
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	if got, want := cards[0].Session.Activity, "Read internal/web/cards.go"; got != want {
 		t.Errorf("cards[0].Session.Activity = %q, want %q", got, want)
@@ -285,7 +285,7 @@ func threeConcurrentFixture(t *testing.T, path string) []events.Event {
 // case its way through.
 func TestScanThreeConcurrentRunsProduceThreeSeparateCards(t *testing.T) {
 	evs := threeConcurrentFixture(t, events.Path(t.TempDir()))
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	if got, want := len(cards), 3; got != want {
 		t.Fatalf("Scan returned %d cards, want %d (three concurrent runs must not merge into fewer)", got, want)
@@ -302,7 +302,7 @@ func TestScanThreeConcurrentRunsProduceThreeSeparateCards(t *testing.T) {
 // count or span none of the three runs actually had.
 func TestScanThreeConcurrentRunsStepCountsAndTimingAreNotMergedAcrossRuns(t *testing.T) {
 	evs := threeConcurrentFixture(t, events.Path(t.TempDir()))
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	if got, want := cards[0].Session.Steps, 1; got != want {
 		t.Errorf("cards[0].Session.Steps = %d, want %d (r1 took one tool call)", got, want)
@@ -339,7 +339,7 @@ func TestScanThreeConcurrentRunsStepCountsAndTimingAreNotMergedAcrossRuns(t *tes
 // -- not the last event in the file, and not another run's terminal state.
 func TestScanThreeConcurrentRunsActivityAndDoneStateAreNotMergedAcrossRuns(t *testing.T) {
 	evs := threeConcurrentFixture(t, events.Path(t.TempDir()))
-	cards := Scan(evs)
+	cards := Scan(evs, nil)
 
 	if got, want := cards[0].Session.Activity, "Read internal/web/cards.go"; got != want {
 		t.Errorf("cards[0].Session.Activity = %q, want %q", got, want)

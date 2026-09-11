@@ -14,7 +14,7 @@ func TestScanExcludesEventsWithEmptyKey(t *testing.T) {
 	cards := Scan([]events.Event{
 		ev(0, events.KindNote, "", "r0"),
 		ev(time.Minute, events.KindTool, "OR-57", "r1"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 1; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
@@ -33,7 +33,7 @@ func TestScanExcludesEventsWithEmptyKey(t *testing.T) {
 // whatever ticket happens to be nearby.
 func TestScanExcludesEventsWithMissingKey(t *testing.T) {
 	noKey := events.Event{At: base, Kind: events.KindTool}
-	cards := Scan([]events.Event{noKey, ev(time.Minute, events.KindTool, "OR-57", "r1")})
+	cards := Scan([]events.Event{noKey, ev(time.Minute, events.KindTool, "OR-57", "r1")}, nil)
 
 	if got, want := len(cards), 1; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
@@ -55,7 +55,7 @@ func TestScanStepCountEqualsToolEventCount(t *testing.T) {
 		ev(2*time.Minute, events.KindTool, "OR-57", "r1"),
 		ev(3*time.Minute, events.KindTool, "OR-57", "r1"),
 		ev(4*time.Minute, events.KindRunEnd, "OR-57", "r1"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 1; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
@@ -75,7 +75,7 @@ func TestScanStepCountExcludesNonToolKinds(t *testing.T) {
 		ev(2*time.Minute, events.KindCommit, "OR-57", "r1"),
 		ev(3*time.Minute, events.KindStage, "OR-57", "r1"),
 		ev(4*time.Minute, events.KindRunEnd, "OR-57", "r1"),
-	})
+	}, nil)
 
 	if got, want := len(cards), 1; got != want {
 		t.Fatalf("Scan returned %d cards, want %d", got, want)
@@ -94,7 +94,7 @@ func TestScanActivityIsLatestMessageFromToolOrSay(t *testing.T) {
 	sayLatest := ev(2*time.Minute, events.KindSay, "OR-57", "r1")
 	sayLatest.Msg = "wiring up the grid"
 
-	cards := Scan([]events.Event{ev(0, events.KindRunStart, "OR-57", "r1"), toolFirst, sayLatest})
+	cards := Scan([]events.Event{ev(0, events.KindRunStart, "OR-57", "r1"), toolFirst, sayLatest}, nil)
 	if got, want := cards[0].Session.Activity, "wiring up the grid"; got != want {
 		t.Errorf("Activity = %q, want %q: say was the newer of the two", got, want)
 	}
@@ -104,7 +104,7 @@ func TestScanActivityIsLatestMessageFromToolOrSay(t *testing.T) {
 	toolLatest := ev(2*time.Minute, events.KindTool, "OR-58", "r1")
 	toolLatest.Msg = "Edit internal/web/cards_test.go"
 
-	cards = Scan([]events.Event{ev(0, events.KindRunStart, "OR-58", "r1"), sayFirst, toolLatest})
+	cards = Scan([]events.Event{ev(0, events.KindRunStart, "OR-58", "r1"), sayFirst, toolLatest}, nil)
 	if got, want := cards[0].Session.Activity, "Edit internal/web/cards_test.go"; got != want {
 		t.Errorf("Activity = %q, want %q: tool was the newer of the two", got, want)
 	}
