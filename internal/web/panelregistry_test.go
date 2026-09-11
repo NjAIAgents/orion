@@ -46,13 +46,20 @@ func TestAppJSBuildsNavFromTheRegistry(t *testing.T) {
 		t.Fatal("app.js does not call listPanels(); the nav has nothing to draw from " +
 			"but a hardcoded list")
 	}
-	if !strings.Contains(src, "navPanels.map(") {
-		t.Error("app.js does not map over the registered panels to build the nav")
+	// The sidebar (OR-439) splits the registry into two rendered groups --
+	// pagePanels (inNav !== false) and viewPanels (inNav === false) -- rather
+	// than one navPanels list, so both must exist and both must be mapped
+	// over, or one half of the registry has nothing rendering it.
+	if !strings.Contains(src, "pagePanels.map(") {
+		t.Error("app.js does not map over pagePanels to build the sidebar's page section")
+	}
+	if !strings.Contains(src, "viewPanels.map(") {
+		t.Error("app.js does not map over viewPanels to build the sidebar's destination-view section")
 	}
 	if !strings.Contains(src, "panels.filter(") {
-		t.Error("app.js does not filter the registry (OR-53's detail panel excludes " +
-			"itself from the nav via inNav: false); a nav built straight from listPanels() " +
-			"with no filter would put a tab on a parameterised, destination-only route")
+		t.Error("app.js does not filter the registry (OR-53's detail panel and OR-437's ask " +
+			"broker mark themselves inNav: false); a sidebar built straight from listPanels() " +
+			"with no filter could not tell a page from a destination-only view")
 	}
 }
 

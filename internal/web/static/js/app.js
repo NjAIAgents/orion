@@ -57,31 +57,37 @@ class App extends Component {
     }
     const active = panels.find((p) => p.name === current) || panels[0];
     const Panel = active.Component;
-    // Filtered from the same registry listPanels() returned, never a second
-    // hardcoded list: navPanels excludes only what a panel itself marked
-    // inNav: false (OR-53's ticket-detail page, reached from a card rather
-    // than a tab).
-    const navPanels = panels.filter((p) => p.inNav !== false);
+    // The sidebar (OR-439) reaches EVERY registered panel, split into two
+    // sections on the same inNav flag registerPanel already carries: a page
+    // meant to be opened cold ("pages") versus a destination that wants a
+    // key/run to be useful ("views" -- OR-53's ticket-detail, OR-437's ask
+    // broker). Never a second hardcoded list -- both groups come straight
+    // out of listPanels().
+    const pagePanels = panels.filter((p) => p.inNav !== false);
+    const viewPanels = panels.filter((p) => p.inNav === false);
+    const item = (p) => html`
+      <a key=${p.name} class="sideitem ${p.name === active.name ? "on" : ""}" href="#${p.name}">
+        ${p.title}
+      </a>
+    `;
     return html`
       <div class="app">
-        <div class="topbar">
-          <div class="brand">orion<span class="dot">·</span>web</div>
-          <div class="nav">
-            ${navPanels.map(
-              (p) => html`
-                <a
-                  key=${p.name}
-                  class="item ${p.name === active.name ? "on" : ""}"
-                  href="#${p.name}"
-                >
-                  ${p.title}
-                </a>
-              `
-            )}
+        <div class="sidebar">
+          <div class="sidebrand">orion<span class="dot">·</span>web</div>
+          <div class="sidenav">
+            <div class="sidelabel">pages</div>
+            ${pagePanels.map(item)}
+            ${viewPanels.length > 0
+              ? html`
+                  <div class="sidelabel">views</div>
+                  ${viewPanels.map(item)}
+                `
+              : null}
           </div>
-          <div class="spacer"></div>
         </div>
-        <${Panel} />
+        <div class="mainarea">
+          <${Panel} />
+        </div>
       </div>
     `;
   }

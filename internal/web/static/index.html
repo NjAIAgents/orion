@@ -56,28 +56,56 @@
       }
       a { color: var(--wait); }
       a:hover { color: #7db0ff; }
-      .app { display: flex; flex-direction: column; height: 100vh; }
-      .topbar {
+      .app { display: flex; flex-direction: row; height: 100vh; }
+      /* The sidebar (OR-439): a persistent left-side menu reaching every
+         registered panel, not only the ones the old horizontal topbar tabs
+         had room for. Two sections, split on the same inNav flag
+         registerPanel already carries (panels.js) -- "pages" for a tab
+         meant to be opened cold, "views" for a destination like ticket-
+         detail or ask-broker that wants a key/run to be useful. No mockup
+         draws this pattern (each one only shows its own page's relevant
+         tabs), so the visual language here is this codebase's own: same
+         tokens, same mono type, distinct from any single mockup. */
+      .sidebar {
+        width: 176px;
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid var(--line);
+        background: var(--panel);
+      }
+      .sidebrand {
+        font-weight: 600;
+        font-size: 13px;
+        padding: 0 16px;
+        height: 44px;
         display: flex;
         align-items: center;
-        gap: 16px;
-        padding: 0 18px;
-        height: 44px;
         border-bottom: 1px solid var(--line);
-        background: var(--panel);
         flex: none;
       }
-      .brand { font-weight: 600; font-size: 13px; }
-      .brand .dot { color: var(--work); }
-      .nav { display: flex; gap: 2px; }
-      .nav .item {
-        padding: 5px 11px;
+      .sidebrand .dot { color: var(--work); }
+      .sidenav { flex: 1; overflow: auto; padding: 12px 10px; }
+      .sidelabel {
+        font-size: 9.5px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        font-weight: 600;
+        padding: 12px 8px 6px;
+      }
+      .sidelabel:first-child { padding-top: 2px; }
+      .sideitem {
+        display: block;
+        padding: 6px 8px;
         border-radius: 5px;
         color: var(--ink-faint);
         font-size: 11.5px;
         text-decoration: none;
       }
-      .nav .item.on { background: rgba(47, 179, 196, 0.12); color: var(--work); }
+      .sideitem:hover { color: var(--ink-dim); }
+      .sideitem.on { background: rgba(47, 179, 196, 0.12); color: var(--work); }
+      .mainarea { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
       .spacer { flex: 1; }
       .dotlive { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
       .body { display: flex; flex: 1; min-height: 0; }
