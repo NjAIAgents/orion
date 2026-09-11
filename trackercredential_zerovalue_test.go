@@ -118,6 +118,17 @@ func TestConfigDefaultsRoundTripPreservesValuesAndNoCredential(t *testing.T) {
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatal(err)
 	}
+	// Toolkit.Stages is `map[string]string` with `omitempty` (internal/config/
+	// toolkit.go): Defaults() sets it to an empty, non-nil map, but an empty
+	// map IS empty for omitempty's purposes, so the JSON carries no "stages"
+	// key at all and Unmarshal leaves it nil. Stages' own doc comment says
+	// "EMPTY IS THE DEFAULT AND MEANS unset" -- nil and an empty map mean the
+	// same thing to every real reader (len is 0, ranging over either is
+	// safe), so the round trip lost nothing a consumer can observe. Normalise
+	// both sides to nil before comparing, rather than asserting a
+	// byte-for-byte identity the type's own contract does not promise.
+	want.Toolkit.Stages = nil
+	got.Toolkit.Stages = nil
 	if !reflect.DeepEqual(want, got) {
 		t.Errorf("config.Defaults() did not round-trip unchanged through JSON:\n got:  %+v\n want: %+v", got, want)
 	}
