@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/session"
 )
 
 // A machine with nothing ever run is a fresh install, not a fault (OR-65's
@@ -28,9 +29,17 @@ func TestSnapshotOnAnEmptyMachineIsEmptyButValid(t *testing.T) {
 // THE ACCEPTANCE CRITERION, verbatim: two calls straddling an appended event
 // return different results. Proves the endpoint re-reads rather than caching
 // a snapshot taken once at startup.
+//
+// A live session.KindWork session for OR-1 is started first (OR-435): with
+// no live session and no run-end, the appended run-start alone would be a
+// stopped/abandoned run under CurrentBatch's filter, not the current batch,
+// and the assertion below would see zero cards for the wrong reason -- the
+// endpoint not re-reading, masked by the card being filtered either way.
 func TestSnapshotChangesBetweenTwoCallsAcrossAnAppendedEvent(t *testing.T) {
 	home := t.TempDir()
 	ws := mkTestWorkspace(t, home, "proj-a")
+	s := session.Start(home, session.KindWork, []string{"OR-1"})
+	defer s.Stop()
 
 	first, err := buildSnapshot(home, time.Now())
 	if err != nil {

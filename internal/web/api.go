@@ -88,8 +88,6 @@ func buildSnapshot(home string, now time.Time) (Snapshot, error) {
 	}
 
 	var cards []Card
-	var started time.Time
-	var at time.Time
 	for _, ws := range wss {
 		evs, err := events.Read(events.Path(ws.Dir))
 		if err != nil {
@@ -99,14 +97,24 @@ func buildSnapshot(home string, now time.Time) (Snapshot, error) {
 			// one mid-write, must not take the whole snapshot down with it.
 			continue
 		}
-		for _, c := range Scan(evs, live) {
-			cards = append(cards, c)
-			if s := c.Session.Started; !s.IsZero() && (started.IsZero() || s.Before(started)) {
-				started = s
-			}
-			if l := c.Session.Last; l.After(at) {
-				at = l
-			}
+		cards = append(cards, Scan(evs, live)...)
+	}
+
+	// Narrowed to the current batch BEFORE Started/At are derived (OR-435):
+	// Scan's output spans the log's entire history, and deriving the
+	// snapshot's own timing from that unfiltered set would print "since"
+	// some run from weeks ago even after the grid itself only shows what is
+	// running now.
+	cards = CurrentBatch(cards, live, now)
+
+	var started time.Time
+	var at time.Time
+	for _, c := range cards {
+		if s := c.Session.Started; !s.IsZero() && (started.IsZero() || s.Before(started)) {
+			started = s
+		}
+		if l := c.Session.Last; l.After(at) {
+			at = l
 		}
 	}
 
