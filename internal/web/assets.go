@@ -56,8 +56,8 @@ var vendored embed.FS
 // has to edit a shared list. Without this, `orion web` (OR-61) prints an
 // address whose root is a 404.
 func init() {
-	Handle("/", Assets())
-	Handle("/vendor/", Vendored())
+	HandleReadOnly("/", Assets())
+	HandleReadOnly("/vendor/", Vendored())
 }
 
 // Assets is the front end, ready to mount: the server skeleton gives it "/",

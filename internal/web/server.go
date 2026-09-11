@@ -24,12 +24,16 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/orion-sdlc/orion/internal/localauth"
 )
 
-// route is one registered page: the pattern it answers on and what answers.
+// route is one registered page: the pattern it answers on, what answers, and
+// whether it is exempt from the local-surface token (OR-266).
 type route struct {
-	pattern string
-	handler http.Handler
+	pattern  string
+	handler  http.Handler
+	readOnly bool
 }
 
 // routes is every route registered so far, in registration order. Package
@@ -46,19 +50,37 @@ var routes []route
 // Registering the same pattern twice panics when Listen builds the mux --
 // at startup, where it is one obvious failure, rather than on whichever
 // request happens to find the collision.
+//
+// A route registered here requires the local-surface token (OR-266/268).
+// Use HandleReadOnly for a route that is genuinely safe to serve without one.
 func Handle(pattern string, handler http.Handler) {
 	routes = append(routes, route{pattern: pattern, handler: handler})
+}
+
+// HandleReadOnly registers pattern the same way Handle does, but exempts it
+// from the local-surface token -- GET/HEAD only, enforced by localauth.Guard
+// regardless of what methods handler itself would otherwise accept.
+//
+// The exemption lives at the registration site, next to the handler it
+// exempts, rather than in a separately maintained path list a caller could
+// forget to update -- the exact drift localauth.New's doc comment warns
+// against.
+func HandleReadOnly(pattern string, handler http.Handler) {
+	routes = append(routes, route{pattern: pattern, handler: handler, readOnly: true})
 }
 
 // Server is a bound loopback listener and the routes registered by the time
 // it was bound.
 type Server struct {
-	ln  net.Listener
-	srv *http.Server
+	ln    net.Listener
+	srv   *http.Server
+	guard *localauth.Guard
 }
 
-// Listen binds 127.0.0.1:port and serves the registered routes. It does not
-// start serving; Serve does, so a caller can print the address first.
+// Listen binds 127.0.0.1:port and serves the registered routes behind the
+// local-surface token guard (OR-266): every route requires the token except
+// the ones registered with HandleReadOnly. It does not start serving; Serve
+// does, so a caller can print the address (and the token) first.
 //
 // Port 0 asks the operating system for a free port and Addr reports which one
 // it got, so a test never hardcodes a number and never loses a race with
@@ -70,12 +92,23 @@ func Listen(port int) (*Server, error) {
 	}
 
 	mux := http.NewServeMux()
+	var readOnly []string
 	for _, r := range routes {
 		mux.Handle(r.pattern, r.handler)
+		if r.readOnly {
+			readOnly = append(readOnly, r.pattern)
+		}
 	}
 
-	return &Server{ln: ln, srv: &http.Server{
-		Handler: mux,
+	boundPort := ln.Addr().(*net.TCPAddr).Port
+	guard, err := localauth.New(boundPort, readOnly...)
+	if err != nil {
+		_ = ln.Close()
+		return nil, fmt.Errorf("orion web: minting the local surface token: %w", err)
+	}
+
+	return &Server{ln: ln, guard: guard, srv: &http.Server{
+		Handler: guard.Middleware(mux),
 		// A request whose headers never finish arriving would otherwise hold
 		// its connection open indefinitely.
 		ReadHeaderTimeout: 10 * time.Second,
@@ -85,6 +118,12 @@ func Listen(port int) (*Server, error) {
 // Addr is the address actually bound, host and port -- "127.0.0.1:52341".
 // This is the string to print for the operator and to dial in a test.
 func (s *Server) Addr() string { return s.ln.Addr().String() }
+
+// Token is the local-surface token (OR-266/268) a caller must send in the
+// localauth.HeaderName header on every request but those registered with
+// HandleReadOnly. Print it once to the launching terminal; do not log it on
+// every request.
+func (s *Server) Token() string { return s.guard.Token() }
 
 // Serve serves until Close, then returns http.ErrServerClosed.
 func (s *Server) Serve() error { return s.srv.Serve(s.ln) }

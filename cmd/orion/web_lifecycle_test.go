@@ -167,8 +167,14 @@ func TestWebSubcommand404sUnknownPathsAndStaysReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("POST / = %d, want %d -- the served tree must stay read-only", resp.StatusCode, http.StatusMethodNotAllowed)
+	// OR-266's guard now stands in front of the tree: "/" is registered
+	// read-only, and a read-only registration exempts GET/HEAD only (server.go,
+	// localauth.Guard.check), so a POST here is denied by the guard itself,
+	// with no token to send from this test's plain client -- before the served
+	// tree ever gets a chance to say 405 on its own. Both status codes prove
+	// the same thing this test's name promises: the tree stays read-only.
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("POST / = %d, want %d -- the served tree must stay read-only", resp.StatusCode, http.StatusForbidden)
 	}
 }
 
