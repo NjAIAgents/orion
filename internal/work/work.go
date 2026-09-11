@@ -46,6 +46,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/registry"
+	"github.com/orion-sdlc/orion/internal/session"
 	"github.com/orion-sdlc/orion/internal/slack"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
@@ -222,6 +223,13 @@ func Run(opts Options, deps Deps) []Result {
 		opts.Home = workspace.Home()
 	}
 
+	// This process's liveness record (OR-52): opts.Keys is what this
+	// invocation of `orion work` has in scope, unlike watch's bare-run-covers-
+	// everything case. Start degrades to a no-op heartbeat on failure (its own
+	// doc comment).
+	sess := session.Start(opts.Home, session.KindWork, opts.Keys)
+	defer sess.Stop()
+
 	// A run of identical lines is held back to be printed once with its
 	// count, so the last such run needs somewhere to land. Without this the
 	// count for whatever a ticket ended on is never printed at all (OR-217).
@@ -229,6 +237,7 @@ func Run(opts Options, deps Deps) []Result {
 
 	var results []Result
 	for _, key := range opts.Keys {
+		sess.SetDoing(key)
 		r := one(strings.ToUpper(strings.TrimSpace(key)), opts, deps)
 		results = append(results, r)
 		// Stop the batch on a hard failure. Continuing would spend money on
