@@ -14,3 +14,4 @@ import "./panel-config.js";
 import "./panel-history.js";
 import "./panel-detail.js";
 import "./panel-askbroker.js";
+import "./panel-stageflow.js";
