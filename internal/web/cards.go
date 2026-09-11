@@ -100,6 +100,49 @@ func Scan(evs []events.Event, live map[string]bool) []Card {
 	return out
 }
 
+// GraceAfterFinish is how long a finished run stays on the run page before
+// it drops to history-only -- long enough to read its result, short enough
+// that the page stays a live view rather than an archive (OR-435).
+const GraceAfterFinish = 2 * time.Minute
+
+// CurrentBatch narrows every card Scan ever produced down to the run page's
+// actual subject: what is happening right now, not everything that has ever
+// been logged.
+//
+// Scan has no time boundary and no reason to have one -- it groups whatever
+// events it is given, and buildSnapshot hands it EVERY event in EVERY
+// workspace's log, so its output spans the log's entire history. Without
+// this filter the run page (docs/design/web/01-run-view.html's "Running 5
+// agents ... since 13:31:04") showed 95 cards going back weeks: release
+// tags, months-old tickets, everything -- because nothing between Scan and
+// the page ever asked "is this part of what's running NOW".
+//
+// A card survives if EITHER its key is currently live (an active
+// session.KindWork session is beating for it -- the same live map Scan's
+// own verb coloring already reads), OR it just finished: Done and its
+// Session.Last is within GraceAfterFinish of now. The second clause is what
+// keeps a just-completed card visible for a beat, matching the mockup's "2
+// done" cards, rather than a card vanishing the instant its session ends.
+//
+// A ticket genuinely waiting on CI or a person (the mockup's OR-279/OR-290)
+// has no session-level signal yet distinguishing it from a run that simply
+// stopped -- that gap is OR-436, not this ticket. CurrentBatch only narrows
+// by liveness and the finish grace window; it cannot keep a card this
+// package has no way to recognise as "waiting" in the first place.
+func CurrentBatch(cards []Card, live map[string]bool, now time.Time) []Card {
+	out := make([]Card, 0, len(cards))
+	for _, c := range cards {
+		if live[c.Key] {
+			out = append(out, c)
+			continue
+		}
+		if c.Session.Done && !c.Session.Last.IsZero() && now.Sub(c.Session.Last) <= GraceAfterFinish {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // verbOf is one run's outcome word: one of internal/ui's five, matching
 // exactly what the terminal would show for the same events -- the browser
 // and the console must not disagree about what a run looks like, which is
