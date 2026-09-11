@@ -38,6 +38,12 @@
         --t-teal: #4fc7c7;
         --t-rose: #e08fb0;
         --t-sky: #7bb6f0;
+        /* ask-broker only (docs/design/web/09-ask-broker.html): a second
+           panel shade for its floating node cards, and the amber used for
+           Ravi's identity there -- distinct from --t-orange, which colours
+           a ticket rather than a person. */
+        --panel2: #161b22;
+        --amber: #dcb67a;
       }
       * { box-sizing: border-box; }
       html, body {
@@ -280,6 +286,230 @@
         -webkit-line-clamp: 3;
         -webkit-box-orient: vertical;
         overflow: hidden;
+      }
+
+      /* The ask-broker panel (OR-437, docs/design/web/09-ask-broker.html),
+         copied verbatim and prefixed askb- throughout: this page reuses
+         .dotlive and .chip as NAMES but with different colours and meaning
+         than the shared rules above (an amber blinking dot here, not the
+         green static one everywhere else), so sharing the bare class would
+         silently reconcile two designs that were never meant to agree. */
+      .askb-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+      .askb-crumbbar {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 0 18px;
+        height: 36px;
+        border-bottom: 1px solid var(--line);
+        flex: none;
+      }
+      .askb-crumb { color: var(--ink-faint); font-size: 11.5px; }
+      .askb-spacer { flex: 1; }
+      .askb-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 9px;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        color: var(--ink-dim);
+        font-size: 11px;
+      }
+      .askb-chip.askb-amber {
+        border-color: rgba(214, 162, 49, 0.35);
+        color: var(--warn);
+        background: rgba(214, 162, 49, 0.07);
+      }
+      .askb-dotlive {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--warn);
+        animation: askb-blink 2s ease-in-out infinite;
+      }
+      @keyframes askb-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+      .askb-canvas {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+        background-image: radial-gradient(circle, rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+        background-size: 22px 22px;
+        background-position: -1px -1px;
+      }
+      .askb-edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+      .askb-e { fill: none; stroke-width: 1.7; }
+      .askb-e.askb-ask { stroke: rgba(220, 182, 122, 0.6); }
+      .askb-e.askb-route { stroke: rgba(107, 113, 120, 0.5); stroke-dasharray: 4 4; }
+      .askb-e.askb-inv { stroke: rgba(181, 140, 240, 0.6); }
+      .askb-e.askb-refuse { stroke: rgba(214, 162, 49, 0.6); stroke-dasharray: 6 4; }
+      .askb-e.askb-ans { stroke: rgba(75, 181, 67, 0.6); }
+      .askb-elab { font-size: 9.5px; font-family: var(--mono); fill: var(--ink-faint); }
+      .askb-elab.askb-amber { fill: var(--amber); }
+      .askb-elab.askb-violet { fill: var(--t-violet); }
+      .askb-elab.askb-warn { fill: var(--warn); }
+      .askb-elab.askb-ok { fill: var(--ok); }
+      .askb-num { font-size: 9px; font-weight: 600; font-family: var(--mono); }
+
+      .askb-n { position: absolute; background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; }
+      .askb-nh { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+      .askb-av {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        font-weight: 600;
+        flex: none;
+      }
+      .askb-ntitle { font-size: 11.5px; font-weight: 600; }
+      .askb-nsub { font-size: 9.5px; color: var(--ink-faint); line-height: 1.55; }
+      .askb-nfoot {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-top: 8px;
+        padding-top: 7px;
+        border-top: 1px solid var(--line-soft);
+        font-size: 9.5px;
+        color: var(--ink-faint);
+      }
+      .askb-nfoot .askb-r { margin-left: auto; color: var(--ink-dim); }
+      .askb-port { position: absolute; width: 7px; height: 7px; border-radius: 50%; background: var(--panel); border: 1.5px solid var(--line); }
+
+      .askb-n.askb-ravi { left: 44px; top: 340px; width: 196px; border-color: rgba(220, 182, 122, 0.35); }
+      .askb-n.askb-ravi .askb-av { background: rgba(220, 182, 122, 0.16); color: var(--amber); }
+      .askb-n.askb-ravi .askb-ntitle { color: var(--amber); }
+      .askb-idlebadge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 9px;
+        padding: 2px 7px;
+        border-radius: 3px;
+        background: rgba(107, 113, 120, 0.16);
+        color: var(--ink-faint);
+      }
+      .askb-zz { animation: askb-zz 2.4s ease-in-out infinite; }
+      @keyframes askb-zz { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.85; } }
+
+      .askb-n.askb-orion {
+        left: 392px;
+        top: 318px;
+        width: 216px;
+        border-color: rgba(47, 179, 196, 0.5);
+        box-shadow: 0 0 0 1px rgba(47, 179, 196, 0.16), 0 0 30px rgba(47, 179, 196, 0.12);
+      }
+      .askb-n.askb-orion .askb-av { background: rgba(47, 179, 196, 0.16); color: var(--work); }
+      .askb-n.askb-orion .askb-ntitle { color: var(--work); }
+      .askb-hubpulse {
+        position: absolute;
+        inset: -5px;
+        border-radius: 11px;
+        border: 1px solid var(--work);
+        opacity: 0.35;
+        animation: askb-hp 2.2s ease-out infinite;
+        pointer-events: none;
+      }
+      @keyframes askb-hp { 0% { transform: scale(0.99); opacity: 0.4; } 70% { transform: scale(1.04); opacity: 0; } 100% { opacity: 0; } }
+      .askb-steps { display: flex; gap: 3px; margin-top: 9px; }
+      .askb-st { flex: 1; height: 3px; border-radius: 2px; background: var(--line); }
+      .askb-st.askb-on { background: var(--work); }
+      .askb-st.askb-done { background: var(--ok); }
+      .askb-st.askb-warnb { background: var(--warn); }
+
+      .askb-n.askb-router { left: 392px; top: 170px; width: 216px; border-color: rgba(201, 160, 220, 0.3); }
+      .askb-n.askb-router .askb-av { background: rgba(201, 160, 220, 0.16); color: #c9a0dc; }
+
+      .askb-n.askb-adv { width: 206px; }
+      .askb-n.askb-adv .askb-av { background: rgba(181, 140, 240, 0.16); color: var(--t-violet); }
+      .askb-n.askb-adv .askb-ntitle { color: var(--t-violet); }
+      .askb-n.askb-arch { left: 800px; top: 196px; border-color: rgba(214, 162, 49, 0.42); background: rgba(214, 162, 49, 0.035); }
+      .askb-n.askb-arch .askb-ntitle { color: var(--warn); }
+      .askb-n.askb-arch .askb-av { background: rgba(214, 162, 49, 0.16); color: var(--warn); }
+      .askb-n.askb-pm { left: 800px; top: 432px; border-color: rgba(75, 181, 67, 0.42); background: rgba(75, 181, 67, 0.03); }
+      .askb-n.askb-pm .askb-ntitle { color: var(--ok); }
+      .askb-n.askb-pm .askb-av { background: rgba(75, 181, 67, 0.16); color: var(--ok); }
+      .askb-spinring {
+        position: absolute;
+        top: 10px;
+        right: 11px;
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        border: 1.5px solid transparent;
+        border-top-color: var(--ok);
+        animation: askb-spin 1s linear infinite;
+      }
+      @keyframes askb-spin { to { transform: rotate(360deg); } }
+      .askb-verdict { font-size: 9px; padding: 2px 7px; border-radius: 3px; display: inline-block; margin-top: 7px; }
+      .askb-verdict.askb-ref { background: rgba(214, 162, 49, 0.14); color: var(--warn); }
+      .askb-verdict.askb-ansv { background: rgba(75, 181, 67, 0.14); color: var(--ok); }
+
+      .askb-legend {
+        position: absolute;
+        left: 14px;
+        top: 14px;
+        background: rgba(7, 9, 11, 0.82);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 10px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+      }
+      .askb-lg { display: flex; align-items: center; gap: 9px; font-size: 9.5px; color: var(--ink-faint); }
+      .askb-lgl { width: 22px; height: 0; border-top: 1.7px solid; flex: none; }
+      .askb-callout {
+        position: absolute;
+        background: rgba(7, 9, 11, 0.9);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 9px 12px;
+        font-size: 9.5px;
+        color: var(--ink-faint);
+        line-height: 1.65;
+        max-width: 238px;
+      }
+      .askb-callout b { color: var(--ink-dim); }
+      .askb-callout.askb-w { border-color: rgba(214, 162, 49, 0.28); }
+      .askb-callout.askb-w b { color: var(--warn); }
+      .askb-controls {
+        position: absolute;
+        left: 14px;
+        bottom: 14px;
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        overflow: hidden;
+        background: var(--panel);
+      }
+      .askb-ctl {
+        width: 28px;
+        height: 26px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--ink-faint);
+        font-size: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      .askb-ctl:last-child { border-bottom: none; }
+      .askb-hint {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        bottom: 16px;
+        font-size: 10px;
+        color: var(--ink-faint);
+        background: rgba(7, 9, 11, 0.82);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 5px 12px;
       }
     </style>
   </head>
