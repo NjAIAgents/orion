@@ -37,7 +37,10 @@ func StageDone(ws *workspace.Workspace, stage string) bool {
 	}
 	cfg := config.Load(ws.RepoDir())
 	if rel := stageArtifact(cfg, stage, ws.Task.Slug); rel != "" {
-		if checkStageArtifact(ws.RepoDir(), cfg, stage, ws.Task.Slug) != nil {
+		// heal:false -- this is a read-only resume check, possibly asked many
+		// times, and answering it must never have the side effect of writing
+		// a commit (OR-441).
+		if _, err := checkStageArtifact(ws.RepoDir(), cfg, stage, ws.Task.Slug, false); err != nil {
 			return false
 		}
 		switch strings.ToLower(strings.TrimSpace(stage)) {
