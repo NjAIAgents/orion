@@ -97,6 +97,11 @@ func specArtifact(cfg config.Config, slug string) string {
 	return filepath.ToSlash(filepath.Join(cfg.Paths.Specs, slug+".spec.md"))
 }
 
+// PlanArtifact is planArtifact for callers outside the package (OR-445):
+// `orion answer` reads the plan's own Open questions from the same path
+// the gate reads.
+func PlanArtifact(cfg config.Config, slug string) string { return planArtifact(cfg, slug) }
+
 func planArtifact(cfg config.Config, slug string) string {
 	if cfg.Toolkit.Stage("plan") != "" {
 		return path.Join(cfg.FeatureDir(slug), "plan.md")

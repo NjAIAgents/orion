@@ -1636,10 +1636,19 @@ func runAnswer(id string) {
 	specPath := filepath.Join(ws.RepoDir(), filepath.FromSlash(supervisor.SpecArtifact(cfg, ws.Task.Slug)))
 	s := discovery.AssessSpec(specPath)
 
-	if a.Open == 0 && (!s.Found || s.Open == 0) {
+	// The plan's own undecided points (OR-445): a stack, platform or
+	// architecture call the plan stage genuinely could not make, in the
+	// same "## Open questions" shape intent and spec already use.
+	planPath := filepath.Join(ws.RepoDir(), filepath.FromSlash(supervisor.PlanArtifact(cfg, ws.Task.Slug)))
+	p := discovery.Assess(planPath)
+
+	if a.Open == 0 && (!s.Found || s.Open == 0) && (!p.Found || p.Open == 0) {
 		fmt.Printf("no open questions in %s", path)
 		if s.Found {
 			fmt.Printf(" or %s", specPath)
+		}
+		if p.Found {
+			fmt.Printf(" or %s", planPath)
 		}
 		fmt.Println()
 		return
@@ -1651,11 +1660,14 @@ func runAnswer(id string) {
 	// somewhere no stage could see. Written in place, the loop is only a
 	// faster editor.
 	if isTerminal(os.Stdin) {
-		written := answerInteractively(os.Stdout, bufio.NewReader(os.Stdin), []discovery.Assessment{a, s})
+		written := answerInteractively(os.Stdout, bufio.NewReader(os.Stdin), []discovery.Assessment{a, s, p})
 		commitAnswers(os.Stdout, ws.RepoDir(), written)
 		open := discovery.Assess(path).Open
 		if s.Found {
 			open += discovery.AssessSpec(specPath).Open
+		}
+		if p.Found {
+			open += discovery.Assess(planPath).Open
 		}
 		if open == 0 {
 			fmt.Printf("\nno open questions left. Then: orion plan %s\n", planKeyOf(ws))
@@ -1665,7 +1677,7 @@ func runAnswer(id string) {
 		os.Exit(1)
 	}
 
-	for _, x := range []discovery.Assessment{a, s} {
+	for _, x := range []discovery.Assessment{a, s, p} {
 		if !x.Found || x.Open == 0 {
 			continue
 		}
@@ -1682,6 +1694,9 @@ func runAnswer(id string) {
 	fmt.Printf("  $EDITOR %s\n", path)
 	if s.Found && s.Open > 0 {
 		fmt.Printf("  $EDITOR %s\n", specPath)
+	}
+	if p.Found && p.Open > 0 {
+		fmt.Printf("  $EDITOR %s\n", planPath)
 	}
 	fmt.Println()
 	fmt.Println("Mark a question with [x], ~~strikethrough~~, or an inline \"Answer: ...\";")

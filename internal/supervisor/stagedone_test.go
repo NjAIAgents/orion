@@ -72,6 +72,29 @@ func TestStageDoneIntentRequiresNoOpenQuestions(t *testing.T) {
 	}
 }
 
+// OR-445: the plan stage follows the same rule intent and spec already do
+// -- a plan with an open question of its own is not done, or a resume
+// would skip straight past it into the next stage's gate refusal.
+func TestStageDonePlanRequiresNoOpenQuestions(t *testing.T) {
+	w := gitWorkspace(t, `{}`)
+	w.Task.Slug = "thing"
+	repo := w.RepoDir()
+
+	writeAt(t, repo, "plans/thing.plan.md",
+		"# Plan\n\n## Open questions\n- Bash-only, or Windows too?\n")
+	commit(t, repo, "plans/thing.plan.md")
+	if StageDone(w, "plan") {
+		t.Error("plan is done with an open question the next stage would block on")
+	}
+
+	writeAt(t, repo, "plans/thing.plan.md",
+		"# Plan\n\n## Open questions\n- None\n")
+	commit(t, repo, "plans/thing.plan.md")
+	if !StageDone(w, "plan") {
+		t.Error("plan is not done once its questions are closed and it is committed")
+	}
+}
+
 // A stage with no artifact is done when its LAST run completed -- not when
 // any run did, and not when a run merely exited.
 func TestStageDoneWithoutAnArtifactReadsTheLastRun(t *testing.T) {

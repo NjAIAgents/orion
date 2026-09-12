@@ -158,3 +158,73 @@ func TestTheConstitutionStageIsBlockedByAnOpenIntentQuestion(t *testing.T) {
 		t.Fatal("the agent was launched despite an open intent question")
 	}
 }
+
+func writePlanFile(t *testing.T, w interface{ RepoDir() string }, body string) {
+	t.Helper()
+	dir := filepath.Join(w.RepoDir(), "plans")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "thing.plan.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// THE CASE OR-445 EXISTS TO FIX: a plan can make a stack/platform/
+// architecture decision it genuinely could not settle -- found on a real
+// project, a plan that committed to Bash-only with a dangling "see Risks"
+// that Risks never answered, and nobody was ever asked. A stage that
+// designs from the plan (analyze, scaffold, decompose) must be blocked by
+// an open question in it, with intent and spec both clean, the same way an
+// open spec marker already blocks with intent clean.
+func TestRunBlocksAtTheGateOnAnOpenPlanQuestionWithIntentAndSpecClean(t *testing.T) {
+	w := ws(t, "")
+	w.Task.Slug = "thing"
+	writeIntentCapture(t, w, "# Intent\n\n## Open questions\n- None\n")
+	writeSpecFile(t, w, "# Spec\n\nNo markers here.\n")
+	writePlanFile(t, w, "# Plan\n\n## Open questions\n- Bash-only, or does this need to run on Windows too?\n")
+	canary := fakeClaude(t)
+
+	_, err := Run(w, Options{Stage: "decompose", Prompt: "do a thing", MaxMinutes: 1, MaxTurns: 1})
+	if err == nil || !strings.Contains(err.Error(), "discovery gate") || !strings.Contains(err.Error(), "Windows") {
+		t.Fatalf("decompose was not blocked by the plan's open question, or the gate does not name it: %v", err)
+	}
+	if _, statErr := os.Stat(canary); statErr == nil {
+		t.Fatal("the agent was launched despite an open question in the plan")
+	}
+}
+
+// The plan stage itself is not blocked by its own open questions: it is
+// the stage that writes them, and a re-run is how they get resolved.
+func TestThePlanStageIsNotBlockedByItsOwnOpenQuestions(t *testing.T) {
+	w := ws(t, "")
+	w.Task.Slug = "thing"
+	writeIntentCapture(t, w, "# Intent\n\n## Open questions\n- None\n")
+	writePlanFile(t, w, "# Plan\n\n## Open questions\n- Still deciding.\n")
+	canary := fakeClaudeThatFinishes(t)
+
+	if _, err := Run(w, Options{Stage: "plan", Prompt: "do a thing", MaxMinutes: 1, MaxTurns: 1}); err != nil {
+		t.Fatalf("the plan stage was blocked by its own open question: %v", err)
+	}
+	if _, statErr := os.Stat(canary); statErr != nil {
+		t.Fatal("the agent was never launched")
+	}
+}
+
+// Once every plan question is settled, the stage that reads it must
+// proceed -- the flip side, on the same file layout.
+func TestRunProceedsPastAnOpenPlanQuestionOnceSettled(t *testing.T) {
+	w := ws(t, "")
+	w.Task.Slug = "thing"
+	writeIntentCapture(t, w, "# Intent\n\n## Open questions\n- None\n")
+	writeSpecFile(t, w, "# Spec\n\nNo markers here.\n")
+	writePlanFile(t, w, "# Plan\n\n## Open questions\n- [x] Bash-only, or Windows too? Bash-only for the MVP.\n")
+	canary := fakeClaudeThatFinishes(t)
+
+	if _, err := Run(w, Options{Stage: "decompose", Prompt: "do a thing", MaxMinutes: 1, MaxTurns: 1}); err != nil {
+		t.Fatalf("decompose was blocked despite the plan's question being settled: %v", err)
+	}
+	if _, statErr := os.Stat(canary); statErr != nil {
+		t.Fatal("the agent was never launched even though the plan's question was settled")
+	}
+}

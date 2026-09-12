@@ -259,6 +259,21 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 					fmt.Errorf("%s", a.GateMessage(ws.ID))
 			}
 		}
+		// And the plan, for the stages that read it (OR-445): a plan makes
+		// stack, platform and architecture decisions the intent never
+		// settled, and one it genuinely could not decide is exactly the
+		// shape of open question this gate already exists to catch --
+		// found on a real project after a plan committed to Bash-only with
+		// a "Windows is not validated (see Risks)" line that Risks never
+		// actually addressed, with nobody ever asked whether that was
+		// acceptable.
+		if stageNeedsPlan(opts.Stage) {
+			planPath := filepath.Join(ws.RepoDir(), filepath.FromSlash(planArtifact(cfgEarly, ws.Task.Slug)))
+			if a := discovery.Assess(planPath); a.Found && a.Open > 0 {
+				return &Result{ExitCode: 0, Reason: "stopped at the discovery gate"},
+					fmt.Errorf("%s", a.GateMessage(ws.ID))
+			}
+		}
 	}
 
 	// Budget checkpoint BEFORE spending, not after. Checking afterwards
@@ -518,6 +533,20 @@ func stageNeedsIntent(stage string) bool {
 func stageNeedsSpec(stage string) bool {
 	switch strings.ToLower(stage) {
 	case "plan", "analyze", "scaffold", "decompose":
+		return true
+	}
+	return false
+}
+
+// stageNeedsPlan reports whether a stage designs from the plan, so a
+// decision the plan could not make -- the same shape as an open intent
+// question -- blocks the stage rather than getting silently defaulted
+// somewhere downstream (OR-445). The plan stage itself is excluded: it is
+// the one writing the file. Same list stageNeedsSpec names minus "plan",
+// because everything that reads the spec also reads the plan built on it.
+func stageNeedsPlan(stage string) bool {
+	switch strings.ToLower(stage) {
+	case "analyze", "scaffold", "decompose":
 		return true
 	}
 	return false
