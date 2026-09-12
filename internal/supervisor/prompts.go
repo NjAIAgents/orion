@@ -350,6 +350,31 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"The bar: an engineer who has never seen this conversation could implement the change",
 			"from the plan alone.",
 			"",
+			"A PLAN MAKES DECISIONS THE INTENT NEVER SETTLED -- the language, the runtime,",
+			"which platforms it runs on, a library over hand-rolling it. Each of those is a",
+			"real constraint on everyone who uses the result, decided here, once, usually",
+			"without anyone asking whether it should be. State every one you made where the",
+			"intent left it open, and why you chose what you chose -- in the plan's own body,",
+			"where a reader will see it, not folded into a Risks paragraph nobody is pointed",
+			"at. FOUND ON A REAL PROJECT: a plan committed to Bash with a one-line \"Windows",
+			"is not validated for the MVP (see Risks)\" -- and Risks never mentioned it again.",
+			"The platform a plugin runs on is exactly the kind of choice this section exists",
+			"for, and a dangling cross-reference to a discussion that never happened is the",
+			"same silent gap as never writing it down.",
+			"",
+			"ANYTHING YOU GENUINELY CANNOT DECIDE -- because it needs a subjective call, a",
+			"cost/effort tradeoff, or knowledge only the person asking for this has -- is an",
+			"OPEN QUESTION, never a default slipped in as though it were settled. These two",
+			"headings must be in " + plan + " when you finish, worded exactly like this --",
+			"Orion's gate finds the second one BY ITS HEADING, so a file that words it",
+			"differently parses as having nothing open:",
+			"",
+			quote(planShape),
+			"",
+			"Write `" + intentNone + "` under Open questions when there genuinely are none.",
+			"A later stage building from an unanswered plan question is worse than one that",
+			"waited for the answer.",
+			"",
 			"Write " + plan + " and commit it. Do not implement yet.",
 			taskListNote(tk, tasks),
 		}
@@ -568,6 +593,20 @@ const intentShape = `## Success measures
 
 ## Open questions
 - One bullet per thing you could not decide.`
+
+// planShape is the skeleton the plan stage must leave behind (OR-445),
+// the same contract intentShape states for intent: the second heading is
+// matched BY discovery's own headingRe, so a plan that words it
+// differently parses as having nothing open, and every later stage
+// designs from a decision nobody was actually asked to make.
+//
+// Only one heading here, not two like intentShape: a plan's "how do we
+// know it worked" is already the plan's own Testing Strategy section, and
+// duplicating that as a second required heading would ask for the same
+// thing twice under two names.
+const planShape = `## Open questions
+- One bullet per stack, platform, or architecture decision you could not
+  make -- not a decision you made and are merely noting.`
 
 // ticketShape is the shape every tracker item's description must have, shown
 // to the planner verbatim.

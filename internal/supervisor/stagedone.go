@@ -51,6 +51,11 @@ func StageDone(ws *workspace.Workspace, stage string) bool {
 			// marker left in it is not done, or the resume would skip it
 			// only to stop at plan.
 			return discovery.AssessSpec(filepath.Join(ws.RepoDir(), filepath.FromSlash(rel))).Ready()
+		case "plan":
+			// Same rule again, one stage later (OR-445): a plan with its own
+			// Open questions left is not done, or the resume would skip it
+			// only to stop at whichever stage reads the plan next.
+			return discovery.Assess(filepath.Join(ws.RepoDir(), filepath.FromSlash(rel))).Ready()
 		}
 		return true
 	}
