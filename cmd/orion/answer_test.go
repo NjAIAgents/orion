@@ -37,8 +37,15 @@ func TestAnswerInteractivelyWritesAnswersAndSkips(t *testing.T) {
 			t.Errorf("file lacks %q:\n%s", want, b)
 		}
 	}
-	if !strings.Contains(out.String(), "[1/3] Which region?") || !strings.Contains(out.String(), "[3/3] Who signs off?") {
+	// The counter and the question text are on separate lines now (OR-444:
+	// bold question, distinct from the plain counter beside it), so the
+	// assertion checks both appear in order rather than on one line.
+	if !strings.Contains(out.String(), "[1/3]") || !strings.Contains(out.String(), "Which region?") ||
+		!strings.Contains(out.String(), "[3/3]") || !strings.Contains(out.String(), "Who signs off?") {
 		t.Errorf("questions were not numbered in order:\n%s", out.String())
+	}
+	if strings.Index(out.String(), "[1/3]") > strings.Index(out.String(), "[3/3]") {
+		t.Errorf("questions were not asked in order:\n%s", out.String())
 	}
 }
 
@@ -75,5 +82,59 @@ func TestAnswerInteractivelyAcceptsTheStandIn(t *testing.T) {
 	}
 	if got := discovery.Assess(p).Open; got != 0 {
 		t.Errorf("Open = %d, want 0", got)
+	}
+}
+
+// OR-444: pressing Enter with nothing typed must not silently skip the way
+// "-" does -- it re-prompts once, and only a SECOND blank (or an explicit
+// "-") actually skips. A real answer typed at the confirm re-prompt is
+// accepted and written, same as if it had been typed the first time.
+func TestAnswerInteractivelyConfirmsBeforeSkippingOnBlankInput(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "intent.md")
+	if err := os.WriteFile(p, []byte("## Open questions\n- Which region?\n- How many users?\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Q1: blank, then a real answer at the confirm re-prompt.
+	// Q2: blank, then blank again -- now it skips.
+	in := bufio.NewReader(strings.NewReader("\neu-west-1\n\n\n"))
+	var out bytes.Buffer
+
+	answerInteractively(&out, in, []discovery.Assessment{discovery.Assess(p)})
+
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), "- [x] Which region?\n  Answer: eu-west-1") {
+		t.Errorf("a real answer given at the confirm re-prompt was not written:\n%s", b)
+	}
+	if strings.Contains(string(b), "[x] How many users?") {
+		t.Errorf("a question left blank twice should stay unanswered, not get ticked:\n%s", b)
+	}
+	if !strings.Contains(out.String(), "nothing typed") {
+		t.Errorf("blank input did not trigger the confirm re-prompt:\n%s", out.String())
+	}
+	a := discovery.Assess(p)
+	if a.Open != 1 {
+		t.Errorf("Open = %d, want 1 (the twice-blank question stays open)", a.Open)
+	}
+}
+
+// "-" alone, with no prior blank, still skips immediately -- an explicit
+// skip must not require confirming twice.
+func TestAnswerInteractivelyDashStillSkipsImmediately(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "intent.md")
+	if err := os.WriteFile(p, []byte("## Open questions\n- Which region?\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in := bufio.NewReader(strings.NewReader("-\n"))
+	var out bytes.Buffer
+
+	answerInteractively(&out, in, []discovery.Assessment{discovery.Assess(p)})
+
+	if strings.Contains(out.String(), "nothing typed") {
+		t.Errorf("an explicit - should not trigger the blank-input confirm:\n%s", out.String())
+	}
+	if got := discovery.Assess(p).Open; got != 1 {
+		t.Errorf("Open = %d, want 1 (explicitly skipped)", got)
 	}
 }
