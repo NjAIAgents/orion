@@ -1875,6 +1875,14 @@ func runSupervised(id string, rest []string) {
 		fmt.Printf("\nstage      %s\nexit       %d\nreason     %s\nattempts   %d\nduration   %s\nlog        %s\n",
 			opts.Stage, res.ExitCode, res.Reason, res.Attempts,
 			res.Duration.Round(time.Second), res.LogPath)
+		// Loud, not silent (OR-441): the stage's own agent did not commit its
+		// artifact, and Orion completed that commit on its behalf. Printed
+		// here rather than folded into "reason" so it reads as what it is --
+		// something ORION did, distinct from what the stage reported of
+		// itself.
+		for _, rel := range res.HealedArtifact {
+			fmt.Printf("healed     %s (committed on the stage's behalf -- it never committed this itself)\n", rel)
+		}
 		if !res.ResumeAt.IsZero() {
 			fmt.Printf("resume     %s (orion run %s --stage %s)\n",
 				res.ResumeAt.Local().Format("15:04 MST"), ws.ID, opts.Stage)

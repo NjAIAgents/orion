@@ -18,6 +18,17 @@ func defaults(t *testing.T) config.Config {
 	return config.Load(t.TempDir())
 }
 
+// checkStageArtifactNoHeal is every existing call site in this file's own
+// contract, unchanged: heal:false, drop the healed-files list, keep the bare
+// error every one of these tests was already written against. These are all
+// direct checks of the gate's own detection logic, not a simulation of "a
+// stage's agent just exited" -- the one case (Run, artifact.go's own call
+// site) where self-healing (OR-441) is ever asked for.
+func checkStageArtifactNoHeal(repoDir string, cfg config.Config, stage, slug string) error {
+	_, err := checkStageArtifact(repoDir, cfg, stage, slug, false)
+	return err
+}
+
 // The mapping is per stage, and it is the whole point of the story that it is
 // decided in Go: a stage that owes a file must owe the SAME file whatever
 // orion.json says about the command.
@@ -48,7 +59,7 @@ func TestStagesThatProduceNoFileAreSkipped(t *testing.T) {
 		if got := stageArtifact(cfg, stage, "thing"); got != "" {
 			t.Errorf("stage %q must owe no artifact, got %q", stage, got)
 		}
-		if err := checkStageArtifact(t.TempDir(), cfg, stage, "thing"); err != nil {
+		if err := checkStageArtifactNoHeal(t.TempDir(), cfg, stage, "thing"); err != nil {
 			t.Errorf("stage %q must be skipped, got: %v", stage, err)
 		}
 	}
@@ -112,7 +123,7 @@ func TestADelegatedPlanOwesItsTaskListAsWell(t *testing.T) {
 	}
 	commit(t, repo, "specs/001-thing/plan.md")
 
-	err := checkStageArtifact(repo, cfg, "plan", "thing")
+	err := checkStageArtifactNoHeal(repo, cfg, "plan", "thing")
 	if err == nil || !strings.Contains(err.Error(), "tasks.md") {
 		t.Fatalf("a delegated plan without tasks.md passed, or the error does not name it: %v", err)
 	}
@@ -121,7 +132,7 @@ func TestADelegatedPlanOwesItsTaskListAsWell(t *testing.T) {
 		t.Fatal(err)
 	}
 	commit(t, repo, "specs/001-thing/tasks.md")
-	if err := checkStageArtifact(repo, cfg, "plan", "thing"); err != nil {
+	if err := checkStageArtifactNoHeal(repo, cfg, "plan", "thing"); err != nil {
 		t.Errorf("a delegated plan with both files failed: %v", err)
 	}
 }
@@ -170,7 +181,7 @@ func TestArtifactCheckCoversAbsentEmptyUntrackedAndCommitted(t *testing.T) {
 
 	t.Run("absent", func(t *testing.T) {
 		repo := gitRepo(t)
-		err := checkStageArtifact(repo, cfg, "spec", "thing")
+		err := checkStageArtifactNoHeal(repo, cfg, "spec", "thing")
 		if err == nil {
 			t.Fatal("a stage that wrote nothing must fail")
 		}
@@ -182,7 +193,7 @@ func TestArtifactCheckCoversAbsentEmptyUntrackedAndCommitted(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		repo := gitRepo(t)
 		writeSpec(t, repo, "   \n\t\n")
-		err := checkStageArtifact(repo, cfg, "spec", "thing")
+		err := checkStageArtifactNoHeal(repo, cfg, "spec", "thing")
 		if err == nil {
 			t.Fatal("a whitespace-only artifact must fail: the command half-ran")
 		}
@@ -194,7 +205,7 @@ func TestArtifactCheckCoversAbsentEmptyUntrackedAndCommitted(t *testing.T) {
 	t.Run("untracked", func(t *testing.T) {
 		repo := gitRepo(t)
 		writeSpec(t, repo, "# Spec\n\nreal content\n")
-		err := checkStageArtifact(repo, cfg, "spec", "thing")
+		err := checkStageArtifactNoHeal(repo, cfg, "spec", "thing")
 		if err == nil {
 			t.Fatal("an uncommitted artifact must fail: the handoff is the committed file")
 		}
@@ -212,7 +223,7 @@ func TestArtifactCheckCoversAbsentEmptyUntrackedAndCommitted(t *testing.T) {
 				t.Fatalf("git %v: %v\n%s", args, err, out)
 			}
 		}
-		if err := checkStageArtifact(repo, cfg, "spec", "thing"); err != nil {
+		if err := checkStageArtifactNoHeal(repo, cfg, "spec", "thing"); err != nil {
 			t.Fatalf("a committed, non-empty artifact must pass: %v", err)
 		}
 	})
@@ -227,7 +238,7 @@ func TestFailureNamesTheArtifactTheStageAndTheCommand(t *testing.T) {
 		[]byte(`{"toolkit": {"stages": {"spec": "/skil-that-does-not-exist"}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := checkStageArtifact(gitRepo(t), config.Load(dir), "spec", "thing")
+	err := checkStageArtifactNoHeal(gitRepo(t), config.Load(dir), "spec", "thing")
 	if err == nil {
 		t.Fatal("a misconfigured stage must fail")
 	}
@@ -246,7 +257,7 @@ func TestFailureNamesTheArtifactTheStageAndTheCommand(t *testing.T) {
 // A project with no toolkit block gets the same check, not an exemption --
 // and the message says which prompt ran rather than quoting an empty string.
 func TestBuiltInPromptsGetTheSameCheck(t *testing.T) {
-	err := checkStageArtifact(gitRepo(t), defaults(t), "plan", "thing")
+	err := checkStageArtifactNoHeal(gitRepo(t), defaults(t), "plan", "thing")
 	if err == nil {
 		t.Fatal("a built-in stage that wrote nothing must fail too")
 	}
@@ -366,7 +377,7 @@ func TestArtifactPathThatIsADirectoryFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := checkStageArtifact(repo, cfg, "spec", "thing")
+	err := checkStageArtifactNoHeal(repo, cfg, "spec", "thing")
 	if err == nil {
 		t.Fatal("a directory at the artifact's path must fail")
 	}
@@ -396,7 +407,7 @@ func TestArtifactThatCannotBeReadFails(t *testing.T) {
 		t.Skip("this environment does not enforce file permissions")
 	}
 
-	err := checkStageArtifact(repo, cfg, "spec", "thing")
+	err := checkStageArtifactNoHeal(repo, cfg, "spec", "thing")
 	if err == nil {
 		t.Fatal("an unreadable artifact must fail")
 	}
@@ -417,7 +428,7 @@ func TestFailureNamesCanonicalStageForDesignAlias(t *testing.T) {
 		[]byte(`{"toolkit": {"stages": {"spec": "/some-skill"}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := checkStageArtifact(gitRepo(t), config.Load(dir), "design", "thing")
+	err := checkStageArtifactNoHeal(gitRepo(t), config.Load(dir), "design", "thing")
 	if err == nil {
 		t.Fatal("a design stage that wrote nothing must fail")
 	}
@@ -436,7 +447,7 @@ func TestWhitespaceOnlyArtifactFails(t *testing.T) {
 	cfg := defaults(t)
 	repo := gitRepo(t)
 	writeSpec(t, repo, "   \t\t\n\n   \n\t \n")
-	err := checkStageArtifact(repo, cfg, "spec", "thing")
+	err := checkStageArtifactNoHeal(repo, cfg, "spec", "thing")
 	if err == nil {
 		t.Fatal("a whitespace-only artifact must fail")
 	}
@@ -459,7 +470,7 @@ func TestGitLsFilesCatchesAnUnstagedFile(t *testing.T) {
 		t.Fatalf("git ls-files must report the unstaged file as unmatched, got: %s", out)
 	}
 
-	checkErr := checkStageArtifact(repo, cfg, "spec", "thing")
+	checkErr := checkStageArtifactNoHeal(repo, cfg, "spec", "thing")
 	if checkErr == nil {
 		t.Fatal("an unstaged artifact must fail")
 	}
@@ -488,7 +499,7 @@ func TestArtifactCommittedThenGitRmedFails(t *testing.T) {
 		t.Fatalf("the file must no longer exist on disk, stat err = %v", err)
 	}
 
-	err := checkStageArtifact(repo, cfg, "spec", "thing")
+	err := checkStageArtifactNoHeal(repo, cfg, "spec", "thing")
 	if err == nil {
 		t.Fatal("a committed-then-removed artifact must fail")
 	}
@@ -520,7 +531,7 @@ func TestEmptyStageNameOwesNoArtifact(t *testing.T) {
 	if got := stageArtifact(cfg, "", "thing"); got != "" {
 		t.Errorf("stageArtifact(\"\") = %q, want \"\"", got)
 	}
-	if err := checkStageArtifact(t.TempDir(), cfg, "", "thing"); err != nil {
+	if err := checkStageArtifactNoHeal(t.TempDir(), cfg, "", "thing"); err != nil {
 		t.Errorf("an empty stage name must be skipped, got: %v", err)
 	}
 }
@@ -564,7 +575,7 @@ func TestAnArtifactThatDeclaresItselfBlockedIsNotSuccess(t *testing.T) {
 			rel := writeSpec(t, repo, body)
 			commit(t, repo, rel)
 
-			err := checkStageArtifact(repo, cfg, "spec", "thing")
+			err := checkStageArtifactNoHeal(repo, cfg, "spec", "thing")
 			if err == nil {
 				t.Fatal("an artifact declaring itself BLOCKED was reported as success")
 			}
@@ -592,7 +603,7 @@ func TestDiscussingBlockingDeepInTheDocumentIsStillSuccess(t *testing.T) {
 	rel := writeSpec(t, repo, b.String())
 	commit(t, repo, rel)
 
-	if err := checkStageArtifact(repo, cfg, "spec", "thing"); err != nil {
+	if err := checkStageArtifactNoHeal(repo, cfg, "spec", "thing"); err != nil {
 		t.Errorf("a finished spec discussing blockage was failed: %v", err)
 	}
 }
@@ -620,7 +631,7 @@ func TestADraftDescribingItsApprovalStateIsNotABlockedStage(t *testing.T) {
 			rel := writeSpec(t, repo, body)
 			commit(t, repo, rel)
 
-			if err := checkStageArtifact(repo, cfg, "spec", "thing"); err != nil {
+			if err := checkStageArtifactNoHeal(repo, cfg, "spec", "thing"); err != nil {
 				t.Errorf("a finished document was failed for describing itself: %v", err)
 			}
 		})
@@ -642,7 +653,7 @@ func TestAStatusOfBlockedStillFails(t *testing.T) {
 			rel := writeSpec(t, repo, body)
 			commit(t, repo, rel)
 
-			err := checkStageArtifact(repo, cfg, "spec", "thing")
+			err := checkStageArtifactNoHeal(repo, cfg, "spec", "thing")
 			if err == nil {
 				t.Fatal("a stage whose status is BLOCKED was reported as success")
 			}
@@ -680,7 +691,7 @@ func TestAConstitutionStillHoldingTemplateSlotsFails(t *testing.T) {
 	repo := gitRepo(t)
 	cfg := defaults(t)
 	commitConstitution(t, repo, "# [PROJECT_NAME] Constitution\n\n## Core Principles\n\n### [PRINCIPLE_1_NAME]\nDo the thing.\n")
-	err := checkStageArtifact(repo, cfg, "constitution", "thing")
+	err := checkStageArtifactNoHeal(repo, cfg, "constitution", "thing")
 	if err == nil {
 		t.Fatal("a constitution with template slots passed")
 	}
@@ -695,7 +706,7 @@ func TestAFinishedConstitutionPasses(t *testing.T) {
 	repo := gitRepo(t)
 	commitConstitution(t, repo, "# Thing Constitution\n\n## Core Principles\n\n### I. Plan first\nA plan is approved before any edit (gates.require_plan_before_edit).\n\n"+
 		"Open point: [NEEDS CLARIFICATION: retention period] -- the discovery gate's, not this check's.\n")
-	if err := checkStageArtifact(repo, defaults(t), "constitution", "thing"); err != nil {
+	if err := checkStageArtifactNoHeal(repo, defaults(t), "constitution", "thing"); err != nil {
 		t.Fatalf("a finished constitution failed: %v", err)
 	}
 }
@@ -707,7 +718,7 @@ func TestTheSlotCheckDoesNotReachOtherStages(t *testing.T) {
 	cfg := defaults(t)
 	writeSpec(t, repo, "# Spec\n\nSet [FEATURE_FLAG] to on.\n")
 	commitAll(t, repo)
-	if err := checkStageArtifact(repo, cfg, "spec", "thing"); err != nil {
+	if err := checkStageArtifactNoHeal(repo, cfg, "spec", "thing"); err != nil {
 		t.Fatalf("the spec was held to the constitution's slot check: %v", err)
 	}
 }
@@ -730,5 +741,137 @@ func TestScaffoldOwesItsReadme(t *testing.T) {
 	claudeWriting(t, w2.RepoDir(), "printf '# Thing\\n\\nreal\\n' > README.md && git add README.md && git commit -qm readme")
 	if _, err := Run(w2, Options{Stage: "scaffold", MaxMinutes: 1, MaxTurns: 1}); err != nil {
 		t.Fatalf("a scaffold that committed its README failed: %v", err)
+	}
+}
+
+// THE CASE OR-441 EXISTS TO FIX: a stage whose agent wrote a real,
+// complete artifact but exited without committing it. heal:false (every
+// other test in this file, and StageDone's own read-only check) still
+// fails it exactly as before -- this proves heal:true is what changes the
+// outcome, not a general loosening of the untracked check.
+func TestCheckStageArtifactHealsAnUncommittedArtifactWhenAskedTo(t *testing.T) {
+	cfg := defaults(t)
+	repo := gitRepo(t)
+	rel := writeSpec(t, repo, "# Spec\n\nreal content, never committed\n")
+
+	healed, err := checkStageArtifact(repo, cfg, "spec", "thing", true)
+	if err != nil {
+		t.Fatalf("heal:true must turn an uncommitted artifact into success, got: %v", err)
+	}
+	if len(healed) != 1 || healed[0] != rel {
+		t.Errorf("healed = %v, want [%s]", healed, rel)
+	}
+
+	out, err := exec.Command("git", "-C", repo, "ls-files", "--error-unmatch", "--", rel).CombinedOutput()
+	if err != nil {
+		t.Errorf("the artifact must be committed after healing, git ls-files still says: %s", out)
+	}
+
+	log, err := exec.Command("git", "-C", repo, "log", "-1", "--format=%s").CombinedOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(log)); !strings.HasPrefix(got, "orion:") {
+		t.Errorf("the healed commit's subject = %q, want it to start with \"orion:\" -- "+
+			"Orion did this, not the stage's own agent", got)
+	}
+}
+
+// Without heal, the exact same uncommitted artifact still fails -- proving
+// heal:true is an opt-in at one call site, not a change to what "untracked"
+// means everywhere.
+func TestCheckStageArtifactStillFailsAnUncommittedArtifactWithoutHeal(t *testing.T) {
+	cfg := defaults(t)
+	repo := gitRepo(t)
+	writeSpec(t, repo, "# Spec\n\nreal content, never committed\n")
+
+	_, err := checkStageArtifact(repo, cfg, "spec", "thing", false)
+	if err == nil {
+		t.Fatal("heal:false must still fail an uncommitted artifact")
+	}
+	if !strings.Contains(err.Error(), "never committed") {
+		t.Errorf("message must say it was never committed, got: %v", err)
+	}
+}
+
+// Healing must touch ONLY the one file the stage was told to write -- never
+// `git add -A`, never any OTHER uncommitted change the agent's working tree
+// holds. A stray scratch file left uncommitted beside the real artifact must
+// still be sitting there, untouched, after healing.
+func TestHealingTouchesOnlyTheOneArtifactFileNeverTheRestOfTheTree(t *testing.T) {
+	cfg := defaults(t)
+	repo := gitRepo(t)
+	rel := writeSpec(t, repo, "# Spec\n\nreal content\n")
+
+	stray := filepath.Join(repo, "scratch.txt")
+	if err := os.WriteFile(stray, []byte("not part of the artifact\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := checkStageArtifact(repo, cfg, "spec", "thing", true); err != nil {
+		t.Fatalf("healing failed: %v", err)
+	}
+
+	out, err := exec.Command("git", "-C", repo, "ls-files", "--error-unmatch", "--", "scratch.txt").CombinedOutput()
+	if err == nil {
+		t.Fatal("scratch.txt was committed by healing -- it must never touch anything but the named artifact")
+	}
+	if !strings.Contains(string(out), "did not match") && !strings.Contains(string(out), "error") {
+		t.Errorf("unexpected git ls-files output for the untouched stray file: %s", out)
+	}
+
+	// The real artifact is still exactly the one file that got healed.
+	if _, err := os.Stat(filepath.Join(repo, rel)); err != nil {
+		t.Fatalf("the real artifact should still be there: %v", err)
+	}
+}
+
+// Run's own end-to-end wiring: an agent that writes its artifact and stops
+// short of committing it must SUCCEED, not fail the whole stage -- this is
+// the exact shape of the real failure OR-441 was filed from (orion run
+// continuity --stage intent).
+func TestRunHealsAStageThatWroteButNeverCommittedItsArtifact(t *testing.T) {
+	w := gitWorkspace(t, `{"toolkit": {"stages": {"spec": "/some-skill"}}}`)
+	claudeWriting(t, w.RepoDir(),
+		"mkdir -p specs/001-thing && printf '# Spec\\n\\nreal content, forgot to commit\\n' > specs/001-thing/spec.md")
+
+	res, err := Run(w, Options{Stage: "spec", MaxMinutes: 1, MaxTurns: 1})
+	if err != nil {
+		t.Fatalf("a stage that wrote but did not commit its artifact must now succeed: %v", err)
+	}
+	if res == nil || res.ExitCode != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+	if len(res.HealedArtifact) != 1 || res.HealedArtifact[0] != "specs/001-thing/spec.md" {
+		t.Errorf("HealedArtifact = %v, want [specs/001-thing/spec.md]", res.HealedArtifact)
+	}
+
+	out, err := exec.Command("git", "-C", w.RepoDir(), "ls-files", "--error-unmatch", "--",
+		"specs/001-thing/spec.md").CombinedOutput()
+	if err != nil {
+		t.Errorf("the artifact must be committed on the real branch after Run, git says: %s", out)
+	}
+}
+
+// StageDone must never write a commit merely by being asked a question --
+// the read-only contract heal:false exists to protect (OR-441).
+func TestStageDoneDoesNotCommitAnUncommittedArtifactJustByChecking(t *testing.T) {
+	w := gitWorkspace(t, `{}`)
+	rel := filepath.Join(w.RepoDir(), "docs", "intent", w.Task.Slug+".md")
+	if err := os.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rel, []byte("# Intent\n\n## Success measures\n- x\n\n## Open questions\n- None\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if StageDone(w, "intent") {
+		t.Fatal("an uncommitted artifact must not read as done")
+	}
+
+	out, err := exec.Command("git", "-C", w.RepoDir(), "ls-files", "--error-unmatch", "--",
+		filepath.Join("docs", "intent", w.Task.Slug+".md")).CombinedOutput()
+	if err == nil {
+		t.Fatalf("StageDone must not have committed anything, but git now tracks the file: %s", out)
 	}
 }

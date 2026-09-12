@@ -159,46 +159,77 @@ func stageArtifactsAlso(cfg config.Config, stage, slug string) []string {
 // A file deleted from the working tree needs no separate check: whether the
 // deletion was staged or not, nothing is at the path and the absent case
 // already reports it.
-func checkStageArtifact(repoDir string, cfg config.Config, stage, slug string) error {
+// heal controls whether an untracked-but-complete artifact is committed on
+// the stage's behalf (OR-441) or reported as a plain failure. true only at
+// the one call site right after a stage's agent has just exited
+// (supervisor.go) -- the moment "did this stage actually finish" is being
+// asked in earnest. false at StageDone's call site: that is a read-only
+// resume check, possibly run many times, and a query must never have the
+// side effect of writing a commit.
+func checkStageArtifact(repoDir string, cfg config.Config, stage, slug string, heal bool) ([]string, error) {
 	rel := stageArtifact(cfg, stage, slug)
 	if rel == "" {
-		return nil
+		return nil, nil
 	}
+	var healed []string
 	for _, r := range append([]string{rel}, stageArtifactsAlso(cfg, stage, slug)...) {
-		if err := checkArtifactFile(repoDir, cfg, stage, r); err != nil {
-			return err
+		h, err := checkArtifactFile(repoDir, cfg, stage, r, heal)
+		if err != nil {
+			return healed, err
+		}
+		if h {
+			healed = append(healed, r)
 		}
 	}
-	return nil
+	return healed, nil
 }
 
 // checkArtifactFile applies the gate's rules to one file a stage owes.
-func checkArtifactFile(repoDir string, cfg config.Config, stage, rel string) error {
+// Reports whether it self-healed an uncommitted-but-otherwise-complete
+// artifact (OR-441) -- which it only attempts at all when heal is true.
+func checkArtifactFile(repoDir string, cfg config.Config, stage, rel string, heal bool) (bool, error) {
 	info, err := os.Stat(filepath.Join(repoDir, rel))
 	switch {
 	case err != nil:
-		return artifactError(cfg, stage, rel,
+		return false, artifactError(cfg, stage, rel,
 			"nothing is at that path: the command wrote no file.")
 	case info.IsDir():
-		return artifactError(cfg, stage, rel,
+		return false, artifactError(cfg, stage, rel,
 			"that path is a directory, not the file the stage owes.")
 	}
 
 	body, err := os.ReadFile(filepath.Join(repoDir, rel))
 	if err != nil {
-		return artifactError(cfg, stage, rel,
+		return false, artifactError(cfg, stage, rel,
 			fmt.Sprintf("the file is there but cannot be read: %v.", err))
 	}
 	if strings.TrimSpace(string(body)) == "" {
-		return artifactError(cfg, stage, rel,
+		return false, artifactError(cfg, stage, rel,
 			"the file is there and empty: the command created it and never wrote it.")
 	}
 
+	healed := false
 	if out, err := exec.Command("git", "-C", repoDir,
 		"ls-files", "--error-unmatch", "--", rel).CombinedOutput(); err != nil {
-		return artifactError(cfg, stage, rel, fmt.Sprintf(
-			"the file is there but git does not track it, so it was never committed (%s).",
-			strings.TrimSpace(firstLine(string(out)))))
+		if !heal {
+			return false, artifactError(cfg, stage, rel, fmt.Sprintf(
+				"the file is there but git does not track it, so it was never committed (%s).",
+				strings.TrimSpace(firstLine(string(out)))))
+		}
+		// UNTRACKED SELF-HEALS, IT DOES NOT BLOCK (OR-441). The prompt already
+		// tells the stage to commit this exact file -- prose is not a
+		// mechanism, and an agent that writes a complete artifact and simply
+		// never reaches the commit step should not sink the whole pipeline on
+		// that alone. Scoped to precisely the one file the stage's own
+		// contract names: this never runs `git add -A` or touches any other
+		// change in the tree, staged or not, that the agent left behind.
+		if cerr := commitOrphanedArtifact(repoDir, stage, rel); cerr != nil {
+			return false, artifactError(cfg, stage, rel, fmt.Sprintf(
+				"the file is there but git does not track it, and completing the "+
+					"commit on the stage's behalf failed too: %v (original: %s).",
+				cerr, strings.TrimSpace(firstLine(string(out)))))
+		}
+		healed = true
 	}
 
 	// The stage may have refused, and said so in the only place it can.
@@ -214,7 +245,7 @@ func checkArtifactFile(repoDir string, cfg config.Config, stage, rel string) err
 	// An agent that refuses well is doing the right thing. Failing to HEAR it
 	// is the defect.
 	if why := declaredBlocked(string(body)); why != "" {
-		return artifactError(cfg, stage, rel, why)
+		return false, artifactError(cfg, stage, rel, why)
 	}
 
 	// The constitution's template ships as slots -- `# [PROJECT_NAME]
@@ -225,9 +256,30 @@ func checkArtifactFile(repoDir string, cfg config.Config, stage, rel string) err
 	// discovery gate owns, which this pattern does not match.
 	if strings.EqualFold(strings.TrimSpace(stage), "constitution") {
 		if left := placeholdersLeft(string(body)); len(left) > 0 {
-			return artifactError(cfg, stage, rel,
+			return false, artifactError(cfg, stage, rel,
 				"the template's placeholders are still in it: "+strings.Join(left, ", ")+".")
 		}
+	}
+	return healed, nil
+}
+
+// commitOrphanedArtifact stages and commits exactly rel -- never `git add -A`,
+// never anything else the agent's working tree might hold uncommitted. That
+// narrowness is the whole safety property (OR-441): this completes the one
+// committed act the stage's own contract already promised (stagePrompt's
+// "write X and commit it"), and touches nothing the agent did not already
+// finish writing.
+//
+// The commit message says "orion:", not the stage's own name, because Orion
+// took this action, not the agent -- the commit history should say who
+// actually did the committing.
+func commitOrphanedArtifact(repoDir, stage, rel string) error {
+	if out, err := exec.Command("git", "-C", repoDir, "add", "--", rel).CombinedOutput(); err != nil {
+		return fmt.Errorf("staging %s: %s", rel, strings.TrimSpace(string(out)))
+	}
+	msg := fmt.Sprintf("orion: completing the %s stage's uncommitted artifact", strings.ToLower(strings.TrimSpace(stage)))
+	if out, err := exec.Command("git", "-C", repoDir, "commit", "-q", "-m", msg).CombinedOutput(); err != nil {
+		return fmt.Errorf("committing %s: %s", rel, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

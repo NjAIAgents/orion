@@ -160,6 +160,12 @@ type Result struct {
 	// deciding whether to hold a ticket or fail it would otherwise have to
 	// pattern-match Reason, which is prose written for a person (OR-214).
 	QuotaUnwaitable bool
+	// HealedArtifact names any repo-relative file the artifact gate had to
+	// commit on the stage's behalf (OR-441): the agent wrote it, but exited
+	// without committing it, and the gate completed that one committed act
+	// rather than fail the run over a mechanical oversight. Empty on the
+	// ordinary path, where the stage committed its own artifact.
+	HealedArtifact []string
 	// Started reports that the CLI got far enough to emit a stream frame.
 	//
 	// False is the honest reading of "this never began": the process died in
@@ -425,7 +431,10 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	// A dry run is excluded for the obvious reason: nothing was asked to write
 	// anything.
 	if !opts.DryRun && opts.Prompt == "" {
-		if err := checkStageArtifact(ws.RepoDir(), cfg, opts.Stage, ws.Task.Slug); err != nil {
+		// heal:true -- this is the moment "did this stage actually finish" is
+		// being asked in earnest, right after its own agent exited (OR-441).
+		healed, err := checkStageArtifact(ws.RepoDir(), cfg, opts.Stage, ws.Task.Slug, true)
+		if err != nil {
 			failRun(ws, last, "the stage left no artifact")
 			notify.Send(notify.Event{
 				Level: notify.Blocked, Workspace: ws.ID, Channel: channelFor(ws),
@@ -434,6 +443,7 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 			})
 			return last, err
 		}
+		last.HealedArtifact = healed
 		// The analyze stage owes no file; it owes a verdict, and the verdict
 		// is read from its report rather than trusted from its exit code
 		// (docs/decisions/0001: the toolkit reports, Orion gates).
