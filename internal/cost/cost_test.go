@@ -232,3 +232,34 @@ func TestReadAllIncludesRotatedGenerations(t *testing.T) {
 		t.Errorf("rotated runs were dropped: %d runs, $%.2f", len(rep.Runs), rep.Total.CostUSD)
 	}
 }
+
+// Session and About round-trip through the real Record -> JSON -> disk ->
+// read-back path -- the exact gap OR-448 found live: a fan-out's children
+// were indistinguishable because session_id was never actually written to
+// the event, despite Run carrying a Session field all along.
+func TestRecordWritesSessionAndAboutToTheEventDetail(t *testing.T) {
+	dir := t.TempDir()
+	path := events.Path(dir)
+	log, err := events.Open(path, events.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := FromBudgetRun(budget.Run{Turns: 4, PromptTokens: 100, CostUSD: 0.11}, true, false, "completed", 30)
+	r.Session = "sess-abc123"
+	r.About = "4 case(s) · column derivation"
+	if err := Record(log, "", events.ActorQA, "OR-1", r); err != nil {
+		t.Fatal(err)
+	}
+	log.Close()
+
+	evs := ReadAll(path)
+	if len(evs) != 1 {
+		t.Fatalf("got %d events, want 1", len(evs))
+	}
+	if got, want := evs[0].Detail["session_id"], "sess-abc123"; got != want {
+		t.Errorf("Detail[session_id] = %v, want %v", got, want)
+	}
+	if got, want := evs[0].Detail["about"], "4 case(s) · column derivation"; got != want {
+		t.Errorf("Detail[about] = %v, want %v", got, want)
+	}
+}

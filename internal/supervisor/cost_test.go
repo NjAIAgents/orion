@@ -177,3 +177,28 @@ func TestRecordTicketCostWritesDispatchedModelAndEffortToHistory(t *testing.T) {
 		t.Errorf("row stage %q session %q, want implement/s", row.Stage, row.Session)
 	}
 }
+
+// A fan-out child's About (what it was given -- "4 case(s) · column
+// derivation") must reach the event log alongside its session id, or the
+// web detail view has no way to distinguish one QA author from another
+// (OR-448/OR-449's own gap: every child shared Actor/Key/Model/Stage, and
+// About plus Session are the only fields that do not).
+func TestRecordTicketCostThreadsAboutToTheEventLog(t *testing.T) {
+	w := ws(t, "")
+	opts := Options{
+		Stage: "qa", Actor: events.ActorQA, Key: "OR-9",
+		About: "4 case(s) · column derivation",
+	}
+	recordTicketCost(w, opts, &Result{Duration: 30 * time.Second, SessionID: "sess-1"}, resultJSON)
+
+	evs := cost.ReadAll(events.Path(w.Dir))
+	if len(evs) != 1 {
+		t.Fatalf("got %d events, want 1", len(evs))
+	}
+	if got, want := evs[0].Detail["about"], "4 case(s) · column derivation"; got != want {
+		t.Errorf("Detail[about] = %v, want %v", got, want)
+	}
+	if got, want := evs[0].Detail["session_id"], "sess-1"; got != want {
+		t.Errorf("Detail[session_id] = %v, want %v", got, want)
+	}
+}
