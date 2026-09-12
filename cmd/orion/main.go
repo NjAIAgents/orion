@@ -1701,7 +1701,10 @@ func answerInteractively(out io.Writer, in *bufio.Reader, as []discovery.Assessm
 		if !x.Found || x.Open == 0 {
 			continue
 		}
-		fmt.Fprintf(out, "%d open question(s) in %s\n  (answer on one line; - skips, ? records \"unknown, design for it\", = accepts the stand-in)\n\n", x.Open, x.Path)
+		fmt.Fprintf(out, "%s %s\n  %s\n\n",
+			ui.Heading(out, fmt.Sprintf("%d open question(s)", x.Open)),
+			ui.Dim(out, "in "+x.Path),
+			ui.Dim(out, "(answer on one line; - skips, ? records \"unknown, design for it\", = accepts the stand-in)"))
 		skipped := map[string]bool{}
 		asked := 0
 		for {
@@ -1723,12 +1726,37 @@ func answerInteractively(out io.Writer, in *bufio.Reader, as []discovery.Assessm
 				break
 			}
 			asked++
-			ans, ok := ask(in, out, fmt.Sprintf("[%d/%d] %s", asked, x.Open, next.Text))
+			// Bold question text, its own line -- distinct from the plain
+			// "[N/M]" counter beside it, so a reader's eye lands on the
+			// question rather than on a wall of uniform grey (a real
+			// complaint: ten questions in a row, none visually distinct from
+			// the next, the counter and the text and the answer all the
+			// same weight).
+			prompt := fmt.Sprintf("%s\n  %s", ui.Dim(out, fmt.Sprintf("[%d/%d]", asked, x.Open)), ui.Heading(out, next.Text))
+			ans, ok := ask(in, out, prompt)
 			if !ok {
 				return written
 			}
+			if ans == "" {
+				// Blank input is not treated as a skip on its own (OR-444):
+				// pressing Enter with nothing typed is exactly as likely to
+				// be a fumbled paste or a moment's hesitation as a genuine
+				// "leave this open". Confirmed once, explicitly, rather
+				// than silently advancing past a question nobody meant to
+				// skip.
+				confirm, ok := ask(in, out, "  "+ui.Dim(out, "nothing typed -- press - to skip this one, or type an answer:"))
+				if !ok {
+					return written
+				}
+				ans = strings.TrimSpace(confirm)
+				if ans == "" {
+					// Asked twice and still nothing: now it is a skip, the
+					// same as typing - explicitly.
+					ans = "-"
+				}
+			}
 			switch ans {
-			case "", "-":
+			case "-":
 				skipped[next.Text] = true
 				continue
 			case "?":
