@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -289,5 +293,169 @@ func TestAnEmptyAnswerToTheFirstQuestionStops(t *testing.T) {
 	}
 	if tr.creates != 0 {
 		t.Error("a project was created with no idea")
+	}
+}
+
+// looksLikeFilePath/looksLikeURL: the same key-vs-prose distinction
+// looksLikeIdeaKey draws (OR-443), for the two other ways an idea can
+// already be written down.
+func TestLooksLikeFilePathAndURL(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(file, []byte("# Doc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !looksLikeFilePath(file) {
+		t.Errorf("%q must be recognised as a file path", file)
+	}
+	if looksLikeFilePath(dir) {
+		t.Error("a directory must not be treated as a document")
+	}
+	if looksLikeFilePath("a portal where customers see claim status") {
+		t.Error("prose that happens to contain no such file was read as a file path")
+	}
+	if looksLikeFilePath(filepath.Join(dir, "does-not-exist.md")) {
+		t.Error("a path naming no real file was read as a file path")
+	}
+
+	if !looksLikeURL("https://example.com/doc.md") {
+		t.Error("an https URL must be recognised")
+	}
+	if !looksLikeURL("http://example.com/doc.md") {
+		t.Error("an http URL must be recognised")
+	}
+	if looksLikeURL("check https://example.com for background") {
+		t.Error("prose that merely MENTIONS a URL was read as a request to fetch it")
+	}
+	if looksLikeURL("") {
+		t.Error("an empty string was read as a URL")
+	}
+}
+
+// The whole point: a local document's content becomes the idea, and the
+// standard interview still runs on top of it -- proven by driving newRun
+// end to end with a real file on disk.
+func TestANewRunReadsALocalDocumentAsTheIdea(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "continuity.md")
+	if err := os.WriteFile(file, []byte("# Continuity\n\nCross-session memory for Claude Code.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tr := workingTracker()
+	var out bytes.Buffer
+
+	in := answers("", "", "", "", "", "Continuity")
+	if err := newRun(tr, newOptions{
+		Idea: file, Site: "https://x.atlassian.net",
+		In: strings.NewReader(in), Out: &out,
+		Confirm: func(string) bool { return true },
+	}); err != nil {
+		t.Fatalf("newRun: %v\n%s", err, out.String())
+	}
+	if tr.creates != 1 {
+		t.Fatalf("created %d project(s), want 1:\n%s", tr.creates, out.String())
+	}
+	if !strings.Contains(tr.createdDesc, "Cross-session memory for Claude Code") {
+		t.Errorf("the document's own words did not reach the description:\n%s", tr.createdDesc)
+	}
+	// One heading, not two: the document echo and the interview's own intro
+	// share it -- the exact bug caught before this shipped (see new.go's
+	// fromDocument comment).
+	if n := strings.Count(out.String(), "The idea"); n != 1 {
+		t.Errorf("\"The idea\" heading appears %d times, want 1:\n%s", n, out.String())
+	}
+	if !strings.Contains(out.String(), "Five questions") {
+		t.Errorf("the interview did not run on top of the document:\n%s", out.String())
+	}
+}
+
+// The same, from a URL -- proving readDocument's HTTP path, not just the
+// file path, reaches the idea.
+func TestANewRunReadsARemoteDocumentAsTheIdea(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "# Continuity\n\nCross-session memory for Claude Code.\n")
+	}))
+	defer srv.Close()
+
+	tr := workingTracker()
+	var out bytes.Buffer
+	in := answers("", "", "", "", "", "Continuity")
+	if err := newRun(tr, newOptions{
+		Idea: srv.URL, Site: "https://x.atlassian.net",
+		In: strings.NewReader(in), Out: &out,
+		Confirm: func(string) bool { return true },
+	}); err != nil {
+		t.Fatalf("newRun: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(tr.createdDesc, "Cross-session memory for Claude Code") {
+		t.Errorf("the remote document's own words did not reach the description:\n%s", tr.createdDesc)
+	}
+}
+
+// A file path that names nothing real must fail clearly, not silently
+// interview from the literal path string as if it were prose.
+func TestANonExistentFilePathIsAnError(t *testing.T) {
+	tr := workingTracker()
+	var out bytes.Buffer
+	missing := filepath.Join(t.TempDir(), "does-not-exist.md")
+
+	err := newRun(tr, newOptions{
+		Idea: missing, Site: "https://x.atlassian.net",
+		In: strings.NewReader(""), Out: &out,
+		Confirm: func(string) bool { return true },
+	})
+	if err == nil {
+		t.Fatal("a nonexistent file path was accepted")
+	}
+	if tr.creates != 0 {
+		t.Error("a project was created from a document that does not exist")
+	}
+}
+
+// An unreachable URL must fail clearly too, and spend nothing on an
+// interview about a document nobody could read.
+func TestAnUnreachableURLIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	tr := workingTracker()
+	var out bytes.Buffer
+	err := newRun(tr, newOptions{
+		Idea: srv.URL, Site: "https://x.atlassian.net",
+		In: strings.NewReader(""), Out: &out,
+		Confirm: func(string) bool { return true },
+	})
+	if err == nil {
+		t.Fatal("a 404 response was accepted as a document")
+	}
+	if tr.creates != 0 {
+		t.Error("a project was created from a document that could not be fetched")
+	}
+}
+
+// An empty document is exactly as much "nothing to design from" as an
+// empty idea typed at the prompt.
+func TestAnEmptyDocumentIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "empty.md")
+	if err := os.WriteFile(file, []byte("   \n\t\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tr := workingTracker()
+	var out bytes.Buffer
+
+	err := newRun(tr, newOptions{
+		Idea: file, Site: "https://x.atlassian.net",
+		In: strings.NewReader(""), Out: &out,
+		Confirm: func(string) bool { return true },
+	})
+	if err == nil {
+		t.Fatal("an empty document was accepted")
+	}
+	if tr.creates != 0 {
+		t.Error("a project was created from an empty document")
 	}
 }
