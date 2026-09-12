@@ -758,8 +758,16 @@ func TestCheckStageArtifactHealsAnUncommittedArtifactWhenAskedTo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("heal:true must turn an uncommitted artifact into success, got: %v", err)
 	}
-	if len(healed) != 1 || healed[0] != rel {
-		t.Errorf("healed = %v, want [%s]", healed, rel)
+	// healed is built from stageArtifact's own return, which is always
+	// slash-form (specArtifact: filepath.ToSlash) -- writeSpec's rel is a
+	// plain filepath.Join for writing the file to disk, which is
+	// backslash-separated on Windows. Both name the same real file; only the
+	// string form differs, so the comparison must normalise the same way
+	// production code does, or this fails on Windows for a reason that has
+	// nothing to do with the behaviour under test.
+	wantRel := filepath.ToSlash(rel)
+	if len(healed) != 1 || healed[0] != wantRel {
+		t.Errorf("healed = %v, want [%s]", healed, wantRel)
 	}
 
 	out, err := exec.Command("git", "-C", repo, "ls-files", "--error-unmatch", "--", rel).CombinedOutput()
