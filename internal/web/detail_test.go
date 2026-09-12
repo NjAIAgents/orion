@@ -323,3 +323,143 @@ func TestScanDetailIgnoresNonRouterNotesInsideAnOpenAsk(t *testing.T) {
 			len(d.Asks[0].Turns))
 	}
 }
+
+// A stage with a single reporting session still gets one Child, not zero --
+// a reader must never have to wonder whether an empty Children means "no
+// data" or "not a fan-out".
+func TestScanDetailASingleSessionStillProducesOneChild(t *testing.T) {
+	evs := []events.Event{
+		{At: t0(1), Kind: events.KindStage, Key: "OR-1", Run: "r1", Actor: "implementer",
+			Detail: map[string]any{"from": "routing", "to": "implementing"}},
+		{At: t0(2), Kind: events.KindUsage, Key: "OR-1", Run: "r1", Actor: "implementer",
+			Detail: map[string]any{"cost_usd": 2.06, "session_id": "sess-a", "about": ""}},
+	}
+	d := ScanDetail(evs, "OR-1", "r1")
+	if len(d.Stages[0].Children) != 1 {
+		t.Fatalf("Children = %d, want 1", len(d.Stages[0].Children))
+	}
+	if got, want := d.Stages[0].Children[0].Session, "sess-a"; got != want {
+		t.Errorf("Session = %q, want %q", got, want)
+	}
+}
+
+// A fan-out's five concurrent authors each report their own session id --
+// this is the exact gap OR-448 found live (all children looked identical):
+// five distinct Children, each with its own About and Cost, not one folded
+// row.
+func TestScanDetailAFanOutProducesOneChildPerSession(t *testing.T) {
+	evs := []events.Event{
+		{At: t0(1), Kind: events.KindStage, Key: "OR-1", Run: "r1", Actor: "qa",
+			Detail: map[string]any{"from": "implementing", "to": "qa"}},
+		{At: t0(2), Kind: events.KindUsage, Key: "OR-1", Run: "r1", Actor: "qa",
+			Detail: map[string]any{"cost_usd": 0.11, "session_id": "sess-1", "about": "4 case(s) · column derivation"}},
+		{At: t0(3), Kind: events.KindUsage, Key: "OR-1", Run: "r1", Actor: "qa",
+			Detail: map[string]any{"cost_usd": 0.07, "session_id": "sess-2", "about": "4 case(s) · output escaping"}},
+		{At: t0(4), Kind: events.KindUsage, Key: "OR-1", Run: "r1", Actor: "qa",
+			Detail: map[string]any{"cost_usd": 0.04, "session_id": "sess-3", "about": "3 case(s) · path validation", "exit": float64(1)}},
+	}
+	d := ScanDetail(evs, "OR-1", "r1")
+	children := d.Stages[0].Children
+	if len(children) != 3 {
+		t.Fatalf("Children = %d, want 3: %+v", len(children), children)
+	}
+	if children[2].Session != "sess-3" || !children[2].Failed {
+		t.Errorf("Children[2] = %+v, want sess-3, Failed=true", children[2])
+	}
+	if children[2].About != "3 case(s) · path validation" {
+		t.Errorf("Children[2].About = %q", children[2].About)
+	}
+	if got, want := d.Stages[0].Cost, 0.22; got != want {
+		t.Errorf("Stage.Cost = %v, want %v (sum of all three children)", got, want)
+	}
+}
+
+// A session that reports usage more than once (a retry within the same
+// child) accumulates into the SAME Child rather than producing a duplicate
+// row.
+func TestScanDetailRepeatedUsageFromOneSessionAccumulatesNotDuplicates(t *testing.T) {
+	evs := []events.Event{
+		{At: t0(1), Kind: events.KindStage, Key: "OR-1", Run: "r1", Actor: "qa",
+			Detail: map[string]any{"from": "implementing", "to": "qa"}},
+		{At: t0(2), Kind: events.KindUsage, Key: "OR-1", Run: "r1", Actor: "qa",
+			Detail: map[string]any{"cost_usd": 0.05, "session_id": "sess-1"}},
+		{At: t0(3), Kind: events.KindUsage, Key: "OR-1", Run: "r1", Actor: "qa",
+			Detail: map[string]any{"cost_usd": 0.03, "session_id": "sess-1"}},
+	}
+	d := ScanDetail(evs, "OR-1", "r1")
+	if len(d.Stages[0].Children) != 1 {
+		t.Fatalf("Children = %d, want 1 (same session, accumulated)", len(d.Stages[0].Children))
+	}
+	if got, want := d.Stages[0].Children[0].Cost, 0.08; got != want {
+		t.Errorf("Cost = %v, want %v", got, want)
+	}
+}
+
+// Usage with no session_id at all (an older log, before this key existed)
+// still counts toward the stage's total Cost but produces no Child --
+// there is nothing to group it by, so it is not fabricated.
+func TestScanDetailUsageWithNoSessionIDStillCountsButNoChild(t *testing.T) {
+	evs := []events.Event{
+		{At: t0(1), Kind: events.KindStage, Key: "OR-1", Run: "r1", Actor: "implementer",
+			Detail: map[string]any{"from": "routing", "to": "implementing"}},
+		{At: t0(2), Kind: events.KindUsage, Key: "OR-1", Run: "r1", Actor: "implementer",
+			Detail: map[string]any{"cost_usd": 2.06}},
+	}
+	d := ScanDetail(evs, "OR-1", "r1")
+	if len(d.Stages[0].Children) != 0 {
+		t.Errorf("Children = %+v, want none: no session_id to group by", d.Stages[0].Children)
+	}
+	if got, want := d.Stages[0].Cost, 2.06; got != want {
+		t.Errorf("Cost = %v, want %v", got, want)
+	}
+}
+
+// A stage's By names who handed it off -- "orion" for the very first
+// crossing (routing -> implementing) -- so the pipeline can show orion as
+// its own node ahead of the stages it never itself runs, rather than the
+// orchestrator disappearing from a view that only ever named who a stage
+// handed off TO.
+func TestScanDetailStageCarriesWhoHandedItOff(t *testing.T) {
+	evs := []events.Event{
+		{At: t0(1), Kind: events.KindStage, Key: "OR-1", Run: "r1", Actor: "implementer",
+			Detail: map[string]any{"from": "routing", "to": "implementing", "by": "orion"}},
+		{At: t0(2), Kind: events.KindStage, Key: "OR-1", Run: "r1", Actor: "qa",
+			Detail: map[string]any{"from": "implementing", "to": "qa", "by": "implementer"}},
+	}
+	d := ScanDetail(evs, "OR-1", "r1")
+	if d.Stages[0].By != "orion" {
+		t.Errorf("Stages[0].By = %q, want orion", d.Stages[0].By)
+	}
+	if d.Stages[1].By != "implementer" {
+		t.Errorf("Stages[1].By = %q, want implementer", d.Stages[1].By)
+	}
+}
+
+// A step's Stage names whichever stage span was open when it happened --
+// the same timestamp-position attribution Stage.Cost already uses,
+// applied to Steps so a reader can filter the raw log to one stage
+// (clicking a stage in the pipeline, per OR-448's own click-to-log ask).
+func TestScanDetailStepsCarryTheStageTheyHappenedIn(t *testing.T) {
+	evs := []events.Event{
+		evt(t0(1), events.KindTool, "OR-1", "r1", "implementer", "opus", "before any stage"),
+		{At: t0(2), Kind: events.KindStage, Key: "OR-1", Run: "r1", Actor: "implementer",
+			Detail: map[string]any{"from": "routing", "to": "implementing"}},
+		evt(t0(3), events.KindTool, "OR-1", "r1", "implementer", "opus", "during implementing"),
+		{At: t0(4), Kind: events.KindStage, Key: "OR-1", Run: "r1", Actor: "qa",
+			Detail: map[string]any{"from": "implementing", "to": "qa"}},
+		evt(t0(5), events.KindTool, "OR-1", "r1", "qa", "sonnet", "during qa"),
+	}
+	d := ScanDetail(evs, "OR-1", "r1")
+	if len(d.Steps) != 3 {
+		t.Fatalf("got %d steps, want 3", len(d.Steps))
+	}
+	if d.Steps[0].Stage != "" {
+		t.Errorf("Steps[0].Stage = %q, want empty: it happened before any stage crossing", d.Steps[0].Stage)
+	}
+	if d.Steps[1].Stage != "implementing" {
+		t.Errorf("Steps[1].Stage = %q, want implementing", d.Steps[1].Stage)
+	}
+	if d.Steps[2].Stage != "qa" {
+		t.Errorf("Steps[2].Stage = %q, want qa", d.Steps[2].Stage)
+	}
+}

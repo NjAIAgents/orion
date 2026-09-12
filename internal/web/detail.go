@@ -29,6 +29,12 @@ type Step struct {
 	Actor string
 	Model string
 	Text  string
+	// Stage is the name of whichever Stage span was open when this step
+	// happened -- attributed by position in the same forward scan that
+	// builds Stages, the same timestamp-ordered attribution Stage.Cost
+	// already uses. Empty for a step that happened before the run's first
+	// stage crossing (or a run with no stage crossings recorded at all).
+	Stage string
 }
 
 // Ask is one question-to-answer exchange: the implementer asked, an advisor
@@ -93,14 +99,45 @@ type PullRequest struct {
 // same way Timing attributes activity to a session by timestamp rather
 // than by an explicit link that does not exist in the log.
 type Stage struct {
-	Name  string
-	Actor string // the actor id this stage handed off TO
+	Name string
+	// Actor is who this stage handed off TO -- the one running it. By is who
+	// handed off FROM: "orion" for the very first crossing (routing ->
+	// implementing, By: events.ActorOrion in internal/work/work.go), an
+	// actor id for every crossing after (the previous stage's own actor
+	// handing the next one off). Both are needed to show the orchestrator
+	// as its own node ahead of the pipeline, not folded into "whoever ran
+	// the first stage" -- orion never runs a stage, it only ever hands one
+	// off.
+	Actor string
+	By    string
 	At    time.Time
 	// Done is false for the run's current (last) stage, when the run has
 	// not yet crossed out of it -- a stage with no known end, not one that
 	// silently reports a zero-length span.
 	Done bool
 	Cost float64
+	// Children is every distinct session that reported usage inside this
+	// stage's span, oldest first -- a fan-out (QA's authoring pass, several
+	// agents at once) produces more than one, since every job in a fan
+	// shares Actor/Key/Model/Stage but each opens its own CLI session
+	// (internal/supervisor.Fan's own doc comment). A stage with exactly one
+	// session still gets one Child here rather than folding it away, so a
+	// reader never has to wonder whether "no children" means "no data" or
+	// "not a fan".
+	Children []Child
+}
+
+// Child is one session's contribution inside a stage: what internal/work's
+// fan-out gave it (About, e.g. "4 case(s) · column derivation" -- the one
+// field that tells five otherwise-identical QA authors apart), what it
+// cost, and whether it failed. Grouped by session id (KindUsage's
+// session_id detail key), the only per-fan-child identifier the log
+// carries.
+type Child struct {
+	Session string
+	About   string
+	Cost    float64
+	Failed  bool
 }
 
 // Detail is everything the log recorded for one (key, run) pair.
@@ -152,9 +189,11 @@ func ScanDetail(evs []events.Event, key, run string) Detail {
 	for _, e := range mine {
 		switch e.Kind {
 		case events.KindTool, events.KindSay:
-			d.Steps = append(d.Steps, Step{
-				At: e.At, Kind: e.Kind, Actor: e.Actor, Model: e.Model, Text: e.Msg,
-			})
+			step := Step{At: e.At, Kind: e.Kind, Actor: e.Actor, Model: e.Model, Text: e.Msg}
+			if openStage != nil {
+				step.Stage = openStage.Name
+			}
+			d.Steps = append(d.Steps, step)
 		case events.KindAsk:
 			d.Asks = append(d.Asks, Ask{At: e.At, Question: e.Msg})
 			openAsk = &d.Asks[len(d.Asks)-1]
@@ -202,17 +241,48 @@ func ScanDetail(evs []events.Event, key, run string) Detail {
 				openStage.Done = true
 			}
 			if to, ok := e.Detail["to"].(string); ok {
-				d.Stages = append(d.Stages, Stage{Name: to, Actor: e.Actor, At: e.At})
+				by, _ := e.Detail["by"].(string)
+				d.Stages = append(d.Stages, Stage{Name: to, Actor: e.Actor, By: by, At: e.At})
 				openStage = &d.Stages[len(d.Stages)-1]
 			}
 		case events.KindUsage:
-			if cost, ok := e.Detail["cost_usd"].(float64); ok {
-				d.Cost += cost
-				if openStage != nil {
-					openStage.Cost += cost
-				}
+			cost, ok := e.Detail["cost_usd"].(float64)
+			if !ok {
+				break
+			}
+			d.Cost += cost
+			if openStage == nil {
+				break
+			}
+			openStage.Cost += cost
+			session, _ := e.Detail["session_id"].(string)
+			if session == "" {
+				break
+			}
+			about, _ := e.Detail["about"].(string)
+			failed, _ := e.Detail["exit"].(float64) // json.Unmarshal decodes every number as float64
+			if c := findChild(openStage.Children, session); c != nil {
+				c.Cost += cost
+			} else {
+				openStage.Children = append(openStage.Children, Child{
+					Session: session, About: about, Cost: cost, Failed: failed != 0,
+				})
 			}
 		}
 	}
 	return d
+}
+
+// findChild returns a pointer to the child carrying session, or nil. Used
+// only within the same loop iteration that might append to the slice it
+// searches, never held across one -- the same rule openStage/openAsk
+// already follow, for the same reason (a later append can reallocate the
+// backing array and invalidate an older pointer into it).
+func findChild(children []Child, session string) *Child {
+	for i := range children {
+		if children[i].Session == session {
+			return &children[i]
+		}
+	}
+	return nil
 }

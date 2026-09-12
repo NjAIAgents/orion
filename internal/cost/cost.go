@@ -54,6 +54,14 @@ const (
 	// event recorded before this existed would read back as false, and the
 	// whole history would relabel itself as never having run.
 	keyNeverRun = "never_started"
+	// keySession is the run's session id -- the one field that tells two
+	// fan-out children apart. Every job in a fan shares the same Actor, Key,
+	// Model and Stage (they are one call to Fan with N Options); only the
+	// session id is genuinely per-child, since each child opens its own CLI
+	// session. Absent from the event until this key existed, the same
+	// backward-compatible posture keyNeverRun's own comment states.
+	keySession = "session_id"
+	keyAbout   = "about"
 )
 
 // Run is one agent invocation's consumption, as recorded.
@@ -106,6 +114,12 @@ type Run struct {
 	Project string
 	Stage   string
 	Session string
+	// About is supervisor.Options' own field, carried through unchanged: N
+	// fan-out children share one Actor, Key, Model and Stage (they are one
+	// call to Fan), so Session is the only thing that tells them apart in
+	// the log, and About is the only thing that says WHY -- "4 case(s) ·
+	// column derivation" rather than a bare session id nobody can read.
+	About string
 	// StartedAt and EndedAt bound the run in wall time. Seconds already says
 	// how long it took; these say WHEN, which is what a benchmark needs to
 	// compare a period before a roster change with the period after it.
@@ -156,7 +170,8 @@ func Record(log *events.Log, home, actor, key string, r Run) error {
 				keyCostUSD: r.CostUSD, keySeconds: r.Seconds,
 				keyExitCode: boolInt(r.Failed), keyReason: r.Reason,
 				keyHaveUse: r.HaveUsage, keyEffort: r.Effort,
-				keyNeverRun: r.NeverStarted,
+				keyNeverRun: r.NeverStarted, keySession: r.Session,
+				keyAbout: r.About,
 			},
 		})
 	}

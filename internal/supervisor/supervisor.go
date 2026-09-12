@@ -678,6 +678,7 @@ func recordTicketCost(ws *workspace.Workspace, opts Options, res *Result, out st
 	r.NeverStarted = !res.Started && !ok
 	r.Model, r.Effort, r.Stage = opts.Model, opts.Effort, opts.Stage
 	r.Project, r.Session = registry.ProjectOf(opts.Key), res.SessionID
+	r.About = opts.About
 	if err := cost.Record(log, workspace.Home(), opts.Actor, opts.Key, r); err != nil {
 		if errors.Is(err, procsafe.ErrLockTimeout) {
 			fmt.Fprintf(ui.Console(),
