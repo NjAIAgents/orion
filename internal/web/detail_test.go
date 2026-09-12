@@ -188,3 +188,138 @@ func TestScanDetailOnAnUnknownKeyAndRunIsEmpty(t *testing.T) {
 		t.Errorf("Detail for an unknown key/run should be entirely empty, got %+v", d)
 	}
 }
+
+// A stage boundary opens a new Stage and closes the one before it -- the
+// same "crossing IN to crossing OUT" pairing OR-448's own comment on Stage
+// describes. The run's LAST stage stays Done=false: there is no next
+// crossing to end it.
+func TestScanDetailBuildsStagesFromStageEvents(t *testing.T) {
+	evs := []events.Event{
+		{At: t0(1), Kind: events.KindStage, Key: "OR-1", Run: "r1", Actor: "implementer",
+			Detail: map[string]any{"from": "routing", "to": "implementing"}},
+		{At: t0(2), Kind: events.KindStage, Key: "OR-1", Run: "r1", Actor: "qa",
+			Detail: map[string]any{"from": "implementing", "to": "qa"}},
+	}
+	d := ScanDetail(evs, "OR-1", "r1")
+	if len(d.Stages) != 2 {
+		t.Fatalf("Stages = %d, want 2", len(d.Stages))
+	}
+	if !d.Stages[0].Done {
+		t.Error("the first stage should be Done: a later crossing ended it")
+	}
+	if d.Stages[1].Done {
+		t.Error("the last stage should not be Done: nothing has ended it yet")
+	}
+	if d.Stages[1].Name != "qa" || d.Stages[1].Actor != "qa" {
+		t.Errorf("Stages[1] = %+v, want Name=qa Actor=qa", d.Stages[1])
+	}
+}
+
+// KindUsage's cost_usd sums into both the run's total Cost and whichever
+// stage was open when it was recorded -- usage carries no stage name of its
+// own, so attribution is by timestamp, the same rule Timing already uses
+// for activity.
+func TestScanDetailAttributesCostToTheOpenStageByTimestamp(t *testing.T) {
+	evs := []events.Event{
+		{At: t0(1), Kind: events.KindStage, Key: "OR-1", Run: "r1", Actor: "implementer",
+			Detail: map[string]any{"from": "routing", "to": "implementing"}},
+		{At: t0(2), Kind: events.KindUsage, Key: "OR-1", Run: "r1", Actor: "implementer",
+			Detail: map[string]any{"cost_usd": 2.06}},
+		{At: t0(3), Kind: events.KindStage, Key: "OR-1", Run: "r1", Actor: "qa",
+			Detail: map[string]any{"from": "implementing", "to": "qa"}},
+		{At: t0(4), Kind: events.KindUsage, Key: "OR-1", Run: "r1", Actor: "qa",
+			Detail: map[string]any{"cost_usd": 0.41}},
+	}
+	d := ScanDetail(evs, "OR-1", "r1")
+	if got, want := d.Cost, 2.47; got != want {
+		t.Errorf("Cost = %v, want %v", got, want)
+	}
+	if got, want := d.Stages[0].Cost, 2.06; got != want {
+		t.Errorf("Stages[0].Cost = %v, want %v", got, want)
+	}
+	if got, want := d.Stages[1].Cost, 0.41; got != want {
+		t.Errorf("Stages[1].Cost = %v, want %v", got, want)
+	}
+}
+
+// Usage recorded before any stage boundary contributes to the run's total
+// but has no stage to attribute to -- it is not lost, just unattributed.
+func TestScanDetailUsageBeforeAnyStageStillCountsTowardTotal(t *testing.T) {
+	evs := []events.Event{
+		{At: t0(1), Kind: events.KindUsage, Key: "OR-1", Run: "r1", Actor: "router",
+			Detail: map[string]any{"cost_usd": 0.01}},
+	}
+	d := ScanDetail(evs, "OR-1", "r1")
+	if got, want := d.Cost, 0.01; got != want {
+		t.Errorf("Cost = %v, want %v", got, want)
+	}
+	if len(d.Stages) != 0 {
+		t.Errorf("Stages = %+v, want none: no boundary was ever crossed", d.Stages)
+	}
+}
+
+// A plain ask/answer with no router note and no escalation still gets one
+// Turn recorded (the answer itself) -- Turns is never nil just because the
+// exchange was the simple, one-advisor case.
+func TestScanDetailAskWithNoRoutingStillGetsAnAnswerTurn(t *testing.T) {
+	evs := []events.Event{
+		evt(t0(1), events.KindAsk, "OR-1", "r1", "implementer", "", "which retry policy?"),
+		evt(t0(2), events.KindAnswer, "OR-1", "r1", "architect", "sonnet", "exponential backoff"),
+	}
+	d := ScanDetail(evs, "OR-1", "r1")
+	if len(d.Asks[0].Turns) != 1 {
+		t.Fatalf("Turns = %d, want 1: the answer itself", len(d.Asks[0].Turns))
+	}
+	if d.Asks[0].Turns[0].Kind != events.KindAnswer {
+		t.Errorf("Turns[0].Kind = %q, want KindAnswer", d.Asks[0].Turns[0].Kind)
+	}
+}
+
+// The real shape from internal/work's consult(): router routes, the first
+// advisor escalates, the second advisor answers -- three turns, in order,
+// closing exactly one ask. This is the exact sequence ask-broker's mockup
+// draws (OR-448): ask -> route -> refuse/escalate -> forward -> answer.
+func TestScanDetailCapturesTheFullRouteEscalateAnswerExchange(t *testing.T) {
+	evs := []events.Event{
+		evt(t0(1), events.KindAsk, "OR-1", "r1", "implementer", "", "which store owns the gate list?"),
+		evt(t0(2), events.KindNote, "OR-1", "r1", events.ActorRouter, "haiku", "routed to the architect"),
+		evt(t0(3), events.KindEscalate, "OR-1", "r1", "architect", "sonnet", "escalated to the pm: not grounded in the repo"),
+		evt(t0(4), events.KindAnswer, "OR-1", "r1", "pm", "sonnet", "the gate board owns it"),
+	}
+	d := ScanDetail(evs, "OR-1", "r1")
+	if len(d.Asks) != 1 {
+		t.Fatalf("Asks = %d, want 1", len(d.Asks))
+	}
+	a := d.Asks[0]
+	if len(a.Turns) != 3 {
+		t.Fatalf("Turns = %d, want 3 (route, escalate, answer): %+v", len(a.Turns), a.Turns)
+	}
+	if a.Turns[0].Kind != events.KindNote || a.Turns[0].Actor != events.ActorRouter {
+		t.Errorf("Turns[0] = %+v, want the router's note", a.Turns[0])
+	}
+	if a.Turns[1].Kind != events.KindEscalate || a.Turns[1].Actor != "architect" {
+		t.Errorf("Turns[1] = %+v, want the architect's escalation", a.Turns[1])
+	}
+	if a.Turns[2].Kind != events.KindAnswer || a.Turns[2].Actor != "pm" {
+		t.Errorf("Turns[2] = %+v, want the pm's answer", a.Turns[2])
+	}
+	if a.Answer != "the gate board owns it" || a.Refused {
+		t.Errorf("a.Answer=%q a.Refused=%v, want the pm's answer and not refused", a.Answer, a.Refused)
+	}
+}
+
+// A note from an actor OTHER than the router (e.g. an ordinary narration
+// line) must not be swept into Turns -- only the router's own routing
+// decision is part of the exchange.
+func TestScanDetailIgnoresNonRouterNotesInsideAnOpenAsk(t *testing.T) {
+	evs := []events.Event{
+		evt(t0(1), events.KindAsk, "OR-1", "r1", "implementer", "", "which retry policy?"),
+		evt(t0(2), events.KindNote, "OR-1", "r1", "implementer", "opus", "waiting on the advisor"),
+		evt(t0(3), events.KindAnswer, "OR-1", "r1", "architect", "opus", "exponential backoff"),
+	}
+	d := ScanDetail(evs, "OR-1", "r1")
+	if len(d.Asks[0].Turns) != 1 {
+		t.Fatalf("Turns = %d, want 1 (only the answer -- the implementer's own note is not routing)",
+			len(d.Asks[0].Turns))
+	}
+}
