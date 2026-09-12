@@ -308,3 +308,39 @@ func TestScanOnAnEmptyLogReturnsNoCards(t *testing.T) {
 		t.Errorf("Scan(nil) returned %d cards, want 0", len(got))
 	}
 }
+
+// A card names the stage it last crossed into, taken from the most recent
+// KindStage event's "to" detail -- the same field ui/stage.go writes and
+// panel-run.js's StageRow already reads off the live stream. Found missing
+// on a real run: the card grid never showed which stage a ticket was in at
+// all, only its verb.
+func TestScanCardsCarryTheStageTheyLastCrossedInto(t *testing.T) {
+	cards := Scan([]events.Event{
+		ev(0, events.KindRunStart, "OR-57", "r1"),
+		{At: base.Add(time.Minute), Kind: events.KindStage, Key: "OR-57", Run: "r1",
+			Detail: map[string]any{"from": "routing", "to": "implementing"}},
+		{At: base.Add(2 * time.Minute), Kind: events.KindStage, Key: "OR-57", Run: "r1",
+			Detail: map[string]any{"from": "implementing", "to": "qa"}},
+	}, nil)
+
+	if got, want := len(cards), 1; got != want {
+		t.Fatalf("Scan returned %d cards, want %d", got, want)
+	}
+	if got, want := cards[0].Stage, "qa"; got != want {
+		t.Errorf("Stage = %q, want %q (the later of two crossings)", got, want)
+	}
+}
+
+// A run with no stage boundary at all -- never handed off from wherever it
+// started -- carries no stage, not an empty-string placeholder rendered as
+// if it meant something.
+func TestScanCardWithNoStageCrossingHasNoStage(t *testing.T) {
+	cards := Scan([]events.Event{
+		ev(0, events.KindRunStart, "OR-57", "r1"),
+		ev(time.Minute, events.KindTool, "OR-57", "r1"),
+	}, nil)
+
+	if got, want := cards[0].Stage, ""; got != want {
+		t.Errorf("Stage = %q, want empty: no stage event was ever recorded", got)
+	}
+}
