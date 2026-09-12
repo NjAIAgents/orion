@@ -158,6 +158,12 @@
         border-radius: 3px;
       }
       .activity { color: var(--ink-faint); font-size: 10.5px; }
+      .stage {
+        color: var(--ink-dim);
+        font-size: 10.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
       .meta {
         display: flex;
         gap: 14px;
@@ -168,6 +174,28 @@
         margin-top: auto;
       }
       .meta b { font-weight: 600; color: var(--ink-dim); }
+      /* An INDETERMINATE bar, not a percentage: there is no fixed stage
+         count a run's progress could be measured against (dba is optional,
+         qa can fan out and loop), so this signals "still working" rather
+         than claiming a completion fraction nothing backs. */
+      .cardbar {
+        height: 2px;
+        border-radius: 1px;
+        background: var(--line-soft);
+        overflow: hidden;
+      }
+      .cardbar i {
+        display: block;
+        width: 40%;
+        height: 100%;
+        background: var(--work);
+        border-radius: 1px;
+        animation: cardbar-sweep 1.4s ease-in-out infinite;
+      }
+      @keyframes cardbar-sweep {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(350%); }
+      }
       .steps { display: flex; gap: 3px; align-items: center; }
       .step { width: 11px; height: 3px; border-radius: 1px; background: var(--line); }
       .step.done { background: var(--ok); }
@@ -235,9 +263,9 @@
       .la { flex: none; width: 142px; overflow: hidden; text-overflow: ellipsis; }
       .lm { flex: none; width: 44px; color: var(--ink-faint); }
       .lg { color: #c8ccd1; overflow: hidden; text-overflow: ellipsis; }
-      .stagerow { display: flex; gap: 8px; padding: 4px 14px; white-space: nowrap; align-items: baseline; }
-      .rule { color: var(--ink-faint); }
-      .stagenames { font-weight: 600; }
+      .stagerow { display: flex; gap: 8px; padding: 4px 14px; white-space: nowrap; align-items: baseline; overflow: hidden; }
+      .rule { color: var(--ink-faint); flex: none; }
+      .stagenames { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
       .logfoot {
         border-top: 1px solid var(--line);
         padding: 8px 14px;

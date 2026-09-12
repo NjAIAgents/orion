@@ -70,6 +70,12 @@ type Card struct {
 	// it. A waiting card with no gate is a card that cannot explain itself,
 	// which is the whole complaint that produced the board.
 	Gate string
+	// Stage is the name of the stage this run is currently in ("qa",
+	// "pull request"), taken from the most recent KindStage event's To
+	// field. Empty when the run has not crossed a stage boundary yet -- a
+	// card with no stage is not an error, it just has not handed off from
+	// wherever it started.
+	Stage string
 	// Session is the agent on this ticket. The zero value means none is --
 	// a ticket waiting on CI or on a person has a card but no session.
 	Session Session

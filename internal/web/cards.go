@@ -95,9 +95,33 @@ func Scan(evs []events.Event, live map[string]bool) []Card {
 
 	out := make([]Card, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, Card{Key: id.key, Run: id.run, Verb: verbs[id], Session: sessions[id]})
+		out = append(out, Card{
+			Key: id.key, Run: id.run, Verb: verbs[id],
+			Stage: stageOf(groups[id]), Session: sessions[id],
+		})
 	}
 	return out
+}
+
+// stageOf reports the stage this run last crossed into: the To field of the
+// most recent KindStage event, by timestamp -- the same "newest by
+// timestamp, not by file position" rule sessionOf and verbOf already follow.
+// Empty when the run's events include no handoff at all.
+func stageOf(evs []events.Event) string {
+	var stage string
+	var at time.Time
+	for _, e := range evs {
+		if e.Kind != events.KindStage {
+			continue
+		}
+		if stage == "" || !e.At.Before(at) {
+			if to, ok := e.Detail["to"].(string); ok {
+				stage = to
+				at = e.At
+			}
+		}
+	}
+	return stage
 }
 
 // GraceAfterFinish is how long a finished run stays on the run page before

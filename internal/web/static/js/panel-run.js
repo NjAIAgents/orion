@@ -143,6 +143,7 @@ class Card extends Component {
           <span class="status ${card.Verb}">${verbIcon(card.Verb)} ${card.Verb}</span>
         </div>
         <div class="summary">${card.Title}</div>
+        ${card.Stage ? html`<div class="stage">${card.Stage}</div>` : null}
         ${s.Role || s.Actor
           ? html`<div class="who">
               <span>${s.Role || s.Actor}</span>
@@ -157,6 +158,7 @@ class Card extends Component {
             ? html`<span><b>${fmtElapsed(s.Started, s.Last)}</b></span>`
             : null}
         </div>
+        ${card.Verb === "working" ? html`<div class="cardbar"><i></i></div>` : null}
       </a>
     `;
   }
@@ -297,39 +299,34 @@ class StageRow extends Component {
 // scrolling a live tail ever needs to guard against.
 const maxLines = 2000;
 
-// LogPanel owns the SSE connection and the four behaviours OR-69's
-// done-when names: streamed lines, verb+trace filters, auto-scroll, and
-// pause-on-scroll-up.
-class LogPanel extends Component {
-  constructor() {
-    super();
-    this.state = {
-      lines: [],
-      active: new Set(VERBS),
-      trace: true,
-      paused: false,
-      connected: false,
-    };
-    this.linesRef = null;
-  }
-
-  componentDidMount() {
-    this.connect();
-  }
-
-  componentWillUnmount() {
-    if (this.source) this.source.close();
-  }
-
-  connect() {
+// logStore holds the SSE connection and accumulated lines OUTSIDE LogPanel's
+// own component state, at module scope, so a click on a card -- which
+// unmounts RunPanel entirely (app.js swaps the whole panel on a hash change,
+// there is no "hidden but mounted" concept) -- does not throw the tail away.
+// Returning to #run re-mounts a fresh LogPanel instance that reconnects
+// nothing and simply reads what is already here; the connection itself is
+// only ever opened once, the first time any LogPanel asks for it.
+const logStore = {
+  source: null,
+  lines: [],
+  connected: false,
+  listeners: new Set(),
+  ensureConnected() {
+    if (this.source) return;
     // No key= or actor= query param: this panel is the whole machine's log,
     // matching the card grid's own scope -- every workspace /api/snapshot
     // draws cards for, /api/stream already fans events in from all of them
     // (OR-63).
     const source = new EventSource("/api/stream");
     this.source = source;
-    source.onopen = () => this.setState({ connected: true });
-    source.onerror = () => this.setState({ connected: false });
+    source.onopen = () => {
+      this.connected = true;
+      this.notify();
+    };
+    source.onerror = () => {
+      this.connected = false;
+      this.notify();
+    };
     source.onmessage = (msg) => {
       let e;
       try {
@@ -348,12 +345,46 @@ class LogPanel extends Component {
         stage: e.kind === "stage",
         detail: e.detail,
       };
-      this.setState((s) => {
-        const lines = s.lines.length >= maxLines ? s.lines.slice(1) : s.lines.slice();
-        lines.push(line);
-        return { lines };
-      }, this.maybeScroll);
+      if (this.lines.length >= maxLines) this.lines.shift();
+      this.lines.push(line);
+      this.notify();
     };
+  },
+  notify() {
+    this.listeners.forEach((fn) => fn());
+  },
+};
+
+// LogPanel reads logStore and owns only the display-side state OR-69's
+// done-when names beyond the tail itself: verb+trace filters, auto-scroll,
+// and pause-on-scroll-up. The connection and the lines survive this
+// component's own mount/unmount (see logStore above).
+class LogPanel extends Component {
+  constructor() {
+    super();
+    this.state = {
+      active: new Set(VERBS),
+      trace: true,
+      paused: false,
+    };
+    this.linesRef = null;
+  }
+
+  componentDidMount() {
+    logStore.ensureConnected();
+    this.onStoreChange = () => {
+      this.forceUpdate(this.maybeScroll);
+    };
+    logStore.listeners.add(this.onStoreChange);
+    // A remount (navigating back from a card click) already has a tail in
+    // logStore, but paused starts false and the DOM has just appeared with
+    // no scroll position yet -- jump to the bottom once, the same place a
+    // fresh connection's first lines would have carried it anyway.
+    this.maybeScroll();
+  }
+
+  componentWillUnmount() {
+    logStore.listeners.delete(this.onStoreChange);
   }
 
   maybeScroll() {
@@ -401,20 +432,20 @@ class LogPanel extends Component {
   }
 
   visible() {
-    return this.state.lines.filter((l) => {
+    return logStore.lines.filter((l) => {
       if (l.stage) return true; // a handoff is never filtered by verb or trace
       if (!this.state.trace && (l.kind === "tool" || l.kind === "say")) return false;
       return this.state.active.has(l.verb);
     });
   }
 
-  render(_, { lines, active, trace, paused, connected }) {
+  render(_, { active, trace, paused }) {
     const shown = this.visible();
     return html`
       <div class="log">
         <div class="logtop">
           <div class="t">log</div>
-          <span class="dim">· ${connected ? "live" : "reconnecting…"}</span>
+          <span class="dim">· ${logStore.connected ? "live" : "reconnecting…"}</span>
           <span class="spacer" style="flex:1"></span>
           <span class="chip">all tickets</span>
         </div>
@@ -433,7 +464,7 @@ class LogPanel extends Component {
           )}
         </div>
         <div class="logfoot">
-          <span>${paused ? "paused" : "following"} · ${lines.length} line${lines.length === 1 ? "" : "s"}</span>
+          <span>${paused ? "paused" : "following"} · ${logStore.lines.length} line${logStore.lines.length === 1 ? "" : "s"}</span>
           <button class="pausebtn ${paused ? "paused" : ""}" onClick=${() => this.togglePause()}>
             ${paused ? "resume" : "pause on scroll-up"}
           </button>
