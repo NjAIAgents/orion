@@ -40,6 +40,15 @@ type Question struct {
 	// Markers are the lines carrying a marker for this same question,
 	// when the question is a bullet. Answered together with it.
 	Markers []int
+
+	// fromMarker records which loop created this Question -- the marker
+	// scan or the bullet scan -- so merge() can tell them apart directly.
+	// A line-based heuristic (marker's line has no bullet on it) breaks
+	// the instant a marker and its bullet share one physical line (a
+	// single-line "- [x] [NEEDS CLARIFICATION: ...]" with no
+	// continuation), which is legal input the heuristic was never safe
+	// against.
+	fromMarker bool
 }
 
 // idRe is the identifier a question may open with. Letters, an optional
@@ -59,9 +68,6 @@ type Assessment struct {
 	Found     bool
 	Questions []Question
 	Open      int
-
-	markerLines map[int]bool
-	bulletLines map[int]bool
 }
 
 // Ready reports whether the chain may proceed past intent.
@@ -99,7 +105,7 @@ func Assess(path string) Assessment { return assess(path, false) }
 func AssessSpec(path string) Assessment { return assess(path, true) }
 
 func assess(path string, markers bool) Assessment {
-	a := Assessment{Path: path, markerLines: map[int]bool{}, bulletLines: map[int]bool{}}
+	a := Assessment{Path: path}
 	f, err := os.Open(path)
 	if err != nil {
 		return a
@@ -140,8 +146,7 @@ func assess(path string, markers bool) Assessment {
 					if text == "" {
 						continue
 					}
-					a.Questions = append(a.Questions, Question{Text: text, Line: n, ID: questionID(text)})
-					a.markerLines[n] = true
+					a.Questions = append(a.Questions, Question{Text: text, Line: n, ID: questionID(text), fromMarker: true})
 					a.Open++
 				}
 			}
@@ -192,7 +197,6 @@ func assess(path string, markers bool) Assessment {
 		text = joinContinuation(text, lines, i+1, k)
 
 		q := Question{Text: text, Answered: answered, Line: n, ID: questionID(text)}
-		a.bulletLines[n] = true
 		if !q.Answered {
 			a.Open++
 		}
@@ -262,19 +266,31 @@ func joinContinuation(first string, lines []string, from, to int) string {
 	return strings.TrimSpace(b.String())
 }
 
-// merge folds a marker and a bullet that ask the same question -- same
-// identifier, or the same text -- into one: the bullet, which is where a
-// person answers, carrying the marker's line so the answer reaches both.
-// A marker with no bullet stays a question of its own, answered only by
-// removal. Open is recounted from what survives.
+// merge folds a marker and a bullet that ask the same question -- the same
+// physical line, the same identifier, or the same text -- into one: the
+// bullet, which is where a person answers, carrying the marker's line so
+// the answer reaches both. A marker with no bullet stays a question of its
+// own, answered only by removal. Open is recounted from what survives.
+//
+// A single-line "- [x] [NEEDS CLARIFICATION: ...]" (no continuation lines)
+// is where ID/text keying alone used to fail: markerRe only ever matches
+// within one physical line, so a multi-line marker (every existing example
+// before this) never produces a marker-born Question at all, and the
+// bullet is the only entry. A single-line marker DOES produce both a
+// marker-born and a bullet-born Question -- and their captured text
+// differs (the marker's is just the bracket's contents, the bullet's is
+// the whole line) so ID/text keying alone does not reliably fold them.
+// Same line number is unambiguous: nothing else can share it.
 func (a *Assessment) merge() {
 	var bullets []*Question
 	byKey := map[string]*Question{}
+	byLine := map[int]*Question{}
 	for i := range a.Questions {
 		q := &a.Questions[i]
-		if len(q.Markers) == 0 && q.Line > 0 && !isMarkerQuestion(a, q) {
+		if len(q.Markers) == 0 && q.Line > 0 && !isMarkerQuestion(q) {
 			bullets = append(bullets, q)
 			byKey[keyOf(*q)] = q
+			byLine[q.Line] = q
 		}
 	}
 	if len(bullets) == 0 {
@@ -282,7 +298,11 @@ func (a *Assessment) merge() {
 	}
 	var kept []Question
 	for _, q := range a.Questions {
-		if isMarkerQuestion(a, &q) {
+		if isMarkerQuestion(&q) {
+			if b, ok := byLine[q.Line]; ok {
+				b.Markers = append(b.Markers, q.Line)
+				continue
+			}
 			if b, ok := byKey[keyOf(q)]; ok {
 				b.Markers = append(b.Markers, q.Line)
 				continue
@@ -309,11 +329,12 @@ func (a *Assessment) merge() {
 	}
 }
 
-// isMarkerQuestion tells a marker-born question from a bullet-born one by
-// where it sits: bullets live under the Open questions heading, markers
-// anywhere else. Recorded during the scan rather than inferred.
-func isMarkerQuestion(a *Assessment, q *Question) bool {
-	return a.markerLines[q.Line] && !a.bulletLines[q.Line]
+// isMarkerQuestion tells a marker-born question from a bullet-born one.
+// Recorded directly at scan time (Question.fromMarker) rather than
+// inferred from line position, which breaks when a marker and its bullet
+// checkbox share one physical line.
+func isMarkerQuestion(q *Question) bool {
+	return q.fromMarker
 }
 
 func keyOf(q Question) string {

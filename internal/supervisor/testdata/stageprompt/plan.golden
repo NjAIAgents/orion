@@ -11,25 +11,35 @@ from the plan alone.
 A PLAN MAKES DECISIONS THE INTENT NEVER SETTLED -- the language, the runtime,
 which platforms it runs on, a library over hand-rolling it. Each of those is a
 real constraint on everyone who uses the result, decided here, once, usually
-without anyone asking whether it should be. State every one you made where the
-intent left it open, and why you chose what you chose -- in the plan's own body,
-where a reader will see it, not folded into a Risks paragraph nobody is pointed
-at. FOUND ON A REAL PROJECT: a plan committed to Bash with a one-line "Windows
-is not validated for the MVP (see Risks)" -- and Risks never mentioned it again.
-The platform a plugin runs on is exactly the kind of choice this section exists
-for, and a dangling cross-reference to a discussion that never happened is the
-same silent gap as never writing it down.
+without anyone asking whether it should be.
 
-ANYTHING YOU GENUINELY CANNOT DECIDE -- because it needs a subjective call, a
-cost/effort tradeoff, or knowledge only the person asking for this has -- is an
-OPEN QUESTION, never a default slipped in as though it were settled. These two
-headings must be in plans/thing.plan.md when you finish, worded exactly like this --
+THE TEST IS NOT WHETHER YOU FEEL CONFIDENT. It is whether the intent actually
+authorized this specific choice. A language, runtime, or target-platform pick
+that the intent did not name is not yours to default -- confidence is not
+authority. If the intent never said Bash, never said Python, never said which
+platforms, that silence is not permission to pick one and move on: it goes to
+Open Questions, worded as the actual choice on the table (e.g. "Bash-only, or
+does this need Python / run on Windows too?"), even if you have a preference
+and even if one option is obviously easier to build. FOUND ON A REAL PROJECT:
+a plan committed to Bash with a one-line "Windows is not validated for the MVP
+(see Risks)" -- stated as settled, never asked, and Risks never mentioned it
+again. That is exactly the failure this rule exists to stop.
+
+Only decisions the intent DID authorize -- or ones with no real consequence
+for who can use the result (an internal helper's name, which stdlib function)
+-- belong in the plan's own body as stated decisions, with your reasoning.
+
+ANYTHING ELSE -- language, runtime, target platform, or any other choice that
+changes who can use or run the result, and that the intent left unresolved --
+is an OPEN QUESTION, never a default slipped in as though it were settled.
+These two headings must be in plans/thing.plan.md when you finish, worded exactly like this --
 Orion's gate finds the second one BY ITS HEADING, so a file that words it
 differently parses as having nothing open:
 
   ## Open questions
-  - One bullet per stack, platform, or architecture decision you could not
-    make -- not a decision you made and are merely noting.
+  - One bullet per stack, platform, or architecture decision the intent did
+    not authorize -- not a decision you made and are merely noting, and not
+    omitted because you felt confident in your own choice.
 
 Write `- None` under Open questions when there genuinely are none.
 A later stage building from an unanswered plan question is worse than one that
