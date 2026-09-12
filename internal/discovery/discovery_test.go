@@ -620,3 +620,41 @@ func TestContinuationJoinStopsAtBlankLineOrHeading(t *testing.T) {
 		t.Errorf("Text = %q, want %q", got, want)
 	}
 }
+
+// A single-line "- [x] [NEEDS CLARIFICATION: ...]" bullet -- the marker and
+// its checkbox sharing one physical line, with no continuation -- must not
+// double-count as open. markerRe only ever matches within one physical
+// line, so every multi-line marker (every other test in this file) never
+// produces a marker-born Question at all; only the single-line case
+// produces both a marker-born and a bullet-born Question for the same
+// line, and merge() must fold them by line rather than by ID or text
+// (which differ between the two captures). Found on a real project: an
+// answered, single-line Q11 still reported Open: 1 and blocked the chain.
+func TestASingleLineMarkerBulletDoesNotDoubleCount(t *testing.T) {
+	p := write(t, "## Open questions\n"+
+		"- [x] [NEEDS CLARIFICATION: Q11 — minimum Python version and Windows scope]\n"+
+		"  Answer: Python 3.9+, native Windows in scope.\n")
+	a := AssessSpec(p)
+	if a.Open != 0 {
+		t.Fatalf("Open = %d, want 0 (the single-line marker+bullet is answered): %+v", a.Open, a.Questions)
+	}
+	if len(a.Questions) != 1 {
+		t.Fatalf("got %d questions, want 1 (marker and bullet folded into one): %+v", len(a.Questions), a.Questions)
+	}
+	if !a.Ready() {
+		t.Error("AssessSpec is not Ready with the single-line question answered")
+	}
+}
+
+// The flip side: an unanswered single-line marker+bullet must still block.
+func TestASingleLineMarkerBulletStillBlocksWhenUnanswered(t *testing.T) {
+	p := write(t, "## Open questions\n"+
+		"- [ ] [NEEDS CLARIFICATION: Q11 — minimum Python version and Windows scope]\n")
+	a := AssessSpec(p)
+	if a.Open != 1 {
+		t.Fatalf("Open = %d, want 1: %+v", a.Open, a.Questions)
+	}
+	if a.Ready() {
+		t.Error("AssessSpec is Ready with an unanswered single-line question")
+	}
+}
