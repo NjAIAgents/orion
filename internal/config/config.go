@@ -82,6 +82,15 @@ type Limits struct {
 	// load than four processes. If a stampede shows up after this change,
 	// that product is the first thing to look at.
 	MaxConcurrentTickets int `json:"max_concurrent_tickets"`
+
+	// MaxBreakerTrips and MaxStranded bound the queue manager's eviction
+	// rules for a ticket that keeps tripping the safety breaker, or whose
+	// worktree keeps failing to settle, without landing (OR-458). Zero means
+	// the shipped default, via Trips()/StrandedRounds() below -- the same
+	// "zero is not unlimited" rule every other ceiling in this struct
+	// follows.
+	MaxBreakerTrips int `json:"max_breaker_trips"`
+	MaxStranded     int `json:"max_stranded"`
 }
 
 // ConcurrencyWarnAbove is where `orion config limits` stops accepting a value
@@ -135,6 +144,26 @@ func (l Limits) NoProgress() time.Duration {
 		n = Defaults().Limits.NoProgressMinutes
 	}
 	return time.Duration(n) * time.Minute
+}
+
+// BreakerTrips is MaxBreakerTrips with the default applied. Zero means the
+// shipped default, never unlimited (OR-458).
+func (l Limits) BreakerTrips() int {
+	n := l.MaxBreakerTrips
+	if n <= 0 {
+		n = Defaults().Limits.MaxBreakerTrips
+	}
+	return n
+}
+
+// StrandedRounds is MaxStranded with the default applied. Zero means the
+// shipped default, never unlimited (OR-458).
+func (l Limits) StrandedRounds() int {
+	n := l.MaxStranded
+	if n <= 0 {
+		n = Defaults().Limits.MaxStranded
+	}
+	return n
 }
 
 // Delegation configures handoff to nj-agents skills.
@@ -1007,6 +1036,8 @@ func Defaults() Config {
 			MaxConcurrentChildren:  2,
 			MaxConcurrentTickets:   4,
 			NoProgressMinutes:      60,
+			MaxBreakerTrips:        2,
+			MaxStranded:            2,
 		},
 		Gates: Gates{
 			RequirePlanBeforeEdit:          false, // opt-in: too disruptive to force on an unconfigured repo
