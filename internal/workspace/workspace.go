@@ -422,9 +422,58 @@ func scaffoldChain(ws *Workspace) error {
 // the canonical template's slack/budget/attribution/qa/ci sections never
 // landed on a project scaffolded via `orion new`/`orion plan` (OR-451,
 // OR-452). One writer, called from both places, cannot race itself.
+//
+// adopt's canonical template deliberately has NO toolkit/spec-kit section:
+// an adopted repo (`orion init`) has no assumption that spec-kit belongs
+// there. A project scaffolded from cold start (`orion new`/`orion plan`)
+// does delegate to it by default (docs/decisions/0022), and that default
+// used to live in the OLD defaultProjectConfig this function replaced --
+// dropping it silently regressed TestANewProjectDeclaresItsToolkit. Rather
+// than forking EnsureConfig's template for a difference this narrow, the
+// toolkit section is patched in here, once, only when this call created the
+// file (never touching one that already existed or one adopt itself wrote).
 func writeProjectConfig(repo string) error {
-	_, err := adopt.EnsureConfig(repo, true)
-	return err
+	created, err := adopt.EnsureConfig(repo, true)
+	if err != nil || !created {
+		return err
+	}
+	return addToolkitDefaults(repo)
+}
+
+// addToolkitDefaults merges the spec-kit delegation a project scaffolded
+// from cold start gets by default into an already-written orion.json.
+//
+// A merge into the parsed JSON rather than a second string template: the
+// canonical template's exact formatting (field order, comments) stays
+// adopt's alone to own, and this only ever adds one key nothing else in
+// that template defines.
+func addToolkitDefaults(repo string) error {
+	path := filepath.Join(repo, "orion.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return err
+	}
+	if _, exists := doc["toolkit"]; exists {
+		return nil
+	}
+	doc["toolkit"] = map[string]any{
+		"repo": "https://github.com/github/spec-kit.git",
+		"stages": map[string]any{
+			"constitution": "/speckit-constitution",
+			"spec":         "/speckit-specify",
+			"plan":         "/speckit-plan",
+			"analyze":      "/speckit-analyze",
+		},
+	}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(out, '\n'), 0o644)
 }
 
 // commitScaffold commits whatever the scaffold just wrote.
