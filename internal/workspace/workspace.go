@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/provision"
 )
@@ -413,12 +414,17 @@ func scaffoldChain(ws *Workspace) error {
 }
 
 // writeProjectConfig lays down orion.json, leaving an existing one alone.
+//
+// Delegates to adopt.EnsureConfig rather than keeping a second, separate
+// template here: this used to write its own minimal defaultProjectConfig,
+// which raced toolkitStep's later adopt.EnsureConfig call -- this function
+// runs first (workspace.New, before the chain), so its file always won and
+// the canonical template's slack/budget/attribution/qa/ci sections never
+// landed on a project scaffolded via `orion new`/`orion plan` (OR-451,
+// OR-452). One writer, called from both places, cannot race itself.
 func writeProjectConfig(repo string) error {
-	cfgPath := filepath.Join(repo, "orion.json")
-	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-		return os.WriteFile(cfgPath, []byte(defaultProjectConfig), 0o644)
-	}
-	return nil
+	_, err := adopt.EnsureConfig(repo, true)
+	return err
 }
 
 // commitScaffold commits whatever the scaffold just wrote.
