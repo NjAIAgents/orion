@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/provision"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
@@ -1071,6 +1072,24 @@ func TestTheToolkitStepWritesOrionJSONFromTheCanonicalTemplate(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"require_plan_before_edit": true`) {
 		t.Error("a project scaffolded from cold start should get require_plan_before_edit true")
+	}
+}
+
+// OR-454: orion init's EnsureDun instruments the repo it adopts, but
+// nothing in the plan chain ever called it, so commits the chain itself
+// makes into a project scaffolded by `orion new`/`orion plan` carried no
+// attribution trailer.
+func TestTheToolkitStepInstrumentsAttribution(t *testing.T) {
+	if _, err := exec.LookPath("dun"); err != nil {
+		t.Skip("dun not on PATH; toolkitStep cannot instrument it for real without it")
+	}
+	w := chainWSWithRepo(t)
+	var out strings.Builder
+	if err := toolkitStep(&stepIO{Out: &out}, w); err != nil {
+		t.Fatal(err)
+	}
+	if !adopt.DunLook(w.RepoDir()).Instrumented {
+		t.Error("repo is not instrumented with dun after toolkitStep, though dun is on PATH")
 	}
 }
 
