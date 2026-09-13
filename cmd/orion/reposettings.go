@@ -28,6 +28,12 @@ import (
 //
 // Detected, never required (A5). No gh, no remote, or no permission means a
 // note and a normal exit -- this is tidiness, and nothing depends on it.
+//
+// Held in a variable, like remoteFn, so a test of the plan chain's
+// remoteStep can observe that it was called without shelling out to a real
+// gh against a repository that does not exist on GitHub (OR-455).
+var ensureRepoSettingsFn = ensureRepoSettings
+
 func ensureRepoSettings(dir string) {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return
