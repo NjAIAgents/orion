@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/collect"
+	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/queue"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/tracker"
@@ -154,5 +156,117 @@ func TestQueuedEscalatesATicketEvictedTwiceRatherThanEvictingAgain(t *testing.T)
 	}
 	if !strings.Contains(q.Held[0].Reason, "evicted 2 times already") {
 		t.Errorf("third pass reason = %q, want it to escalate rather than evict a third time", q.Held[0].Reason)
+	}
+}
+
+// OR-458: tripsLookup and strandedLookup used to not exist at all --
+// queue.Facts.Trips and .Stranded were always nil in the live watch loop.
+func TestTripsLookupBridgesTheRegistryToTheWorkspace(t *testing.T) {
+	home := t.TempDir()
+	ws := t.TempDir()
+	if err := registry.Save(home, &registry.File{Repos: map[string]registry.Entry{
+		"OR": {Key: "OR", Source: t.TempDir(), Workspace: ws},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := collect.RecordTrip(ws, "OR-1", "unverified-edits", "detail"); err != nil {
+		t.Fatal(err)
+	}
+	if err := collect.RecordTrip(ws, "OR-1", "no-progress", "detail"); err != nil {
+		t.Fatal(err)
+	}
+
+	lookup := tripsLookup(home)
+	n, known := lookup("OR-1")
+	if !known || n != 2 {
+		t.Errorf("tripsLookup(OR-1) = (%d, %v), want (2, true)", n, known)
+	}
+	if _, known := lookup("NOPE-1"); known {
+		t.Error("an unregistered ticket must be unknown, not a reading of zero")
+	}
+}
+
+func TestStrandedLookupBridgesTheRegistryToTheWorkspace(t *testing.T) {
+	home := t.TempDir()
+	ws := t.TempDir()
+	if err := registry.Save(home, &registry.File{Repos: map[string]registry.Entry{
+		"OR": {Key: "OR", Source: t.TempDir(), Workspace: ws},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := collect.RecordStranded(ws, "OR-1", "detail"); err != nil {
+		t.Fatal(err)
+	}
+
+	lookup := strandedLookup(home)
+	n, known := lookup("OR-1")
+	if !known || n != 1 {
+		t.Errorf("strandedLookup(OR-1) = (%d, %v), want (1, true)", n, known)
+	}
+	if _, known := lookup("NOPE-1"); known {
+		t.Error("an unregistered ticket must be unknown, not a reading of zero")
+	}
+}
+
+// OR-458: maxLimit generalises maxFixRounds's reconciliation rule (smallest
+// configured value wins) for MaxTrips/MaxStranded too.
+func TestMaxLimitReadsTheSmallestConfiguredCeilingForAnyExtractor(t *testing.T) {
+	home := t.TempDir()
+	repoA := t.TempDir()
+	repoB := t.TempDir()
+	writeOrionJSON(t, repoA, `{"version":1,"limits":{"max_breaker_trips":5}}`)
+	writeOrionJSON(t, repoB, `{"version":1,"limits":{"max_breaker_trips":2}}`)
+	if err := registry.Save(home, &registry.File{Repos: map[string]registry.Entry{
+		"A": {Key: "A", Source: repoA},
+		"B": {Key: "B", Source: repoB},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	n := maxLimit(home, []string{"A", "B"}, func(cfg config.Config) int { return cfg.Limits.BreakerTrips() })
+	if n != 2 {
+		t.Errorf("maxLimit = %d, want 2 (the smaller of the two projects)", n)
+	}
+}
+
+// OR-458 end to end: a ticket that has tripped the breaker at or past the
+// configured ceiling must be evicted for it, the same way a spent fix-round
+// ceiling already evicts (OR-456) -- collect.Trips had no caller anywhere in
+// the live watch loop before this.
+func TestQueuedEvictsATicketThatHasTrippedThePastTheCeiling(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/project/OR/versions"):
+			_, _ = w.Write([]byte(`[]`))
+		case strings.Contains(r.URL.Path, "/search/jql"):
+			_, _ = w.Write([]byte(`{"issues":[{"key":"OR-1","fields":{"labels":["ORION"]}}]}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	ws := t.TempDir()
+	repo := t.TempDir()
+	writeOrionJSON(t, repo, `{"version":1,"limits":{"max_breaker_trips":1}}`)
+	if err := registry.Save(home, &registry.File{Repos: map[string]registry.Entry{
+		"OR": {Key: "OR", Source: repo, Workspace: ws},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := collect.RecordTrip(ws, "OR-1", "unverified-edits", "detail"); err != nil {
+		t.Fatal(err)
+	}
+
+	q, err := Queued(&tracker.Jira{BaseURL: srv.URL}, home, []string{"OR"}, "ORION")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.Held) != 1 {
+		t.Fatalf("want exactly one held ticket, got ready=%+v held=%+v", q.Ready, q.Held)
+	}
+	if !strings.Contains(q.Held[0].Reason, "breaker tripped") {
+		t.Errorf("held reason = %q, want it to name the breaker", q.Held[0].Reason)
 	}
 }

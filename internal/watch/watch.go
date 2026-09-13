@@ -1341,7 +1341,16 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 		Scheduled:    func(i tracker.Issue) string { return sched.HoldReason(i, label) },
 		FixRounds:    fixRoundsLookup(home),
 		MaxFixRounds: maxFixRounds(home, keys),
-		Ledger:       ledger,
+		// OR-458: Trips and Stranded were the other two eviction signals left
+		// unwired alongside FixRounds -- unlike FixRounds, no reader existed
+		// at all until collect.Trips/collect.Stranded (recorded from
+		// internal/work/residue.go's settleTripResidue, the one place both a
+		// tripped session and its ticket key are known together).
+		Trips:       tripsLookup(home),
+		MaxTrips:    maxLimit(home, keys, func(cfg config.Config) int { return cfg.Limits.BreakerTrips() }),
+		Stranded:    strandedLookup(home),
+		MaxStranded: maxLimit(home, keys, func(cfg config.Config) int { return cfg.Limits.StrandedRounds() }),
+		Ledger:      ledger,
 	})
 	// Best-effort, same as every other durable-state write in this package: a
 	// failed save costs one re-evicted ticket next pass (the ledger still
@@ -1402,11 +1411,44 @@ func fixRoundsLookup(home string) func(key string) (int, bool) {
 	}
 }
 
+// tripsLookup bridges the registry to collect.Trips the same way
+// fixRoundsLookup bridges it to collect.FixRounds (OR-458).
+func tripsLookup(home string) func(key string) (int, bool) {
+	return func(key string) (int, bool) {
+		entry, err := registry.Lookup(home, key)
+		if err != nil {
+			return 0, false
+		}
+		return collect.Trips(entry.Workspace, key)
+	}
+}
+
+// strandedLookup bridges the registry to collect.Stranded the same way
+// fixRoundsLookup bridges it to collect.FixRounds (OR-458).
+func strandedLookup(home string) func(key string) (int, bool) {
+	return func(key string) (int, bool) {
+		entry, err := registry.Lookup(home, key)
+		if err != nil {
+			return 0, false
+		}
+		return collect.Stranded(entry.Workspace, key)
+	}
+}
+
 // maxFixRounds resolves the fix-round ceiling the same way Concurrency
 // resolves the concurrency cap: the smallest value among the watched
 // projects, because a watcher spans several and the only safe direction to
 // reconcile a per-project setting into one number is down.
 func maxFixRounds(home string, keys []string) int {
+	return maxLimit(home, keys, func(cfg config.Config) int { return cfg.CI.Attempts() })
+}
+
+// maxLimit is maxFixRounds generalised (OR-458): the smallest value among the
+// watched projects' configs, per an extractor naming which ceiling to read.
+// One implementation of "reconcile a per-project setting into one number for
+// a multi-project watcher" so MaxFixRounds, MaxTrips and MaxStranded cannot
+// drift into three different reconciliation rules.
+func maxLimit(home string, keys []string, extract func(config.Config) int) int {
 	f, err := registry.Load(home)
 	if err != nil {
 		return 0
@@ -1417,7 +1459,7 @@ func maxFixRounds(home string, keys []string) int {
 		if !ok {
 			continue
 		}
-		c := config.Load(e.Source).CI.Attempts()
+		c := extract(config.Load(e.Source))
 		if n == 0 || c < n {
 			n = c
 		}
