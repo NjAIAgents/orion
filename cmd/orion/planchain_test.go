@@ -1095,6 +1095,24 @@ func TestTheToolkitStepWritesOrionJSONFromTheCanonicalTemplate(t *testing.T) {
 	}
 }
 
+// OR-453: orion init's ensureCI never had a plan-chain equivalent, so a
+// project scaffolded via `orion new`/`orion plan` reached its first
+// supervised stage with no scripts/test.sh and no CI workflow -- nothing
+// for a merge to gate on unless the scaffold agent improvised one.
+func TestTheToolkitStepScaffoldsCI(t *testing.T) {
+	w := chainWSWithRepo(t)
+	var out strings.Builder
+	if err := toolkitStep(&stepIO{Out: &out}, w); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(w.RepoDir(), "scripts", "test.sh")); err != nil {
+		t.Errorf("scripts/test.sh was not scaffolded: %v", err)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(w.RepoDir(), ".github", "workflows", "*.yml")); len(matches) == 0 {
+		t.Error("no CI workflow was scaffolded under .github/workflows")
+	}
+}
+
 // OR-454: orion init's EnsureDun instruments the repo it adopts, but
 // nothing in the plan chain ever called it, so commits the chain itself
 // makes into a project scaffolded by `orion new`/`orion plan` carried no
