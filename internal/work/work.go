@@ -267,6 +267,10 @@ func Run(opts Options, deps Deps) []Result {
 	return results
 }
 
+// claimBeatEvery is claim.BeatEvery, held in a variable so a test can shrink
+// it rather than waiting out the real one-minute interval.
+var claimBeatEvery = claim.BeatEvery
+
 // one works a single ticket.
 //
 // The return value is NAMED because the rollback below is a defer that
@@ -638,6 +642,29 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if err := claim.Take(opts.Home, key, job.Branch, job.Path); err != nil {
 		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not record the claim: %v", err)
 	}
+	// OR-457: claim.Beat existed, was documented as "cheap enough to call on
+	// every tick", and had zero callers anywhere. Dead's own staleness check
+	// (time.Since(r.Beat) < staleAfter) degenerated into "has this job run
+	// longer than two hours" rather than "has the heartbeat gone stale" --
+	// so a run still alive and working past that point would have its claim
+	// read as dead and its ticket started a second time. Started here and
+	// stopped when this ticket's run ends, however it ends, so the whole of
+	// one() -- including a resumed run after an advisory consult -- stays
+	// covered by one ticker rather than one per Supervise call.
+	stopBeat := make(chan struct{})
+	defer close(stopBeat)
+	go func() {
+		t := time.NewTicker(claimBeatEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				_ = claim.Beat(opts.Home, key)
+			case <-stopBeat:
+				return
+			}
+		}
+	}()
 	// Attribution hooks live in the sandbox CLONE, not in the worktree and
 	// not in the user's checkout. Before this, the clone was never
 	// instrumented, so every commit an agent made carried no AI-Attribution

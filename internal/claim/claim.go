@@ -46,9 +46,14 @@ import (
 // the writer is not the process now wearing its number.
 const staleAfter = 2 * time.Hour
 
-// beat is how often a holder refreshes its record. Frequent enough that a
-// two-hour gap is unambiguous, rare enough to cost nothing.
-const beat = time.Minute
+// BeatEvery is how often a holder should refresh its record by calling Beat.
+// Frequent enough that a two-hour gap is unambiguous, rare enough to cost
+// nothing.
+//
+// Exported so the caller that runs the actual ticker (internal/work, OR-457)
+// reads the same interval this package's own staleness check is tuned
+// against, rather than a second number the two could drift apart on.
+const BeatEvery = time.Minute
 
 // Record is one claim, as written to disk.
 type Record struct {
