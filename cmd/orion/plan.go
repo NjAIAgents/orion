@@ -178,9 +178,10 @@ var planStages = []planStage{
 		Frame: cloneStep, Done: cloneDone},
 }
 
-// toolkitStep installs spec-kit into the workspace repository, once, and
+// toolkitStep installs spec-kit into the workspace repository, once,
 // ensures orion.json exists from the same canonical template `orion init`
-// writes.
+// writes, and instruments the repo with dun the same way `orion init`
+// does (OR-454).
 //
 // THE CONFIG FILE, HERE, BEFORE ANYTHING READS IT. constitution's own
 // description says it is "seeded from orion.json gates" -- but nothing in
@@ -199,6 +200,24 @@ func toolkitStep(sio *stepIO, ws *workspace.Workspace) error {
 		return fmt.Errorf("writing orion.json: %w", err)
 	} else if created {
 		ui.Ok(sio.Out, "created", "orion.json (the canonical template, before anything reads it)")
+	}
+
+	// OR-454: orion init's EnsureDun instruments the repo it adopts; nothing
+	// in this chain ever called it, so every commit the chain itself makes
+	// into a project scaffolded by `orion new`/`orion plan` -- its own
+	// frame-step and stage commits -- carried no attribution trailer.
+	//
+	// Uses EnsureSandboxDun, not EnsureDun: the chain is unattended, and
+	// EnsureDun's autoInstall path shells out to `go install` (or brew/scoop)
+	// over the network with no one to ask first. EnsureSandboxDun -- the
+	// same function every later supervised job already calls on its own
+	// clone (internal/work/work.go) -- instruments only when dun is already
+	// on PATH and otherwise just warns, matching how the sandbox clones
+	// this same repo are handled once work begins.
+	if cfg := config.Load(ws.RepoDir()); cfg.Attribution.Enabled {
+		if err := adopt.EnsureSandboxDun(ws.RepoDir()); err != nil {
+			ui.Warn(sio.Out, "attribution: %v", err)
+		}
 	}
 
 	hadInit := toolkitInstalled(ws)
