@@ -180,8 +180,8 @@ var planStages = []planStage{
 
 // toolkitStep installs spec-kit into the workspace repository, once,
 // ensures orion.json exists from the same canonical template `orion init`
-// writes, and instruments the repo with dun the same way `orion init`
-// does (OR-454).
+// writes, scaffolds CI the same way `orion init` does (OR-453), and
+// instruments the repo with dun the same way `orion init` does (OR-454).
 //
 // THE CONFIG FILE, HERE, BEFORE ANYTHING READS IT. constitution's own
 // description says it is "seeded from orion.json gates" -- but nothing in
@@ -201,6 +201,11 @@ func toolkitStep(sio *stepIO, ws *workspace.Workspace) error {
 	} else if created {
 		ui.Ok(sio.Out, "created", "orion.json (the canonical template, before anything reads it)")
 	}
+
+	// OR-453: orion init's ensureCI never had a plan-chain equivalent, so a
+	// project scaffolded via `orion new`/`orion plan` had no scripts/test.sh
+	// and no CI workflow to gate a merge on. Non-fatal, same as orion init.
+	ensureCITo(sio.Out, ws.RepoDir())
 
 	// OR-454: orion init's EnsureDun instruments the repo it adopts; nothing
 	// in this chain ever called it, so every commit the chain itself makes
