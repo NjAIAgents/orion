@@ -1316,11 +1316,15 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 	// rule cannot be expressed in JQL at all, because it depends on links
 	// written on OTHER tickets in the same result set.
 	//
-	// The eviction signals are left nil here. Queued has a Jira and no
-	// workspace, and reading a fix-round count it cannot see would report
-	// "no evidence" as "no rounds spent" -- the one reading queue.Facts
-	// documents as the way this gate disappears. The tick supplies them where
-	// it has the repository.
+	// OR-456: the eviction signals used to be left nil here unconditionally,
+	// with a comment saying "the tick supplies them where it has the
+	// repository" -- but nothing ever did. Queued has a home directory and a
+	// registry, which is everything registry.Lookup needs to find each
+	// candidate's own workspace, so it can supply FixRounds itself; the
+	// escalation ledger lives at home directly (queue.LoadLedger), the same
+	// way holds.json does (internal/work/hold.go), since a ticket key is
+	// unique across every project one watcher manages.
+	ledger := queue.LoadLedger(home)
 	ds := queue.Plan(queue.Facts{
 		Candidates: candidates,
 		// Every eligible ticket, not a slice of them: the concurrency limit
@@ -1332,10 +1336,17 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 		// query rather than a second search: those tickets are excluded from
 		// the claim query by their working label, which is exactly why they
 		// would otherwise be invisible to the scope rule.
-		Working:   working(all),
-		Resolved:  resolvedLookup(j, candidates),
-		Scheduled: func(i tracker.Issue) string { return sched.HoldReason(i, label) },
+		Working:      working(all),
+		Resolved:     resolvedLookup(j, candidates),
+		Scheduled:    func(i tracker.Issue) string { return sched.HoldReason(i, label) },
+		FixRounds:    fixRoundsLookup(home),
+		MaxFixRounds: maxFixRounds(home, keys),
+		Ledger:       ledger,
 	})
+	// Best-effort, same as every other durable-state write in this package: a
+	// failed save costs one re-evicted ticket next pass (the ledger still
+	// reads zero for it), not a stopped tick.
+	_ = recordEvictions(home, ledger, ds, time.Now())
 
 	q := Queue{All: all}
 	byKey := make(map[string]tracker.Issue, len(candidates))
@@ -1370,6 +1381,70 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 		}
 	}
 	return q, nil
+}
+
+// fixRoundsLookup resolves a candidate's fix-round count by finding its own
+// workspace first -- collect.FixRounds is keyed by workspace directory, and
+// Queued only ever sees a ticket key, so registry.Lookup bridges the two the
+// same way work.go and collect.go already do for other per-ticket state.
+//
+// A key the registry has never heard of is unknown, not zero (OR-456): a
+// ticket that has not been worked yet says nothing about fix rounds, and
+// reading that silence as "none spent" is indistinguishable from a ticket
+// that has genuinely spent none.
+func fixRoundsLookup(home string) func(key string) (int, bool) {
+	return func(key string) (int, bool) {
+		entry, err := registry.Lookup(home, key)
+		if err != nil {
+			return 0, false
+		}
+		return collect.FixRounds(entry.Workspace, key)
+	}
+}
+
+// maxFixRounds resolves the fix-round ceiling the same way Concurrency
+// resolves the concurrency cap: the smallest value among the watched
+// projects, because a watcher spans several and the only safe direction to
+// reconcile a per-project setting into one number is down.
+func maxFixRounds(home string, keys []string) int {
+	f, err := registry.Load(home)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, k := range keys {
+		e, ok := f.Repos[strings.ToUpper(k)]
+		if !ok {
+			continue
+		}
+		c := config.Load(e.Source).CI.Attempts()
+		if n == 0 || c < n {
+			n = c
+		}
+	}
+	return n
+}
+
+// recordEvictions appends every new Escalate/Evict verdict this pass decided
+// to the ledger and saves it, so the NEXT pass's Ledger.Count sees it.
+//
+// Without this the ledger loaded above always reads zero evictions no matter
+// how many times a ticket has actually been evicted, which is the bug
+// OR-456 fixed: the "evicted twice, escalate to a person" rule could never
+// fire because nothing ever wrote to the ledger it reads.
+func recordEvictions(home string, l queue.Ledger, ds []queue.Decision, now time.Time) error {
+	changed := false
+	for _, d := range ds {
+		if d.Verdict != queue.Evict {
+			continue
+		}
+		l.Record(queue.Eviction{Key: d.Key, Reason: d.Reason, Rule: d.Rule}, now)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return queue.SaveLedger(home, l)
 }
 
 // queuedJQL is the claim criterion: what a watcher will turn an agent loose
