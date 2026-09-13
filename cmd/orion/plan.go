@@ -43,6 +43,7 @@ import (
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/actors"
+	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/dbaplan"
@@ -177,8 +178,29 @@ var planStages = []planStage{
 		Frame: cloneStep, Done: cloneDone},
 }
 
-// toolkitStep installs spec-kit into the workspace repository, once.
+// toolkitStep installs spec-kit into the workspace repository, once, and
+// ensures orion.json exists from the same canonical template `orion init`
+// writes.
+//
+// THE CONFIG FILE, HERE, BEFORE ANYTHING READS IT. constitution's own
+// description says it is "seeded from orion.json gates" -- but nothing in
+// this chain ever wrote one, so a project designed by `orion new`/`orion
+// plan` reached the scaffold stage with no orion.json at all. config.Load
+// degrades gracefully to shipped defaults when the file is absent, which is
+// exactly why this went unnoticed: the scaffold stage's own agent, needing
+// a real file for some purpose of its own, invented one from judgment
+// rather than copying the template -- no slack section, no budget section,
+// none of the comments the real one documents (OR-451, found on a real
+// project). planGate is true here, unlike orion init's adopted-repo
+// default of false: a project just designed from scratch has no existing
+// team habit to protect the way an adopted repo does.
 func toolkitStep(sio *stepIO, ws *workspace.Workspace) error {
+	if created, err := adopt.EnsureConfig(ws.RepoDir(), true); err != nil {
+		return fmt.Errorf("writing orion.json: %w", err)
+	} else if created {
+		ui.Ok(sio.Out, "created", "orion.json (the canonical template, before anything reads it)")
+	}
+
 	hadInit := toolkitInstalled(ws)
 	did, err := provision.InitSpecKit(ws.RepoDir())
 	if err != nil {
@@ -196,11 +218,22 @@ func toolkitStep(sio *stepIO, ws *workspace.Workspace) error {
 	return nil
 }
 
-// toolkitDone: nothing to do for a project that delegates nothing to
-// spec-kit; otherwise done when the installer's own directory is there AND
-// the orion preset is composed into the specify skill -- the registration
-// alone outlives the composition (docs/decisions/0022).
+// toolkitDone is never true before orion.json exists, or the step that
+// writes it (toolkitStep) would never run: config.Load degrades to shipped
+// defaults when the file is absent, Defaults().Toolkit.Stages is empty, and
+// DelegatesTo would read that absence as "nothing to do" -- which is
+// answering the wrong question. Whether spec-kit is delegated to is a
+// property of a config file that has to exist first (OR-451).
+//
+// Once orion.json exists: nothing further to do for a project that
+// delegates nothing to spec-kit; otherwise done when the installer's own
+// directory is there AND the orion preset is composed into the specify
+// skill -- the registration alone outlives the composition
+// (docs/decisions/0022).
 func toolkitDone(ws *workspace.Workspace) bool {
+	if _, err := os.Stat(filepath.Join(ws.RepoDir(), "orion.json")); err != nil {
+		return false
+	}
 	if !config.Load(ws.RepoDir()).Toolkit.DelegatesTo("speckit") {
 		return true
 	}

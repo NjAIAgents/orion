@@ -92,7 +92,12 @@ func swapRelease(t *testing.T) *fakeRelease {
 // task list where the chain pinned it.
 func boundWS(t *testing.T, withTasks bool) *workspace.Workspace {
 	t.Helper()
-	w := chainWS(t)
+	// A real (if minimal) git repo and a specify-CLI check: every caller
+	// here runs the chain for real via runPlanChain, and toolkitStep's
+	// Frame -- which now writes orion.json directly into RepoDir and stages
+	// what specify init wrote (OR-451) -- runs for real too, not stubbed
+	// the way okRun replaces supervised stages.
+	w := chainWSWithRepo(t)
 	w.Task.Tracker = json.RawMessage(`{"provider":"jira","key":"OR"}`)
 	if withTasks {
 		dir := filepath.Join(w.RepoDir(), "specs", "001-cloudlens")
