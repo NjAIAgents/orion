@@ -318,6 +318,35 @@ func writeConfig(opts Options, res *Result) error {
 	return nil
 }
 
+// EnsureConfig writes orion.json from the same canonical template `orion
+// init` uses, if the file does not already exist -- a caller outside this
+// package's own Run (the plan chain's toolkit step, before constitution
+// reads "orion.json gates") that needs the file to exist without running
+// the rest of adoption (git hooks, CI workflow, remote provisioning, all of
+// which a brand-new project scaffolded by `orion plan` handles its own way).
+//
+// FOUND ON A REAL PROJECT (OR-451): a project scaffolded via `orion new`/
+// `orion plan` never went through Run at all, so its orion.json did not
+// exist when the scaffold stage's own agent got there -- and rather than
+// stopping, it invented one from its own judgment: no slack section, no
+// budget section, no explanatory comments, nothing this template documents.
+// config.Load already degrades gracefully to shipped defaults when the file
+// is absent, which is exactly why nobody noticed until the agent's own
+// improvised file was read back weeks later and asked "who wrote this".
+//
+// planGate is exposed rather than hardcoded because a repo `orion init`
+// adopts and a project `orion new` designs from cold start warrant
+// different defaults, per defaultConfig's own comment: an adopted repo's
+// team has habits Orion should not break on day one, but a project with no
+// history yet has no habit to protect.
+func EnsureConfig(dir string, planGate bool) (created bool, err error) {
+	res := &Result{}
+	if err := writeConfig(Options{Dir: dir, PlanGate: planGate}, res); err != nil {
+		return false, err
+	}
+	return len(res.Created) > 0, nil
+}
+
 // mergeSettings adds Orion's hooks to .claude/settings.json without
 // disturbing anything already there.
 //
