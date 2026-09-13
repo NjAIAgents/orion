@@ -43,6 +43,7 @@ func chainWS(t *testing.T) *workspace.Workspace {
 // premise along with anything else quietly depending on it.
 func chainWSWithRepo(t *testing.T) *workspace.Workspace {
 	t.Helper()
+	skipWithoutSpecify(t)
 	w := chainWS(t)
 	if err := os.MkdirAll(w.RepoDir(), 0o755); err != nil {
 		t.Fatal(err)
@@ -960,6 +961,22 @@ func mustGit(t *testing.T, dir string, args ...string) {
 		"GIT_COMMITTER_NAME=o", "GIT_COMMITTER_EMAIL=o@l")
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Skipf("git unavailable: %v\n%s", err, b)
+	}
+}
+
+// skipWithoutSpecify skips a test that runs the toolkit step for real
+// (chainWSWithRepo callers) when the specify CLI is not on PATH.
+// provision.InitSpecKit calls it unconditionally whenever .specify/ does
+// not already exist in the target directory, regardless of whether
+// orion.json's toolkit config actually delegates anything to spec-kit
+// (OR-451 found this to be pre-existing behavior, not something the fix
+// introduced) -- so any test exercising a fresh workspace's real toolkit
+// step needs the binary present, the same posture mustGit already takes
+// for git.
+func skipWithoutSpecify(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("specify"); err != nil {
+		t.Skip("specify CLI not on PATH; toolkitStep cannot run for real without it")
 	}
 }
 
