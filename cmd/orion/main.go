@@ -1848,19 +1848,32 @@ func commitAnswers(out io.Writer, repo string, files []string) {
 // createProjectChannel makes the workspace's Slack channel and posts the
 // opening message, so the channel is useful the moment it appears rather
 // than being an empty room someone has to interpret.
+//
+// Checks LIVE Slack availability (credentials configured, AuthTest succeeds)
+// rather than requiring cfg.Slack.Enabled to already be true, matching
+// orion init's provisionRemote (main.go:703-722): that is what makes init
+// reliably create a channel while the plan chain silently never did
+// (FOUND ON A REAL PROJECT, OR-460). cfg.Slack.Enabled defaults false and
+// nothing in workspace.New/scaffoldChain/toolkitStep ever sets it true, so
+// gating on it meant this function no-opped on every orion new/orion plan
+// project -- with no message at all, unlike every other decline path here.
+//
+// CreateChannelPerProject still opts a project OUT: an operator who set it
+// false deliberately gets that choice honoured, credentials or not.
 func createProjectChannel(ws *workspace.Workspace) *workspace.SlackChannel {
 	cfg := config.Load(ws.RepoDir())
-	if !cfg.Slack.Enabled || !cfg.Slack.CreateChannelPerProject {
+	if !cfg.Slack.CreateChannelPerProject {
+		fmt.Println("slack      create_channel_per_project is off; not creating one")
 		return nil
 	}
 	c, err := slack.FromEnv()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "orion: slack enabled but not usable: %v\n", err)
+		fmt.Fprintf(os.Stderr, "orion: no project channel: %v\n", err)
 		return nil
 	}
 	id, err := c.AuthTest()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "orion: slack: %v\n", err)
+		fmt.Fprintf(os.Stderr, "orion: no project channel: slack: %v\n", err)
 		return nil
 	}
 	ch, err := c.CreateChannel(cfg.Slack.ChannelPrefix+ws.Task.Slug, cfg.Slack.Private)
@@ -1880,6 +1893,14 @@ func createProjectChannel(ws *workspace.Workspace) *workspace.SlackChannel {
 		verb = "reusing"
 	}
 	fmt.Printf("slack      #%s (%s)\n", ch.Name, verb)
+
+	// A channel with nobody in it but the bot is not a communication medium
+	// (ensureAudience's own doc comment) -- orion init learned this the hard
+	// way (fcia ran two full pipelines into an unreadable channel). The plan
+	// chain gets the same automatic invite-and-verify rather than a second,
+	// quieter way to strand a project's notifications.
+	ensureAudience(c, ch, cfg, filepath.Join(ws.RepoDir(), "orion.json"))
+
 	return &workspace.SlackChannel{
 		ID: ch.ID, Name: ch.Name, TeamID: id.TeamID,
 		URL: slack.ChannelURL(id.TeamID, ch.ID),
