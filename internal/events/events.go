@@ -183,6 +183,18 @@ type Log struct {
 	base Event
 }
 
+// Run is the run id stamped into this log's base, so a caller several
+// layers away from wherever the log was opened -- a fan dispatching several
+// supervised sessions, a fix loop re-entering the same ticket -- can still
+// attribute what IT emits to the same run, rather than emitting an event
+// with no Run at all (OR-461).
+func (l *Log) Run() string {
+	if l == nil {
+		return "" // logging must never be the reason a run fails
+	}
+	return l.base.Run
+}
+
 // Open creates or appends to a log.
 func Open(path string, base Event) (*Log, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

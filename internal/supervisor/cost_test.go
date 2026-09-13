@@ -202,3 +202,52 @@ func TestRecordTicketCostThreadsAboutToTheEventLog(t *testing.T) {
 		t.Errorf("Detail[session_id] = %v, want %v", got, want)
 	}
 }
+
+// OR-461. recordTicketCost used to open its own events.Log with an empty
+// base, so every usage event it wrote carried no Run at all -- regardless of
+// what run id the caller (internal/work) had already established for this
+// exact ticket run. internal/web's ScanDetail matches events to a run by
+// EXACT Run equality, so every usage event silently vanished from a run's
+// reported cost and fan-out children: a QA fan-out of five concurrent
+// sessions rendered as a single node with no fan-out box at all, because the
+// usage events that would have populated it never survived the match.
+//
+// opts.Run is now threaded from the caller's own run-scoped log
+// (internal/events.Log.Run()) into supervisor.Options, and recordTicketCost
+// opens its log with that same Run in its base -- so the usage event it
+// emits carries it, the same as every stage/tool/say event for that run.
+func TestRecordTicketCostCarriesTheCallersRunID(t *testing.T) {
+	w := ws(t, "")
+	opts := Options{
+		Stage: "qa", Actor: events.ActorQA, Key: "OR-9",
+		Run: "1789325239507632000",
+	}
+	recordTicketCost(w, opts, &Result{Duration: 30 * time.Second}, resultJSON)
+
+	evs := cost.ReadAll(events.Path(w.Dir))
+	if len(evs) != 1 {
+		t.Fatalf("got %d events, want 1", len(evs))
+	}
+	if got, want := evs[0].Run, "1789325239507632000"; got != want {
+		t.Errorf("Run = %q, want %q -- this is what internal/web's ScanDetail "+
+			"matches on to attribute the event to its run", got, want)
+	}
+}
+
+// An empty Run must not become a magic sentinel that matches every run: a
+// caller with nothing to attribute to (a stage driven by hand, a test) still
+// gets its usage logged, exactly as before this fix, just without a Run a
+// detail page could ever correlate.
+func TestRecordTicketCostToleratesAnEmptyRunID(t *testing.T) {
+	w := ws(t, "")
+	opts := Options{Stage: "qa", Actor: events.ActorQA, Key: "OR-9"}
+	recordTicketCost(w, opts, &Result{Duration: 30 * time.Second}, resultJSON)
+
+	evs := cost.ReadAll(events.Path(w.Dir))
+	if len(evs) != 1 {
+		t.Fatalf("got %d events, want 1", len(evs))
+	}
+	if evs[0].Run != "" {
+		t.Errorf("Run = %q, want empty when the caller supplied none", evs[0].Run)
+	}
+}
