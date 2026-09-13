@@ -521,6 +521,26 @@ func TestTheRemoteStepRecordsTheURLItMade(t *testing.T) {
 	}
 }
 
+// OR-455: orion init calls ensureRepoSettings (delete_branch_on_merge)
+// right after adopting a remote; remoteStep never did, so a repo created
+// via the plan chain accumulated merged head branches forever.
+func TestTheRemoteStepEnsuresRepoSettings(t *testing.T) {
+	fakeRemote(t)
+	w := chainWSWithRepo(t)
+
+	calls := 0
+	orig := ensureRepoSettingsFn
+	ensureRepoSettingsFn = func(dir string) { calls++ }
+	t.Cleanup(func() { ensureRepoSettingsFn = orig })
+
+	if err := remoteStep(&stepIO{Out: &strings.Builder{}, Confirm: yes}, w); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Errorf("ensureRepoSettings was called %d times, want exactly once", calls)
+	}
+}
+
 // No copy asked for is a complete answer, so the clone step is done before
 // it starts and the chain still ends.
 func TestTheCloneStepIsDoneWhenNoCopyWasAskedFor(t *testing.T) {
