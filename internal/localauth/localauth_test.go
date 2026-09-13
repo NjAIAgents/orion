@@ -331,11 +331,18 @@ func TestTokenComparisonRejectsUniformlyRegardlessOfWhereOrHowMuchItDiffers(t *t
 	s := newSurface(t, "/api/runs")
 	real := s.guard.Token()
 
+	// The substituted byte must differ from the real token's own byte at
+	// that position, or the case accidentally reconstructs the valid token
+	// and the middleware is CORRECT to let it through -- hardcoding "0"
+	// flaked whenever the real (hex, so 1-in-16 per byte) token happened to
+	// start or end with "0".
+	firstByteDiffer := map[bool]string{true: "1", false: "0"}[strings.HasPrefix(real, "0")]
+	lastByteDiffer := map[bool]string{true: "0", false: "1"}[strings.HasSuffix(real, "1")]
 	cases := map[string]string{
 		"shorter than the real token":           real[:len(real)/2],
 		"longer than the real token":            real + "00",
-		"same length, differs at byte 0":        "0" + real[1:],
-		"same length, differs at the last byte": real[:len(real)-1] + map[bool]string{true: "0", false: "1"}[strings.HasSuffix(real, "1")],
+		"same length, differs at byte 0":        firstByteDiffer + real[1:],
+		"same length, differs at the last byte": real[:len(real)-1] + lastByteDiffer,
 		"same length, every byte differs":       strings.Repeat("f", len(real)),
 	}
 	for name, wrong := range cases {
