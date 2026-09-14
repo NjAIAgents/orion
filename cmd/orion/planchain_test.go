@@ -1148,3 +1148,117 @@ func TestTheToolkitStepNeverOverwritesAnExistingOrionJSON(t *testing.T) {
 		t.Error("toolkitStep overwrote an existing orion.json")
 	}
 }
+
+// specBranchSyncWS provisions a sandbox with a real remote (SwitchSandbox
+// fetches from it) carrying both the work branch and a spec-kit-style
+// numbered feature branch, and leaves the sandbox checked out on the
+// feature branch -- exactly the state /speckit-specify leaves behind
+// (OR-459).
+func specBranchSyncWS(t *testing.T) *workspace.Workspace {
+	t.Helper()
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	mustGit(t, "", "init", "--bare", "-b", "main", bare)
+
+	w := chainWS(t)
+	repo := w.RepoDir()
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init", "-b", "develop")
+	mustGit(t, repo, "remote", "add", "origin", bare)
+	if err := os.WriteFile(filepath.Join(repo, "orion.json"),
+		[]byte(`{"version":1,"vcs":{"work_branch":"develop"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "add", "orion.json")
+	mustGit(t, repo, "commit", "-m", "seed")
+	mustGit(t, repo, "push", "-u", "origin", "develop")
+	mustGit(t, repo, "checkout", "-b", "001-continuity-scaffold")
+	mustGit(t, repo, "push", "-u", "origin", "001-continuity-scaffold")
+	return w
+}
+
+// OR-459 end to end: the sandbox left on spec-kit's own numbered feature
+// branch gets switched back to the configured work branch.
+func TestSpecBranchSyncStepSwitchesBackToTheWorkBranch(t *testing.T) {
+	w := specBranchSyncWS(t)
+	if got := gitLineIn(t, w.RepoDir(), "branch", "--show-current"); got != "001-continuity-scaffold" {
+		t.Fatalf("fixture is not set up on the feature branch: %q", got)
+	}
+
+	var out strings.Builder
+	if err := specBranchSyncStep(&stepIO{Out: &out}, w); err != nil {
+		t.Fatalf("specBranchSyncStep failed: %v", err)
+	}
+	if got := gitLineIn(t, w.RepoDir(), "branch", "--show-current"); got != "develop" {
+		t.Errorf("sandbox branch = %q, want develop", got)
+	}
+}
+
+// A sandbox already on the work branch is a no-op -- SwitchSandbox returns
+// before ever touching the network, so this must succeed even with no
+// origin configured at all. config.Defaults().VCS.WorkBranch is "develop",
+// so there is no config shape that leaves WorkBranch genuinely empty; the
+// already-there case is the one worth covering.
+func TestSpecBranchSyncStepIsANoopAlreadyOnTheWorkBranch(t *testing.T) {
+	w := chainWS(t)
+	repo := w.RepoDir()
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init", "-q", "-b", "develop")
+	mustGit(t, repo, "commit", "-q", "--allow-empty", "-m", "seed")
+
+	var out strings.Builder
+	if err := specBranchSyncStep(&stepIO{Out: &out}, w); err != nil {
+		t.Fatalf("specBranchSyncStep failed: %v", err)
+	}
+	if got := gitLineIn(t, repo, "branch", "--show-current"); got != "develop" {
+		t.Errorf("branch changed on a no-op: %q", got)
+	}
+}
+
+// Uncommitted work in the sandbox is never discarded to make the switch --
+// same rule SyncSandbox already follows. Reported as Degraded so the chain
+// can continue and ask, rather than stopping outright.
+func TestSpecBranchSyncStepRefusesOverUncommittedChanges(t *testing.T) {
+	w := specBranchSyncWS(t)
+	if err := os.WriteFile(filepath.Join(w.RepoDir(), "dirty.txt"), []byte("wip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	err := specBranchSyncStep(&stepIO{Out: &out}, w)
+	var deg *Degraded
+	if !errors.As(err, &deg) {
+		t.Fatalf("want a Degraded error, got %v", err)
+	}
+	if got := gitLineIn(t, w.RepoDir(), "branch", "--show-current"); got != "001-continuity-scaffold" {
+		t.Errorf("branch changed despite uncommitted work: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(w.RepoDir(), "dirty.txt")); err != nil {
+		t.Error("the uncommitted file was lost")
+	}
+}
+
+// specBranchSyncDone reads LIVE state rather than a recorded stamp: a
+// person or a later stage switching the sandbox away again must be noticed
+// on the next `orion plan` resume, not hidden behind a step marked done
+// from an earlier run.
+func TestSpecBranchSyncDoneReflectsLiveState(t *testing.T) {
+	w := specBranchSyncWS(t)
+	if specBranchSyncDone(w) {
+		t.Error("done before the switch happened")
+	}
+	var out2 strings.Builder
+	if err := specBranchSyncStep(&stepIO{Out: &out2}, w); err != nil {
+		t.Fatal(err)
+	}
+	if !specBranchSyncDone(w) {
+		t.Error("not done after the switch happened")
+	}
+	mustGit(t, w.RepoDir(), "checkout", "-b", "wandered-again")
+	if specBranchSyncDone(w) {
+		t.Error("still reported done after the sandbox moved away again")
+	}
+}
