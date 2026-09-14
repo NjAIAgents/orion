@@ -43,6 +43,34 @@ func TestEmitAppendsAndStampsBaseFields(t *testing.T) {
 	}
 }
 
+// OR-461. A caller several layers away from wherever a log was opened (a QA
+// fan-out dispatching several supervised sessions, a fix loop re-entering the
+// same ticket) needs to attribute what IT emits to the same run -- Run() is
+// how it reads that back rather than threading the base Event itself around.
+func TestLogRunReturnsTheBasesRunID(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "events.jsonl")
+	l, err := Open(p, Event{Run: "r1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if got := l.Run(); got != "r1" {
+		t.Errorf("Run() = %q, want %q", got, "r1")
+	}
+}
+
+func TestLogRunIsEmptyWhenTheBaseCarriesNone(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "events.jsonl")
+	l, err := Open(p, Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if got := l.Run(); got != "" {
+		t.Errorf("Run() = %q, want empty", got)
+	}
+}
+
 // A live log that buffers is not live, and the moment events matter most is
 // the moment a process is killed. Every event must be on disk when Emit
 // returns, not when the file is closed.

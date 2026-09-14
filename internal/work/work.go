@@ -330,9 +330,10 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			"keeping the shipped agent names: %v", err)
 	}
 
+	run := fmt.Sprintf("%d", deps.Now().UnixNano())
 	log, logErr := events.Open(events.Path(ws.Dir), events.Event{
 		Project: registry.ProjectOf(key), Key: key,
-		Run: fmt.Sprintf("%d", deps.Now().UnixNano()), Actor: events.ActorOrion,
+		Run: run, Actor: events.ActorOrion,
 	})
 	if logErr == nil {
 		defer log.Close()
@@ -794,7 +795,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 			MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
 			OnActivity: ActivityLogger(log, w, key, actorID),
-			Actor:      actorID, Key: key,
+			Actor:      actorID, Key: key, Run: run,
 		})
 	}
 	code := -1
@@ -938,7 +939,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 			MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
 			OnActivity: ActivityLogger(log, w, key, actorID),
-			Actor:      actorID, Key: key,
+			Actor:      actorID, Key: key, Run: run,
 		})
 		if f, env := faultOf(runRes); env {
 			return held(res, key, f, job, true, cfg, opts, deps, ws, log, w)

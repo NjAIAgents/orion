@@ -101,6 +101,25 @@ type Options struct {
 	// it belongs to no ticket, so there is nothing to attribute it to.
 	Actor string
 	Key   string
+	// Run is the caller's own run id -- work.go's log, opened once per ticket
+	// run with Run stamped in its base Event, so every stage/tool/say event
+	// for this run carries the same value. recordTicketCost below used to
+	// open a SECOND, independent log handle with no Run of its own (OR-461):
+	// events.Log.Emit only fills Run from a log's base when the emitted
+	// event's own Run is empty, so every usage event it wrote carried none at
+	// all -- and internal/web's ScanDetail matches events to a run by exact
+	// Run equality, so every usage event silently vanished from a run's
+	// reported cost and fan-out children, project-wide, not just on one
+	// ticket. Passed through so the usage line this package writes carries
+	// the SAME run its caller already established, rather than inventing (or
+	// omitting) one of its own.
+	//
+	// Empty is tolerated -- a caller with no ticket run to attribute to (a
+	// stage driven by hand, a test) still gets its usage logged, just without
+	// a run a detail page could ever correlate it to; that is the same
+	// silent-but-harmless gap Actor/Key's own doc comment describes for an
+	// empty Actor.
+	Run string
 	// About is one short phrase naming what THIS run was given -- the package
 	// it owns, the question it was asked, how many cases it is writing. Used
 	// only by the fan's narration, and only there because the fan is the one
@@ -665,7 +684,7 @@ func recordTicketCost(ws *workspace.Workspace, opts Options, res *Result, out st
 	if res == nil || opts.DryRun || opts.Actor == "" || opts.Key == "" {
 		return
 	}
-	log, err := events.Open(events.Path(ws.Dir), events.Event{})
+	log, err := events.Open(events.Path(ws.Dir), events.Event{Run: opts.Run})
 	if err != nil {
 		return
 	}

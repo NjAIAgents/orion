@@ -105,7 +105,7 @@ func fanAuthoring(job qaJob, cfg config.Config, cases string,
 			// the ticket and the surrounding tests before it writes anything.
 			MaxMinutes: job.MaxMinutes, MaxTurns: job.MaxTurns,
 			OnActivity: ActivityLogger(log, w, key, events.ActorQA),
-			Actor:      events.ActorQA, Key: key,
+			Actor:      events.ActorQA, Key: key, Run: log.Run(),
 		})
 	}
 
