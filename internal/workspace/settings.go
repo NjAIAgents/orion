@@ -3,9 +3,12 @@ package workspace
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/orion-sdlc/orion/internal/creds"
 )
 
 // writeSettings generates the per-workspace Claude Code settings.
@@ -109,7 +112,7 @@ func writeSettings(ws *Workspace) error {
 			"failIfUnavailable":        true,
 			"allowUnsandboxedCommands": false,
 			"network": map[string]any{
-				"allowedDomains": defaultAllowedDomains,
+				"allowedDomains": allowedDomains(),
 				// Listening on 127.0.0.1 or [::1] is not egress. The domain
 				// allowlist exists to stop a compromised dependency reaching
 				// the internet, and a loopback socket reaches nothing but the
@@ -173,6 +176,7 @@ var defaultAllowedDomains = []string{
 	"api.anthropic.com",
 	"github.com",
 	"api.github.com",
+	"raw.githubusercontent.com",
 	"objects.githubusercontent.com",
 	"codeload.github.com",
 	"registry.npmjs.org",
@@ -182,6 +186,31 @@ var defaultAllowedDomains = []string{
 	"sum.golang.org",
 	"crates.io",
 	"static.crates.io",
+}
+
+// allowedDomains is defaultAllowedDomains plus this installation's tracker
+// host.
+//
+// The tracker is configured per installation, so its host cannot be a
+// constant -- and leaving it out denied the one call a stage is most often
+// told to make. An intent stage asked to file its idea in Jira reached
+// nishantnavjyot.atlassian.net, the sandbox refused the egress, and the
+// stage reported success having published nothing: the agent wrote the file,
+// could not reach the tracker, and said so only in a line that scrolled away
+// (OR-466).
+//
+// Only the host is added, and only when a tracker URL is actually
+// configured. An installation with no tracker keeps exactly the old list.
+func allowedDomains() []string {
+	raw := creds.Get(Home(), creds.JiraURL)
+	if raw == "" {
+		return defaultAllowedDomains
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return defaultAllowedDomains
+	}
+	return append(append([]string{}, defaultAllowedDomains...), u.Hostname())
 }
 
 // orionBinary resolves the path to write into hook commands. Prefers the
