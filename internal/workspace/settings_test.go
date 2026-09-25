@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -176,5 +177,40 @@ func TestBuildCacheLivesOutsideTheRepo(t *testing.T) {
 	if ws.BuildCacheDir() != job.BuildCacheDir() {
 		t.Errorf("per-job cache paths (%s vs %s); every ticket would compile from cold",
 			ws.BuildCacheDir(), job.BuildCacheDir())
+	}
+}
+
+// A tracker host is per installation, so it cannot be in the constant list.
+// Without it the sandbox denied the one call a stage is most often told to
+// make, and the stage reported success having published nothing (OR-462).
+func TestSandboxAllowsConfiguredTrackerHost(t *testing.T) {
+	t.Setenv("ORION_HOME", t.TempDir())
+	t.Setenv("ORION_JIRA_URL", "https://example.atlassian.net")
+
+	got := settingsFor(t, testWorkspace(t))
+	sandbox := got["sandbox"].(map[string]any)
+	network := sandbox["network"].(map[string]any)
+
+	var domains []string
+	for _, d := range network["allowedDomains"].([]any) {
+		domains = append(domains, d.(string))
+	}
+	for _, want := range []string{"example.atlassian.net", "raw.githubusercontent.com"} {
+		if !slices.Contains(domains, want) {
+			t.Errorf("allowedDomains missing %q: %v", want, domains)
+		}
+	}
+}
+
+// No tracker configured means no widening: the allowlist is exactly what it
+// was before, since every addition widens what a dependency could reach.
+func TestSandboxWithoutTrackerKeepsDefaultDomains(t *testing.T) {
+	t.Setenv("ORION_HOME", t.TempDir())
+	t.Setenv("ORION_JIRA_URL", "")
+
+	got := settingsFor(t, testWorkspace(t))
+	network := got["sandbox"].(map[string]any)["network"].(map[string]any)
+	if n := len(network["allowedDomains"].([]any)); n != len(defaultAllowedDomains) {
+		t.Errorf("allowedDomains = %d entries, want the %d defaults", n, len(defaultAllowedDomains))
 	}
 }
