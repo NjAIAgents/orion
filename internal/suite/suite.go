@@ -134,7 +134,10 @@ func DetectScoped(dir, base string, procs int) ([]string, Scope, error) {
 		return append(argv, "--scope="+strings.Join(sc.Packages, " ")), sc, nil
 	}
 	// The bare go.mod shape: replace ./... with the packages themselves.
-	out := make([]string, 0, len(argv)+len(sc.Packages))
+	// No capacity hint: len(argv)+len(sc.Packages) reads to CodeQL as an
+	// allocation size that may overflow (OR-473). It cannot in practice, but
+	// the hint only saved a reallocation or two, so it is not worth an alert.
+	var out []string
 	for _, a := range argv {
 		if a == "./..." {
 			out = append(out, sc.Packages...)
