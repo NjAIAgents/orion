@@ -449,6 +449,11 @@ now refuses to do**.
   and one genuinely in progress were visually indistinguishable. Failed is sticky;
   everything else is newest-wins.
 
+- **An allocation in scoped test runs no longer trips CodeQL's size-overflow
+  check.** The capacity hint on the scoped package list summed two slice lengths,
+  which CodeQL reads as an allocation size that may overflow. It cannot in
+  practice, but the hint saved almost nothing, so it is gone.
+
 ### Security
 
 - The local web surface will be authenticated. The epic's original "Localhost
