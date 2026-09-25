@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -144,6 +145,14 @@ var planStages = []planStage{
 	// can be written no earlier and is wanted no later.
 	{Stage: "constitution", Actor: events.ActorArchitect, What: "project principles for spec-kit, seeded from orion.json gates and the intent", Done: stageDone("constitution")},
 	{Stage: "spec", Actor: events.ActorArchitect, What: "requirements and design spec", Done: stageDone("spec")},
+	// Between spec and plan, and only here: spec-kit's /speckit-specify (the
+	// spec stage) creates and checks out a numbered feature branch as its own
+	// convention, and nothing else in this chain does that. Left unfixed the
+	// sandbox stays on that branch for the rest of the project's life, and
+	// every later tick's SyncSandbox call reports the mismatch instead of
+	// keeping the clone current (OR-459, found on a real project).
+	{Stage: "spec-branch-sync", Actor: events.ActorOrion, What: "the sandbox switched back to the work branch after spec-kit's own checkout",
+		Frame: specBranchSyncStep, Done: specBranchSyncDone},
 	{Stage: "plan", Actor: events.ActorArchitect, What: "implementation plan: files, order of work, tests, risks", Done: stageDone("plan")},
 	// After plan and before anything is built from it: a read-only check
 	// that spec, plan and tasks agree with each other and the constitution.
@@ -268,6 +277,53 @@ func toolkitDone(ws *workspace.Workspace) bool {
 func toolkitInstalled(ws *workspace.Workspace) bool {
 	st, err := os.Stat(filepath.Join(ws.RepoDir(), provision.SpecKitDir))
 	return err == nil && st.IsDir()
+}
+
+// specBranchSyncStep switches the sandbox back to the configured work
+// branch after the spec stage, undoing spec-kit's own checkout onto its
+// numbered feature branch (OR-459). Non-fatal: reported as Degraded rather
+// than stopping the chain, because a mismatched branch here costs later
+// SyncSandbox calls their fast-forward, not this run's own progress -- the
+// same reasoning ensureCITo and EnsureSandboxDun already apply in
+// toolkitStep for a failure that should not block the whole chain.
+func specBranchSyncStep(sio *stepIO, ws *workspace.Workspace) error {
+	branch := config.Load(ws.RepoDir()).VCS.WorkBranch
+	if branch == "" {
+		return nil // nothing configured to switch back to
+	}
+	msg, err := workspace.SwitchSandbox(ws, branch)
+	if err != nil {
+		return &Degraded{Reason: fmt.Sprintf("could not switch the sandbox back to %s: %v", branch, err)}
+	}
+	if msg == "" {
+		return nil // already on branch, or SwitchSandbox found nothing to do
+	}
+	if strings.HasPrefix(msg, "the sandbox has") || strings.HasPrefix(msg, "could not switch") {
+		return &Degraded{Reason: msg, Fix: "git -C <sandbox> checkout " + branch}
+	}
+	ui.Ok(sio.Out, "switched", "%s", msg)
+	return nil
+}
+
+// specBranchSyncDone is true once the sandbox is actually on the work
+// branch -- checked live rather than recorded, since a later stage or a
+// person could switch it away again and the chain should notice on resume
+// rather than trust a stamp from an earlier run.
+func specBranchSyncDone(ws *workspace.Workspace) bool {
+	branch := config.Load(ws.RepoDir()).VCS.WorkBranch
+	if branch == "" {
+		return true
+	}
+	cur, err := currentBranch(ws.RepoDir())
+	return err == nil && cur == branch
+}
+
+// currentBranch is git branch --show-current, read directly rather than
+// through workspace.SwitchSandbox: Done has to answer without switching
+// anything or taking the sandbox lock a concurrent job might be holding.
+func currentBranch(repo string) (string, error) {
+	out, err := exec.Command("git", "-C", repo, "branch", "--show-current").CombinedOutput()
+	return strings.TrimSpace(string(out)), err
 }
 
 // planFromIndex resolves --from to an index into planStages, or -1 when

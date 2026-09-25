@@ -283,6 +283,59 @@ func SyncSandbox(ws *Workspace, branch string) (string, error) {
 	return "fast-forwarded the sandbox to " + after[:min(7, len(after))], nil
 }
 
+// SwitchSandbox checks the sandbox clone out onto branch when it is
+// currently on something else, then fast-forwards it -- SyncSandbox's own
+// job, once the checkout is done.
+//
+// FOUND ON A REAL PROJECT (continuity, OR-459): spec-kit's own /speckit-specify
+// command creates and checks out a numbered feature branch (NNN-<slug>) as
+// its own convention, entirely outside this package -- internal/provision's
+// speckit.go has no branch/checkout logic at all. Nothing in the plan chain
+// ever switched the sandbox back afterwards, so SyncSandbox reported "the
+// sandbox has 001-<slug> checked out, not develop" on every tick for the
+// rest of the project's life, correctly refusing to force a checkout over
+// state it could not vouch for -- and correctly never fixing it either,
+// because a detector is not a corrector.
+//
+// Same safety rule as SyncSandbox: refuses over uncommitted changes rather
+// than discarding them, and never forces. The one thing it does that
+// SyncSandbox will not is the checkout itself -- SyncSandbox treats a
+// branch mismatch as a terminal state to report, this treats it as a
+// one-time correction to make, which is the right default only right after
+// the ONE stage (spec) that is known to leave the clone on a different
+// branch than it started on.
+func SwitchSandbox(ws *Workspace, branch string) (string, error) {
+	defer LockRepo(ws)()
+
+	repo := ws.RepoDir()
+	g := func(args ...string) (string, error) {
+		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	if _, err := os.Stat(repo); err != nil {
+		return "", err
+	}
+	cur, _ := g("branch", "--show-current")
+	if cur == branch {
+		return "", nil // already there; SyncSandbox handles keeping it current
+	}
+	if dirty, _ := g("status", "--porcelain"); dirty != "" {
+		return fmt.Sprintf("the sandbox has %s checked out with uncommitted changes; "+
+			"not switching to %s", cur, branch), nil
+	}
+	if out, err := g("fetch", "--prune", "origin"); err != nil {
+		return "", fmt.Errorf("fetching in the sandbox: %w\n%s", err, out)
+	}
+	// -B rather than checkout -b: branch already exists locally from
+	// provisioning (workspace.New establishes it before any stage runs), and
+	// -B resets it to track origin's tip rather than refusing "already
+	// exists" the way a plain checkout -b would.
+	if out, err := g("checkout", "-B", branch, "origin/"+branch); err != nil {
+		return fmt.Sprintf("could not switch the sandbox to %s: %s", branch, firstLineOf(out)), nil
+	}
+	return "switched the sandbox back to " + branch, nil
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
