@@ -159,6 +159,11 @@ var planStages = []planStage{
 	// It owes no file, so its Done is the recorded verdict of its last run.
 	{Stage: "analyze", Actor: events.ActorArchitect, What: "read-only consistency check of spec, plan and tasks; blocks on critical issues", Done: stageDone("analyze")},
 	{Stage: "scaffold", Actor: events.ActorDevOps, What: "repository skeleton on the OpenSSF baseline", Done: stageDone("scaffold")},
+	// After scaffold so the repository exists; before remote so what it
+	// writes is committed and pushed with everything else. Free, and a no-op
+	// for a project whose spec carries no eval plan (OR-478).
+	{Stage: "evals", Actor: events.ActorOrion, What: "eval cases and harness from the spec's agentic design, when it has one",
+		Frame: evalsStep, Done: evalsDone},
 	// The remote comes AFTER scaffold and BEFORE decompose. After scaffold,
 	// because creating a repository on GitHub is outward and irreversible
 	// enough to want every gate before it passed first -- a chain stopped
