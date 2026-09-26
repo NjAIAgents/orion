@@ -55,6 +55,106 @@ now refuses to do**.
   declined; installation is per project; a spec is a living document — are ADRs 0021,
   0022 and 0023. The chain steps that use them land under OR-355.
 
+## v0.11.0
+
+### Added
+
+- **The spec and plan stages design agent-shaped systems as agents.** When the
+  idea behind a project is an LLM agent — tool calls, a loop, state carried
+  between steps — and nj-agents ships `/agentic-design`, the spec stage now has it
+  write an Agentic design section: loop bounds as named config, a contract per
+  tool, the state carried between steps, a discriminating eval plan and the
+  harness. The plan stage schedules those parts as work. Detection is a fixed set
+  of phrases rather than a model's judgment and needs two kinds of evidence, so a
+  stray "user agent" does not trip it. For every other project the prompts are
+  byte for byte what they were.
+
+- **An agent-shaped project is scaffolded with an eval suite that runs.** When the
+  spec carries an Agentic design eval plan, a new step between scaffold and remote
+  writes one case file per case, a harness that runs the project's **own** agent
+  (not Claude Code), and an `agent-evals` CI job — the check `auto_merge` already
+  waits for. Cases that check nothing, or that do not say what wrong behaviour they
+  catch, are refused rather than scaffolded, because they would pass on any answer.
+  An undecided harness command fails the suite loudly instead of skipping it, and
+  `auto_merge` stays off: starter cases are not the real suite. Files are written
+  only when absent, so re-running the chain never overwrites a case someone edited.
+  A project with no eval plan gets nothing.
+
+- **A project repository on a free GitHub plan can stay private.** GitHub
+  protects a private repository's branches only on a paid plan, and `orion plan`
+  used to stop at "remote did not finish" with no clean way forward. It now asks
+  whether to make the repository public so `main` and `develop` can be protected,
+  and says exactly what that exposes — every file and the full history, including
+  the intent, spec, plan and constitution. Answering **no** (the default) keeps it
+  private with both branches pushed and unprotected, reports that plainly, and
+  carries on. A non-interactive run does the same without asking. Protection
+  failures with any other cause still stop the chain.
+
+### Fixed
+
+- **Upgrading Orion now updates the sandbox policy of existing projects.** A
+  project's sandbox policy was written when the project was created and rewritten
+  only for `orion watch` jobs, so every planning stage — intent, spec, plan,
+  analyze and the rest — kept running under the policy of whatever release created
+  the project. A project created before the tracker host was allowed could not
+  reach Jira from any stage, even after upgrading. Every stage run now regenerates
+  the policy first.
+
+- **A new project's constitution no longer forbids the commits that created it.**
+  The branch rule Orion seeds said nothing is ever committed straight to the work
+  branch, while Orion's own planning chain commits the constitution, intent, spec,
+  plan and tasks there — before any remote exists for a pull request to target. So
+  every project's analyze stage reported its own planning history as a critical
+  violation. The seeded rule now states that one exception, and keeps it narrow:
+  every implementation change still lands on a feature branch by reviewed pull
+  request.
+
+- **An answer written under an Open question now counts.** The discovery gate
+  looked for an answer only on a question's first line, so a hand-written
+  `Answer:` on the line below an unticked box was ignored — and the gate then
+  refused the stage while quoting that same answer back. It now also accepts an
+  `Answer:` or strikethrough at the start of a continuation line. Answers written
+  with `orion answer` were never affected, since it also ticks the box.
+
+- **The scaffold reaches the new repository.** The scaffold stage works on a
+  feature branch, as the project's constitution requires, but creating the remote
+  pushed only `main` and `develop`. The repository appeared without its scaffold,
+  and every later stage committed onto the stranded branch because the sandbox was
+  still on it. A new step right after the remote is created pushes that branch,
+  opens its pull request into `develop` for review — never merging it — and puts
+  the sandbox back on `develop`. A resumed chain does not open a second pull
+  request, and putting the sandbox back on `develop` by hand no longer counts as done
+  while the scaffold exists only locally.
+
+- **Resuming the planning chain no longer re-runs the scaffold.** The scaffold
+  counted as done only when its README was on the branch the sandbox had checked
+  out, but the scaffold is committed on a feature branch and the sandbox returns to
+  `develop` while that branch waits for review. Resuming then started the scaffold
+  stage over. A README on a local feature branch now counts.
+
+- **Ctrl-C on `orion plan` or `orion run` now stops the agent too.** Each stage
+  run gets its own process group so a timeout can kill everything it started, but
+  that also kept it out of reach of the terminal's Ctrl-C. Cancelling ended Orion
+  and left the agent running on its own, still editing the project's sandbox. The
+  commands now stop the agent and everything it started, name any process that
+  outlives the grace period, and exit with status 130.
+
+- **Tasks already ticked done are created and then closed as Done**, never offered
+  to an agent and never part of an ordering link. They used to arrive in the tracker
+  as open work.
+
+- **"Needs Phase 2", "requires T012", "depends on" and "blocked by" are read as
+  ordering, the same as "after".** A Dependencies section whose wording is not read
+  is reported as unread, rather than as "states no dependencies".
+
+- **A phase that waits on the one before it now blocks every task in the phase**,
+  not only its first. The queue does not run a phase's tasks in order, so the rest
+  of the phase used to start at once.
+
+- **Stories in the filed work tree are blocked, not just their tasks.** The queue
+  picks up stories, but ordering links landed only on the tasks inside them, so every
+  story was ready the moment it was created.
+
 ## v0.10.0
 
 ### Added
