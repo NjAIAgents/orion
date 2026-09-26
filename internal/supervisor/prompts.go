@@ -325,7 +325,7 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 		), nil
 
 	case "spec", "design":
-		return join(
+		body := join(
 			"Read docs/intent/"+ws.Task.Slug+".md.",
 			"",
 			useCommandNote(tk, "spec"),
@@ -336,7 +336,13 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"you cannot satisfy both. A flagged concern is more useful than a confident guess.",
 			"",
 			"Write "+spec+" and commit it. No implementation.",
-		), nil
+		)
+		// Appended only when it applies, so every other project's prompt is
+		// byte for byte what it always was (OR-477).
+		if note := agenticDesignNote(ws, stage, intentPath, spec); note != "" {
+			body += "\n\n" + note
+		}
+		return body, nil
 
 	case "plan":
 		lines := []string{
@@ -386,6 +392,9 @@ func stageBody(ws *workspace.Workspace, stage string, tk config.Toolkit) (string
 			"",
 			"Write " + plan + " and commit it. Do not implement yet.",
 			taskListNote(tk, tasks),
+		}
+		if note := agenticDesignNote(ws, stage, intentPath, spec); note != "" {
+			lines = append(lines, "", note)
 		}
 		// Appended only when there IS feedback, so a first run's prompt is
 		// byte for byte what it always was.
