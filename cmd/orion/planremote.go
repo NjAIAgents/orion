@@ -56,6 +56,9 @@ func remoteOptions(ws *workspace.Workspace, cfg config.Config, confirm func(stri
 // step can proceed without a remote.
 func remoteStep(sio *stepIO, ws *workspace.Workspace) error {
 	cfg := config.Load(ws.RepoDir())
+	// Which account or organisation, asked before anything is created when
+	// nobody said (OR-490). Records its answer in ws.Task.RemoteOrg.
+	chooseRemoteOwner(sio, ws)
 	opts := remoteOptions(ws, cfg, sio.Confirm, sio.Out, ws.Task.RemoteOrg)
 	res, err := remoteFn(opts)
 	if err != nil {
