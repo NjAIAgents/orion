@@ -152,7 +152,14 @@ func gatesNote(cfg config.Config) string {
 	lines := []string{
 		"- Branch model: feature branches are cut from " + cfg.VCS.WorkBranch + " and merge",
 		"  back by reviewed pull request; " + cfg.VCS.DefaultBranch + " is the release branch.",
-		"  Both are protected; nothing pushes to either directly (orion.json vcs).",
+		"  Both are protected once the remote exists; nothing pushes to either directly",
+		"  (orion.json vcs). State the one exception Orion's own chain relies on: before the",
+		"  remote exists, the planning chain commits the planning artifacts -- this",
+		"  constitution, the intent, spec, plan, tasks and their companion documents, and",
+		"  amendments to them -- on " + cfg.VCS.WorkBranch + ", because no pull request can carry them yet.",
+		"  Every implementation change still lands on a feature branch (prefix " + cfg.VCS.BranchPrefix + ")",
+		"  by reviewed pull request. Without this exception the constitution forbids the very",
+		"  commits that produced it, and the analyze stage reports that as critical (OR-480).",
 	}
 	g := cfg.Gates
 	if g.RequirePlanBeforeEdit {
