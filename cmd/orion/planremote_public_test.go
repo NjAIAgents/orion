@@ -59,14 +59,34 @@ func TestYesMakesItPublicAndTheStepCompletes(t *testing.T) {
 	}
 }
 
-func TestNoLeavesItPrivateAndDegraded(t *testing.T) {
+// A no keeps the repository private with both branches and no protection --
+// and that is a completed step with a plain warning, not "remote did not
+// finish": the operator chose it, and the plan cannot do otherwise.
+func TestNoKeepsItPrivateUnprotectedAndCompletes(t *testing.T) {
 	madePublic := stubRemote(t, paid)
-	err := remoteStep(&stepIO{Out: &bytes.Buffer{}, Confirm: func(string) bool { return false }}, remoteWS(t))
+	var out bytes.Buffer
+	w := remoteWS(t)
+	err := remoteStep(&stepIO{Out: &out, Confirm: func(string) bool { return false }}, w)
 	if *madePublic {
 		t.Fatal("visibility changed without a yes")
 	}
-	if _, ok := err.(*Degraded); !ok {
-		t.Errorf("want the existing degraded result, got %v", err)
+	if err != nil {
+		t.Fatalf("declining to go public stopped the chain: %v", err)
+	}
+	if !strings.Contains(out.String(), "NOT protected") {
+		t.Errorf("the unprotected branches were not reported:\n%s", out.String())
+	}
+	if w.Task.Remote == "" {
+		t.Error("the remote was not recorded")
+	}
+}
+
+// With nobody to ask, the same: private, unprotected, complete.
+func TestNonInteractiveKeepsItPrivateAndCompletes(t *testing.T) {
+	madePublic := stubRemote(t, paid)
+	err := remoteStep(&stepIO{Out: &bytes.Buffer{}}, remoteWS(t))
+	if *madePublic || err != nil {
+		t.Errorf("madePublic=%v err=%v; want private and complete", *madePublic, err)
 	}
 }
 
@@ -74,9 +94,12 @@ func TestNoLeavesItPrivateAndDegraded(t *testing.T) {
 func TestOtherProtectionFailuresNeverAsk(t *testing.T) {
 	madePublic := stubRemote(t, "NOT APPLIED: Resource not accessible by integration")
 	asked := false
-	_ = remoteStep(&stepIO{Out: &bytes.Buffer{}, Confirm: func(string) bool { asked = true; return true }}, remoteWS(t))
+	err := remoteStep(&stepIO{Out: &bytes.Buffer{}, Confirm: func(string) bool { asked = true; return true }}, remoteWS(t))
 	if asked || *madePublic {
 		t.Errorf("asked=%v madePublic=%v for a failure going public would not fix", asked, *madePublic)
+	}
+	if _, ok := err.(*Degraded); !ok {
+		t.Errorf("a non-plan protection failure must still stop the chain, got %v", err)
 	}
 }
 

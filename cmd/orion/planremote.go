@@ -94,6 +94,22 @@ func remoteStep(sio *stepIO, ws *workspace.Workspace) error {
 	if err := ws.SaveTask(); err != nil {
 		ui.Warn(sio.Out, "could not record the remote in task.json: %v", err)
 	}
+	// A private repository on a plan that cannot protect it, kept private by
+	// choice (or with nobody there to choose): the remote exists with both
+	// branches, and the only thing missing is something the plan does not
+	// offer. That is a decision, not a failure, so the step completes -- and
+	// says so plainly, which is the part OR-408 exists to guarantee (OR-485).
+	// Every other protection failure still stops below.
+	if opts.Private && provision.NeedsPaidPlan(res) {
+		ui.Warn(sio.Out, "%s and %s are NOT protected: the repository stays private, and GitHub "+
+			"protects private branches only on a paid plan. Orion's gate hook still refuses the "+
+			"agent's pushes to them; nothing stops a person.",
+			cfg.VCS.DefaultBranch, cfg.VCS.WorkBranch)
+		fmt.Fprintf(sio.Out, "          %s\n", ui.Dim(sio.Out,
+			"to protect them later (paid plan or public repository): orion provision "+ws.ID))
+		return nil
+	}
+
 	// The remote exists, so this is not a failure -- but a branch left
 	// unprotected is the step not having done what it exists to do, and
 	// saying "done" about it is how an unprotected main ships (OR-408).
