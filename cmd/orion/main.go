@@ -103,8 +103,19 @@ RUNNING
                               requeue a failed ticket and return it to To Do)
   orion queue remove <KEY>... take tickets out of the queue; status and
                               fixVersion are left alone
+  orion prioritise <KEY>...   reorder the queue: the tickets named are worked in
+                              the order given (--project KEY). Refuses tickets
+                              that are not queued, and a set whose priorities
+                              differ, rather than writing an order the queue
+                              would not show
+  orion request-plan-changes <KEY> <text>
+                              record what you want changed about the plan; the
+                              plan stage reads it on its next run. Everything
+                              after the key is the feedback, verbatim
   orion dashboard             whether coding is outrunning integration: queue
                               depth, batch cost, CI runs saved (read-only)
+  orion web [--port N]        serve the run view on 127.0.0.1 and print its URL
+                              (default port 7061; --port 0 asks for a free one)
   orion routes                which marker sends a ticket to which actor, and
                               which actors are reached another way (read-only)
   orion watch [PROJECT...]    run the queue by itself: work, collect, repeat
@@ -290,9 +301,21 @@ func main() {
 		} else {
 			runQueue(os.Args[2:])
 		}
+	case "prioritise", "prioritize":
+		// Both spellings, because the queue is reordered by whoever is at the
+		// keyboard and a command that exists under one spelling only is a
+		// command half the operators cannot find (OR-280).
+		runPrioritise(os.Args[2:])
+	case "request-plan-changes":
+		// No mustArg: its own parser reports what is missing, and it must
+		// take everything after the key as literal text rather than letting
+		// a shared usage check decide what looks like a flag.
+		runRequestPlanChanges(os.Args[2:])
 	case "decompose":
 		mustArg(os.Args, 2, "orion decompose <KEY> [path/to/tasks.md]")
 		runDecompose(os.Args[2:])
+	case "web":
+		runWeb(os.Args[2:])
 	case "routes":
 		runRoutes()
 	case "repos":
@@ -1613,10 +1636,19 @@ func runAnswer(id string) {
 	specPath := filepath.Join(ws.RepoDir(), filepath.FromSlash(supervisor.SpecArtifact(cfg, ws.Task.Slug)))
 	s := discovery.AssessSpec(specPath)
 
-	if a.Open == 0 && (!s.Found || s.Open == 0) {
+	// The plan's own undecided points (OR-445): a stack, platform or
+	// architecture call the plan stage genuinely could not make, in the
+	// same "## Open questions" shape intent and spec already use.
+	planPath := filepath.Join(ws.RepoDir(), filepath.FromSlash(supervisor.PlanArtifact(cfg, ws.Task.Slug)))
+	p := discovery.Assess(planPath)
+
+	if a.Open == 0 && (!s.Found || s.Open == 0) && (!p.Found || p.Open == 0) {
 		fmt.Printf("no open questions in %s", path)
 		if s.Found {
 			fmt.Printf(" or %s", specPath)
+		}
+		if p.Found {
+			fmt.Printf(" or %s", planPath)
 		}
 		fmt.Println()
 		return
@@ -1628,11 +1660,14 @@ func runAnswer(id string) {
 	// somewhere no stage could see. Written in place, the loop is only a
 	// faster editor.
 	if isTerminal(os.Stdin) {
-		written := answerInteractively(os.Stdout, bufio.NewReader(os.Stdin), []discovery.Assessment{a, s})
+		written := answerInteractively(os.Stdout, bufio.NewReader(os.Stdin), []discovery.Assessment{a, s, p})
 		commitAnswers(os.Stdout, ws.RepoDir(), written)
 		open := discovery.Assess(path).Open
 		if s.Found {
 			open += discovery.AssessSpec(specPath).Open
+		}
+		if p.Found {
+			open += discovery.Assess(planPath).Open
 		}
 		if open == 0 {
 			fmt.Printf("\nno open questions left. Then: orion plan %s\n", planKeyOf(ws))
@@ -1642,7 +1677,7 @@ func runAnswer(id string) {
 		os.Exit(1)
 	}
 
-	for _, x := range []discovery.Assessment{a, s} {
+	for _, x := range []discovery.Assessment{a, s, p} {
 		if !x.Found || x.Open == 0 {
 			continue
 		}
@@ -1659,6 +1694,9 @@ func runAnswer(id string) {
 	fmt.Printf("  $EDITOR %s\n", path)
 	if s.Found && s.Open > 0 {
 		fmt.Printf("  $EDITOR %s\n", specPath)
+	}
+	if p.Found && p.Open > 0 {
+		fmt.Printf("  $EDITOR %s\n", planPath)
 	}
 	fmt.Println()
 	fmt.Println("Mark a question with [x], ~~strikethrough~~, or an inline \"Answer: ...\";")
@@ -1678,7 +1716,10 @@ func answerInteractively(out io.Writer, in *bufio.Reader, as []discovery.Assessm
 		if !x.Found || x.Open == 0 {
 			continue
 		}
-		fmt.Fprintf(out, "%d open question(s) in %s\n  (answer on one line; - skips, ? records \"unknown, design for it\", = accepts the stand-in)\n\n", x.Open, x.Path)
+		fmt.Fprintf(out, "%s %s\n  %s\n\n",
+			ui.Heading(out, fmt.Sprintf("%d open question(s)", x.Open)),
+			ui.Dim(out, "in "+x.Path),
+			ui.Dim(out, "(answer on one line; - skips, ? records \"unknown, design for it\", = accepts the stand-in)"))
 		skipped := map[string]bool{}
 		asked := 0
 		for {
@@ -1700,12 +1741,37 @@ func answerInteractively(out io.Writer, in *bufio.Reader, as []discovery.Assessm
 				break
 			}
 			asked++
-			ans, ok := ask(in, out, fmt.Sprintf("[%d/%d] %s", asked, x.Open, next.Text))
+			// Bold question text, its own line -- distinct from the plain
+			// "[N/M]" counter beside it, so a reader's eye lands on the
+			// question rather than on a wall of uniform grey (a real
+			// complaint: ten questions in a row, none visually distinct from
+			// the next, the counter and the text and the answer all the
+			// same weight).
+			prompt := fmt.Sprintf("%s\n  %s", ui.Dim(out, fmt.Sprintf("[%d/%d]", asked, x.Open)), ui.Heading(out, next.Text))
+			ans, ok := ask(in, out, prompt)
 			if !ok {
 				return written
 			}
+			if ans == "" {
+				// Blank input is not treated as a skip on its own (OR-444):
+				// pressing Enter with nothing typed is exactly as likely to
+				// be a fumbled paste or a moment's hesitation as a genuine
+				// "leave this open". Confirmed once, explicitly, rather
+				// than silently advancing past a question nobody meant to
+				// skip.
+				confirm, ok := ask(in, out, "  "+ui.Dim(out, "nothing typed -- press - to skip this one, or type an answer:"))
+				if !ok {
+					return written
+				}
+				ans = strings.TrimSpace(confirm)
+				if ans == "" {
+					// Asked twice and still nothing: now it is a skip, the
+					// same as typing - explicitly.
+					ans = "-"
+				}
+			}
 			switch ans {
-			case "", "-":
+			case "-":
 				skipped[next.Text] = true
 				continue
 			case "?":
@@ -1782,19 +1848,32 @@ func commitAnswers(out io.Writer, repo string, files []string) {
 // createProjectChannel makes the workspace's Slack channel and posts the
 // opening message, so the channel is useful the moment it appears rather
 // than being an empty room someone has to interpret.
+//
+// Checks LIVE Slack availability (credentials configured, AuthTest succeeds)
+// rather than requiring cfg.Slack.Enabled to already be true, matching
+// orion init's provisionRemote (main.go:703-722): that is what makes init
+// reliably create a channel while the plan chain silently never did
+// (FOUND ON A REAL PROJECT, OR-460). cfg.Slack.Enabled defaults false and
+// nothing in workspace.New/scaffoldChain/toolkitStep ever sets it true, so
+// gating on it meant this function no-opped on every orion new/orion plan
+// project -- with no message at all, unlike every other decline path here.
+//
+// CreateChannelPerProject still opts a project OUT: an operator who set it
+// false deliberately gets that choice honoured, credentials or not.
 func createProjectChannel(ws *workspace.Workspace) *workspace.SlackChannel {
 	cfg := config.Load(ws.RepoDir())
-	if !cfg.Slack.Enabled || !cfg.Slack.CreateChannelPerProject {
+	if !cfg.Slack.CreateChannelPerProject {
+		fmt.Println("slack      create_channel_per_project is off; not creating one")
 		return nil
 	}
 	c, err := slack.FromEnv()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "orion: slack enabled but not usable: %v\n", err)
+		fmt.Fprintf(os.Stderr, "orion: no project channel: %v\n", err)
 		return nil
 	}
 	id, err := c.AuthTest()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "orion: slack: %v\n", err)
+		fmt.Fprintf(os.Stderr, "orion: no project channel: slack: %v\n", err)
 		return nil
 	}
 	ch, err := c.CreateChannel(cfg.Slack.ChannelPrefix+ws.Task.Slug, cfg.Slack.Private)
@@ -1814,6 +1893,14 @@ func createProjectChannel(ws *workspace.Workspace) *workspace.SlackChannel {
 		verb = "reusing"
 	}
 	fmt.Printf("slack      #%s (%s)\n", ch.Name, verb)
+
+	// A channel with nobody in it but the bot is not a communication medium
+	// (ensureAudience's own doc comment) -- orion init learned this the hard
+	// way (fcia ran two full pipelines into an unreadable channel). The plan
+	// chain gets the same automatic invite-and-verify rather than a second,
+	// quieter way to strand a project's notifications.
+	ensureAudience(c, ch, cfg, filepath.Join(ws.RepoDir(), "orion.json"))
+
 	return &workspace.SlackChannel{
 		ID: ch.ID, Name: ch.Name, TeamID: id.TeamID,
 		URL: slack.ChannelURL(id.TeamID, ch.ID),
@@ -1852,6 +1939,14 @@ func runSupervised(id string, rest []string) {
 		fmt.Printf("\nstage      %s\nexit       %d\nreason     %s\nattempts   %d\nduration   %s\nlog        %s\n",
 			opts.Stage, res.ExitCode, res.Reason, res.Attempts,
 			res.Duration.Round(time.Second), res.LogPath)
+		// Loud, not silent (OR-441): the stage's own agent did not commit its
+		// artifact, and Orion completed that commit on its behalf. Printed
+		// here rather than folded into "reason" so it reads as what it is --
+		// something ORION did, distinct from what the stage reported of
+		// itself.
+		for _, rel := range res.HealedArtifact {
+			fmt.Printf("healed     %s (committed on the stage's behalf -- it never committed this itself)\n", rel)
+		}
 		if !res.ResumeAt.IsZero() {
 			fmt.Printf("resume     %s (orion run %s --stage %s)\n",
 				res.ResumeAt.Local().Format("15:04 MST"), ws.ID, opts.Stage)

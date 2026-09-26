@@ -45,6 +45,29 @@ func TestNewProvisionsTheFullLayout(t *testing.T) {
 	}
 }
 
+// OR-451/OR-452: writeProjectConfig used to carry its own minimal template
+// and won the race against the chain's later adopt.EnsureConfig call (which
+// never overwrites an existing file), so a project scaffolded via `orion
+// new`/`orion plan` never actually got the canonical orion.json -- only the
+// hand-built planchain_test.go fixture did, which skips New/scaffoldChain
+// entirely and so never caught it. This goes through the real New path.
+func TestNewWritesTheCanonicalOrionJSONNotAMinimalOne(t *testing.T) {
+	home(t)
+	ws, err := New(NewOptions{Idea: "Customers should see claim status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(ws.RepoDir(), "orion.json"))
+	if err != nil {
+		t.Fatalf("orion.json not written: %v", err)
+	}
+	for _, section := range []string{`"slack"`, `"budget"`, `"attribution"`, `"qa"`, `"ci"`} {
+		if !strings.Contains(string(b), section) {
+			t.Errorf("orion.json is missing %s -- got the minimal template, not the canonical one", section)
+		}
+	}
+}
+
 func TestNewRequiresAnIdea(t *testing.T) {
 	home(t)
 	for _, idea := range []string{"", "   ", "\t\n"} {

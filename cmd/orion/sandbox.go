@@ -21,7 +21,17 @@ import (
 // adopting; it just cannot have a merge gated on a verdict, and saying so
 // once here is better than discovering it at the first pull request.
 func ensureCI(dir string) {
-	w := os.Stdout
+	ensureCITo(os.Stdout, dir)
+}
+
+// ensureCITo is ensureCI with the output writer exposed, for a caller (the
+// plan chain's toolkitStep) that isn't writing straight to os.Stdout.
+//
+// Called only from orion init's runInit until OR-453: a project scaffolded
+// via `orion new`/`orion plan` had no scripts/test.sh and no CI workflow at
+// all unless the scaffold stage's agent improvised one uninstructed -- the
+// same shape of gap as OR-451's orion.json, found in the same audit.
+func ensureCITo(w io.Writer, dir string) {
 	res, err := ciscaffold.Ensure(dir)
 	if err != nil {
 		ui.Warn(w, "could not scaffold CI: %v", err)

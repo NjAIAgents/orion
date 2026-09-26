@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
@@ -559,6 +560,101 @@ func TestResidueIsKeptWhenTheCommitItselfFails(t *testing.T) {
 	// The ticket carries the reason too, not only the count.
 	if comments := strings.Join(j.comments, "\n---\n"); !strings.Contains(comments, "KEPT them") {
 		t.Errorf("the ticket does not say what became of the work:\n%s", comments)
+	}
+}
+
+// OR-458: a trip and an unresolved (could-not-commit) residue must both be
+// recorded against the ticket, so the queue manager can eventually evict a
+// ticket that keeps doing this without landing -- collect.Trips/.Stranded
+// had no writer anywhere before settleTripResidue called them here.
+func TestATrippedRunWithUnresolvedResidueRecordsBothTripsAndStranded(t *testing.T) {
+	home := project(t, cfg)
+	j := &fakeJira{}
+	var out strings.Builder
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				dir := ws.RepoDir()
+				if err := os.WriteFile(filepath.Join(dir, "impl.go"), []byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, dir, "add", ".")
+				git(t, dir, "commit", "-q", "-m", "feat: implement")
+				if err := os.WriteFile(filepath.Join(dir, "impl.go"), []byte("package x\n\nfunc F() {}\n"), 0o644); err != nil {
+					return nil, err
+				}
+				tripIn(t, dir, "sess-impl", "breaker/loop", "Bash repeated 4 times")
+				hooks := filepath.Join(dir, "refusing-hooks")
+				if err := os.MkdirAll(hooks, 0o755); err != nil {
+					return nil, err
+				}
+				if err := os.WriteFile(filepath.Join(hooks, "pre-commit"),
+					[]byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+					return nil, err
+				}
+				git(t, dir, "config", "core.hooksPath", hooks)
+				return &supervisor.Result{ExitCode: 1, Reason: "tripped"}, errors.New("the agent stopped: breaker tripped")
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	entry, err := registry.Lookup(home, "FCIA-6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Open(entry.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if n, known := collect.Trips(ws.Dir, "FCIA-6"); !known || n != 1 {
+		t.Errorf("collect.Trips(FCIA-6) = (%d, %v), want (1, true)", n, known)
+	}
+	if n, known := collect.Stranded(ws.Dir, "FCIA-6"); !known || n != 1 {
+		t.Errorf("collect.Stranded(FCIA-6) = (%d, %v), want (1, true)", n, known)
+	}
+}
+
+// OR-458: a run that ends holding nothing must clear any prior stranded
+// streak -- a ticket settled cleanly this pass must not still be evictable
+// on a stranding from two passes ago.
+func TestACleanEndingClearsAPriorStrandedStreak(t *testing.T) {
+	home := project(t, cfg)
+	entry, err := registry.Lookup(home, "FCIA-6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Open(entry.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := collect.RecordStranded(ws.Dir, "FCIA-6", "a prior pass could not settle"); err != nil {
+		t.Fatal(err)
+	}
+
+	j := &fakeJira{}
+	var out strings.Builder
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(ws *workspace.Workspace, o supervisor.Options) (*supervisor.Result, error) {
+				dir := ws.RepoDir()
+				if err := os.WriteFile(filepath.Join(dir, "impl.go"), []byte("package x\n"), 0o644); err != nil {
+					return nil, err
+				}
+				git(t, dir, "add", ".")
+				git(t, dir, "commit", "-q", "-m", "feat: implement")
+				return &supervisor.Result{ExitCode: 0, Reason: "completed"}, nil
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	if n, known := collect.Stranded(ws.Dir, "FCIA-6"); !known || n != 0 {
+		t.Errorf("collect.Stranded(FCIA-6) after a clean ending = (%d, %v), want (0, true)", n, known)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/orion-sdlc/orion/internal/toolkit"
@@ -36,6 +37,24 @@ type Limits struct {
 	// converts a queue into a stampede (OR-162 is what misreading this limit
 	// costs).
 	MaxConcurrentChildren int `json:"max_concurrent_children"`
+
+	// NoProgressMinutes stops the watcher when its cycles stop achieving
+	// anything (OR-428).
+	//
+	// The spend breaker cannot see this failure. A batch that re-assembles,
+	// re-tests and lands nothing spends no tokens at all -- 91 CI runs over
+	// 13.5 hours cost $0 of budget and tripped no checkpoint, because there
+	// is no LLM anywhere in that loop. What it does spend is CI minutes and
+	// the whole night.
+	//
+	// Nor is a warning enough on its own. OR-261 already prints "the batch
+	// landed nothing" for exactly this cycle, and it printed it more than
+	// thirty times while nobody was awake to read it.
+	//
+	// Minutes rather than a tick count: the operator's question is "how long
+	// may this get nowhere before you wake me", and that answer must not
+	// change when the poll interval does.
+	NoProgressMinutes int `json:"no_progress_minutes"`
 
 	// MaxConcurrentTickets caps how many tickets a watcher works at the same
 	// time. Unlike the limits above it does not bound one agent's behaviour;
@@ -63,6 +82,15 @@ type Limits struct {
 	// load than four processes. If a stampede shows up after this change,
 	// that product is the first thing to look at.
 	MaxConcurrentTickets int `json:"max_concurrent_tickets"`
+
+	// MaxBreakerTrips and MaxStranded bound the queue manager's eviction
+	// rules for a ticket that keeps tripping the safety breaker, or whose
+	// worktree keeps failing to settle, without landing (OR-458). Zero means
+	// the shipped default, via Trips()/StrandedRounds() below -- the same
+	// "zero is not unlimited" rule every other ceiling in this struct
+	// follows.
+	MaxBreakerTrips int `json:"max_breaker_trips"`
+	MaxStranded     int `json:"max_stranded"`
 }
 
 // ConcurrencyWarnAbove is where `orion config limits` stops accepting a value
@@ -97,6 +125,43 @@ func (l Limits) ConcurrentTickets() int {
 	n := l.MaxConcurrentTickets
 	if n <= 0 {
 		n = Defaults().Limits.MaxConcurrentTickets
+	}
+	return n
+}
+
+// NoProgress is how long the watcher may cycle without achieving anything
+// before it stops and says so. Zero means the shipped default.
+//
+// THERE IS NO OFF SWITCH, and that is deliberate rather than an omission.
+// `orion config limits` refuses every negative value for every limit, so a
+// sentinel would be settable only by hand-editing orion.json -- which the
+// shield hook refuses to an agent and which has no validation for a person.
+// An operator who wants a longer leash sets a longer window; one who wants
+// no breaker at all is asking for the night this was written.
+func (l Limits) NoProgress() time.Duration {
+	n := l.NoProgressMinutes
+	if n <= 0 {
+		n = Defaults().Limits.NoProgressMinutes
+	}
+	return time.Duration(n) * time.Minute
+}
+
+// BreakerTrips is MaxBreakerTrips with the default applied. Zero means the
+// shipped default, never unlimited (OR-458).
+func (l Limits) BreakerTrips() int {
+	n := l.MaxBreakerTrips
+	if n <= 0 {
+		n = Defaults().Limits.MaxBreakerTrips
+	}
+	return n
+}
+
+// StrandedRounds is MaxStranded with the default applied. Zero means the
+// shipped default, never unlimited (OR-458).
+func (l Limits) StrandedRounds() int {
+	n := l.MaxStranded
+	if n <= 0 {
+		n = Defaults().Limits.MaxStranded
 	}
 	return n
 }
@@ -970,6 +1035,9 @@ func Defaults() Config {
 			MaxFilesTouched:        60,
 			MaxConcurrentChildren:  2,
 			MaxConcurrentTickets:   4,
+			NoProgressMinutes:      60,
+			MaxBreakerTrips:        2,
+			MaxStranded:            2,
 		},
 		Gates: Gates{
 			RequirePlanBeforeEdit:          false, // opt-in: too disruptive to force on an unconfigured repo

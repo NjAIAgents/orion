@@ -85,6 +85,27 @@ const batchValidated = "validated"
 // learn it again.
 const batchRed = "red"
 
+// batchStuck is a red batch that bisection has already PROVEN it cannot
+// convict: every proper subset tested green, so the fault needs two members
+// together (OR-427).
+//
+// A state of its own rather than clearing the record, and the difference is
+// the whole fix. batchRed means "isolate on the next pass", which is right
+// exactly once: after the search comes back with no culprit, isolating again
+// re-runs the same four CI runs to reach the same non-verdict. That is the
+// loop that spent 91 runs over 13.5 hours and landed nothing.
+//
+// Clearing it instead would be just as bad in the other direction: the next
+// pass would assemble the same members from scratch, test the whole set, go
+// red, and start over -- the pre-OR-324 behaviour this state exists to stop.
+//
+// So the record is kept and says STUCK: the members and the base are
+// remembered, the next pass declines to spend anything on them, and the
+// operator is told why. A person changes something -- a fix, an ejection, a
+// different set -- and the members or the base no longer match, so the
+// record stops applying on its own.
+const batchStuck = "stuck"
+
 func batchStatePath(wsDir string) string {
 	return filepath.Join(wsDir, "batch-state.json")
 }

@@ -20,10 +20,26 @@ cd "$(dirname "$0")/.."
 
 QUICK=0
 COVER_ONLY=0
+# SCOPE is a space-separated package list, and it is how the QA stage asks for
+# the packages a change can actually break instead of all of them (OR-425).
+#
+# Why this exists: seven concurrent agents each running the whole suite starve
+# each other. The packages that lose are the ones with a clock in them, so
+# tickets went red on a timeout and then passed on retry with "0 fix
+# round(s)" -- nothing was repaired, because nothing was broken. -p bounds
+# packages WITHIN a run; nothing bounded the runs against each other.
+#
+# The floor is deliberately NOT applied to a scoped run. A tree-wide
+# percentage measured over four packages is not the same number and would
+# either block unrelated work or quietly mean nothing. Coverage is still
+# enforced on the full run the batch does before anything merges -- once per
+# batch instead of once per agent, which is where it belonged.
+SCOPE="${SCOPE:-}"
 for arg in "$@"; do
   case "$arg" in
     --quick)      QUICK=1 ;;
     --cover-only) COVER_ONLY=1 ;;
+    --scope=*)    SCOPE="${arg#--scope=}" ;;
     *) echo "unknown option: $arg" >&2; exit 64 ;;
   esac
 done
@@ -103,7 +119,11 @@ step "tests"
 # computation, and a serial run costs several minutes on every leg. Raising
 # this is a decision about the slowest runner, not about this laptop.
 : "${TEST_PARALLEL_PACKAGES:=2}"
-go test ./... -p "$TEST_PARALLEL_PACKAGES" -timeout 20m \
+# Unquoted on purpose: SCOPE is a space-separated package list and has to
+# word-split into several arguments. It is built by internal/suite from
+# `go list` output, never from user input.
+# shellcheck disable=SC2086
+go test ${SCOPE:-./...} -p "$TEST_PARALLEL_PACKAGES" -timeout 20m \
   -coverprofile=coverage.raw.out -covermode=atomic
 
 step "coverage"
@@ -146,7 +166,14 @@ printf '\ntotal coverage: %s%% (floor %s%%)\n' "$total" "$MIN_COVERAGE"
 
 # Compare without bc: it is not installed everywhere, and a check that
 # silently no-ops on a runner missing a tool is worse than no check.
-if awk -v t="$total" -v m="$MIN_COVERAGE" 'BEGIN { exit (t >= m) ? 0 : 1 }'; then
+if [ -n "$SCOPE" ]; then
+  # Reported, not enforced (OR-425). The number is real for the packages that
+  # ran and meaningless as a tree-wide figure, so printing it helps a reader
+  # and gating on it would fail honest work.
+  echo "coverage floor not applied: this was a scoped run" \
+       "($(printf '%s' "$SCOPE" | wc -w | tr -d ' ') package(s));" \
+       "the batch's full run enforces it"
+elif awk -v t="$total" -v m="$MIN_COVERAGE" 'BEGIN { exit (t >= m) ? 0 : 1 }'; then
   echo "coverage floor met"
 else
   echo "coverage $total% is below the $MIN_COVERAGE% floor" >&2

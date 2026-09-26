@@ -14,6 +14,7 @@ import (
 
 	"github.com/orion-sdlc/orion/internal/advise"
 	"github.com/orion-sdlc/orion/internal/budget"
+	"github.com/orion-sdlc/orion/internal/claim"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
@@ -30,6 +31,7 @@ type fakeJira struct {
 	labelCalls  []string // "add:X remove:Y"
 	transitions []string
 	comments    []string
+	description string
 	// children maps a key to its sub-tasks. Nil in every existing test,
 	// which is the flat ticket the rest of this file describes.
 	children map[string][]tracker.Issue
@@ -72,6 +74,11 @@ func (f *fakeJira) TransitionTo(key, status string) error {
 func (f *fakeJira) Comment(key, text string) error {
 	f.comments = append(f.comments, text)
 	return nil
+}
+func (f *fakeJira) SetDescription(key, text string) (string, error) {
+	was := f.description
+	f.description = text
+	return was, nil
 }
 func (f *fakeJira) labelLog() string { return strings.Join(f.labelCalls, " | ") }
 
@@ -285,6 +292,51 @@ func TestSuccessfulRunClaimsRunsPushesAndHandsOffToCI(t *testing.T) {
 	}
 	if strings.Index(log, "orion-working") > strings.Index(log, "orion-ci-wait") {
 		t.Errorf("ci-wait was set before the claim: %s", log)
+	}
+}
+
+// OR-457: claim.Beat existed and had zero callers, so a claim's heartbeat
+// never advanced past the moment it was taken -- a run alive and working
+// past claim.staleAfter (2h) would have its claim read as dead by then,
+// though the fix here is a periodic call, not the two-hour wait itself.
+// Shrinks claimBeatEvery so the test observes a real tick rather than
+// waiting out the production interval.
+func TestARunningTicketsClaimIsBeatenWhileItWorks(t *testing.T) {
+	home := project(t, cfg)
+	j := &fakeJira{}
+	var out strings.Builder
+
+	orig := claimBeatEvery
+	claimBeatEvery = 20 * time.Millisecond
+	defer func() { claimBeatEvery = orig }()
+
+	var sawFreshBeat bool
+	res := Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(*workspace.Workspace, supervisor.Options) (*supervisor.Result, error) {
+				rec, err := claim.Read(home, "FCIA-6")
+				if err != nil || rec == nil {
+					t.Fatal("no claim recorded before the run started")
+				}
+				taken := rec.Beat
+				time.Sleep(10 * claimBeatEvery)
+				rec, err = claim.Read(home, "FCIA-6")
+				if err != nil || rec == nil {
+					t.Fatal("claim vanished mid-run")
+				}
+				sawFreshBeat = rec.Beat.After(taken)
+				return &supervisor.Result{ExitCode: 1, Reason: "stop here"}, nil
+			},
+			Push:   func(string, string) error { return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	if res[0].Outcome != OutcomeFailed {
+		t.Fatalf("outcome = %q", res[0].Outcome)
+	}
+	if !sawFreshBeat {
+		t.Error("claim.Beat was never called during the run -- the heartbeat never advanced past claim.Take's own timestamp")
 	}
 }
 

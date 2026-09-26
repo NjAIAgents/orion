@@ -46,6 +46,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
 	"github.com/orion-sdlc/orion/internal/registry"
+	"github.com/orion-sdlc/orion/internal/session"
 	"github.com/orion-sdlc/orion/internal/slack"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
@@ -186,6 +187,10 @@ type TrackerAPI interface {
 	AssignSelf(key string) error
 	TransitionTo(key, status string) error
 	Comment(key, text string) error
+	// SetDescription replaces an issue's description. Only called from the
+	// description-proposal path (OR-288/OR-431), and only via the approval
+	// gate in internal/collect -- never directly from an agent's output.
+	SetDescription(key, text string) (was string, err error)
 }
 
 // Options for one invocation.
@@ -218,6 +223,13 @@ func Run(opts Options, deps Deps) []Result {
 		opts.Home = workspace.Home()
 	}
 
+	// This process's liveness record (OR-52): opts.Keys is what this
+	// invocation of `orion work` has in scope, unlike watch's bare-run-covers-
+	// everything case. Start degrades to a no-op heartbeat on failure (its own
+	// doc comment).
+	sess := session.Start(opts.Home, session.KindWork, opts.Keys)
+	defer sess.Stop()
+
 	// A run of identical lines is held back to be printed once with its
 	// count, so the last such run needs somewhere to land. Without this the
 	// count for whatever a ticket ended on is never printed at all (OR-217).
@@ -225,6 +237,7 @@ func Run(opts Options, deps Deps) []Result {
 
 	var results []Result
 	for _, key := range opts.Keys {
+		sess.SetDoing(key)
 		r := one(strings.ToUpper(strings.TrimSpace(key)), opts, deps)
 		results = append(results, r)
 		// Stop the batch on a hard failure. Continuing would spend money on
@@ -253,6 +266,10 @@ func Run(opts Options, deps Deps) []Result {
 	}
 	return results
 }
+
+// claimBeatEvery is claim.BeatEvery, held in a variable so a test can shrink
+// it rather than waiting out the real one-minute interval.
+var claimBeatEvery = claim.BeatEvery
 
 // one works a single ticket.
 //
@@ -313,9 +330,10 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			"keeping the shipped agent names: %v", err)
 	}
 
+	run := fmt.Sprintf("%d", deps.Now().UnixNano())
 	log, logErr := events.Open(events.Path(ws.Dir), events.Event{
 		Project: registry.ProjectOf(key), Key: key,
-		Run: fmt.Sprintf("%d", deps.Now().UnixNano()), Actor: events.ActorOrion,
+		Run: run, Actor: events.ActorOrion,
 	})
 	if logErr == nil {
 		defer log.Close()
@@ -590,6 +608,19 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if err != nil {
 		return fail(res, err)
 	}
+	// WHERE the interrupted run stopped, not just WHICH BRANCH (OR-429).
+	//
+	// OR-265 kept the branch; the pipeline still re-entered at implementing,
+	// so a ticket interrupted during QA had its finished implementation
+	// re-implemented on top of itself. Read from the ticket's own stage
+	// boundaries, which are the pipeline's record of its own position.
+	//
+	// Empty for every run that is not a resume, and for a resume whose log
+	// says nothing usable -- a full run is always the safe reading.
+	var at resumePoint
+	if job.Resumed {
+		at = resumeAt(ws.Dir, key)
+	}
 	if job.Resumed {
 		ui.Say(w, key, events.ActorOrion, ui.VerbOK,
 			"resumed %s, where the interrupted run stopped", job.Branch)
@@ -612,6 +643,29 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if err := claim.Take(opts.Home, key, job.Branch, job.Path); err != nil {
 		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not record the claim: %v", err)
 	}
+	// OR-457: claim.Beat existed, was documented as "cheap enough to call on
+	// every tick", and had zero callers anywhere. Dead's own staleness check
+	// (time.Since(r.Beat) < staleAfter) degenerated into "has this job run
+	// longer than two hours" rather than "has the heartbeat gone stale" --
+	// so a run still alive and working past that point would have its claim
+	// read as dead and its ticket started a second time. Started here and
+	// stopped when this ticket's run ends, however it ends, so the whole of
+	// one() -- including a resumed run after an advisory consult -- stays
+	// covered by one ticker rather than one per Supervise call.
+	stopBeat := make(chan struct{})
+	defer close(stopBeat)
+	go func() {
+		t := time.NewTicker(claimBeatEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				_ = claim.Beat(opts.Home, key)
+			case <-stopBeat:
+				return
+			}
+		}
+	}()
 	// Attribution hooks live in the sandbox CLONE, not in the worktree and
 	// not in the user's checkout. Before this, the clone was never
 	// instrumented, so every commit an agent made carried no AI-Attribution
@@ -698,34 +752,66 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	handoff(w, log, deps, opts, ui.Handoff{Key: key, From: "routing", To: "implementing",
 		By: events.ActorOrion, Next: actorID, Detail: "on " + job.Branch})
 
-	log.Emitf(events.KindRunStart, actorID, "implementing %s", key)
-	stTitle, stBody := msgStarted(key, issue.Summary, job.Branch, issue.URL)
-	tell(w, log, ws, notify.Event{
-		Key: key, Level: notify.Info, Workspace: ws.ID, Actor: actorID,
-		Title: stTitle, Body: stBody,
-	})
+	// THE IMPLEMENTER IS SKIPPED WHEN IT HAS ALREADY FINISHED (OR-429).
+	//
+	// Only the model call is skipped, and nothing downstream of it. The
+	// commit count below is read from the BRANCH (commitsOn), not from the
+	// run, so it is already correct for resumed work; QA reads the tree the
+	// same way it always does. Skipping the whole block instead would be a
+	// far larger diff for no more benefit and several more ways to be wrong.
+	//
+	// runRes stays nil, which every path below already tolerates -- it has
+	// to, because a Supervise that fails returns nil too. The cost is a fix
+	// round starting a cold session instead of resuming the implementer's
+	// (dba.go passes ImplSession as Resume, and supervisor skips --resume
+	// when it is empty): the agent re-reads the tree rather than recalling
+	// the conversation, which is slower and not wrong.
+	if at.Stage != "" {
+		ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+			"skipping implementation: %s. Its commits are on %s, and %s picks up from there",
+			at.Why, job.Branch, at.Stage)
+		log.Emitf(events.KindNote, events.ActorOrion,
+			"resumed at %s rather than re-implementing (OR-429)", at.Stage)
+	} else {
+		log.Emitf(events.KindRunStart, actorID, "implementing %s", key)
+		stTitle, stBody := msgStarted(key, issue.Summary, job.Branch, issue.URL)
+		tell(w, log, ws, notify.Event{
+			Key: key, Level: notify.Info, Workspace: ws.ID, Actor: actorID,
+			Title: stTitle, Body: stBody,
+		})
+	}
 
-	runRes, runErr := deps.Supervise(&jobWS, supervisor.Options{
-		Stage: "ticket", Prompt: prompt,
-		// The roster's own model and effort, not the operator's CLI defaults.
-		// Empty stays empty: the banner above reports what the registry says
-		// ran, and a run configured from anywhere else would make that line
-		// a claim about a different agent (OR-133).
-		Model:      actors.Model(actorID),
-		Effort:     actors.Effort(actorID),
-		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
-		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
-		OnActivity: ActivityLogger(log, w, key, actorID),
-		Actor:      actorID, Key: key,
-	})
+	var runRes *supervisor.Result
+	var runErr error
+	if at.Stage == "" {
+		runRes, runErr = deps.Supervise(&jobWS, supervisor.Options{
+			Stage: "ticket", Prompt: prompt,
+			// The roster's own model and effort, not the operator's CLI defaults.
+			// Empty stays empty: the banner above reports what the registry says
+			// ran, and a run configured from anywhere else would make that line
+			// a claim about a different agent (OR-133).
+			Model:      actors.Model(actorID),
+			Effort:     actors.Effort(actorID),
+			MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
+			MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
+			OnActivity: ActivityLogger(log, w, key, actorID),
+			Actor:      actorID, Key: key, Run: run,
+		})
+	}
 	code := -1
 	if runRes != nil {
 		code = runRes.ExitCode
 		res.LogPath = runRes.LogPath
 	}
-	log.Emit(events.Event{Kind: events.KindRunEnd, Actor: actorID,
-		Msg:    fmt.Sprintf("exit %d", code),
-		Detail: map[string]any{"reason": reasonOf(runRes)}})
+	// No run, no run-end. A skipped implementer never started, and recording
+	// "exit -1" for it would put a failure in the log for work that was
+	// deliberately not done -- indistinguishable, later, from an implementer
+	// that crashed (OR-429).
+	if at.Stage == "" {
+		log.Emit(events.Event{Kind: events.KindRunEnd, Actor: actorID,
+			Msg:    fmt.Sprintf("exit %d", code),
+			Detail: map[string]any{"reason": reasonOf(runRes)}})
+	}
 
 	// Carry the plan's own verdict out of the run. This is what replaced
 	// budget.weekly_tokens: the CLI reports the real limit on every run, so
@@ -775,6 +861,14 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		if why, ok := noopDeclared(tailOf(runRes)); ok {
 			return noChange(res, key, actorID, why, cfg, opts, deps, ws, log, w)
 		}
+		// A drafted description is a DECISION for a human, not a question for
+		// the advisor (OR-288/OR-431). Routing it to an architect would pay
+		// for an answer nobody asked for and then block the ticket on a reply
+		// to a question that was never open -- the proposal already IS the
+		// answer, waiting on approval rather than on advice.
+		if proposed, ok := descProposalDeclared(tailOf(runRes)); ok {
+			return descProposed(res, key, actorID, proposed, deps, ws, log, w)
+		}
 	}
 
 	// The advisor loop. This is the automation of carrying a question to the
@@ -783,7 +877,12 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// It only engages when the run produced NOTHING and said something --
 	// which is what "stopped to ask" looks like from outside. A run that
 	// committed and also mused about an alternative is finished, not blocked.
-	for round := 1; commits == 0 && strings.TrimSpace(runRes.Final) != "" &&
+	// runRes != nil FIRST, and not merely for tidiness. A skipped implementer
+	// (OR-429) leaves it nil, and while commits == 0 short-circuits for the
+	// ordinary resume -- the branch has the commits its earlier run made --
+	// a resumed branch that somehow has none would reach runRes.Final and
+	// panic. Nil-checked rather than argued about.
+	for round := 1; commits == 0 && runRes != nil && strings.TrimSpace(runRes.Final) != "" &&
 		round <= maxQuestions && deps.Advise != nil; round++ {
 
 		question := strings.TrimSpace(runRes.Final)
@@ -840,7 +939,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 			MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
 			OnActivity: ActivityLogger(log, w, key, actorID),
-			Actor:      actorID, Key: key,
+			Actor:      actorID, Key: key, Run: run,
 		})
 		if f, env := faultOf(runRes); env {
 			return held(res, key, f, job, true, cfg, opts, deps, ws, log, w)
@@ -939,7 +1038,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	dbaWork := dbaJob{
 		Key: key, Summary: issue.Summary, Description: issue.Description,
 		Fields:      routeFields(*issue),
-		ImplSession: runRes.SessionID, Actor: actorID, WS: &jobWS,
+		ImplSession: sessionOf(runRes), Actor: actorID, WS: &jobWS,
 		MaxMinutes: minutesFor(opts.MaxMinutes, len(children)),
 		MaxTurns:   turnsFor(opts.MaxTurns, len(children)),
 		BaseSHA:    baseSHA,
@@ -954,7 +1053,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		By: actorID, Next: firstActor,
 		Detail: fmt.Sprintf("%d commit(s) on %s", commits, job.Branch)})
 
-	implSession := runRes.SessionID
+	implSession := sessionOf(runRes)
 	if reviewData {
 		out := runDBA(dbaWork, sigs, cfg, opts, deps, log, w)
 		// A schema fix round resumed the developer and moved its session on.
@@ -1179,18 +1278,33 @@ func branchFor(prefix, key string) string {
 	return prefix + strings.ToLower(key)
 }
 
-// commitsOn counts IMPLEMENTATION commits: those touching anything outside
-// docs/decisions.
+// decisionCommitGrep matches CommitDecision's own subject lines exactly
+// (see decisions.go) -- "record the <role> decision" / "record an
+// unanswered question" -- so only the advisor loop's own bookkeeping
+// commits are excluded, never a ticket's real work.
+const decisionCommitGrep = `^docs\([^)]*\): record (the .+ decision|an unanswered question)$`
+
+// commitsOn counts IMPLEMENTATION commits: those that are not one of the
+// advisor loop's own decision-record commits.
 //
-// Excluding the decision records is not tidiness. Orion commits one per
-// question, so an agent that only ever asks produces five commits and no
-// code -- and a plain count would read that as work, push it, and open a
-// pull request whose entire content is a record of not having decided
-// anything. Caught by TestTheAdvisorLoopIsCapped.
+// Excluding those is not tidiness. Orion commits one per question, so an
+// agent that only ever asks produces five commits and no code -- and a
+// plain count would read that as work, push it, and open a pull request
+// whose entire content is a record of not having decided anything. Caught
+// by TestTheAdvisorLoopIsCapped.
+//
+// Matched by commit SUBJECT, not by path (OR-329): excluding the whole
+// docs/decisions/ path made any commit that only touched that directory
+// invisible to this count, even when the commit was real, ticket-assigned
+// work rather than the advisor loop's bookkeeping -- so a run that wrote
+// and committed its artifact there read as commits == 0, got routed to
+// noChange, and closed Done with the work stranded, unpushed, in the
+// worktree.
 func commitsOn(dir, base string) (int, error) {
 	args := func(ref string) []string {
-		return []string{"-C", dir, "rev-list", "--count", ref + "..HEAD",
-			"--", ".", ":(exclude)docs/decisions"}
+		return []string{"-C", dir, "rev-list", "--count",
+			"--invert-grep", "--extended-regexp", "--grep=" + decisionCommitGrep,
+			ref + "..HEAD"}
 	}
 	out, err := exec.Command("git", args("origin/"+base)...).CombinedOutput()
 	if err != nil {

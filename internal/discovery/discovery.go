@@ -15,9 +15,9 @@
 package discovery
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strings"
@@ -40,6 +40,15 @@ type Question struct {
 	// Markers are the lines carrying a marker for this same question,
 	// when the question is a bullet. Answered together with it.
 	Markers []int
+
+	// fromMarker records which loop created this Question -- the marker
+	// scan or the bullet scan -- so merge() can tell them apart directly.
+	// A line-based heuristic (marker's line has no bullet on it) breaks
+	// the instant a marker and its bullet share one physical line (a
+	// single-line "- [x] [NEEDS CLARIFICATION: ...]" with no
+	// continuation), which is legal input the heuristic was never safe
+	// against.
+	fromMarker bool
 }
 
 // idRe is the identifier a question may open with. Letters, an optional
@@ -59,9 +68,6 @@ type Assessment struct {
 	Found     bool
 	Questions []Question
 	Open      int
-
-	markerLines map[int]bool
-	bulletLines map[int]bool
 }
 
 // Ready reports whether the chain may proceed past intent.
@@ -99,7 +105,7 @@ func Assess(path string) Assessment { return assess(path, false) }
 func AssessSpec(path string) Assessment { return assess(path, true) }
 
 func assess(path string, markers bool) Assessment {
-	a := Assessment{Path: path, markerLines: map[int]bool{}, bulletLines: map[int]bool{}}
+	a := Assessment{Path: path}
 	f, err := os.Open(path)
 	if err != nil {
 		return a
@@ -107,14 +113,23 @@ func assess(path string, markers bool) Assessment {
 	defer f.Close()
 	a.Found = true
 
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	// Read every line up front, not scanned one at a time, so a bullet's
+	// SOFT-WRAPPED CONTINUATION LINES (OR-444) can be looked ahead at and
+	// joined into one Question.Text -- a plain forward-only Scanner cannot
+	// look ahead without consuming, and consuming without a plan for what
+	// was consumed is how a question's own continuation lines silently
+	// vanished. Bounded the same way the old scanner's buffer was: no
+	// intent or spec file approaches this size.
+	lines, err := readLines(f, 1<<20)
+	if err != nil {
+		return a
+	}
+
 	inSection := false
 	inFence := false
-	n := 0
-	for sc.Scan() {
-		line := sc.Text()
-		n++
+	for i := 0; i < len(lines); i++ {
+		n := i + 1 // 1-based, matching every Question.Line elsewhere
+		line := lines[i]
 
 		if markers {
 			if strings.HasPrefix(strings.TrimSpace(line), "```") {
@@ -131,8 +146,7 @@ func assess(path string, markers bool) Assessment {
 					if text == "" {
 						continue
 					}
-					a.Questions = append(a.Questions, Question{Text: text, Line: n, ID: questionID(text)})
-					a.markerLines[n] = true
+					a.Questions = append(a.Questions, Question{Text: text, Line: n, ID: questionID(text), fromMarker: true})
 					a.Open++
 				}
 			}
@@ -172,12 +186,27 @@ func assess(path string, markers bool) Assessment {
 		} else if len(text) > 3 && strings.HasPrefix(strings.ToLower(text), "[x]") {
 			text = strings.TrimSpace(text[3:])
 		}
-		q := Question{Text: text, Answered: answeredRe.MatchString(line), Line: n, ID: questionID(text)}
-		a.bulletLines[n] = true
+		answered := answeredRe.MatchString(line)
+
+		// Absorb this bullet's continuation lines through the ONE shared
+		// helper Answer also calls (bulletContinuationEnd): the two must
+		// agree on where a bullet ends, or the parsed text here and the
+		// place Answer later inserts "Answer: ..." could disagree about
+		// what the bullet actually contains.
+		k := bulletContinuationEnd(lines, i+1)
+		text = joinContinuation(text, lines, i+1, k)
+
+		q := Question{Text: text, Answered: answered, Line: n, ID: questionID(text)}
 		if !q.Answered {
 			a.Open++
 		}
 		a.Questions = append(a.Questions, q)
+		// Resume the outer scan after the continuation lines just consumed:
+		// they belong to this bullet's text, not to a fresh top-of-loop
+		// check (a marker inside a continuation line is not a real gap --
+		// this bullet already carries its own [NEEDS CLARIFICATION:...] as
+		// prose within Text, not as a second, separate question).
+		i = k - 1
 	}
 	if markers {
 		a.merge()
@@ -185,19 +214,83 @@ func assess(path string, markers bool) Assessment {
 	return a
 }
 
-// merge folds a marker and a bullet that ask the same question -- same
-// identifier, or the same text -- into one: the bullet, which is where a
-// person answers, carrying the marker's line so the answer reaches both.
-// A marker with no bullet stays a question of its own, answered only by
-// removal. Open is recounted from what survives.
+// readLines splits r into lines, bounded to max bytes total -- the same
+// ceiling bufio.Scanner's own buffer used to enforce per line, applied here
+// to the whole file since assess() now needs every line addressable by
+// index rather than streamed one at a time.
+func readLines(r io.Reader, max int64) ([]string, error) {
+	b, err := io.ReadAll(io.LimitReader(r, max))
+	if err != nil {
+		return nil, err
+	}
+	return strings.Split(string(b), "\n"), nil
+}
+
+// bulletContinuationEnd returns the 0-based index just past a bullet's own
+// soft-wrapped continuation lines, given from (0-based) the line right
+// after the bullet itself.
+//
+// THE ONE PLACE THIS RULE IS STATED (OR-444). assess() (parsing a bullet's
+// full Question.Text) and Answer() (finding where to insert "Answer: ...")
+// both need to agree, byte for byte, on where a bullet ends -- two
+// independent copies of "indented, non-blank, not itself a bullet" already
+// diverged once before this existed, which is exactly the kind of bug that
+// looks fixed until the next edit touches only one copy.
+//
+// A continuation line is indented at or past the bullet's own content
+// column, non-blank, and not itself a bullet -- CommonMark's own soft-wrap
+// rule for a list item.
+func bulletContinuationEnd(lines []string, from int) int {
+	k := from
+	for k < len(lines) {
+		l := lines[k]
+		if strings.TrimSpace(l) == "" || bulletRe.MatchString(l) ||
+			!(strings.HasPrefix(l, " ") || strings.HasPrefix(l, "\t")) {
+			break
+		}
+		k++
+	}
+	return k
+}
+
+// joinContinuation appends lines[from:to], trimmed, onto first -- the
+// bullet's own first-line text plus every soft-wrapped continuation line
+// that follows it, as one string.
+func joinContinuation(first string, lines []string, from, to int) string {
+	var b strings.Builder
+	b.WriteString(first)
+	for _, l := range lines[from:to] {
+		b.WriteByte(' ')
+		b.WriteString(strings.TrimSpace(l))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// merge folds a marker and a bullet that ask the same question -- the same
+// physical line, the same identifier, or the same text -- into one: the
+// bullet, which is where a person answers, carrying the marker's line so
+// the answer reaches both. A marker with no bullet stays a question of its
+// own, answered only by removal. Open is recounted from what survives.
+//
+// A single-line "- [x] [NEEDS CLARIFICATION: ...]" (no continuation lines)
+// is where ID/text keying alone used to fail: markerRe only ever matches
+// within one physical line, so a multi-line marker (every existing example
+// before this) never produces a marker-born Question at all, and the
+// bullet is the only entry. A single-line marker DOES produce both a
+// marker-born and a bullet-born Question -- and their captured text
+// differs (the marker's is just the bracket's contents, the bullet's is
+// the whole line) so ID/text keying alone does not reliably fold them.
+// Same line number is unambiguous: nothing else can share it.
 func (a *Assessment) merge() {
 	var bullets []*Question
 	byKey := map[string]*Question{}
+	byLine := map[int]*Question{}
 	for i := range a.Questions {
 		q := &a.Questions[i]
-		if len(q.Markers) == 0 && q.Line > 0 && !isMarkerQuestion(a, q) {
+		if len(q.Markers) == 0 && q.Line > 0 && !isMarkerQuestion(q) {
 			bullets = append(bullets, q)
 			byKey[keyOf(*q)] = q
+			byLine[q.Line] = q
 		}
 	}
 	if len(bullets) == 0 {
@@ -205,7 +298,11 @@ func (a *Assessment) merge() {
 	}
 	var kept []Question
 	for _, q := range a.Questions {
-		if isMarkerQuestion(a, &q) {
+		if isMarkerQuestion(&q) {
+			if b, ok := byLine[q.Line]; ok {
+				b.Markers = append(b.Markers, q.Line)
+				continue
+			}
 			if b, ok := byKey[keyOf(q)]; ok {
 				b.Markers = append(b.Markers, q.Line)
 				continue
@@ -232,11 +329,12 @@ func (a *Assessment) merge() {
 	}
 }
 
-// isMarkerQuestion tells a marker-born question from a bullet-born one by
-// where it sits: bullets live under the Open questions heading, markers
-// anywhere else. Recorded during the scan rather than inferred.
-func isMarkerQuestion(a *Assessment, q *Question) bool {
-	return a.markerLines[q.Line] && !a.bulletLines[q.Line]
+// isMarkerQuestion tells a marker-born question from a bullet-born one.
+// Recorded directly at scan time (Question.fromMarker) rather than
+// inferred from line position, which breaks when a marker and its bullet
+// checkbox share one physical line.
+func isMarkerQuestion(q *Question) bool {
+	return q.fromMarker
 }
 
 func keyOf(q Question) string {
@@ -369,6 +467,13 @@ func Answer(path string, q Question, text string) error {
 	m := bulletRe.FindStringSubmatch(line)
 	body := strings.TrimSpace(m1(m))
 	body = strings.TrimSpace(strings.TrimPrefix(body, "[ ]"))
+	// j is the shared boundary (bulletContinuationEnd, OR-444): assess()
+	// parses Question.Text as this same first line joined with these same
+	// continuation lines, so the comparison below must join them the same
+	// way rather than compare only the first line against a Text that may
+	// now span several.
+	j := bulletContinuationEnd(lines, i+1)
+	body = joinContinuation(body, lines, i+1, j)
 	if m == nil || body != q.Text && !strings.HasPrefix(body, q.Text) {
 		return fmt.Errorf("line %d of %s is no longer the question %q", q.Line, path, q.Text)
 	}
@@ -378,16 +483,6 @@ func Answer(path string, q Question, text string) error {
 	case !strings.HasPrefix(strings.ToLower(strings.TrimSpace(m[1])), "[x]"):
 		k := strings.IndexAny(line, "-*+")
 		lines[i] = line[:k+1] + " [x]" + line[k+1:]
-	}
-	// Past the bullet's own continuation lines: indented, non-empty, not
-	// a bullet themselves.
-	j := i + 1
-	for j < len(lines) {
-		l := lines[j]
-		if strings.TrimSpace(l) == "" || bulletRe.MatchString(l) || !(strings.HasPrefix(l, " ") || strings.HasPrefix(l, "\t")) {
-			break
-		}
-		j++
 	}
 	indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))] + "  "
 	lines = append(lines[:j], append([]string{indent + "Answer: " + text}, lines[j:]...)...)

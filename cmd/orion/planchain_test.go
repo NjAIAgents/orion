@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/provision"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
@@ -28,6 +29,27 @@ func chainWS(t *testing.T) *workspace.Workspace {
 	if err := os.MkdirAll(w.MetaDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	return w
+}
+
+// chainWSWithRepo is chainWS plus a real (if minimal) git repository at
+// RepoDir -- for any test that runs the chain for real via runPlanChain,
+// where toolkitStep's Frame is not stubbed the way okRun replaces
+// supervised stages and now (OR-451) writes orion.json directly into
+// RepoDir, then stages what specify init wrote.
+//
+// A SEPARATE helper from chainWS itself, deliberately: at least one test
+// (the failed-clone one) relies on chainWS's own repo dir having no .git,
+// and changing chainWS under all 29 of its call sites risked breaking that
+// premise along with anything else quietly depending on it.
+func chainWSWithRepo(t *testing.T) *workspace.Workspace {
+	t.Helper()
+	skipWithoutSpecify(t)
+	w := chainWS(t)
+	if err := os.MkdirAll(w.RepoDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, w.RepoDir(), "init", "-q")
 	return w
 }
 
@@ -65,7 +87,7 @@ func TestTheChainRunsEveryStageInRosterOrder(t *testing.T) {
 	var order []string
 	var out bytes.Buffer
 
-	done := runPlanChain(&out, chainWS(t), okRun(&order), yes)
+	done := runPlanChain(&out, chainWSWithRepo(t), okRun(&order), yes)
 
 	if done != len(planStages) {
 		t.Fatalf("completed %d of %d stages:\n%s", done, len(planStages), out.String())
@@ -94,19 +116,22 @@ func TestDecliningTheNextStageStopsTheChain(t *testing.T) {
 	asked := 0
 	ask := func(string) bool { asked++; return asked < 2 }
 
-	runPlanChain(&out, chainWS(t), okRun(&order), ask)
+	runPlanChain(&out, chainWSWithRepo(t), okRun(&order), ask)
 
-	// intent runs unasked (first to run), constitution on the first yes,
-	// spec is declined. Named rather than counted, because done frame steps ahead
-	// of intent are skipped and would shift any index.
-	if strings.Join(order, ",") != "intent,constitution" {
-		t.Errorf("ran %v; want intent then constitution, and the declined spec must not run", order)
+	// toolkit runs unasked (first to run, and it is a real step now that
+	// it writes orion.json, OR-451 -- previously invisible-done on a fresh
+	// workspace with nothing to delegate to spec-kit). intent is asked on
+	// the first yes, constitution is declined on the second. Named rather
+	// than counted, because done frame steps ahead of intent are skipped
+	// and would shift any index.
+	if strings.Join(order, ",") != "intent" {
+		t.Errorf("ran %v; want only intent, and the declined constitution must not run", order)
 	}
 	if !strings.Contains(out.String(), "at your request") {
 		t.Errorf("a declined chain must say it stopped deliberately:\n%s", out.String())
 	}
 	// Naming the stage it stopped BEFORE is what makes it resumable.
-	if !strings.Contains(out.String(), "--stage spec") {
+	if !strings.Contains(out.String(), "--stage constitution") {
 		t.Errorf("output does not name the resume command:\n%s", out.String())
 	}
 }
@@ -128,7 +153,7 @@ func TestAStageThatFailsStopsTheChainAndNamesTheFix(t *testing.T) {
 		return &supervisor.Result{ExitCode: 0, Duration: time.Second}, nil
 	}
 
-	done := runPlanChain(&out, chainWS(t), run, yes)
+	done := runPlanChain(&out, chainWSWithRepo(t), run, yes)
 
 	// intent and constitution run and succeed; spec blocks. So everything
 	// before spec completed, plus any done frame step ahead of it, and
@@ -162,11 +187,28 @@ func TestTheFirstStageIsNotAskedAboutTwice(t *testing.T) {
 	var out bytes.Buffer
 	asked := 0
 
+	// One workspace for both halves of this test: the real chain run and the
+	// "which steps count as done before we start" check below must agree on
+	// the SAME filesystem state, or a step whose Done depends on something
+	// an earlier step just wrote (toolkitStep writes orion.json; toolkitDone
+	// reads it, OR-451) would compute against a workspace the run never
+	// touched.
+	w := chainWSWithRepo(t)
+
+	// Snapshot which steps are already done BEFORE the chain runs anything
+	// -- this is what "skipped, not asked about" actually means.
+	runs := 0
+	for _, s := range planStages {
+		if s.Done == nil || !s.Done(w) {
+			runs++
+		}
+	}
+
 	// Only the chain's own "Continue to ...?" prompts: a frame step may ask
 	// its own question before an outward action (the remote confirms before
 	// creating a repository), and that is a second, deliberate confirmation,
 	// not the chain asking twice.
-	runPlanChain(&out, chainWS(t), okRun(&order), func(q string) bool {
+	runPlanChain(&out, w, okRun(&order), func(q string) bool {
 		if strings.HasPrefix(q, "Continue to") {
 			asked++
 		}
@@ -176,13 +218,6 @@ func TestTheFirstStageIsNotAskedAboutTwice(t *testing.T) {
 	// One per step that runs, except the first that runs: a done step is
 	// skipped, not asked about (the toolkit is done when nothing delegates
 	// to spec-kit; the clone when no copy was asked for), wherever it sits.
-	w := chainWS(t)
-	runs := 0
-	for _, s := range planStages {
-		if s.Done == nil || !s.Done(w) {
-			runs++
-		}
-	}
 	if want := runs - 1; asked != want {
 		t.Errorf("asked %d times, want %d -- one per step that runs, after the first", asked, want)
 	}
@@ -416,7 +451,7 @@ func TestAFreshWorkspaceIsDoneAtNoSupervisedStage(t *testing.T) {
 // chain never tries to create the repository twice.
 func TestTheRemoteStepIsDoneOnceTheTaskRecordsARemote(t *testing.T) {
 	calls := fakeRemote(t)
-	w := chainWS(t)
+	w := chainWSWithRepo(t)
 	w.Task.Remote = "git@github.com:test/cloudlens.git"
 	var out bytes.Buffer
 	var ran []string
@@ -436,7 +471,7 @@ func TestTheRemoteStepIsDoneOnceTheTaskRecordsARemote(t *testing.T) {
 // tickets -- and the refusal is the operator's own answer, not a failure.
 func TestDecliningTheRemoteStopsTheChainBeforeDecompose(t *testing.T) {
 	fakeRemote(t)
-	w := chainWS(t)
+	w := chainWSWithRepo(t)
 	var out bytes.Buffer
 	var ran []string
 	ask := func(q string) bool { return !strings.Contains(q, "create?") }
@@ -463,7 +498,7 @@ func TestDecliningTheRemoteStopsTheChainBeforeDecompose(t *testing.T) {
 // resume's Done reads and what `orion watch` pushes to.
 func TestTheRemoteStepRecordsTheURLItMade(t *testing.T) {
 	calls := fakeRemote(t)
-	w := chainWS(t)
+	w := chainWSWithRepo(t)
 	var out bytes.Buffer
 	var ran []string
 
@@ -486,11 +521,31 @@ func TestTheRemoteStepRecordsTheURLItMade(t *testing.T) {
 	}
 }
 
+// OR-455: orion init calls ensureRepoSettings (delete_branch_on_merge)
+// right after adopting a remote; remoteStep never did, so a repo created
+// via the plan chain accumulated merged head branches forever.
+func TestTheRemoteStepEnsuresRepoSettings(t *testing.T) {
+	fakeRemote(t)
+	w := chainWSWithRepo(t)
+
+	calls := 0
+	orig := ensureRepoSettingsFn
+	ensureRepoSettingsFn = func(dir string) { calls++ }
+	t.Cleanup(func() { ensureRepoSettingsFn = orig })
+
+	if err := remoteStep(&stepIO{Out: &strings.Builder{}, Confirm: yes}, w); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Errorf("ensureRepoSettings was called %d times, want exactly once", calls)
+	}
+}
+
 // No copy asked for is a complete answer, so the clone step is done before
 // it starts and the chain still ends.
 func TestTheCloneStepIsDoneWhenNoCopyWasAskedFor(t *testing.T) {
 	fakeRemote(t)
-	w := chainWS(t)
+	w := chainWSWithRepo(t)
 	var out bytes.Buffer
 	var ran []string
 
@@ -526,7 +581,13 @@ func TestTheCloneStepIsDoneWhenTheCopyAlreadyExists(t *testing.T) {
 // not the run. The chain still ends, and the retry is named.
 func TestAFailedCloneDoesNotFailTheChain(t *testing.T) {
 	fakeRemote(t)
-	w := chainWS(t) // its repo dir has no .git, so the clone refuses
+	w := chainWSWithRepo(t)
+	// An unreachable remote is what makes THIS clone fail now that RepoDir
+	// is a real git repo (toolkitStep needs one, OR-451, and cloneSource
+	// prefers Task.Remote over the local sandbox whenever it is set) --
+	// the clone step failing is what this test is actually about, not
+	// which specific reason it failed for.
+	w.Task.Remote = "https://example.invalid/does/not/exist.git"
 	w.Task.CheckoutPath = filepath.Join(t.TempDir(), "mine")
 	var out bytes.Buffer
 	var ran []string
@@ -586,13 +647,25 @@ func TestPlanFromIndexRejectsAnUnknownStepAndListsThem(t *testing.T) {
 // The toolkit step has nothing to do for a project that delegates nothing to
 // spec-kit -- the chain tests' workspaces are such projects -- and is done
 // for a spec-kit project once .specify/ is there and the preset is composed.
+//
+// A project with no orion.json at all is NEVER reported done (OR-451): the
+// step is what writes that file from the canonical template, so treating
+// its absence as "done" would skip the one thing the step exists to do,
+// exactly the bug found on a real project.
 func TestTheToolkitStepIsDoneWhenNothingDelegatesToSpecKitOrItIsInstalled(t *testing.T) {
 	w := chainWS(t)
-	if !toolkitDone(w) {
-		t.Error("a project with no spec-kit stages is not reported done")
-	}
 	if err := os.MkdirAll(w.RepoDir(), 0o755); err != nil {
 		t.Fatal(err)
+	}
+	if toolkitDone(w) {
+		t.Error("a project with no orion.json at all is reported done -- that file is what this step writes")
+	}
+	if err := os.WriteFile(filepath.Join(w.RepoDir(), "orion.json"),
+		[]byte(`{"toolkit":{"stages":{}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !toolkitDone(w) {
+		t.Error("a project with orion.json but no spec-kit stages is not reported done")
 	}
 	if err := os.WriteFile(filepath.Join(w.RepoDir(), "orion.json"),
 		[]byte(`{"toolkit":{"stages":{"spec":"/speckit-specify"}}}`), 0o644); err != nil {
@@ -674,7 +747,15 @@ func TestChainLinesCarryTheOutcomeIcon(t *testing.T) {
 		}
 		return &supervisor.Result{ExitCode: 0, Duration: time.Second}, nil
 	}
-	runPlanChain(&out, chainWS(t), run, yes)
+	// orion.json pre-exists, so toolkit is genuinely done (nothing
+	// delegates to spec-kit here) rather than a real step this run has to
+	// execute (OR-451) -- this test needs one naturally SKIPPED step to
+	// exercise the "= done" icon, and toolkit is it.
+	w := chainWSWithRepo(t)
+	if err := os.WriteFile(filepath.Join(w.RepoDir(), "orion.json"), []byte(`{"version":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runPlanChain(&out, w, run, yes)
 	got := out.String()
 	ok, fail := ui.Icon(&out, ui.VerbOK), ui.Icon(&out, ui.VerbFail)
 	if !strings.Contains(got, ok+"= done") {
@@ -689,7 +770,7 @@ func TestChainLinesCarryTheOutcomeIcon(t *testing.T) {
 
 	out.Reset()
 	asked := 0
-	runPlanChain(&out, chainWS(t), okRun(new([]string)), func(string) bool { asked++; return asked < 2 })
+	runPlanChain(&out, chainWSWithRepo(t), okRun(new([]string)), func(string) bool { asked++; return asked < 2 })
 	if !strings.Contains(out.String(), ui.Icon(&out, "pending")+"stopped") {
 		t.Errorf("a stop at the operator's request lacks the pending icon:\n%s", out.String())
 	}
@@ -904,6 +985,22 @@ func mustGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
+// skipWithoutSpecify skips a test that runs the toolkit step for real
+// (chainWSWithRepo callers) when the specify CLI is not on PATH.
+// provision.InitSpecKit calls it unconditionally whenever .specify/ does
+// not already exist in the target directory, regardless of whether
+// orion.json's toolkit config actually delegates anything to spec-kit
+// (OR-451 found this to be pre-existing behavior, not something the fix
+// introduced) -- so any test exercising a fresh workspace's real toolkit
+// step needs the binary present, the same posture mustGit already takes
+// for git.
+func skipWithoutSpecify(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("specify"); err != nil {
+		t.Skip("specify CLI not on PATH; toolkitStep cannot run for real without it")
+	}
+}
+
 // The copy usually lands at <recorded path>/<id>, because the path someone
 // gives is the folder they keep code in. A Done that looked only at the
 // recorded path would report the step unfinished forever and clone again
@@ -971,5 +1068,197 @@ func TestAProjectWithNoCopyIsStillRegistered(t *testing.T) {
 	f, _ := registry.Load(home)
 	if _, ok := f.Repos["CLOUDLEN"]; !ok {
 		t.Errorf("a sandbox-only project was not registered: %v", f.Keys())
+	}
+}
+
+// toolkitStep is where orion.json actually gets written (OR-451): a project
+// scaffolded by orion new/plan never called adopt.Run at all, so nothing
+// wrote the canonical config before constitution needed to read its gates.
+// Found live: the scaffold stage's own agent invented an incomplete
+// orion.json from its own judgment instead, missing the slack section
+// entirely.
+func TestTheToolkitStepWritesOrionJSONFromTheCanonicalTemplate(t *testing.T) {
+	w := chainWSWithRepo(t)
+	var out strings.Builder
+	if err := toolkitStep(&stepIO{Out: &out}, w); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(w.RepoDir(), "orion.json"))
+	if err != nil {
+		t.Fatalf("orion.json was not written: %v", err)
+	}
+	if !strings.Contains(string(b), `"slack"`) {
+		t.Error("orion.json is missing the slack section -- not the canonical template")
+	}
+	if !strings.Contains(string(b), `"require_plan_before_edit": true`) {
+		t.Error("a project scaffolded from cold start should get require_plan_before_edit true")
+	}
+}
+
+// OR-453: orion init's ensureCI never had a plan-chain equivalent, so a
+// project scaffolded via `orion new`/`orion plan` reached its first
+// supervised stage with no scripts/test.sh and no CI workflow -- nothing
+// for a merge to gate on unless the scaffold agent improvised one.
+func TestTheToolkitStepScaffoldsCI(t *testing.T) {
+	w := chainWSWithRepo(t)
+	var out strings.Builder
+	if err := toolkitStep(&stepIO{Out: &out}, w); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(w.RepoDir(), "scripts", "test.sh")); err != nil {
+		t.Errorf("scripts/test.sh was not scaffolded: %v", err)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(w.RepoDir(), ".github", "workflows", "*.yml")); len(matches) == 0 {
+		t.Error("no CI workflow was scaffolded under .github/workflows")
+	}
+}
+
+// OR-454: orion init's EnsureDun instruments the repo it adopts, but
+// nothing in the plan chain ever called it, so commits the chain itself
+// makes into a project scaffolded by `orion new`/`orion plan` carried no
+// attribution trailer.
+func TestTheToolkitStepInstrumentsAttribution(t *testing.T) {
+	if _, err := exec.LookPath("dun"); err != nil {
+		t.Skip("dun not on PATH; toolkitStep cannot instrument it for real without it")
+	}
+	w := chainWSWithRepo(t)
+	var out strings.Builder
+	if err := toolkitStep(&stepIO{Out: &out}, w); err != nil {
+		t.Fatal(err)
+	}
+	if !adopt.DunLook(w.RepoDir()).Instrumented {
+		t.Error("repo is not instrumented with dun after toolkitStep, though dun is on PATH")
+	}
+}
+
+// A project that already has an orion.json -- from a resume, or a person
+// who wrote one by hand -- keeps it. The step must never clobber it.
+func TestTheToolkitStepNeverOverwritesAnExistingOrionJSON(t *testing.T) {
+	w := chainWSWithRepo(t)
+	p := filepath.Join(w.RepoDir(), "orion.json")
+	if err := os.WriteFile(p, []byte(`{"version":1,"mine":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := toolkitStep(&stepIO{Out: &out}, w); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), "mine") {
+		t.Error("toolkitStep overwrote an existing orion.json")
+	}
+}
+
+// specBranchSyncWS provisions a sandbox with a real remote (SwitchSandbox
+// fetches from it) carrying both the work branch and a spec-kit-style
+// numbered feature branch, and leaves the sandbox checked out on the
+// feature branch -- exactly the state /speckit-specify leaves behind
+// (OR-459).
+func specBranchSyncWS(t *testing.T) *workspace.Workspace {
+	t.Helper()
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	mustGit(t, "", "init", "--bare", "-b", "main", bare)
+
+	w := chainWS(t)
+	repo := w.RepoDir()
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init", "-b", "develop")
+	mustGit(t, repo, "remote", "add", "origin", bare)
+	if err := os.WriteFile(filepath.Join(repo, "orion.json"),
+		[]byte(`{"version":1,"vcs":{"work_branch":"develop"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "add", "orion.json")
+	mustGit(t, repo, "commit", "-m", "seed")
+	mustGit(t, repo, "push", "-u", "origin", "develop")
+	mustGit(t, repo, "checkout", "-b", "001-continuity-scaffold")
+	mustGit(t, repo, "push", "-u", "origin", "001-continuity-scaffold")
+	return w
+}
+
+// OR-459 end to end: the sandbox left on spec-kit's own numbered feature
+// branch gets switched back to the configured work branch.
+func TestSpecBranchSyncStepSwitchesBackToTheWorkBranch(t *testing.T) {
+	w := specBranchSyncWS(t)
+	if got := gitLineIn(t, w.RepoDir(), "branch", "--show-current"); got != "001-continuity-scaffold" {
+		t.Fatalf("fixture is not set up on the feature branch: %q", got)
+	}
+
+	var out strings.Builder
+	if err := specBranchSyncStep(&stepIO{Out: &out}, w); err != nil {
+		t.Fatalf("specBranchSyncStep failed: %v", err)
+	}
+	if got := gitLineIn(t, w.RepoDir(), "branch", "--show-current"); got != "develop" {
+		t.Errorf("sandbox branch = %q, want develop", got)
+	}
+}
+
+// A sandbox already on the work branch is a no-op -- SwitchSandbox returns
+// before ever touching the network, so this must succeed even with no
+// origin configured at all. config.Defaults().VCS.WorkBranch is "develop",
+// so there is no config shape that leaves WorkBranch genuinely empty; the
+// already-there case is the one worth covering.
+func TestSpecBranchSyncStepIsANoopAlreadyOnTheWorkBranch(t *testing.T) {
+	w := chainWS(t)
+	repo := w.RepoDir()
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init", "-q", "-b", "develop")
+	mustGit(t, repo, "commit", "-q", "--allow-empty", "-m", "seed")
+
+	var out strings.Builder
+	if err := specBranchSyncStep(&stepIO{Out: &out}, w); err != nil {
+		t.Fatalf("specBranchSyncStep failed: %v", err)
+	}
+	if got := gitLineIn(t, repo, "branch", "--show-current"); got != "develop" {
+		t.Errorf("branch changed on a no-op: %q", got)
+	}
+}
+
+// Uncommitted work in the sandbox is never discarded to make the switch --
+// same rule SyncSandbox already follows. Reported as Degraded so the chain
+// can continue and ask, rather than stopping outright.
+func TestSpecBranchSyncStepRefusesOverUncommittedChanges(t *testing.T) {
+	w := specBranchSyncWS(t)
+	if err := os.WriteFile(filepath.Join(w.RepoDir(), "dirty.txt"), []byte("wip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	err := specBranchSyncStep(&stepIO{Out: &out}, w)
+	var deg *Degraded
+	if !errors.As(err, &deg) {
+		t.Fatalf("want a Degraded error, got %v", err)
+	}
+	if got := gitLineIn(t, w.RepoDir(), "branch", "--show-current"); got != "001-continuity-scaffold" {
+		t.Errorf("branch changed despite uncommitted work: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(w.RepoDir(), "dirty.txt")); err != nil {
+		t.Error("the uncommitted file was lost")
+	}
+}
+
+// specBranchSyncDone reads LIVE state rather than a recorded stamp: a
+// person or a later stage switching the sandbox away again must be noticed
+// on the next `orion plan` resume, not hidden behind a step marked done
+// from an earlier run.
+func TestSpecBranchSyncDoneReflectsLiveState(t *testing.T) {
+	w := specBranchSyncWS(t)
+	if specBranchSyncDone(w) {
+		t.Error("done before the switch happened")
+	}
+	var out2 strings.Builder
+	if err := specBranchSyncStep(&stepIO{Out: &out2}, w); err != nil {
+		t.Fatal(err)
+	}
+	if !specBranchSyncDone(w) {
+		t.Error("not done after the switch happened")
+	}
+	mustGit(t, w.RepoDir(), "checkout", "-b", "wandered-again")
+	if specBranchSyncDone(w) {
+		t.Error("still reported done after the sandbox moved away again")
 	}
 }

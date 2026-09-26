@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orion web mockup — 08 graph canvas</title>
+<style>
+:root{
+  --ink:#e6e6e6; --ink-dim:#9aa0a6; --ink-faint:#6b7178;
+  --bg:#0b0d10; --panel:#12161b; --panel2:#161b22; --line:#242a33; --line-soft:rgba(36,42,51,.6);
+  --ok:#4bb543; --fail:#e05252; --warn:#d6a231; --wait:#4f8ff0; --work:#2fb3c4;
+  --t-orange:#d98a3d; --t-violet:#b58cf0; --t-teal:#4fc7c7; --t-rose:#e08fb0;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:12px;}
+.app{display:flex;flex-direction:column;height:1000px;}
+.topbar{display:flex;align-items:center;gap:16px;padding:0 18px;height:44px;
+  border-bottom:1px solid var(--line);background:var(--panel);flex:none;}
+.brand{font-weight:600;font-size:13px;} .brand .dot{color:var(--work);}
+.crumb{color:var(--ink-faint);font-size:11.5px;}
+.spacer{flex:1;}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:4px;
+  border:1px solid var(--line);color:var(--ink-dim);font-size:11px;}
+.dotlive{width:6px;height:6px;border-radius:50%;background:var(--ok);animation:blink 2s ease-in-out infinite;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+
+.canvas{flex:1;position:relative;overflow:hidden;
+  background-image:radial-gradient(circle, rgba(255,255,255,.055) 1px, transparent 1px);
+  background-size:22px 22px;background-position:-1px -1px;}
+.viewport{position:absolute;inset:0;}
+svg.edges{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none;}
+.edge{fill:none;stroke:var(--line);stroke-width:1.6;}
+.edge.done{stroke:rgba(75,181,67,.5);}
+.edge.live{stroke:var(--work);stroke-width:2;}
+.edge.loop{stroke:rgba(214,162,49,.5);stroke-dasharray:5 4;}
+.edge.ghost{stroke:rgba(107,113,120,.35);stroke-dasharray:3 5;}
+.flowdot{fill:var(--work);}
+.loopdot{fill:var(--warn);}
+.edgelabel{font-size:9.5px;fill:var(--ink-faint);font-family:var(--mono);}
+.edgelabel.warn{fill:var(--warn);}
+
+.n{position:absolute;background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+  width:172px;padding:9px 11px 10px;}
+.n.done{border-color:rgba(75,181,67,.4);}
+.n.now{border-color:var(--work);box-shadow:0 0 0 1px rgba(47,179,196,.25),0 0 22px rgba(47,179,196,.14);}
+.n.gate{border-color:rgba(214,162,49,.45);}
+.n.skip{border-style:dashed;opacity:.6;}
+.n.child{width:150px;padding:7px 9px 8px;}
+.nh{display:flex;align-items:center;gap:7px;margin-bottom:5px;}
+.nico{width:15px;text-align:center;font-size:11px;flex:none;}
+.ntitle{font-size:11px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.n.done .ntitle{color:var(--ink-dim);} .n.now .ntitle{color:var(--work);}
+.n.todo .ntitle{color:var(--ink-faint);} .n.gate .ntitle{color:var(--warn);}
+.nsub{font-size:9.5px;color:var(--ink-faint);line-height:1.5;}
+.nfoot{display:flex;align-items:center;gap:6px;margin-top:7px;padding-top:6px;
+  border-top:1px solid var(--line-soft);font-size:9.5px;color:var(--ink-faint);}
+.nfoot .cost{margin-left:auto;color:var(--ink-dim);}
+.mini{height:2.5px;border-radius:2px;background:var(--line);overflow:hidden;margin-top:6px;}
+.mini i{display:block;height:100%;background:var(--work);}
+.mini i.ok{background:var(--ok);} .mini i.bad{background:var(--fail);}
+.port{position:absolute;width:7px;height:7px;border-radius:50%;background:var(--panel);
+  border:1.5px solid var(--line);top:50%;margin-top:-3.5px;}
+.port.in{left:-4px;} .port.out{right:-4px;}
+.port.on{border-color:var(--work);background:rgba(47,179,196,.4);}
+.port.ok{border-color:rgba(75,181,67,.55);background:rgba(75,181,67,.3);}
+.spinring{position:absolute;top:9px;right:9px;width:11px;height:11px;border-radius:50%;
+  border:1.5px solid transparent;border-top-color:var(--work);animation:spin 1s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.pulse{position:absolute;inset:-4px;border-radius:9px;border:1px solid var(--work);
+  opacity:.4;animation:pl 2s ease-out infinite;pointer-events:none;}
+@keyframes pl{0%{transform:scale(.99);opacity:.45}70%{transform:scale(1.035);opacity:0}100%{opacity:0}}
+
+.grouplab{position:absolute;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink-faint);}
+.groupbox{position:absolute;border:1px dashed rgba(181,140,240,.3);border-radius:11px;
+  background:rgba(181,140,240,.03);}
+.groupbox.ex{border-color:rgba(214,162,49,.28);background:rgba(214,162,49,.025);}
+
+.controls{position:absolute;left:14px;bottom:14px;display:flex;flex-direction:column;gap:1px;
+  border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--panel);}
+.ctl{width:28px;height:26px;display:flex;align-items:center;justify-content:center;
+  color:var(--ink-faint);font-size:12px;border-bottom:1px solid var(--line);}
+.ctl:last-child{border-bottom:none;}
+.minimap{position:absolute;right:14px;bottom:14px;width:168px;height:104px;background:rgba(7,9,11,.85);
+  border:1px solid var(--line);border-radius:6px;padding:7px;}
+.mm{position:absolute;background:var(--line);border-radius:1.5px;height:5px;}
+.mm.done{background:rgba(75,181,67,.5);} .mm.now{background:var(--work);}
+.mm.gate{background:rgba(214,162,49,.55);}
+.mmview{position:absolute;border:1px solid rgba(47,179,196,.5);border-radius:3px;
+  background:rgba(47,179,196,.07);}
+.legend{position:absolute;left:14px;top:14px;background:rgba(7,9,11,.8);border:1px solid var(--line);
+  border-radius:6px;padding:9px 11px;display:flex;flex-direction:column;gap:6px;}
+.lg{display:flex;align-items:center;gap:8px;font-size:9.5px;color:var(--ink-faint);}
+.lgline{width:20px;height:0;border-top:1.6px solid var(--line);flex:none;}
+.lgline.done{border-color:rgba(75,181,67,.5);}
+.lgline.live{border-top-width:2px;border-color:var(--work);}
+.lgline.loop{border-top-style:dashed;border-color:rgba(214,162,49,.5);}
+.lgline.ghost{border-top-style:dashed;border-color:rgba(107,113,120,.4);}
+.hint{position:absolute;left:50%;transform:translateX(-50%);bottom:16px;font-size:10px;
+  color:var(--ink-faint);background:rgba(7,9,11,.8);border:1px solid var(--line);
+  border-radius:5px;padding:5px 12px;}
+</style>
+</head><body>
+<div class="app">
+  <div class="topbar">
+    <div class="brand">orion<span class="dot">·</span>web</div>
+    <div class="crumb">run / OR-272 · graph</div>
+    <div class="spacer"></div>
+    <div class="chip">fit view</div>
+    <div class="chip"><span class="dotlive"></span>live</div>
+  </div>
+
+  <div class="canvas">
+    <div class="viewport">
+
+      <div class="groupbox" style="left:566px;top:196px;width:436px;height:300px"></div>
+      <div class="grouplab" style="left:580px;top:206px;color:var(--t-violet)">qa · fan ×5 · 18 cases</div>
+
+      <div class="groupbox ex" style="left:150px;top:392px;width:360px;height:196px"></div>
+      <div class="grouplab" style="left:164px;top:402px;color:var(--warn)">implementing · 2 asks</div>
+
+      <svg class="edges">
+        <path class="edge done" d="M 198 120 C 232 120, 232 120, 266 120"/>
+        <path class="edge done" d="M 438 120 C 472 120, 472 120, 506 120"/>
+        <path class="edge ghost" d="M 678 120 C 700 120, 700 120, 722 120"/>
+        <text class="edgelabel" x="592" y="110">skipped</text>
+
+        <path class="edge done" d="M 350 152 C 350 260, 300 300, 300 392"/>
+        <text class="edgelabel warn" x="306" y="300">stops on a question</text>
+        <path class="edge done" d="M 420 470 C 470 470, 520 300, 560 176"/>
+        <text class="edgelabel" x="470" y="350">resumes</text>
+
+        <path class="edge live" d="M 678 120 C 760 120, 700 240, 754 268">
+          <animate attributeName="stroke-dasharray" values="0 400;400 0" dur="2s" repeatCount="indefinite"/>
+        </path>
+
+        <path class="edge live" id="f1" d="M 828 268 C 862 268, 862 244, 896 244"/>
+        <path class="edge live" id="f2" d="M 828 268 C 862 268, 862 300, 896 300"/>
+        <path class="edge live" id="f3" d="M 828 268 C 862 268, 862 356, 896 356"/>
+        <path class="edge live" id="f4" d="M 828 268 C 862 268, 862 412, 896 412" style="stroke:rgba(224,82,82,.45)"/>
+        <path class="edge live" id="f5" d="M 828 268 C 862 268, 862 468, 896 468"/>
+
+        <circle class="flowdot" r="2.6"><animateMotion dur="2.4s" repeatCount="indefinite"
+          path="M 828 268 C 862 268, 862 244, 896 244"/></circle>
+        <circle class="flowdot" r="2.6"><animateMotion dur="2.4s" begin="0.5s" repeatCount="indefinite"
+          path="M 828 268 C 862 268, 862 300, 896 300"/></circle>
+        <circle class="flowdot" r="2.6"><animateMotion dur="2.4s" begin="1s" repeatCount="indefinite"
+          path="M 828 268 C 862 268, 862 356, 896 356"/></circle>
+        <circle class="flowdot" r="2.6"><animateMotion dur="2.4s" begin="1.5s" repeatCount="indefinite"
+          path="M 828 268 C 862 268, 862 468, 896 468"/></circle>
+
+        <path class="edge loop" d="M 986 470 C 1040 470, 1046 200, 766 176"/>
+        <text class="edgelabel warn" x="1000" y="330">fix round 1 of 3</text>
+        <circle class="loopdot" r="2.4"><animateMotion dur="3s" repeatCount="indefinite"
+          path="M 986 470 C 1040 470, 1046 200, 766 176"/></circle>
+
+        <path class="edge" d="M 890 120 C 930 120, 930 120, 970 120"/>
+        <path class="edge" d="M 1142 120 C 1176 120, 1176 120, 1210 120"/>
+
+        <path class="edge" d="M 300 470 C 250 470, 240 470, 240 470"/>
+        <path class="edge" d="M 268 442 C 300 420, 330 420, 362 442"/>
+        <text class="edgelabel" x="286" y="414">routes</text>
+        <path class="edge" d="M 362 500 C 330 522, 300 522, 268 500" style="stroke:rgba(214,162,49,.5)"/>
+        <text class="edgelabel warn" x="278" y="540">refuses → re-ask</text>
+      </svg>
+
+      <div class="n done" style="left:26px;top:92px">
+        <span class="port in"></span><span class="port out ok"></span>
+        <div class="nh"><span class="nico" style="color:var(--ok)">✓</span><span class="ntitle">routing</span></div>
+        <div class="nsub">Sam · dispatcher · haiku</div>
+        <div class="nfoot">1 turn<span class="cost">$0.01</span></div>
+      </div>
+
+      <div class="n done" style="left:266px;top:80px">
+        <span class="port in ok"></span><span class="port out ok"></span>
+        <div class="nh"><span class="nico" style="color:var(--ok)">✓</span><span class="ntitle">implementing</span></div>
+        <div class="nsub">Ravi · backend developer · opus</div>
+        <div class="mini"><i class="ok" style="width:100%"></i></div>
+        <div class="nfoot">3 commits · 2 asks<span class="cost">$2.06</span></div>
+      </div>
+
+      <div class="n skip todo" style="left:506px;top:96px">
+        <span class="port in"></span><span class="port out"></span>
+        <div class="nh"><span class="nico">–</span><span class="ntitle">dba</span></div>
+        <div class="nsub">no schema change</div>
+      </div>
+
+      <div class="n now" style="left:722px;top:84px">
+        <span class="pulse"></span><span class="spinring"></span>
+        <span class="port in on"></span><span class="port out on"></span>
+        <div class="nh"><span class="nico" style="color:var(--work)">◐</span><span class="ntitle">qa</span></div>
+        <div class="nsub">Anita · QA engineer · sonnet</div>
+        <div class="mini"><i style="width:46%"></i></div>
+        <div class="nfoot">fan ×5 · 1m 08s<span class="cost">$0.41</span></div>
+      </div>
+
+      <div class="n todo" style="left:970px;top:96px">
+        <span class="port in"></span><span class="port out"></span>
+        <div class="nh"><span class="nico">○</span><span class="ntitle">push</span></div>
+        <div class="nsub">orion</div>
+      </div>
+
+      <div class="n todo" style="left:1210px;top:96px">
+        <span class="port in"></span><span class="port out"></span>
+        <div class="nh"><span class="nico">○</span><span class="ntitle">pull request</span></div>
+        <div class="nsub">Dana · PR writer · sonnet</div>
+      </div>
+
+      <div class="n now" style="left:754px;top:242px;width:74px;padding:7px 9px;text-align:center">
+        <span class="port out on"></span>
+        <div class="ntitle" style="font-size:10px">fan</div>
+        <div class="nsub">5 authors</div>
+      </div>
+
+      <div class="n child done" style="left:896px;top:222px">
+        <span class="port in ok"></span>
+        <div class="nh"><span class="nico" style="color:var(--ok)">✓</span><span class="ntitle">author 1</span></div>
+        <div class="nsub">4 case(s) · columns</div>
+        <div class="mini"><i class="ok" style="width:100%"></i></div>
+      </div>
+      <div class="n child now" style="left:896px;top:278px">
+        <span class="port in on"></span>
+        <div class="nh"><span class="nico" style="color:var(--work)">◐</span><span class="ntitle">author 2</span></div>
+        <div class="nsub">4 case(s) · default view</div>
+        <div class="mini"><i style="width:62%"></i></div>
+      </div>
+      <div class="n child now" style="left:896px;top:334px">
+        <span class="port in on"></span>
+        <div class="nh"><span class="nico" style="color:var(--work)">◐</span><span class="ntitle">author 3</span></div>
+        <div class="nsub">4 case(s) · escaping</div>
+        <div class="mini"><i style="width:38%"></i></div>
+      </div>
+      <div class="n child" style="left:896px;top:390px;border-color:rgba(224,82,82,.4)">
+        <span class="port in" style="border-color:rgba(224,82,82,.5)"></span>
+        <div class="nh"><span class="nico" style="color:var(--fail)">✗</span>
+          <span class="ntitle" style="color:#e07878">author 4</span></div>
+        <div class="nsub">3 case(s) · ignored, not fatal</div>
+        <div class="mini"><i class="bad" style="width:100%"></i></div>
+      </div>
+      <div class="n child now" style="left:896px;top:446px">
+        <span class="port in on"></span>
+        <div class="nh"><span class="nico" style="color:var(--work)">◐</span><span class="ntitle">author 5</span></div>
+        <div class="nsub">3 case(s) · credentials</div>
+        <div class="mini"><i style="width:24%"></i></div>
+      </div>
+
+      <div class="n done" style="left:166px;top:444px;width:102px;padding:7px 9px">
+        <span class="port out ok"></span>
+        <div class="nh"><span class="nico" style="color:#dcb67a">R</span><span class="ntitle" style="font-size:10px">Ravi</span></div>
+        <div class="nsub">asks, then resumes</div>
+      </div>
+      <div class="n done" style="left:268px;top:400px;width:94px;padding:6px 8px">
+        <div class="nh"><span class="nico" style="color:#c9a0dc">S</span><span class="ntitle" style="font-size:10px">Sam</span></div>
+        <div class="nsub">haiku · routes</div>
+      </div>
+      <div class="n gate" style="left:362px;top:432px;width:132px;padding:7px 9px">
+        <span class="port in"></span>
+        <div class="nh"><span class="nico" style="color:var(--t-violet)">A</span><span class="ntitle">advisors</span></div>
+        <div class="nsub">architect refused<br>→ PM answered · sonnet</div>
+        <div class="nfoot">4 turns<span class="cost">$0.19</span></div>
+      </div>
+
+      <div class="legend">
+        <div class="lg"><span class="lgline done"></span>completed</div>
+        <div class="lg"><span class="lgline live"></span>in flight · spending</div>
+        <div class="lg"><span class="lgline loop"></span>fix loop · returns to a stage</div>
+        <div class="lg"><span class="lgline ghost"></span>skipped · never ran</div>
+      </div>
+
+      <div class="controls">
+        <div class="ctl">+</div><div class="ctl">−</div><div class="ctl">⤢</div><div class="ctl">▣</div>
+      </div>
+
+      <div class="minimap">
+        <div class="mm done" style="left:10px;top:26px;width:16px"></div>
+        <div class="mm done" style="left:32px;top:26px;width:20px"></div>
+        <div class="mm" style="left:58px;top:26px;width:12px;opacity:.4"></div>
+        <div class="mm now" style="left:76px;top:26px;width:18px"></div>
+        <div class="mm" style="left:100px;top:26px;width:14px"></div>
+        <div class="mm" style="left:120px;top:26px;width:18px"></div>
+        <div class="mm now" style="left:88px;top:44px;width:8px"></div>
+        <div class="mm done" style="left:102px;top:40px;width:12px"></div>
+        <div class="mm now" style="left:102px;top:48px;width:12px"></div>
+        <div class="mm now" style="left:102px;top:56px;width:12px"></div>
+        <div class="mm" style="left:102px;top:64px;width:12px;background:rgba(224,82,82,.5)"></div>
+        <div class="mm now" style="left:102px;top:72px;width:12px"></div>
+        <div class="mm done" style="left:24px;top:62px;width:10px"></div>
+        <div class="mm gate" style="left:40px;top:62px;width:16px"></div>
+        <div class="mmview" style="left:6px;top:18px;width:120px;height:66px"></div>
+      </div>
+
+      <div class="hint">drag to pan · scroll to zoom · click a node to open its log · F to fit</div>
+    </div>
+  </div>
+</div>
+</body></html>

@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orion web mockup — 07 stage flow</title>
+<style>
+:root{
+  --ink:#e6e6e6; --ink-dim:#9aa0a6; --ink-faint:#6b7178;
+  --bg:#0b0d10; --panel:#12161b; --panel2:#151a20; --line:#242a33; --line-soft:rgba(36,42,51,.55);
+  --ok:#4bb543; --fail:#e05252; --warn:#d6a231; --wait:#4f8ff0; --work:#2fb3c4;
+  --t-orange:#d98a3d; --t-violet:#b58cf0; --t-teal:#4fc7c7; --t-rose:#e08fb0;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:12px;}
+.app{display:flex;flex-direction:column;min-height:1240px;}
+.topbar{display:flex;align-items:center;gap:16px;padding:0 18px;height:44px;
+  border-bottom:1px solid var(--line);background:var(--panel);flex:none;}
+.brand{font-weight:600;font-size:13px;} .brand .dot{color:var(--work);}
+.crumb{color:var(--ink-faint);font-size:11.5px;}
+.spacer{flex:1;}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:4px;
+  border:1px solid var(--line);color:var(--ink-dim);font-size:11px;}
+.dotlive{width:6px;height:6px;border-radius:50%;background:var(--ok);animation:blink 2s ease-in-out infinite;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+.hero{padding:16px 22px 13px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px;}
+.key{font-size:15px;font-weight:600;color:var(--t-orange);}
+.htitle{font-size:12.5px;color:#dfe3e7;}
+.state{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;padding:2.5px 9px;border-radius:4px;
+  background:rgba(47,179,196,.13);color:var(--work);}
+
+.sec{padding:22px 22px 0;}
+.seclabel{font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-faint);
+  font-weight:600;margin-bottom:6px;}
+.secnote{font-size:10.5px;color:var(--ink-faint);line-height:1.6;margin-bottom:18px;max-width:760px;}
+
+/* ---------- spine ---------- */
+.flow{display:flex;align-items:flex-start;overflow-x:auto;padding-bottom:6px;}
+.node{flex:none;width:104px;display:flex;flex-direction:column;align-items:center;gap:7px;}
+.orb{width:32px;height:32px;border-radius:50%;border:1.5px solid var(--line);
+  display:flex;align-items:center;justify-content:center;font-size:12px;
+  background:var(--panel);position:relative;flex:none;}
+.orb.done{border-color:rgba(75,181,67,.55);color:var(--ok);background:rgba(75,181,67,.08);}
+.orb.now{border-color:var(--work);color:var(--work);background:rgba(47,179,196,.1);}
+.orb.now::after{content:"";position:absolute;inset:-6px;border-radius:50%;
+  border:1.5px solid var(--work);opacity:.5;animation:pulse 1.8s ease-out infinite;}
+@keyframes pulse{0%{transform:scale(.86);opacity:.55}70%{transform:scale(1.22);opacity:0}100%{opacity:0}}
+.orb.todo{color:var(--ink-faint);}
+.orb.skip{border-style:dashed;color:var(--ink-faint);}
+.spin{position:absolute;inset:-4px;border-radius:50%;border:1.5px solid transparent;
+  border-top-color:var(--work);animation:spin 1.1s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.nname{font-size:10.5px;text-align:center;line-height:1.3;}
+.nname.done{color:var(--ink-dim);} .nname.now{color:var(--work);font-weight:600;}
+.nname.todo{color:var(--ink-faint);}
+.nwho{font-size:9.5px;color:var(--ink-faint);text-align:center;line-height:1.4;}
+.link{flex:none;width:26px;height:1.5px;background:var(--line);margin-top:16px;position:relative;}
+.link.done{background:rgba(75,181,67,.45);}
+.link.live{background:linear-gradient(90deg,rgba(75,181,67,.45),var(--work));}
+.link.live::after{content:"";position:absolute;top:-2px;left:0;width:5px;height:5px;border-radius:50%;
+  background:var(--work);animation:travel 1.6s ease-in-out infinite;}
+@keyframes travel{0%{left:0;opacity:0}20%{opacity:1}80%{opacity:1}100%{left:21px;opacity:0}}
+.badgefan{font-size:9px;padding:1.5px 6px;border-radius:3px;background:rgba(181,140,240,.14);
+  color:var(--t-violet);border:1px solid rgba(181,140,240,.3);}
+
+/* ---------- fan ---------- */
+.fanbox{border:1px solid rgba(181,140,240,.28);border-radius:9px;background:rgba(181,140,240,.035);
+  padding:16px 18px;margin-top:6px;}
+.fanhead{display:flex;align-items:center;gap:10px;margin-bottom:4px;}
+.fanhead .t{font-size:11.5px;font-weight:600;color:var(--t-violet);}
+.fanhead .c{font-size:10.5px;color:var(--ink-faint);}
+.fansaid{font-size:10.5px;color:var(--ink-dim);line-height:1.6;margin-bottom:16px;
+  padding:7px 10px;border-radius:5px;background:rgba(0,0,0,.24);border-left:2px solid rgba(181,140,240,.4);}
+.fanwrap{display:flex;align-items:stretch;gap:0;}
+.fanparent{flex:none;width:120px;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:7px;}
+.fanrays{flex:none;width:44px;position:relative;}
+.ray{position:absolute;left:0;right:0;height:1.5px;background:rgba(181,140,240,.3);}
+.ray::after{content:"";position:absolute;top:-2px;left:0;width:4px;height:4px;border-radius:50%;
+  background:var(--t-violet);animation:ray 2.2s ease-in-out infinite;}
+@keyframes ray{0%{left:0;opacity:0}25%{opacity:1}75%{opacity:1}100%{left:38px;opacity:0}}
+.children{flex:1;display:flex;flex-direction:column;gap:7px;}
+.child{display:flex;align-items:center;gap:10px;padding:8px 11px;border-radius:6px;
+  border:1px solid var(--line);background:var(--panel);}
+.child.run{border-color:rgba(47,179,196,.35);}
+.child.fail{border-color:rgba(224,82,82,.34);background:rgba(224,82,82,.05);}
+.cico{width:15px;flex:none;font-size:11px;text-align:center;}
+.cname{font-size:11px;flex:none;width:78px;}
+.cabout{font-size:10.5px;color:var(--ink-faint);flex:1;min-width:0;}
+.cbar{flex:none;width:78px;height:3px;border-radius:2px;background:var(--line);overflow:hidden;}
+.cbar i{display:block;height:100%;background:var(--work);}
+.cbar i.done{background:var(--ok);}
+.ccost{font-size:10.5px;color:var(--ink-dim);flex:none;width:46px;text-align:right;}
+.fanfoot{margin-top:14px;font-size:10.5px;color:var(--ink-faint);line-height:1.65;}
+.fanfoot b{color:var(--ink-dim);}
+
+/* ---------- exchange ---------- */
+.exbox{border:1px solid rgba(214,162,49,.26);border-radius:9px;background:rgba(214,162,49,.03);
+  padding:16px 18px;margin-top:6px;}
+.exhead{display:flex;align-items:center;gap:10px;margin-bottom:15px;}
+.exhead .t{font-size:11.5px;font-weight:600;color:var(--warn);}
+.exhead .c{font-size:10.5px;color:var(--ink-faint);}
+.lanes{display:flex;gap:0;align-items:stretch;}
+.lane{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:6px;padding-bottom:6px;}
+.lanehead{font-size:10.5px;text-align:center;line-height:1.4;}
+.lanesub{font-size:9.5px;color:var(--ink-faint);text-align:center;}
+.laneline{width:1.5px;flex:1;background:var(--line);margin-top:4px;min-height:150px;}
+.turns{flex:none;width:340px;display:flex;flex-direction:column;gap:0;padding-top:26px;}
+.turn{display:flex;align-items:center;gap:0;height:38px;position:relative;}
+.arrow{flex:1;height:1.5px;background:rgba(214,162,49,.32);position:relative;}
+.arrow::after{content:"";position:absolute;top:-2.5px;width:6px;height:6px;border-radius:50%;
+  background:var(--warn);}
+.arrow.r::after{animation:goR 2.4s ease-in-out infinite;}
+.arrow.l::after{animation:goL 2.4s ease-in-out infinite;}
+@keyframes goR{0%{left:0;opacity:0}15%{opacity:1}85%{opacity:1}100%{left:calc(100% - 6px);opacity:0}}
+@keyframes goL{0%{right:0;opacity:0}15%{opacity:1}85%{opacity:1}100%{right:calc(100% - 6px);opacity:0}}
+.turnlab{position:absolute;top:-11px;left:50%;transform:translateX(-50%);font-size:9.5px;
+  color:var(--ink-dim);background:var(--bg);padding:0 8px;white-space:nowrap;}
+.turnlab.refuse{color:var(--warn);}
+.exfoot{margin-top:12px;font-size:10.5px;color:var(--ink-faint);line-height:1.65;}
+.exfoot b{color:var(--ink-dim);}
+.dim{color:var(--ink-faint);}
+</style>
+</head><body>
+<div class="app">
+  <div class="topbar">
+    <div class="brand">orion<span class="dot">·</span>web</div>
+    <div class="crumb">run / OR-272</div>
+    <div class="spacer"></div>
+    <div class="chip"><span class="dotlive"></span>live</div>
+    <div class="chip">✕ close</div>
+  </div>
+
+  <div class="hero">
+    <span class="key">OR-272</span>
+    <span class="htitle">The gate board: everything waiting on me, across projects</span>
+    <span class="spacer"></span>
+    <span class="state">◐ working · qa</span>
+  </div>
+
+  <div class="sec">
+    <div class="seclabel">Pipeline</div>
+    <div class="secnote">The spine is the stage chain. A stage that fans out or holds an exchange carries a badge
+    and expands below — the spine stays one line per stage, because a stage is still one stage however many
+    agents it runs.</div>
+    <div class="flow">
+      <div class="node">
+        <div class="orb done">✓</div><div class="nname done">routing</div>
+        <div class="nwho">Sam · dispatcher</div>
+      </div>
+      <div class="link done"></div>
+      <div class="node">
+        <div class="orb done">✓</div><div class="nname done">implementing</div>
+        <div class="nwho">Ravi · opus<br>$2.06</div>
+        <span class="badgefan" style="background:rgba(214,162,49,.14);color:var(--warn);border-color:rgba(214,162,49,.3)">2 asks</span>
+      </div>
+      <div class="link done"></div>
+      <div class="node">
+        <div class="orb skip">–</div><div class="nname todo">dba</div>
+        <div class="nwho">skipped — no<br>schema change</div>
+      </div>
+      <div class="link live"></div>
+      <div class="node">
+        <div class="orb now"><span class="spin"></span>◐</div><div class="nname now">qa</div>
+        <div class="nwho">Anita · sonnet<br>$0.41</div>
+        <span class="badgefan">fan ×5</span>
+      </div>
+      <div class="link"></div>
+      <div class="node">
+        <div class="orb todo">○</div><div class="nname todo">push</div><div class="nwho">orion</div>
+      </div>
+      <div class="link"></div>
+      <div class="node">
+        <div class="orb todo">○</div><div class="nname todo">pull request</div><div class="nwho">Dana · PR writer</div>
+      </div>
+      <div class="link"></div>
+      <div class="node">
+        <div class="orb todo">⏳</div><div class="nname todo">ci</div>
+        <div class="nwho">no agent runs<br>nothing spent</div>
+      </div>
+      <div class="link"></div>
+      <div class="node">
+        <div class="orb todo">○</div><div class="nname todo">approval</div><div class="nwho">you</div>
+      </div>
+      <div class="link"></div>
+      <div class="node">
+        <div class="orb todo">○</div><div class="nname todo">promotion</div>
+        <div class="nwho">a person, never<br>the watcher</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="seclabel">qa · expanded — fan-out</div>
+    <div class="secnote">One stage, five concurrent authors. The count is said out loud <b>before</b> the spend,
+    not discovered in the bill — so the panel leads with it too.</div>
+    <div class="fanbox">
+      <div class="fanhead">
+        <span class="t">authoring ×5</span>
+        <span class="c">18 cases across 5 authors · all sonnet · capped at max_concurrent_children</span>
+      </div>
+      <div class="fansaid">Anita · QA engineer said: <b>writing 18 case(s) across 5 authors</b> — a fan is a
+      multiplication of cost, and a reader who sees the agent count only in the bill has been told too late.</div>
+
+      <div class="fanwrap">
+        <div class="fanparent">
+          <div class="orb now"><span class="spin"></span>◐</div>
+          <div class="nname now">qa</div>
+          <div class="nwho">Anita · sonnet</div>
+        </div>
+        <div class="fanrays">
+          <div class="ray" style="top:22px"></div>
+          <div class="ray" style="top:60px;animation-delay:.4s"></div>
+          <div class="ray" style="top:98px;animation-delay:.8s"></div>
+          <div class="ray" style="top:136px;animation-delay:1.2s"></div>
+          <div class="ray" style="top:174px;animation-delay:1.6s"></div>
+        </div>
+        <div class="children">
+          <div class="child"><span class="cico ok" style="color:var(--ok)">✓</span>
+            <span class="cname">author 1</span><span class="cabout">4 case(s) · column derivation</span>
+            <span class="cbar"><i class="done" style="width:100%"></i></span><span class="ccost">$0.11</span></div>
+          <div class="child run"><span class="cico" style="color:var(--work)">◐</span>
+            <span class="cname">author 2</span><span class="cabout">4 case(s) · waiting-on-me default view</span>
+            <span class="cbar"><i style="width:62%"></i></span><span class="ccost">$0.07</span></div>
+          <div class="child run"><span class="cico" style="color:var(--work)">◐</span>
+            <span class="cname">author 3</span><span class="cabout">4 case(s) · output escaping</span>
+            <span class="cbar"><i style="width:38%"></i></span><span class="ccost">$0.05</span></div>
+          <div class="child fail"><span class="cico" style="color:var(--fail)">✗</span>
+            <span class="cname">author 4</span><span class="cabout">3 case(s) · path validation — exited non-zero</span>
+            <span class="cbar"><i style="width:100%;background:var(--fail)"></i></span><span class="ccost">$0.04</span></div>
+          <div class="child run"><span class="cico" style="color:var(--work)">◐</span>
+            <span class="cname">author 5</span><span class="cabout">3 case(s) · credential isolation</span>
+            <span class="cbar"><i style="width:24%"></i></span><span class="ccost">$0.03</span></div>
+        </div>
+      </div>
+
+      <div class="fanfoot">
+        <b>A failed author is reported and otherwise ignored.</b> Its cases stay in the list handed to the QA
+        session, which reads the diff and writes what it finds missing — so author 4 costs a retry of that
+        group's work, never the cases themselves. The stage does not fail because a child did.
+      </div>
+    </div>
+  </div>
+
+  <div class="sec" style="padding-bottom:28px">
+    <div class="seclabel">implementing · expanded — the exchange</div>
+    <div class="secnote">When an implementer stops on a question it does not go to you. A router picks an advisor,
+    the advisor answers or refuses, and the run resumes — all inside one stage. Read top to bottom; each arrow is
+    one turn.</div>
+    <div class="exbox">
+      <div class="exhead">
+        <span class="t">2 asks during implementation</span>
+        <span class="c">$0.19 across 4 advisor turns · the implementer stays resumed throughout</span>
+      </div>
+
+      <div class="lanes">
+        <div class="lane">
+          <div class="orb done" style="border-color:rgba(220,182,122,.5);color:#dcb67a;background:rgba(220,182,122,.08)">R</div>
+          <div class="lanehead">Ravi</div>
+          <div class="lanesub">backend developer<br>opus</div>
+          <div class="laneline"></div>
+        </div>
+
+        <div class="turns">
+          <div class="turn"><span class="turnlab">stops: “which store owns the gate list?”</span>
+            <span class="arrow r"></span></div>
+          <div class="turn"><span class="turnlab">Sam · haiku routes it → architect</span>
+            <span class="arrow r" style="background:rgba(107,113,120,.3)"></span></div>
+          <div class="turn"><span class="turnlab refuse">architect refuses — not grounded in the repo</span>
+            <span class="arrow l"></span></div>
+          <div class="turn"><span class="turnlab">re-asked: product manager</span>
+            <span class="arrow r"></span></div>
+          <div class="turn"><span class="turnlab">answer + grounding → run resumes</span>
+            <span class="arrow l" style="background:rgba(75,181,67,.4)"></span></div>
+        </div>
+
+        <div class="lane">
+          <div class="orb done" style="border-color:rgba(181,140,240,.5);color:var(--t-violet);background:rgba(181,140,240,.08)">A</div>
+          <div class="lanehead">advisors</div>
+          <div class="lanesub">architect → PM<br>sonnet · read-only</div>
+          <div class="laneline"></div>
+        </div>
+      </div>
+
+      <div class="exfoot">
+        <b>A refusal is not a failure and never escalates the model.</b> Refusal means the artifact is silent — a
+        stronger model is not more likely to find something that is not there, only more likely to produce a
+        confident answer anyway. So the question moves sideways to another advisor, still on sonnet.
+        Only when both refuse does it reach you, and the board shows it as a question gate.
+      </div>
+    </div>
+  </div>
+</div>
+</body></html>

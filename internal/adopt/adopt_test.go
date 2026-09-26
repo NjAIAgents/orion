@@ -653,3 +653,66 @@ func TestInitScaffoldsANonRepositoryWithForce(t *testing.T) {
 		t.Error("--force scaffolded a non-repository without saying so")
 	}
 }
+
+// EnsureConfig is the entry point OR-451 adds for the plan chain's toolkit
+// step: a project scaffolded by `orion new`/`orion plan` never called Run
+// at all, so its orion.json was never written from the canonical template
+// -- found live when a real project's scaffold-stage AGENT invented one
+// from its own judgment instead, missing the slack section entirely.
+func TestEnsureConfigWritesTheCanonicalTemplate(t *testing.T) {
+	d := repo(t)
+	created, err := EnsureConfig(d, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Error("EnsureConfig reported nothing created on an empty directory")
+	}
+	b, err := os.ReadFile(filepath.Join(d, "orion.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(b)
+	for _, want := range []string{`"slack"`, `"budget"`, `"tracker"`, `"require_plan_before_edit": true`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("orion.json missing %q -- not the canonical template", want)
+		}
+	}
+}
+
+// A project that already has an orion.json -- however it got one -- keeps
+// it. EnsureConfig must never clobber a file a person (or a different
+// stage) already wrote, the same rule writeConfig already states for Run.
+func TestEnsureConfigNeverOverwritesAnExistingFile(t *testing.T) {
+	d := repo(t)
+	p := filepath.Join(d, "orion.json")
+	if err := os.WriteFile(p, []byte(`{"version":1,"mine":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	created, err := EnsureConfig(d, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created {
+		t.Error("EnsureConfig reported creating a file that already existed")
+	}
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), "mine") {
+		t.Error("EnsureConfig overwrote an existing orion.json")
+	}
+}
+
+// planGate=true is the whole reason EnsureConfig takes it as a parameter
+// rather than hardcoding Run's own adopted-repo default of false: a project
+// `orion new`/`orion plan` designs from cold start has no existing team
+// habit to protect, unlike a repo `orion init` adopts.
+func TestEnsureConfigHonoursThePlanGateParameter(t *testing.T) {
+	d := repo(t)
+	if _, err := EnsureConfig(d, true); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(d, "orion.json"))
+	if !strings.Contains(string(b), `"require_plan_before_edit": true`) {
+		t.Error("EnsureConfig(dir, true) did not set require_plan_before_edit true")
+	}
+}

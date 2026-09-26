@@ -507,3 +507,154 @@ func TestAnswerRefusesAnAnswerThatNamesNoValue(t *testing.T) {
 		}
 	}
 }
+
+// THE CASE OR-444 EXISTS TO FIX: a bullet's soft-wrapped continuation lines
+// used to vanish from Question.Text entirely -- TestAnswerRoundTripsThroughAssess
+// above has had a two-line bullet since before this fix and never once
+// checked what Text actually contained, which is exactly how this shipped
+// broken. Confirmed live on a real file (docs/intent/continuity.md): a
+// question was displayed and stored as only its first physical line.
+func TestQuestionTextJoinsSoftWrappedContinuationLines(t *testing.T) {
+	p := write(t, "## Open questions\n"+
+		"- Should `.continuity/` be committed to git\n"+
+		"  (so context is shared across contributors and branches) or\n"+
+		"  gitignored (local-only per developer machine)?\n")
+	a := Assess(p)
+	if len(a.Questions) != 1 {
+		t.Fatalf("got %d questions, want 1", len(a.Questions))
+	}
+	want := "Should `.continuity/` be committed to git (so context is shared across " +
+		"contributors and branches) or gitignored (local-only per developer machine)?"
+	if got := a.Questions[0].Text; got != want {
+		t.Errorf("Text = %q, want %q", got, want)
+	}
+}
+
+// The real shape from continuity.md: a [NEEDS CLARIFICATION: ...] marker
+// whose own closing bracket is many lines below its opening one, inside a
+// bullet under Open questions. markerRe alone can never match this (no
+// closing "]" on the opening line), so it is parsed as an ordinary
+// multi-line bullet -- and must join in full, brackets and all, the same
+// as any other soft-wrapped bullet.
+func TestAMultiLineNeedsClarificationMarkerInsideABulletJoinsInFull(t *testing.T) {
+	p := write(t, "## Open questions\n"+
+		"- [NEEDS CLARIFICATION: Q1 -- Should `.continuity/` be committed to git\n"+
+		"  (so context is shared across contributors and branches, matching the\n"+
+		"  intent doc's framing) or gitignored (local-only\n"+
+		"  per developer machine)? This cannot be resolved by a default.]\n")
+	a := Assess(p)
+	if len(a.Questions) != 1 {
+		t.Fatalf("got %d questions, want 1: %+v", len(a.Questions), a.Questions)
+	}
+	got := a.Questions[0].Text
+	for _, want := range []string{
+		"Q1 -- Should `.continuity/` be committed to git",
+		"matching the",
+		"intent doc's framing",
+		"This cannot be resolved by a default.]",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Text does not contain %q, got: %q", want, got)
+		}
+	}
+}
+
+// Answer must still find and replace the right bullet when its Question.Text
+// now spans several lines -- the body-comparison check in Answer has to join
+// the same way assess() does, or a multi-line question could never be
+// answered at all once the fix landed.
+func TestAnswerStillWorksOnAMultiLineQuestion(t *testing.T) {
+	p := write(t, "## Open questions\n"+
+		"- Should `.continuity/` be committed to git\n"+
+		"  (so context is shared across contributors and branches) or\n"+
+		"  gitignored (local-only per developer machine)?\n")
+	a := Assess(p)
+	if err := Answer(p, a.Questions[0], "Yes, committed by default."); err != nil {
+		t.Fatalf("Answer failed on a multi-line question: %v", err)
+	}
+	a = Assess(p)
+	if a.Open != 0 {
+		t.Errorf("Open = %d after answering, want 0", a.Open)
+	}
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), "Answer: Yes, committed by default.") {
+		t.Errorf("the answer was not written:\n%s", b)
+	}
+}
+
+// A continuation line must not itself be mistaken for the start of a new
+// bullet or section -- the join stops at exactly the same place Answer's
+// own insertion point does, proven here by a bullet immediately followed by
+// another bullet with no continuation lines of its own.
+func TestContinuationJoinStopsAtTheNextBulletNotPastIt(t *testing.T) {
+	p := write(t, "## Open questions\n"+
+		"- First question wraps\n"+
+		"  onto a second line.\n"+
+		"- Second question, one line.\n")
+	a := Assess(p)
+	if len(a.Questions) != 2 {
+		t.Fatalf("got %d questions, want 2: %+v", len(a.Questions), a.Questions)
+	}
+	if got, want := a.Questions[0].Text, "First question wraps onto a second line."; got != want {
+		t.Errorf("Questions[0].Text = %q, want %q", got, want)
+	}
+	if got, want := a.Questions[1].Text, "Second question, one line."; got != want {
+		t.Errorf("Questions[1].Text = %q, want %q", got, want)
+	}
+}
+
+// A continuation join must also stop at a blank line or a new heading, not
+// swallow the rest of the document.
+func TestContinuationJoinStopsAtBlankLineOrHeading(t *testing.T) {
+	p := write(t, "## Open questions\n"+
+		"- A question that wraps\n"+
+		"  onto one more line.\n"+
+		"\n"+
+		"## Success measures\n"+
+		"- Not a question at all.\n")
+	a := Assess(p)
+	if len(a.Questions) != 1 {
+		t.Fatalf("got %d questions, want 1: %+v", len(a.Questions), a.Questions)
+	}
+	if got, want := a.Questions[0].Text, "A question that wraps onto one more line."; got != want {
+		t.Errorf("Text = %q, want %q", got, want)
+	}
+}
+
+// A single-line "- [x] [NEEDS CLARIFICATION: ...]" bullet -- the marker and
+// its checkbox sharing one physical line, with no continuation -- must not
+// double-count as open. markerRe only ever matches within one physical
+// line, so every multi-line marker (every other test in this file) never
+// produces a marker-born Question at all; only the single-line case
+// produces both a marker-born and a bullet-born Question for the same
+// line, and merge() must fold them by line rather than by ID or text
+// (which differ between the two captures). Found on a real project: an
+// answered, single-line Q11 still reported Open: 1 and blocked the chain.
+func TestASingleLineMarkerBulletDoesNotDoubleCount(t *testing.T) {
+	p := write(t, "## Open questions\n"+
+		"- [x] [NEEDS CLARIFICATION: Q11 — minimum Python version and Windows scope]\n"+
+		"  Answer: Python 3.9+, native Windows in scope.\n")
+	a := AssessSpec(p)
+	if a.Open != 0 {
+		t.Fatalf("Open = %d, want 0 (the single-line marker+bullet is answered): %+v", a.Open, a.Questions)
+	}
+	if len(a.Questions) != 1 {
+		t.Fatalf("got %d questions, want 1 (marker and bullet folded into one): %+v", len(a.Questions), a.Questions)
+	}
+	if !a.Ready() {
+		t.Error("AssessSpec is not Ready with the single-line question answered")
+	}
+}
+
+// The flip side: an unanswered single-line marker+bullet must still block.
+func TestASingleLineMarkerBulletStillBlocksWhenUnanswered(t *testing.T) {
+	p := write(t, "## Open questions\n"+
+		"- [ ] [NEEDS CLARIFICATION: Q11 — minimum Python version and Windows scope]\n")
+	a := AssessSpec(p)
+	if a.Open != 1 {
+		t.Fatalf("Open = %d, want 1: %+v", a.Open, a.Questions)
+	}
+	if a.Ready() {
+		t.Error("AssessSpec is Ready with an unanswered single-line question")
+	}
+}

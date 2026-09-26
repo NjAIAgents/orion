@@ -57,6 +57,15 @@ func remoteStep(sio *stepIO, ws *workspace.Workspace) error {
 		return err
 	}
 	fmt.Fprint(sio.Out, res.Summary())
+
+	// OR-455: orion init calls ensureRepoSettings right after adopting a
+	// remote; this step never did, so a repo created here accumulated
+	// merged head branches forever -- internal/collect/collect.go's own
+	// comment assumes delete_branch_on_merge is on, which was only ever
+	// true for an init-adopted repo. Non-fatal, same as orion init: a repo
+	// that cannot get this setting is still worth having created.
+	ensureRepoSettingsFn(ws.RepoDir())
+
 	ws.Task.Remote = res.RemoteURL
 	// Recorded rather than fatal: the remote exists whether or not this
 	// write lands, and a resume re-discovers it from origin.

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orion web mockup — 00 brief</title>
+<style>
+  :root{
+    --ink:#e6e6e6; --ink-dim:#9aa0a6; --ink-faint:#6b7178;
+    --bg:#0f1115; --panel:#161a20; --line:#242a33;
+    --ok:#4bb543; --fail:#e05252; --warn:#d6a231; --wait:#4f8ff0; --work:#2fb3c4;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  body{margin:0;background:#0b0d10;color:var(--ink);font-family:var(--mono);}
+  .doc{max-width:1080px;margin:0 auto;padding:56px 48px 72px;}
+  h1{font-size:26px;font-weight:600;letter-spacing:-.01em;margin:0 0 6px;}
+  .sub{color:var(--ink-dim);font-size:13px;margin:0 0 40px;line-height:1.6;}
+  h2{font-size:12px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+     color:var(--ink-faint);margin:44px 0 16px;padding-bottom:8px;border-bottom:1px solid var(--line);}
+  p{font-size:13px;line-height:1.75;color:#c8ccd1;margin:0 0 14px;}
+  .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:0 0 8px;}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px 18px;}
+  .card h3{font-size:12px;margin:0 0 8px;font-weight:600;color:var(--ink);}
+  .card p{font-size:12px;line-height:1.65;color:var(--ink-dim);margin:0;}
+  .k{color:var(--ink);}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin:0 0 10px;}
+  th{text-align:left;font-weight:600;color:var(--ink-faint);font-size:10.5px;
+     letter-spacing:.1em;text-transform:uppercase;padding:0 12px 9px 0;border-bottom:1px solid var(--line);}
+  td{padding:9px 12px 9px 0;border-bottom:1px solid rgba(36,42,51,.6);color:var(--ink-dim);vertical-align:top;}
+  td:first-child{color:var(--ink);white-space:nowrap;}
+  .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:7px;vertical-align:baseline;}
+  .term{background:#0b0d10;border:1px solid var(--line);border-radius:6px;padding:16px 18px;
+        font-size:11.5px;line-height:1.85;white-space:pre;overflow-x:auto;color:var(--ink-dim);margin:0 0 14px;}
+  .q{background:rgba(214,162,49,.07);border:1px solid rgba(214,162,49,.28);border-radius:6px;
+     padding:14px 16px;margin:0 0 12px;}
+  .q h3{font-size:12px;margin:0 0 6px;color:var(--warn);font-weight:600;}
+  .q p{font-size:12px;margin:0;color:#c8ccd1;line-height:1.65;}
+  .tag{display:inline-block;font-size:10px;padding:2px 7px;border-radius:3px;
+       background:rgba(79,143,240,.14);color:var(--wait);margin-right:6px;}
+  a{color:var(--wait);} a:hover{color:#7db0ff;}
+</style>
+</head><body>
+
+<div class="doc">
+  <h1>Orion web — design brief</h1>
+  <p class="sub">Mockups for Jira fixVersion <span class="k">v0.10.0</span> — epic OR-35 plus the write-capable
+  surface (OR-266, OR-272, OR-279, OR-281). Read this first: it says what I took from the codebase,
+  what I assumed, and what I need you to settle.</p>
+
+  <h2>Where the visual language comes from</h2>
+  <p>Orion already has a design system — it lives in <span class="k">internal/ui</span> and it is a terminal.
+  I lifted it rather than inventing one, so the browser and the console never disagree about what a run looks like.
+  The rules below are the CLI's own, quoted from its source.</p>
+
+  <div class="grid">
+    <div class="card"><h3>Five verbs, not twenty</h3><p>The status column answers one question: “do I have to do
+    something”. It has exactly five values — ok, working, waiting, warning, failed. Every card and log row uses
+    these words and no others.</p></div>
+    <div class="card"><h3>Colour is never the sole carrier</h3><p>From <span class="k">ui/color.go</span>:
+    every line begins with a word saying the same thing as its colour, so output reads identically piped, logged,
+    or by someone who cannot distinguish the colours. The mockups keep the word beside every dot.</p></div>
+    <div class="card"><h3>Three colour axes, three columns</h3><p>Ticket key coloured by ticket, status by outcome,
+    actor by actor. The message is never coloured — its text belongs to the agent that said it.</p></div>
+    <div class="card"><h3>Name and job title, every line</h3><p><span class="k">internal/actors</span>: the name
+    alone is opaque to anyone who has not memorised the cast. So it is “Ravi · backend developer”, always, never
+    just “Ravi”.</p></div>
+  </div>
+
+  <h2>The status palette, as the CLI defines it</h2>
+  <table>
+    <tr><th>Verb</th><th>Icon</th><th>Means</th><th>Why its own colour</th></tr>
+    <tr><td><span class="sw" style="background:var(--ok)"></span>ok</td><td>✓</td><td>It worked</td><td>—</td></tr>
+    <tr><td><span class="sw" style="background:var(--work)"></span>working</td><td>◐</td><td>In flight, money is being spent</td><td>Not green: a claimed ticket is in flight, not finished</td></tr>
+    <tr><td><span class="sw" style="background:var(--wait)"></span>waiting</td><td>⏳</td><td>A machine or a person is deciding</td><td>Not cyan: nothing is being spent here</td></tr>
+    <tr><td><span class="sw" style="background:var(--warn)"></span>warning</td><td>⚠</td><td>Worth a look, nothing broken</td><td>—</td></tr>
+    <tr><td><span class="sw" style="background:var(--fail)"></span>failed</td><td>✗</td><td>Broken, needs a person</td><td>—</td></tr>
+    <tr><td><span class="sw" style="background:#6b7178"></span>queued</td><td>○</td><td>Admitted, unclaimed</td><td>Dim: nothing has happened yet</td></tr>
+  </table>
+
+  <h2>What the terminal prints today</h2>
+  <p>This is the line the web surface has to reproduce — same columns, same order, same words:</p>
+  <div class="term">13:34:52 <span style="color:#c586c0">OR-183</span>  <span style="color:var(--ok)">✓  ok      </span> <span style="color:#dcb67a">Ravi · backend developer</span>   opus     2 commit(s) on orion/or-183
+13:34:52 <span style="color:#c586c0">OR-183</span>  <span style="color:var(--ink-faint)">══ stage ══</span> <span style="color:var(--ink)">implementing → qa</span>  Ravi · backend developer hands to Anita · QA engineer
+13:34:53 <span style="color:#c586c0">OR-183</span>  <span style="color:var(--work)">◐  working </span> <span style="color:#7ec9d8">Anita · QA engineer</span>        sonnet   verifying acceptance criteria
+13:35:01 <span style="color:#9cdcfe">OR-266</span>  <span style="color:var(--wait)">⏳ waiting </span> <span style="color:var(--ink-faint)">ci</span>                        -        pull request opened, awaiting CI; no agent is running</div>
+  <p>Note the stage boundary: it drops the icon/verb/actor columns entirely and puts one sentence where they were.
+  Nothing else looks like that, which is what makes a handoff findable by eye. The mockups keep that rule.</p>
+
+  <h2>Assumptions I made</h2>
+  <div class="grid">
+    <div class="card"><h3>Dark first</h3><p>This sits beside a terminal on the same screen. A white dashboard next
+    to a dark console is the jarring part. Light theme is a later variant, not the default.</p></div>
+    <div class="card"><h3>Monospace throughout</h3><p>The columns only line up in a mono face, and column alignment
+    is what <span class="k">ui/color.go</span> calls the thing that makes a long report scannable at all.</p></div>
+    <div class="card"><h3>No invented metrics</h3><p>Every number shown traces to something Orion records: step
+    counts, elapsed, cost from the budget ledger, CI verdict. No engagement-style charts.</p></div>
+    <div class="card"><h3>Sample data is real-shaped</h3><p>Ticket keys, actor names and models come from the
+    shipped roster in <span class="k">internal/actors</span>. Names are configurable, so treat them as examples.</p></div>
+  </div>
+
+  <h2>What I need you to settle</h2>
+  <div class="q"><h3>1 — The read-only premise is dead. How far?</h3>
+  <p>OR-35 still says “Read-only, at least to begin with” and “Localhost only, no auth”. OR-266 and OR-281 overturn
+  both, and OR-286 exists purely to rewrite the tickets that still cite the old premise. I have designed the board
+  <span class="tag">with</span> gate controls. Say if you want the mockup to show the read-only version instead.</p></div>
+  <div class="q"><h3>2 — Static mockups, or a clickable prototype?</h3>
+  <p>Static screens are faster to iterate on and are what a ticket usually needs. A clickable prototype earns its
+  cost if you want to feel the log-panel filtering and the gate-response flow before OR-51 and OR-281 are built.</p></div>
+  <div class="q"><h3>3 — Is the gate board the front door, or is the run view?</h3>
+  <p>OR-35 opens on live agent activity. OR-272 says the thing you actually need is “everything waiting on me,
+  across projects”. Those are different landing pages. I assumed <span class="tag">gate board first</span>,
+  run view one click away — because the epic itself says the common case is opening it to see what happened.</p></div>
+
+  <h2>What comes next</h2>
+  <p>Once you answer those, I build the screens: the run view (OR-51), the gate board (OR-272), a ticket detail
+  (OR-53), and agent config (OR-54). Each one annotated with the ticket it satisfies.</p>
+</div>
+
+</body></html>

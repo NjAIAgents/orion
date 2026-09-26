@@ -180,6 +180,31 @@ type Git interface {
 // they will not merge on it.
 var ErrCheckPending = errors.New("the checks have not reported yet")
 
+// ErrInteractionFault is returned when the batch is red and bisection can
+// find no single member to blame: every proper subset it tested came back
+// green, so the fault needs two members TOGETHER.
+//
+// THE NIGHT THIS COST. OR-274 spelled the literals "orion-failed" and
+// "ORION" in internal/web/gates.go; OR-273 added a test forbidding any queue
+// label in a non-test file of that package. Each branch is green alone. The
+// five-member batch holding both split into [OR-59 OR-274 OR-277] and
+// [OR-276 OR-273] -- both halves GREEN, four times each -- so the search
+// returned no culprit at all.
+//
+// The caller then read an empty culprit list as EVERY MEMBER INNOCENT, spent
+// a confirming run on the whole set, went red, saved the state as red, and
+// on the next tick knownRed sent it straight back into isolation with the
+// same members. 91 CI runs, 13.5 hours, nothing merged, nobody convicted.
+//
+// A sentinel, for the reason ErrCheckPending gives above: a caller that does
+// not know about this stops, and stopping is the safe reading. There is no
+// bisection that finds an interaction fault -- the search proves subsets, and
+// every subset here is sound -- so no amount of re-running helps and a person
+// has to look.
+var ErrInteractionFault = errors.New(
+	"the batch is red but every part of it is green: the fault needs two " +
+		"members together, so no single branch can be ejected")
+
 // Tester runs CI against a ref and reports whether it passed.
 //
 // Returns ErrCheckPending while a build is still running. It must NOT block
@@ -386,6 +411,26 @@ func isolateProving(t Tester, g Git, refPrefix, base string, members []Member,
 			return nil, runs, green, serr
 		}
 		culprits = append(culprits, sub...)
+	}
+	// NOBODY GUILTY IS NOT EVERYBODY INNOCENT (OR-427).
+	//
+	// Reaching here with no culprit means both halves tested green while
+	// their union is red: the fault is an INTERACTION, and bisection cannot
+	// represent it. The search proves subsets, and every subset here is
+	// sound.
+	//
+	// Said with an error rather than an empty slice because the empty slice
+	// is exactly what the caller misread for 91 CI runs. A sentinel makes
+	// the two cases impossible to confuse, and a caller that does not know
+	// about it stops -- the safe reading.
+	//
+	// depth > 0 is excluded deliberately. A green/green split INSIDE the
+	// recursion is normal: the parent already knows its own ref is red, and
+	// this level's job is only to hand back what it found. The claim "no
+	// single member is to blame" can only be made about the whole set, which
+	// is the top-level call.
+	if len(culprits) == 0 && depth == 0 {
+		return nil, runs, green, ErrInteractionFault
 	}
 	return culprits, runs, green, nil
 }

@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orion web mockup — 03 ticket detail</title>
+<style>
+:root{
+  --ink:#e6e6e6; --ink-dim:#9aa0a6; --ink-faint:#6b7178;
+  --bg:#0b0d10; --panel:#12161b; --line:#242a33; --line-soft:rgba(36,42,51,.55);
+  --ok:#4bb543; --fail:#e05252; --warn:#d6a231; --wait:#4f8ff0; --work:#2fb3c4;
+  --t-teal:#4fc7c7;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:12px;}
+a{color:var(--wait);} a:hover{color:#7db0ff;}
+.app{display:flex;flex-direction:column;height:900px;}
+.topbar{display:flex;align-items:center;gap:16px;padding:0 18px;height:44px;
+  border-bottom:1px solid var(--line);background:var(--panel);flex:none;}
+.brand{font-weight:600;font-size:13px;} .brand .dot{color:var(--work);}
+.crumb{color:var(--ink-faint);font-size:11.5px;}
+.spacer{flex:1;}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:4px;
+  border:1px solid var(--line);color:var(--ink-dim);font-size:11px;}
+.scroll{flex:1;overflow:auto;min-height:0;}
+.hero{padding:22px 24px 16px;border-bottom:1px solid var(--line);}
+.herotop{display:flex;align-items:center;gap:12px;margin-bottom:9px;flex-wrap:wrap;}
+.key{font-size:15px;font-weight:600;color:var(--t-teal);}
+.state{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;padding:2.5px 9px;border-radius:4px;
+  background:rgba(75,181,67,.12);color:var(--ok);}
+.label{font-size:10px;color:var(--ink-faint);padding:1.5px 6px;border:1px solid var(--line);border-radius:3px;}
+.title{font-size:13px;line-height:1.55;color:#dfe3e7;max-width:760px;}
+.facts{display:flex;gap:26px;margin-top:14px;flex-wrap:wrap;}
+.fact .l{font-size:10px;color:var(--ink-faint);letter-spacing:.09em;text-transform:uppercase;margin-bottom:4px;}
+.fact .v{font-size:12px;color:var(--ink);}
+.cols{display:flex;gap:0;align-items:stretch;}
+.left{flex:1;min-width:0;padding:20px 24px 30px;}
+.right{width:340px;flex:none;border-left:1px solid var(--line);padding:20px 20px 30px;background:var(--panel);}
+h2{font-size:10.5px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-faint);
+  margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line);}
+h2.mt{margin-top:30px;}
+.tl{display:flex;flex-direction:column;}
+.ev{display:flex;gap:12px;padding:9px 0;border-bottom:1px solid var(--line-soft);}
+.ev .ts{color:var(--ink-faint);flex:none;width:60px;font-size:11px;}
+.ev .ic{flex:none;width:18px;font-size:11px;}
+.ev .bd{flex:1;min-width:0;}
+.ev .who{font-size:11px;margin-bottom:2px;}
+.ev .msg{font-size:11.5px;color:#c8ccd1;line-height:1.55;}
+.stage{display:flex;gap:12px;padding:11px 0;border-bottom:1px solid var(--line-soft);align-items:baseline;}
+.stage .rule{color:var(--ink-faint);font-size:11px;}
+.stage .nm{font-weight:600;font-size:11.5px;}
+.stage .cl{color:var(--ink-dim);font-size:11px;}
+.dec{background:rgba(255,255,255,.028);border-left:2px solid rgba(181,140,240,.5);
+  padding:10px 12px;border-radius:0 5px 5px 0;margin:9px 0;}
+.dec .from{color:var(--ink-faint);font-size:10.5px;margin-bottom:4px;}
+.dec .txt{font-size:11.5px;color:#c8ccd1;line-height:1.6;}
+.kv{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line-soft);font-size:11.5px;}
+.kv .k{color:var(--ink-faint);} .kv .v{color:var(--ink);}
+.acts{display:flex;flex-direction:column;gap:7px;margin-top:16px;}
+.btn{padding:7px 11px;border-radius:5px;border:1px solid var(--line);text-align:center;
+  font-size:11.5px;color:var(--ink-dim);}
+.btn.primary{background:rgba(75,181,67,.13);border-color:rgba(75,181,67,.4);color:var(--ok);}
+.btn.warnb{background:rgba(214,162,49,.1);border-color:rgba(214,162,49,.34);color:var(--warn);}
+.ci{display:flex;align-items:center;gap:8px;padding:9px 11px;border-radius:5px;
+  background:rgba(75,181,67,.08);border:1px solid rgba(75,181,67,.26);font-size:11.5px;color:var(--ok);}
+.cost{display:flex;align-items:baseline;gap:7px;}
+.cost .big{font-size:19px;font-weight:600;}
+.bar{display:flex;height:5px;border-radius:3px;overflow:hidden;margin:9px 0 6px;background:var(--line);}
+.bar i{display:block;height:100%;}
+.leg{display:flex;flex-direction:column;gap:5px;font-size:10.5px;color:var(--ink-faint);}
+.leg .r{display:flex;align-items:center;gap:7px;}
+.sw{width:8px;height:8px;border-radius:2px;flex:none;}
+</style>
+</head><body>
+
+<div class="app">
+  <div class="topbar">
+    <div class="brand">orion<span class="dot">·</span>web</div>
+    <div class="crumb">gate board / orion / OR-266</div>
+    <div class="spacer"></div>
+    <div class="chip">next ↓</div>
+    <div class="chip">prev ↑</div>
+  </div>
+
+  <div class="scroll">
+    <div class="hero">
+      <div class="herotop">
+        <span class="key">OR-266</span>
+        <span class="state">✓ awaiting approval</span>
+        <span class="label">orion-ready</span>
+        <span class="label">v0.10.0</span>
+      </div>
+      <div class="title">Authentication for the write-capable local surface</div>
+      <div class="facts">
+        <div class="fact"><div class="l">stage</div><div class="v">done triage → you</div></div>
+        <div class="fact"><div class="l">branch</div><div class="v">orion/OR-266-auth</div></div>
+        <div class="fact"><div class="l">pull request</div><div class="v"><a href="#pr">#479</a></div></div>
+        <div class="fact"><div class="l">elapsed</div><div class="v">18m 41s</div></div>
+        <div class="fact"><div class="l">spent</div><div class="v">$6.90</div></div>
+      </div>
+    </div>
+
+    <div class="cols">
+      <div class="left">
+        <h2>What happened</h2>
+        <div class="tl">
+          <div class="ev"><span class="ts">13:12:04</span><span class="ic work">◐</span>
+            <div class="bd"><div class="who" style="color:#e0e0e0">orion</div>
+            <div class="msg">claimed OR-266 (3 queued) · branch orion/OR-266-auth</div></div></div>
+
+          <div class="stage"><span class="ts" style="color:var(--ink-faint);width:60px;flex:none">13:12:09</span>
+            <span class="rule">══ stage ══</span><span class="nm">planning → implementing</span>
+            <span class="cl">· Navjyot · architect hands to Ravi · backend developer</span></div>
+
+          <div class="ev"><span class="ts">13:15:22</span><span class="ic ok">✓</span>
+            <div class="bd"><div class="who" style="color:#dcb67a">Ravi · backend developer <span class="dim" style="color:var(--ink-faint)">opus</span></div>
+            <div class="msg">4 commit(s) on orion/OR-266-auth</div></div></div>
+
+          <div class="dec">
+            <div class="from">Navjyot · architect, an Orion agent — decision recorded</div>
+            <div class="txt">Token is mandatory rather than argued for. Origin and Host checks are additive,
+            never a substitute: a browser that omits Origin must still fail on the token. Host is an exact-string
+            allowlist — never a suffix match, never a DNS lookup (OR-267, OR-270).</div>
+          </div>
+
+          <div class="stage"><span class="ts" style="color:var(--ink-faint);width:60px;flex:none">13:21:40</span>
+            <span class="rule">══ stage ══</span><span class="nm">implementing → qa</span>
+            <span class="cl">· Ravi hands to Anita · QA engineer</span></div>
+
+          <div class="ev"><span class="ts">13:26:11</span><span class="ic ok">✓</span>
+            <div class="bd"><div class="who" style="color:#7ec9d8">Anita · QA engineer <span style="color:var(--ink-faint)">sonnet</span></div>
+            <div class="msg">7 case(s) authored — default-deny over the whole mux, read-only allowlist, missing-token, wrong-token, bad Host, absent Origin, replay</div></div></div>
+
+          <div class="ev"><span class="ts">13:27:03</span><span class="ic wait">⏳</span>
+            <div class="bd"><div class="who dim" style="color:var(--ink-faint)">ci <span>-</span></div>
+            <div class="msg">pull request #479 opened, awaiting CI; no agent is running</div></div></div>
+
+          <div class="ev"><span class="ts">13:30:48</span><span class="ic ok">✓</span>
+            <div class="bd"><div class="who dim" style="color:var(--ink-faint)">ci <span>-</span></div>
+            <div class="msg">all checks passed — build, vet, test, race</div></div></div>
+
+          <div class="stage"><span class="ts" style="color:var(--ink-faint);width:60px;flex:none">13:30:52</span>
+            <span class="rule">══ stage ══</span><span class="nm">qa → approval</span>
+            <span class="cl">· Anita hands to you; no agent is running</span></div>
+
+          <div class="dec" style="border-left-color:rgba(75,181,67,.5)">
+            <div class="from">Hema · delivery triage, an Orion agent — verdict</div>
+            <div class="txt">Genuinely done, not merely green. The middleware is default-deny over the whole mux
+            with an explicit read-only allowlist, so a route added later is refused until someone opts it in.
+            No test was weakened to pass.</div>
+          </div>
+        </div>
+
+        <h2 class="mt">Plan conformance</h2>
+        <div class="dec" style="border-left-color:rgba(79,143,240,.5);margin-top:0">
+          <div class="from">Nadia · plan conformance reviewer, an Orion agent</div>
+          <div class="txt">One departure from the confirmed plan: the plan proposed a shared secret in the config
+          file; the implementation generates a per-process token instead and never writes it to disk. Reported,
+          not blocked — this is stricter than planned.</div>
+        </div>
+      </div>
+
+      <div class="right">
+        <h2>Checks</h2>
+        <div class="ci">✓ all checks passed · 3m 41s</div>
+        <div class="kv"><span class="k">diff</span><span class="v">12 files · +486 −31</span></div>
+        <div class="kv"><span class="k">tests added</span><span class="v">7</span></div>
+        <div class="kv"><span class="k">fix loops</span><span class="v">0</span></div>
+
+        <h2 class="mt">Cost</h2>
+        <div class="cost"><span class="big">$6.90</span><span class="dim" style="color:var(--ink-faint)">of $25 ticket cap</span></div>
+        <div class="bar">
+          <i style="background:#dcb67a;width:58%"></i>
+          <i style="background:#7ec9d8;width:26%"></i>
+          <i style="background:#c9a0dc;width:9%"></i>
+          <i style="background:#9fd6a0;width:7%"></i>
+        </div>
+        <div class="leg">
+          <div class="r"><span class="sw" style="background:#dcb67a"></span>Ravi · backend developer · opus · $4.00</div>
+          <div class="r"><span class="sw" style="background:#7ec9d8"></span>Anita · QA engineer · sonnet · $1.79</div>
+          <div class="r"><span class="sw" style="background:#c9a0dc"></span>Hema · delivery triage · sonnet · $0.62</div>
+          <div class="r"><span class="sw" style="background:#9fd6a0"></span>Nadia · plan conformance · sonnet · $0.49</div>
+        </div>
+
+        <h2 class="mt">Your call</h2>
+        <div class="acts">
+          <div class="btn primary">approve and merge</div>
+          <div class="btn warnb">request changes</div>
+          <div class="btn">view diff</div>
+          <div class="btn">open in Jira</div>
+        </div>
+        <div style="margin-top:12px;font-size:10.5px;color:var(--ink-faint);line-height:1.6">
+          Each action shells out to the CLI command that already owns it — explicit argv, no shell,
+          closed allowlist (OR-282).
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body></html>

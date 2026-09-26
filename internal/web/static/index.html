@@ -1,0 +1,795 @@
+<!doctype html>
+<!--
+  The run view (OR-67): the card grid rendering /api/snapshot.
+
+  Preact + htm, vendored (OR-66) -- no build step, no bundler. This file and
+  js/app.js are what the browser runs; there is nothing to compile between
+  editing either and reloading the page.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>orion web</title>
+    <style>
+      :root {
+        --ink: #e6e6e6;
+        --ink-dim: #9aa0a6;
+        --ink-faint: #6b7178;
+        --bg: #0b0d10;
+        --panel: #12161b;
+        --line: #242a33;
+        --line-soft: rgba(36, 42, 51, 0.55);
+        --ok: #4bb543;
+        --fail: #e05252;
+        --warn: #d6a231;
+        --wait: #4f8ff0;
+        --work: #2fb3c4;
+        --dimc: #6b7178;
+        --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        /* The ticket-identity palette (docs/design/web/01-run-view.html and
+           friends): a colour PER TICKET, distinct from the five outcome
+           colours above -- --ok/--fail/--warn/--wait/--work say how a run
+           went, this says WHICH ticket a card or log line belongs to, so
+           the two axes must never share a hue or a card that failed would
+           read as "this is ticket X" and "this went wrong" at once. */
+        --t-orange: #d98a3d;
+        --t-violet: #b58cf0;
+        --t-teal: #4fc7c7;
+        --t-rose: #e08fb0;
+        --t-sky: #7bb6f0;
+        /* ask-broker only (docs/design/web/09-ask-broker.html): a second
+           panel shade for its floating node cards, and the amber used for
+           Ravi's identity there -- distinct from --t-orange, which colours
+           a ticket rather than a person. */
+        --panel2: #161b22;
+        --amber: #dcb67a;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      a { color: var(--wait); }
+      a:hover { color: #7db0ff; }
+      .app { display: flex; flex-direction: row; height: 100vh; }
+      /* The sidebar (OR-439): a persistent left-side menu reaching every
+         registered panel, not only the ones the old horizontal topbar tabs
+         had room for. Two sections, split on the same inNav flag
+         registerPanel already carries (panels.js) -- "pages" for a tab
+         meant to be opened cold, "views" for a destination like ticket-
+         detail or ask-broker that wants a key/run to be useful. No mockup
+         draws this pattern (each one only shows its own page's relevant
+         tabs), so the visual language here is this codebase's own: same
+         tokens, same mono type, distinct from any single mockup. */
+      .sidebar {
+        width: 176px;
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid var(--line);
+        background: var(--panel);
+      }
+      .sidebrand {
+        font-weight: 600;
+        font-size: 13px;
+        padding: 0 16px;
+        height: 44px;
+        display: flex;
+        align-items: center;
+        border-bottom: 1px solid var(--line);
+        flex: none;
+      }
+      .sidebrand .dot { color: var(--work); }
+      .sidenav { flex: 1; overflow: auto; padding: 12px 10px; }
+      .sidelabel {
+        font-size: 9.5px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        font-weight: 600;
+        padding: 12px 8px 6px;
+      }
+      .sidelabel:first-child { padding-top: 2px; }
+      .sideitem {
+        display: block;
+        padding: 6px 8px;
+        border-radius: 5px;
+        color: var(--ink-faint);
+        font-size: 11.5px;
+        text-decoration: none;
+      }
+      .sideitem:hover { color: var(--ink-dim); }
+      .sideitem.on { background: rgba(47, 179, 196, 0.12); color: var(--work); }
+      .mainarea { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+      .spacer { flex: 1; }
+      .dotlive { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+      .body { display: flex; flex: 1; min-height: 0; }
+      .main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+      .head { display: flex; align-items: baseline; gap: 12px; padding: 18px 20px 12px; flex: none; }
+      .h1 { font-size: 14px; font-weight: 600; }
+      .head .sub, .sub { color: var(--ink-faint); font-size: 11.5px; }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 12px;
+        padding: 4px 20px 20px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 13px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+        position: relative;
+        overflow: hidden;
+      }
+      .card.active { border-color: rgba(47, 179, 196, 0.42); }
+      /* The ticket-identity stripe (docs/design/web/01-run-view.html): a
+         positioned overlay, not a border -- a border-left would add to the
+         card's own 1px border rather than sitting distinct from it, and
+         would shift the card's content by its own width. */
+      .card .rail { position: absolute; left: 0; top: 0; bottom: 0; width: 2px; }
+      .crow { display: flex; align-items: center; gap: 8px; }
+      .key { font-weight: 600; font-size: 12px; letter-spacing: 0.01em; }
+      .status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; }
+      .status.ok { color: var(--ok); }
+      .status.working { color: var(--work); }
+      .status.waiting { color: var(--wait); }
+      .status.warning { color: var(--warn); }
+      .status.failed { color: var(--fail); }
+      .summary {
+        color: #c8ccd1;
+        font-size: 11.5px;
+        line-height: 1.5;
+      }
+      .who { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--ink-dim); }
+      .model {
+        color: var(--ink-faint);
+        font-size: 10.5px;
+        padding: 1px 6px;
+        border: 1px solid var(--line);
+        border-radius: 3px;
+      }
+      .activity { color: var(--ink-faint); font-size: 10.5px; }
+      .stage {
+        color: var(--ink-dim);
+        font-size: 10.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .meta {
+        display: flex;
+        gap: 14px;
+        font-size: 10.5px;
+        color: var(--ink-faint);
+        border-top: 1px solid var(--line-soft);
+        padding-top: 8px;
+        margin-top: auto;
+      }
+      .meta b { font-weight: 600; color: var(--ink-dim); }
+      /* An INDETERMINATE bar, not a percentage: there is no fixed stage
+         count a run's progress could be measured against (dba is optional,
+         qa can fan out and loop), so this signals "still working" rather
+         than claiming a completion fraction nothing backs. */
+      .cardbar {
+        height: 2px;
+        border-radius: 1px;
+        background: var(--line-soft);
+        overflow: hidden;
+      }
+      .cardbar i {
+        display: block;
+        width: 40%;
+        height: 100%;
+        background: var(--work);
+        border-radius: 1px;
+        animation: cardbar-sweep 1.4s ease-in-out infinite;
+      }
+      @keyframes cardbar-sweep {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(350%); }
+      }
+      .steps { display: flex; gap: 3px; align-items: center; }
+      .step { width: 11px; height: 3px; border-radius: 1px; background: var(--line); }
+      .step.done { background: var(--ok); }
+      .step.now { background: var(--work); }
+      .gate {
+        background: rgba(214, 162, 49, 0.09);
+        border: 1px solid rgba(214, 162, 49, 0.3);
+        border-radius: 5px;
+        padding: 7px 9px;
+        font-size: 10.5px;
+        color: #e7d3a8;
+        line-height: 1.5;
+      }
+      .empty {
+        padding: 40px 20px;
+        color: var(--ink-faint);
+        font-size: 12px;
+        text-align: center;
+      }
+      /* The log panel (OR-69): docked right, matching the mockup 1:1. */
+      .log {
+        width: 430px;
+        flex: none;
+        border-left: 1px solid var(--line);
+        background: var(--panel);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .logtop { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+      .logtop .t { font-size: 11.5px; font-weight: 600; }
+      .dim { color: var(--ink-faint); }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 9px;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        color: var(--ink-dim);
+        font-size: 11px;
+      }
+      .filter { display: flex; gap: 4px; flex-wrap: wrap; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+      .f {
+        padding: 2.5px 8px;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        color: var(--ink-faint);
+        font-size: 10.5px;
+        cursor: pointer;
+        background: none;
+        font-family: inherit;
+      }
+      .f.on { background: rgba(47, 179, 196, 0.13); border-color: rgba(47, 179, 196, 0.35); color: var(--work); }
+      .lines { flex: 1; overflow: auto; padding: 10px 0 14px; font-size: 11px; line-height: 1.75; min-height: 0; }
+      .ln { display: flex; gap: 8px; padding: 1px 14px; white-space: nowrap; }
+      .ts { color: var(--ink-faint); flex: none; width: 52px; }
+      .lk { flex: none; width: 52px; }
+      .lv { flex: none; width: 74px; }
+      .lv.ok { color: var(--ok); }
+      .lv.working { color: var(--work); }
+      .lv.waiting { color: var(--wait); }
+      .lv.warning { color: var(--warn); }
+      .lv.failed { color: var(--fail); }
+      .la { flex: none; width: 142px; overflow: hidden; text-overflow: ellipsis; }
+      .lm { flex: none; width: 44px; color: var(--ink-faint); }
+      .lg { color: #c8ccd1; overflow: hidden; text-overflow: ellipsis; }
+      .stagerow { display: flex; gap: 8px; padding: 4px 14px; white-space: nowrap; align-items: baseline; overflow: hidden; }
+      .rule { color: var(--ink-faint); flex: none; }
+      .stagenames { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+      .logfoot {
+        border-top: 1px solid var(--line);
+        padding: 8px 14px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 10.5px;
+        color: var(--ink-faint);
+        flex: none;
+      }
+      .pausebtn {
+        margin-left: auto;
+        padding: 3px 9px;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        color: var(--ink-dim);
+        cursor: pointer;
+        background: none;
+        font-family: inherit;
+        font-size: inherit;
+      }
+      .pausebtn.paused { background: rgba(214, 162, 49, 0.13); border-color: rgba(214, 162, 49, 0.35); color: var(--warn); }
+
+      /* The config panel (OR-54, OR-81) and history panel (OR-54, OR-83)
+         share this table styling -- one role/run per row, matching the
+         mockups' own layout (docs/design/web/04-agents.html). */
+      .scroll { flex: 1; overflow: auto; padding: 0 20px 24px; min-height: 0; }
+      table { width: 100%; border-collapse: collapse; }
+      th {
+        text-align: left;
+        font-size: 10px;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        font-weight: 600;
+        padding: 0 14px 9px 0;
+        border-bottom: 1px solid var(--line);
+        position: sticky;
+        top: 0;
+        background: var(--bg);
+      }
+      td { padding: 10px 14px 10px 0; border-bottom: 1px solid var(--line-soft); vertical-align: top; font-size: 11.5px; }
+      .nm { color: var(--ink); white-space: nowrap; }
+      .desig { color: var(--ink-dim); white-space: nowrap; }
+      .id { color: var(--ink-faint); font-size: 10.5px; }
+      .mdl { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10.5px; }
+      .mdl.opus { background: rgba(224, 138, 61, 0.14); color: #e0a06a; }
+      .mdl.sonnet { background: rgba(79, 143, 240, 0.13); color: #7bb6f0; }
+      .mdl.haiku { background: rgba(75, 181, 67, 0.12); color: #7cc47a; }
+      .dash { color: var(--ink-faint); }
+      .ovr {
+        display: inline-block;
+        font-size: 9.5px;
+        padding: 1.5px 6px;
+        border-radius: 3px;
+        background: rgba(214, 162, 49, 0.13);
+        color: var(--warn);
+        margin-left: 7px;
+      }
+      .sect {
+        font-size: 10.5px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        padding: 22px 0 9px;
+        font-weight: 600;
+      }
+      .why {
+        color: var(--ink-faint);
+        font-size: 10.5px;
+        line-height: 1.6;
+        max-width: 430px;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+
+      /* The ask-broker panel (OR-437, docs/design/web/09-ask-broker.html),
+         copied verbatim and prefixed askb- throughout: this page reuses
+         .dotlive and .chip as NAMES but with different colours and meaning
+         than the shared rules above (an amber blinking dot here, not the
+         green static one everywhere else), so sharing the bare class would
+         silently reconcile two designs that were never meant to agree. */
+      .askb-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+      .askb-crumbbar {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 0 18px;
+        height: 36px;
+        border-bottom: 1px solid var(--line);
+        flex: none;
+      }
+      .askb-crumb { color: var(--ink-faint); font-size: 11.5px; }
+      .askb-spacer { flex: 1; }
+      .askb-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 9px;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        color: var(--ink-dim);
+        font-size: 11px;
+      }
+      .askb-chip.askb-amber {
+        border-color: rgba(214, 162, 49, 0.35);
+        color: var(--warn);
+        background: rgba(214, 162, 49, 0.07);
+      }
+      .askb-dotlive {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--warn);
+        animation: askb-blink 2s ease-in-out infinite;
+      }
+      @keyframes askb-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+      .askb-canvas {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+        background-image: radial-gradient(circle, rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+        background-size: 22px 22px;
+        background-position: -1px -1px;
+      }
+      .askb-edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+      .askb-e { fill: none; stroke-width: 1.7; }
+      .askb-e.askb-ask { stroke: rgba(220, 182, 122, 0.6); }
+      .askb-e.askb-route { stroke: rgba(107, 113, 120, 0.5); stroke-dasharray: 4 4; }
+      .askb-e.askb-inv { stroke: rgba(181, 140, 240, 0.6); }
+      .askb-e.askb-refuse { stroke: rgba(214, 162, 49, 0.6); stroke-dasharray: 6 4; }
+      .askb-e.askb-ans { stroke: rgba(75, 181, 67, 0.6); }
+      .askb-elab { font-size: 9.5px; font-family: var(--mono); fill: var(--ink-faint); }
+      .askb-elab.askb-amber { fill: var(--amber); }
+      .askb-elab.askb-violet { fill: var(--t-violet); }
+      .askb-elab.askb-warn { fill: var(--warn); }
+      .askb-elab.askb-ok { fill: var(--ok); }
+      .askb-num { font-size: 9px; font-weight: 600; font-family: var(--mono); }
+
+      .askb-n { position: absolute; background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; }
+      .askb-nh { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+      .askb-av {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        font-weight: 600;
+        flex: none;
+      }
+      .askb-ntitle { font-size: 11.5px; font-weight: 600; }
+      .askb-nsub { font-size: 9.5px; color: var(--ink-faint); line-height: 1.55; }
+      .askb-nfoot {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-top: 8px;
+        padding-top: 7px;
+        border-top: 1px solid var(--line-soft);
+        font-size: 9.5px;
+        color: var(--ink-faint);
+      }
+      .askb-nfoot .askb-r { margin-left: auto; color: var(--ink-dim); }
+      .askb-port { position: absolute; width: 7px; height: 7px; border-radius: 50%; background: var(--panel); border: 1.5px solid var(--line); }
+
+      .askb-n.askb-ravi { left: 44px; top: 340px; width: 196px; border-color: rgba(220, 182, 122, 0.35); }
+      .askb-n.askb-ravi .askb-av { background: rgba(220, 182, 122, 0.16); color: var(--amber); }
+      .askb-n.askb-ravi .askb-ntitle { color: var(--amber); }
+      .askb-idlebadge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 9px;
+        padding: 2px 7px;
+        border-radius: 3px;
+        background: rgba(107, 113, 120, 0.16);
+        color: var(--ink-faint);
+      }
+      .askb-zz { animation: askb-zz 2.4s ease-in-out infinite; }
+      @keyframes askb-zz { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.85; } }
+
+      .askb-n.askb-orion {
+        left: 392px;
+        top: 318px;
+        width: 216px;
+        border-color: rgba(47, 179, 196, 0.5);
+        box-shadow: 0 0 0 1px rgba(47, 179, 196, 0.16), 0 0 30px rgba(47, 179, 196, 0.12);
+      }
+      .askb-n.askb-orion .askb-av { background: rgba(47, 179, 196, 0.16); color: var(--work); }
+      .askb-n.askb-orion .askb-ntitle { color: var(--work); }
+      .askb-hubpulse {
+        position: absolute;
+        inset: -5px;
+        border-radius: 11px;
+        border: 1px solid var(--work);
+        opacity: 0.35;
+        animation: askb-hp 2.2s ease-out infinite;
+        pointer-events: none;
+      }
+      @keyframes askb-hp { 0% { transform: scale(0.99); opacity: 0.4; } 70% { transform: scale(1.04); opacity: 0; } 100% { opacity: 0; } }
+      .askb-steps { display: flex; gap: 3px; margin-top: 9px; }
+      .askb-st { flex: 1; height: 3px; border-radius: 2px; background: var(--line); }
+      .askb-st.askb-on { background: var(--work); }
+      .askb-st.askb-done { background: var(--ok); }
+      .askb-st.askb-warnb { background: var(--warn); }
+
+      .askb-n.askb-router { left: 392px; top: 170px; width: 216px; border-color: rgba(201, 160, 220, 0.3); }
+      .askb-n.askb-router .askb-av { background: rgba(201, 160, 220, 0.16); color: #c9a0dc; }
+
+      .askb-n.askb-adv { width: 206px; }
+      .askb-n.askb-adv .askb-av { background: rgba(181, 140, 240, 0.16); color: var(--t-violet); }
+      .askb-n.askb-adv .askb-ntitle { color: var(--t-violet); }
+      .askb-n.askb-arch { left: 800px; top: 196px; border-color: rgba(214, 162, 49, 0.42); background: rgba(214, 162, 49, 0.035); }
+      .askb-n.askb-arch .askb-ntitle { color: var(--warn); }
+      .askb-n.askb-arch .askb-av { background: rgba(214, 162, 49, 0.16); color: var(--warn); }
+      .askb-n.askb-pm { left: 800px; top: 432px; border-color: rgba(75, 181, 67, 0.42); background: rgba(75, 181, 67, 0.03); }
+      .askb-n.askb-pm .askb-ntitle { color: var(--ok); }
+      .askb-n.askb-pm .askb-av { background: rgba(75, 181, 67, 0.16); color: var(--ok); }
+      .askb-spinring {
+        position: absolute;
+        top: 10px;
+        right: 11px;
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        border: 1.5px solid transparent;
+        border-top-color: var(--ok);
+        animation: askb-spin 1s linear infinite;
+      }
+      @keyframes askb-spin { to { transform: rotate(360deg); } }
+      .askb-verdict { font-size: 9px; padding: 2px 7px; border-radius: 3px; display: inline-block; margin-top: 7px; }
+      .askb-verdict.askb-ref { background: rgba(214, 162, 49, 0.14); color: var(--warn); }
+      .askb-verdict.askb-ansv { background: rgba(75, 181, 67, 0.14); color: var(--ok); }
+
+      .askb-legend {
+        position: absolute;
+        left: 14px;
+        top: 14px;
+        background: rgba(7, 9, 11, 0.82);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 10px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+      }
+      .askb-lg { display: flex; align-items: center; gap: 9px; font-size: 9.5px; color: var(--ink-faint); }
+      .askb-lgl { width: 22px; height: 0; border-top: 1.7px solid; flex: none; }
+      .askb-callout {
+        position: absolute;
+        background: rgba(7, 9, 11, 0.9);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 9px 12px;
+        font-size: 9.5px;
+        color: var(--ink-faint);
+        line-height: 1.65;
+        max-width: 238px;
+      }
+      .askb-callout b { color: var(--ink-dim); }
+      .askb-callout.askb-w { border-color: rgba(214, 162, 49, 0.28); }
+      .askb-callout.askb-w b { color: var(--warn); }
+      .askb-controls {
+        position: absolute;
+        left: 14px;
+        bottom: 14px;
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        overflow: hidden;
+        background: var(--panel);
+      }
+      .askb-ctl {
+        width: 28px;
+        height: 26px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--ink-faint);
+        font-size: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      .askb-ctl:last-child { border-bottom: none; }
+      .askb-hint {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        bottom: 16px;
+        font-size: 10px;
+        color: var(--ink-faint);
+        background: rgba(7, 9, 11, 0.82);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 5px 12px;
+      }
+
+      /* The stage-flow panel (OR-438, docs/design/web/07-stage-flow.html),
+         copied verbatim and prefixed sf- throughout -- same reason as
+         askb-: this page's .dotlive and .chip carry different colours/
+         animations than the shared ones above. */
+      .sf-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+      .sf-topbar {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 0 18px;
+        height: 44px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+        flex: none;
+      }
+      .sf-crumb { color: var(--ink-faint); font-size: 11.5px; }
+      .sf-spacer { flex: 1; }
+      .sf-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 9px;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        color: var(--ink-dim);
+        font-size: 11px;
+      }
+      .sf-dotlive {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--ok);
+        animation: sf-blink 2s ease-in-out infinite;
+      }
+      @keyframes sf-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+      .sf-hero {
+        padding: 16px 22px 13px;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        flex: none;
+      }
+      .sf-key { font-size: 15px; font-weight: 600; color: var(--t-orange); }
+      .sf-htitle { font-size: 12.5px; color: #dfe3e7; }
+      .sf-state {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 10.5px;
+        padding: 2.5px 9px;
+        border-radius: 4px;
+        background: rgba(47, 179, 196, 0.13);
+        color: var(--work);
+      }
+
+      .sf-sec { padding: 22px 22px 0; }
+      .sf-seclabel {
+        font-size: 10px;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+      .sf-secnote { font-size: 10.5px; color: var(--ink-faint); line-height: 1.6; margin-bottom: 18px; max-width: 760px; }
+
+      .sf-flow { display: flex; align-items: flex-start; overflow-x: auto; padding-bottom: 6px; }
+      .sf-node { flex: none; width: 104px; display: flex; flex-direction: column; align-items: center; gap: 7px; }
+      .sf-orb {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        border: 1.5px solid var(--line);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        background: var(--panel);
+        position: relative;
+        flex: none;
+      }
+      .sf-orb.sf-done { border-color: rgba(75, 181, 67, 0.55); color: var(--ok); background: rgba(75, 181, 67, 0.08); }
+      .sf-orb.sf-now { border-color: var(--work); color: var(--work); background: rgba(47, 179, 196, 0.1); }
+      .sf-orb.sf-now::after {
+        content: "";
+        position: absolute;
+        inset: -6px;
+        border-radius: 50%;
+        border: 1.5px solid var(--work);
+        opacity: 0.5;
+        animation: sf-pulse 1.8s ease-out infinite;
+      }
+      @keyframes sf-pulse { 0% { transform: scale(0.86); opacity: 0.55; } 70% { transform: scale(1.22); opacity: 0; } 100% { opacity: 0; } }
+      .sf-orb.sf-todo { color: var(--ink-faint); }
+      .sf-orb.sf-skip { border-style: dashed; color: var(--ink-faint); }
+      .sf-spin {
+        position: absolute;
+        inset: -4px;
+        border-radius: 50%;
+        border: 1.5px solid transparent;
+        border-top-color: var(--work);
+        animation: sf-spin 1.1s linear infinite;
+      }
+      @keyframes sf-spin { to { transform: rotate(360deg); } }
+      .sf-nname { font-size: 10.5px; text-align: center; line-height: 1.3; }
+      .sf-nname.sf-done { color: var(--ink-dim); }
+      .sf-nname.sf-now { color: var(--work); font-weight: 600; }
+      .sf-nname.sf-todo { color: var(--ink-faint); }
+      .sf-nwho { font-size: 9.5px; color: var(--ink-faint); text-align: center; line-height: 1.4; }
+      .sf-link { flex: none; width: 26px; height: 1.5px; background: var(--line); margin-top: 16px; position: relative; }
+      .sf-link.sf-done { background: rgba(75, 181, 67, 0.45); }
+      .sf-link.sf-live { background: linear-gradient(90deg, rgba(75, 181, 67, 0.45), var(--work)); }
+      .sf-link.sf-live::after {
+        content: "";
+        position: absolute;
+        top: -2px;
+        left: 0;
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--work);
+        animation: sf-travel 1.6s ease-in-out infinite;
+      }
+      @keyframes sf-travel { 0% { left: 0; opacity: 0; } 20% { opacity: 1; } 80% { opacity: 1; } 100% { left: 21px; opacity: 0; } }
+      .sf-badgefan {
+        font-size: 9px;
+        padding: 1.5px 6px;
+        border-radius: 3px;
+        background: rgba(181, 140, 240, 0.14);
+        color: var(--t-violet);
+        border: 1px solid rgba(181, 140, 240, 0.3);
+      }
+
+      .sf-fanbox { border: 1px solid rgba(181, 140, 240, 0.28); border-radius: 9px; background: rgba(181, 140, 240, 0.035); padding: 16px 18px; margin-top: 6px; }
+      .sf-fanhead { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+      .sf-fanhead .sf-t { font-size: 11.5px; font-weight: 600; color: var(--t-violet); }
+      .sf-fanhead .sf-c { font-size: 10.5px; color: var(--ink-faint); }
+      .sf-fansaid {
+        font-size: 10.5px;
+        color: var(--ink-dim);
+        line-height: 1.6;
+        margin-bottom: 16px;
+        padding: 7px 10px;
+        border-radius: 5px;
+        background: rgba(0, 0, 0, 0.24);
+        border-left: 2px solid rgba(181, 140, 240, 0.4);
+      }
+      .sf-fanwrap { display: flex; align-items: stretch; gap: 0; }
+      .sf-fanparent { flex: none; width: 120px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; }
+      .sf-fanrays { flex: none; width: 44px; position: relative; }
+      .sf-ray { position: absolute; left: 0; right: 0; height: 1.5px; background: rgba(181, 140, 240, 0.3); }
+      .sf-ray::after {
+        content: "";
+        position: absolute;
+        top: -2px;
+        left: 0;
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: var(--t-violet);
+        animation: sf-ray 2.2s ease-in-out infinite;
+      }
+      @keyframes sf-ray { 0% { left: 0; opacity: 0; } 25% { opacity: 1; } 75% { opacity: 1; } 100% { left: 38px; opacity: 0; } }
+      .sf-children { flex: 1; display: flex; flex-direction: column; gap: 7px; }
+      .sf-child { display: flex; align-items: center; gap: 10px; padding: 8px 11px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); }
+      .sf-child.sf-run { border-color: rgba(47, 179, 196, 0.35); }
+      .sf-child.sf-fail { border-color: rgba(224, 82, 82, 0.34); background: rgba(224, 82, 82, 0.05); }
+      .sf-cico { width: 15px; flex: none; font-size: 11px; text-align: center; }
+      .sf-cname { font-size: 11px; flex: none; width: 78px; }
+      .sf-cabout { font-size: 10.5px; color: var(--ink-faint); flex: 1; min-width: 0; }
+      .sf-cbar { flex: none; width: 78px; height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
+      .sf-cbar i { display: block; height: 100%; background: var(--work); }
+      .sf-cbar i.sf-done { background: var(--ok); }
+      .sf-ccost { font-size: 10.5px; color: var(--ink-dim); flex: none; width: 46px; text-align: right; }
+      .sf-fanfoot { margin-top: 14px; font-size: 10.5px; color: var(--ink-faint); line-height: 1.65; }
+      .sf-fanfoot b { color: var(--ink-dim); }
+
+      .sf-exbox { border: 1px solid rgba(214, 162, 49, 0.26); border-radius: 9px; background: rgba(214, 162, 49, 0.03); padding: 16px 18px; margin-top: 6px; }
+      .sf-exhead { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; }
+      .sf-exhead .sf-t { font-size: 11.5px; font-weight: 600; color: var(--warn); }
+      .sf-exhead .sf-c { font-size: 10.5px; color: var(--ink-faint); }
+      .sf-lanes { display: flex; gap: 0; align-items: stretch; }
+      .sf-lane { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; padding-bottom: 6px; }
+      .sf-lanehead { font-size: 10.5px; text-align: center; line-height: 1.4; }
+      .sf-lanesub { font-size: 9.5px; color: var(--ink-faint); text-align: center; }
+      .sf-laneline { width: 1.5px; flex: 1; background: var(--line); margin-top: 4px; min-height: 150px; }
+      .sf-turns { flex: none; width: 340px; display: flex; flex-direction: column; gap: 0; padding-top: 26px; }
+      .sf-turn { display: flex; align-items: center; gap: 0; height: 38px; position: relative; }
+      .sf-arrow { flex: 1; height: 1.5px; background: rgba(214, 162, 49, 0.32); position: relative; }
+      .sf-arrow::after {
+        content: "";
+        position: absolute;
+        top: -2.5px;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--warn);
+      }
+      .sf-arrow.sf-r::after { animation: sf-goR 2.4s ease-in-out infinite; }
+      .sf-arrow.sf-l::after { animation: sf-goL 2.4s ease-in-out infinite; }
+      @keyframes sf-goR { 0% { left: 0; opacity: 0; } 15% { opacity: 1; } 85% { opacity: 1; } 100% { left: calc(100% - 6px); opacity: 0; } }
+      @keyframes sf-goL { 0% { right: 0; opacity: 0; } 15% { opacity: 1; } 85% { opacity: 1; } 100% { right: calc(100% - 6px); opacity: 0; } }
+      .sf-turnlab {
+        position: absolute;
+        top: -11px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 9.5px;
+        color: var(--ink-dim);
+        background: var(--bg);
+        padding: 0 8px;
+        white-space: nowrap;
+      }
+      .sf-turnlab.sf-refuse { color: var(--warn); }
+      .sf-exfoot { margin-top: 12px; font-size: 10.5px; color: var(--ink-faint); line-height: 1.65; }
+      .sf-exfoot b { color: var(--ink-dim); }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>

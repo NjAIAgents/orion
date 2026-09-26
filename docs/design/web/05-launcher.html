@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orion web mockup — 05 launcher</title>
+<style>
+:root{
+  --ink:#e6e6e6; --ink-dim:#9aa0a6; --ink-faint:#6b7178;
+  --bg:#0b0d10; --panel:#12161b; --line:#242a33; --line-soft:rgba(36,42,51,.55);
+  --ok:#4bb543; --fail:#e05252; --warn:#d6a231; --wait:#4f8ff0; --work:#2fb3c4;
+  --t-orange:#d98a3d; --t-violet:#b58cf0; --t-teal:#4fc7c7; --t-rose:#e08fb0; --t-sky:#7bb6f0;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:12px;}
+a{color:var(--wait);} a:hover{color:#7db0ff;}
+.app{display:flex;flex-direction:column;height:940px;}
+.topbar{display:flex;align-items:center;gap:16px;padding:0 18px;height:44px;
+  border-bottom:1px solid var(--line);background:var(--panel);flex:none;}
+.brand{font-weight:600;font-size:13px;} .brand .dot{color:var(--work);}
+.nav{display:flex;gap:2px;}
+.nav .item{padding:5px 11px;border-radius:5px;color:var(--ink-faint);font-size:11.5px;}
+.nav .item.on{background:rgba(47,179,196,.12);color:var(--work);}
+.spacer{flex:1;}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:4px;
+  border:1px solid var(--line);color:var(--ink-dim);font-size:11px;}
+.dotlive{width:6px;height:6px;border-radius:50%;background:var(--ok);}
+.body{display:flex;flex:1;min-height:0;}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:auto;}
+.head{padding:18px 22px 4px;display:flex;align-items:baseline;gap:13px;}
+.h1{font-size:15px;font-weight:600;}
+.head .sub{color:var(--ink-faint);font-size:11.5px;}
+.sec{padding:14px 22px 4px;font-size:10px;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:600;}
+.pick{margin:6px 22px 0;border:1px solid var(--line);border-radius:8px;background:var(--panel);overflow:hidden;}
+.search{display:flex;align-items:center;gap:9px;padding:11px 14px;border-bottom:1px solid var(--line);}
+.search .inp{flex:1;color:var(--ink);font-size:12px;}
+.search .ph{color:var(--ink-faint);}
+.trow{display:flex;align-items:center;gap:11px;padding:10px 14px;border-bottom:1px solid var(--line-soft);}
+.trow:last-child{border-bottom:none;}
+.trow.sel{background:rgba(47,179,196,.07);}
+.cb{width:13px;height:13px;border-radius:3px;border:1px solid var(--line);flex:none;}
+.cb.on{background:var(--work);border-color:var(--work);}
+.key{font-weight:600;flex:none;width:62px;}
+.ttl{flex:1;min-width:0;color:#c8ccd1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.badge{font-size:10px;padding:1.5px 7px;border-radius:3px;border:1px solid var(--line);
+  color:var(--ink-faint);flex:none;}
+.badge.route{border-color:rgba(217,138,61,.35);color:#e0a06a;background:rgba(217,138,61,.08);}
+.badge.blocked{border-color:rgba(224,82,82,.35);color:var(--fail);background:rgba(224,82,82,.08);}
+.badge.queued{border-color:rgba(107,113,120,.5);}
+.plan{width:420px;flex:none;border-left:1px solid var(--line);background:var(--panel);
+  display:flex;flex-direction:column;min-height:0;overflow:auto;}
+.ptop{padding:14px 16px 10px;border-bottom:1px solid var(--line);}
+.ptop .t{font-size:12px;font-weight:600;margin-bottom:3px;}
+.ptop .s{font-size:10.5px;color:var(--ink-faint);line-height:1.55;}
+.mode{display:flex;gap:5px;padding:12px 16px 4px;}
+.m{flex:1;padding:8px 9px;border:1px solid var(--line);border-radius:6px;text-align:center;
+  font-size:11px;color:var(--ink-faint);}
+.m.on{background:rgba(47,179,196,.12);border-color:rgba(47,179,196,.4);color:var(--work);}
+.m .d{display:block;font-size:9.5px;margin-top:3px;color:var(--ink-faint);}
+.opts{padding:12px 16px 4px;display:flex;flex-direction:column;gap:9px;}
+.opt{display:flex;align-items:center;gap:9px;font-size:11px;color:var(--ink-dim);}
+.tog{width:26px;height:14px;border-radius:8px;background:var(--line);position:relative;flex:none;}
+.tog i{position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:var(--ink-faint);}
+.tog.on{background:rgba(47,179,196,.35);} .tog.on i{left:14px;background:var(--work);}
+.num{border:1px solid var(--line);border-radius:4px;padding:2px 8px;color:var(--ink);font-size:11px;}
+.cmd{margin:14px 16px 0;background:#07090b;border:1px solid var(--line);border-radius:6px;
+  padding:12px 13px;font-size:11px;line-height:1.9;white-space:pre-wrap;word-break:break-all;}
+.cmd .p{color:var(--ink-faint);}
+.cmd .c{color:var(--work);}
+.cmd .k{color:var(--t-orange);}
+.cmd .f{color:var(--ink-dim);}
+.warnbox{margin:12px 16px 0;background:rgba(214,162,49,.07);border:1px solid rgba(214,162,49,.28);
+  border-radius:6px;padding:10px 12px;font-size:10.5px;color:#e7d3a8;line-height:1.6;}
+.est{margin:12px 16px 0;display:flex;flex-direction:column;gap:6px;}
+.er{display:flex;justify-content:space-between;font-size:11px;}
+.er .k{color:var(--ink-faint);} .er .v{color:var(--ink);}
+.go{margin:14px 16px 18px;display:flex;flex-direction:column;gap:7px;}
+.btn{padding:9px 11px;border-radius:6px;border:1px solid var(--line);text-align:center;
+  font-size:11.5px;color:var(--ink-dim);}
+.btn.primary{background:rgba(75,181,67,.14);border-color:rgba(75,181,67,.42);color:var(--ok);}
+.btn.ghost{color:var(--ink-faint);}
+.routing{margin:16px 22px 22px;border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:14px 16px;}
+.routing .rt{font-size:11px;font-weight:600;margin-bottom:4px;}
+.routing .rs{font-size:10.5px;color:var(--ink-faint);line-height:1.6;margin-bottom:11px;}
+.rr{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line-soft);font-size:11px;}
+.rr:last-child{border-bottom:none;}
+.rr .n{color:var(--ink-faint);width:14px;flex:none;}
+.rr .a{width:190px;flex:none;}
+.rr .kw{color:var(--ink-faint);font-size:10.5px;}
+.dim{color:var(--ink-faint);}
+</style>
+</head><body>
+<div class="app">
+  <div class="topbar">
+    <div class="brand">orion<span class="dot">·</span>web</div>
+    <div class="nav">
+      <div class="item">gate board</div>
+      <div class="item on">start work</div>
+      <div class="item">run</div>
+      <div class="item">history</div>
+      <div class="item">agents</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="chip"><span class="dotlive"></span>watcher live · orion</div>
+    <div class="chip">$38.40 today</div>
+  </div>
+
+  <div class="body">
+    <div class="main">
+      <div class="head">
+        <div class="h1">Start work</div>
+        <div class="sub">pick tickets, choose how they run — the browser types the command, the CLI does the work</div>
+      </div>
+
+      <div class="sec">Tickets · v0.10.0 · not yet claimed</div>
+      <div class="pick">
+        <div class="search">
+          <span class="dim">/</span>
+          <span class="inp">OR-2<span class="ph">█ &nbsp;key, range (OR-100..OR-105), or text</span></span>
+          <span class="badge">3 selected</span>
+        </div>
+
+        <div class="trow sel">
+          <span class="cb on"></span>
+          <span class="key" style="color:var(--t-orange)">OR-273</span>
+          <span class="ttl">Derive board columns from the label state machine</span>
+          <span class="badge route">Ravi · backend developer</span>
+          <span class="badge queued">To Do</span>
+        </div>
+        <div class="trow sel">
+          <span class="cb on"></span>
+          <span class="key" style="color:var(--t-violet)">OR-275</span>
+          <span class="ttl">Group cards by project and batch, with waiting-on-me as the default view</span>
+          <span class="badge route">Kai · frontend developer</span>
+          <span class="badge queued">To Do</span>
+        </div>
+        <div class="trow sel">
+          <span class="cb on"></span>
+          <span class="key" style="color:var(--t-teal)">OR-267</span>
+          <span class="ttl">ADR: token mandatory, origin and Host checks additive</span>
+          <span class="badge route">Navjyot · architect</span>
+          <span class="badge queued">To Do</span>
+        </div>
+        <div class="trow">
+          <span class="cb"></span>
+          <span class="key" style="color:var(--t-rose)">OR-276</span>
+          <span class="ttl">Output-escaping contract: html/template, no template.HTML on scanned values</span>
+          <span class="badge route">Ravi · backend developer</span>
+          <span class="badge queued">To Do</span>
+        </div>
+        <div class="trow">
+          <span class="cb"></span>
+          <span class="key" style="color:var(--t-sky)">OR-282</span>
+          <span class="ttl">Shell-out helper: explicit argv, no shell, closed command allowlist</span>
+          <span class="badge route">Ravi · backend developer</span>
+          <span class="badge blocked">orion-failed · needs --reset</span>
+        </div>
+        <div class="trow">
+          <span class="cb"></span>
+          <span class="key" style="color:#9fd6a0">OR-277</span>
+          <span class="ttl">Validate the project id before joining it into a filesystem path</span>
+          <span class="badge route">Ravi · backend developer</span>
+          <span class="badge queued">To Do</span>
+        </div>
+      </div>
+
+      <div class="routing">
+        <div class="rt">Who gets it is decided by the ticket, not by this screen</div>
+        <div class="rs">The first rule whose keyword EQUALS the ticket's issue type, one of its components, or one of
+        its labels wins — case-insensitive, equality not containment. To send a ticket elsewhere, change its
+        label in the tracker; there is no override flag, and adding one would be a second way to reach one job.</div>
+        <div class="rr"><span class="n">1</span><span class="a">Iris · docs engineer</span><span class="kw">documentation, docs, doc</span></div>
+        <div class="rr"><span class="n">2</span><span class="a">Kai · frontend developer</span><span class="kw">ui, frontend, front-end</span></div>
+        <div class="rr"><span class="n">3</span><span class="a">Navjyot · architect</span><span class="kw">architecture, architect, adr</span></div>
+        <div class="rr"><span class="n">4</span><span class="a">Priya · product manager</span><span class="kw">product, pm, requirements</span></div>
+        <div class="rr"><span class="n">5</span><span class="a">Surya · database architect</span><span class="kw">database, schema, migration, index, query …</span></div>
+        <div class="rr"><span class="n">—</span><span class="a">Ravi · backend developer</span><span class="kw">no marker: the default actor</span></div>
+      </div>
+    </div>
+
+    <div class="plan">
+      <div class="ptop">
+        <div class="t">How it runs</div>
+        <div class="s">Nothing starts until you press the button. The command is shown in full first — it is the
+        same one you would type.</div>
+      </div>
+
+      <div class="mode">
+        <div class="m on">work now<span class="d">in order given</span></div>
+        <div class="m">add to queue<span class="d">watcher picks up</span></div>
+        <div class="m">watch project<span class="d">loop by itself</span></div>
+      </div>
+
+      <div class="opts">
+        <div class="opt"><span class="tog on"><i></i></span>--verbose · include the agent's tool-call lines</div>
+        <div class="opt"><span class="tog"><i></i></span>--reset · requeue a failed ticket, return it to To Do</div>
+        <div class="opt"><span class="tog"><i></i></span>--dry-run · say what would happen, spend nothing</div>
+      </div>
+
+      <div class="cmd"><span class="p">$</span> <span class="c">orion work</span> <span class="k">OR-273 OR-275 OR-267</span> <span class="f">--verbose</span></div>
+
+      <div class="warnbox">
+        Three tickets run <b>in the order given</b>, one after another — not in parallel. OR-267 routes to the
+        architect on opus; the other two are opus and opus. This screen shows the command; it does not shorten it.
+      </div>
+
+      <div class="est">
+        <div class="er"><span class="k">tickets</span><span class="v">3</span></div>
+        <div class="er"><span class="k">actors</span><span class="v">Ravi, Kai, Navjyot</span></div>
+        <div class="er"><span class="k">ticket cap</span><span class="v">$25 each</span></div>
+        <div class="er"><span class="k">spent today</span><span class="v">$38.40 of $200</span></div>
+      </div>
+
+      <div class="go">
+        <div class="btn primary">start · orion work</div>
+        <div class="btn ghost">copy command instead</div>
+      </div>
+
+      <div class="ptop" style="border-top:1px solid var(--line);border-bottom:none">
+        <div class="t">The other two modes</div>
+        <div class="s">Same picker, different command.</div>
+      </div>
+      <div class="cmd" style="margin-top:0"><span class="p">$</span> <span class="c">orion queue add</span> <span class="k">OR-273 OR-275 OR-267</span>
+<span class="p">$</span> <span class="c">orion watch</span> <span class="k">orion</span> <span class="f">--max-jobs 2 --interval 60</span></div>
+      <div class="warnbox" style="background:rgba(79,143,240,.06);border-color:rgba(79,143,240,.24);color:#c2d4ee">
+        <b>queue add</b> takes keys and inclusive ranges (OR-100 OR-140..OR-145) and leaves the watcher to pick
+        them up. <b>watch</b> runs the queue by itself until stopped — the one mode that keeps spending after you
+        close the tab, which is why it states the job and interval limits on the button.
+      </div>
+    </div>
+  </div>
+</div>
+</body></html>

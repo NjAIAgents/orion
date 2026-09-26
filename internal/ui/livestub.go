@@ -92,6 +92,29 @@ func (l *Live) Write(p []byte) (int, error) {
 	return l.w.Write(p)
 }
 
+// Unwrap names the writer underneath, so a caller asking "is this a terminal"
+// gets an answer about the terminal rather than about the wrapper.
+//
+// WITHOUT THIS, `orion watch` PRINTS NO COLOUR AT ALL. isTerminal walks the
+// Unwrap chain to find an *os.File; a wrapper that does not implement it ends
+// the walk, the assertion fails, and enabled() reports false for every line
+// the watcher writes. `orion logs` wraps nothing, so it keeps its colour --
+// and the two commands then disagree about what a run looks like, which is
+// the one thing internal/ui exists to prevent.
+//
+// This is OR-184's bug, one layer up. That fix taught isTerminal to unwrap
+// because internal/watch's syncWriter hid the terminal the same way; the
+// method was added there and not here, and when OR-334 replaced the live
+// region with this stub the gap moved outward with it. A pass-through that
+// changes the answer to a question about the thing it passes through to is
+// not a pass-through.
+func (l *Live) Unwrap() io.Writer {
+	if l == nil {
+		return nil
+	}
+	return l.w
+}
+
 // Close is a no-op: there is no region to erase and nothing to commit to
 // scrollback, because every line was already printed as it happened.
 func (l *Live) Close() {}

@@ -169,7 +169,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 		// takes ten minutes to run takes ten minutes to run for either actor.
 		MaxMinutes: job.MaxMinutes, MaxTurns: job.MaxTurns,
 		OnActivity: ActivityLogger(log, w, key, events.ActorQA),
-		Actor:      events.ActorQA, Key: key,
+		Actor:      events.ActorQA, Key: key, Run: log.Run(),
 	})
 	if !qaRan(res, err, key, log, w) {
 		return qaOutcome{}
@@ -233,7 +233,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 			Effort:     actors.Effort(job.Actor),
 			MaxMinutes: job.MaxMinutes, MaxTurns: job.MaxTurns,
 			OnActivity: ActivityLogger(log, w, key, job.Actor),
-			Actor:      job.Actor, Key: key,
+			Actor:      job.Actor, Key: key, Run: log.Run(),
 		})
 		if fixErr != nil || fix == nil || fix.ExitCode != 0 {
 			report.Verdict = "The fix run did not finish, so this was never re-verified."
@@ -263,7 +263,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 			Effort:     actors.Effort(events.ActorQA),
 			MaxMinutes: job.MaxMinutes, MaxTurns: job.MaxTurns,
 			OnActivity: ActivityLogger(log, w, key, events.ActorQA),
-			Actor:      events.ActorQA, Key: key,
+			Actor:      events.ActorQA, Key: key, Run: log.Run(),
 		})
 		if !qaRan(res, err, key, log, w) {
 			report.Verdict = "The re-verification run did not finish, so whether the fix cleared " +
@@ -314,7 +314,7 @@ const (
 // from deriveCases so the actor, model and prompt it is configured with can
 // be asserted without spawning anything -- the same reason triageOptions is
 // split from triageLog.
-func caseDeriveOptions(job qaJob, diff string) supervisor.Options {
+func caseDeriveOptions(job qaJob, diff string, run string) supervisor.Options {
 	return supervisor.Options{
 		Stage:      "qa-cases",
 		Prompt:     supervisor.QACasesPrompt(job.Key, job.Summary, job.Description, diff),
@@ -326,7 +326,7 @@ func caseDeriveOptions(job qaJob, diff string) supervisor.Options {
 		// rather than a second run at QA's price. Attributed to the same ticket
 		// so its spend is its own row in that ticket's cost report instead of
 		// hiding inside QA's total (OR-182, following OR-143).
-		Actor: events.ActorCaseDerive, Key: job.Key,
+		Actor: events.ActorCaseDerive, Key: job.Key, Run: run,
 		Model:  actors.Model(events.ActorCaseDerive),
 		Effort: actors.Effort(events.ActorCaseDerive),
 	}
@@ -357,7 +357,7 @@ func deriveCases(job qaJob, deps Deps, log *events.Log, w io.Writer) string {
 		return ""
 	}
 
-	res, sErr := deps.Supervise(job.WS, caseDeriveOptions(job, diff))
+	res, sErr := deps.Supervise(job.WS, caseDeriveOptions(job, diff, log.Run()))
 	if sErr != nil || res == nil || res.ExitCode != 0 || strings.TrimSpace(res.Final) == "" {
 		ui.Say(w, job.Key, events.ActorCaseDerive, ui.VerbWarn,
 			"could not derive the cases, so QA reads the ticket itself")
@@ -681,7 +681,7 @@ func qaReadVerdict(job qaJob, qa config.QA, session string, res *supervisor.Resu
 		Effort:     actors.Effort(events.ActorQA),
 		MaxMinutes: budget, MaxTurns: qaVerdictMaxTurns,
 		OnActivity: ActivityLogger(log, w, job.Key, events.ActorQA),
-		Actor:      events.ActorQA, Key: job.Key,
+		Actor:      events.ActorQA, Key: job.Key, Run: log.Run(),
 	})
 	if !qaRan(again, err, job.Key, log, w) {
 		// A KILLED RE-ASK IS NOT QA DECLINING TO ANSWER, and the two need

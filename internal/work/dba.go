@@ -208,7 +208,7 @@ func runDBA(job dbaJob, sigs []dba.Signal, cfg config.Config, opts Options, deps
 		// whichever actor does it.
 		MaxMinutes: job.MaxMinutes, MaxTurns: job.MaxTurns,
 		OnActivity: ActivityLogger(log, w, key, events.ActorDBA),
-		Actor:      events.ActorDBA, Key: key,
+		Actor:      events.ActorDBA, Key: key, Run: log.Run(),
 	})
 	if !dbaRan(res, err, key, log, w) {
 		return dbaOutcome{}
@@ -257,7 +257,7 @@ func runDBA(job dbaJob, sigs []dba.Signal, cfg config.Config, opts Options, deps
 			Effort:     actors.Effort(job.Actor),
 			MaxMinutes: job.MaxMinutes, MaxTurns: job.MaxTurns,
 			OnActivity: ActivityLogger(log, w, key, job.Actor),
-			Actor:      job.Actor, Key: key,
+			Actor:      job.Actor, Key: key, Run: log.Run(),
 		})
 		if fixErr != nil || fix == nil || fix.ExitCode != 0 {
 			dbaPostRound(deps, job, out.Rounds, findings,
@@ -279,7 +279,7 @@ func runDBA(job dbaJob, sigs []dba.Signal, cfg config.Config, opts Options, deps
 			Effort:     actors.Effort(events.ActorDBA),
 			MaxMinutes: job.MaxMinutes, MaxTurns: job.MaxTurns,
 			OnActivity: ActivityLogger(log, w, key, events.ActorDBA),
-			Actor:      events.ActorDBA, Key: key,
+			Actor:      events.ActorDBA, Key: key, Run: log.Run(),
 		})
 		if !dbaRan(res, err, key, log, w) {
 			dbaPostRound(deps, job, out.Rounds, findings,

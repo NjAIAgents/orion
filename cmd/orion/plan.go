@@ -38,11 +38,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/actors"
+	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/budget"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/dbaplan"
@@ -143,6 +145,14 @@ var planStages = []planStage{
 	// can be written no earlier and is wanted no later.
 	{Stage: "constitution", Actor: events.ActorArchitect, What: "project principles for spec-kit, seeded from orion.json gates and the intent", Done: stageDone("constitution")},
 	{Stage: "spec", Actor: events.ActorArchitect, What: "requirements and design spec", Done: stageDone("spec")},
+	// Between spec and plan, and only here: spec-kit's /speckit-specify (the
+	// spec stage) creates and checks out a numbered feature branch as its own
+	// convention, and nothing else in this chain does that. Left unfixed the
+	// sandbox stays on that branch for the rest of the project's life, and
+	// every later tick's SyncSandbox call reports the mismatch instead of
+	// keeping the clone current (OR-459, found on a real project).
+	{Stage: "spec-branch-sync", Actor: events.ActorOrion, What: "the sandbox switched back to the work branch after spec-kit's own checkout",
+		Frame: specBranchSyncStep, Done: specBranchSyncDone},
 	{Stage: "plan", Actor: events.ActorArchitect, What: "implementation plan: files, order of work, tests, risks", Done: stageDone("plan")},
 	// After plan and before anything is built from it: a read-only check
 	// that spec, plan and tasks agree with each other and the constitution.
@@ -177,8 +187,53 @@ var planStages = []planStage{
 		Frame: cloneStep, Done: cloneDone},
 }
 
-// toolkitStep installs spec-kit into the workspace repository, once.
+// toolkitStep installs spec-kit into the workspace repository, once,
+// ensures orion.json exists from the same canonical template `orion init`
+// writes, scaffolds CI the same way `orion init` does (OR-453), and
+// instruments the repo with dun the same way `orion init` does (OR-454).
+//
+// THE CONFIG FILE, HERE, BEFORE ANYTHING READS IT. constitution's own
+// description says it is "seeded from orion.json gates" -- but nothing in
+// this chain ever wrote one, so a project designed by `orion new`/`orion
+// plan` reached the scaffold stage with no orion.json at all. config.Load
+// degrades gracefully to shipped defaults when the file is absent, which is
+// exactly why this went unnoticed: the scaffold stage's own agent, needing
+// a real file for some purpose of its own, invented one from judgment
+// rather than copying the template -- no slack section, no budget section,
+// none of the comments the real one documents (OR-451, found on a real
+// project). planGate is true here, unlike orion init's adopted-repo
+// default of false: a project just designed from scratch has no existing
+// team habit to protect the way an adopted repo does.
 func toolkitStep(sio *stepIO, ws *workspace.Workspace) error {
+	if created, err := adopt.EnsureConfig(ws.RepoDir(), true); err != nil {
+		return fmt.Errorf("writing orion.json: %w", err)
+	} else if created {
+		ui.Ok(sio.Out, "created", "orion.json (the canonical template, before anything reads it)")
+	}
+
+	// OR-453: orion init's ensureCI never had a plan-chain equivalent, so a
+	// project scaffolded via `orion new`/`orion plan` had no scripts/test.sh
+	// and no CI workflow to gate a merge on. Non-fatal, same as orion init.
+	ensureCITo(sio.Out, ws.RepoDir())
+
+	// OR-454: orion init's EnsureDun instruments the repo it adopts; nothing
+	// in this chain ever called it, so every commit the chain itself makes
+	// into a project scaffolded by `orion new`/`orion plan` -- its own
+	// frame-step and stage commits -- carried no attribution trailer.
+	//
+	// Uses EnsureSandboxDun, not EnsureDun: the chain is unattended, and
+	// EnsureDun's autoInstall path shells out to `go install` (or brew/scoop)
+	// over the network with no one to ask first. EnsureSandboxDun -- the
+	// same function every later supervised job already calls on its own
+	// clone (internal/work/work.go) -- instruments only when dun is already
+	// on PATH and otherwise just warns, matching how the sandbox clones
+	// this same repo are handled once work begins.
+	if cfg := config.Load(ws.RepoDir()); cfg.Attribution.Enabled {
+		if err := adopt.EnsureSandboxDun(ws.RepoDir()); err != nil {
+			ui.Warn(sio.Out, "attribution: %v", err)
+		}
+	}
+
 	hadInit := toolkitInstalled(ws)
 	did, err := provision.InitSpecKit(ws.RepoDir())
 	if err != nil {
@@ -196,11 +251,22 @@ func toolkitStep(sio *stepIO, ws *workspace.Workspace) error {
 	return nil
 }
 
-// toolkitDone: nothing to do for a project that delegates nothing to
-// spec-kit; otherwise done when the installer's own directory is there AND
-// the orion preset is composed into the specify skill -- the registration
-// alone outlives the composition (docs/decisions/0022).
+// toolkitDone is never true before orion.json exists, or the step that
+// writes it (toolkitStep) would never run: config.Load degrades to shipped
+// defaults when the file is absent, Defaults().Toolkit.Stages is empty, and
+// DelegatesTo would read that absence as "nothing to do" -- which is
+// answering the wrong question. Whether spec-kit is delegated to is a
+// property of a config file that has to exist first (OR-451).
+//
+// Once orion.json exists: nothing further to do for a project that
+// delegates nothing to spec-kit; otherwise done when the installer's own
+// directory is there AND the orion preset is composed into the specify
+// skill -- the registration alone outlives the composition
+// (docs/decisions/0022).
 func toolkitDone(ws *workspace.Workspace) bool {
+	if _, err := os.Stat(filepath.Join(ws.RepoDir(), "orion.json")); err != nil {
+		return false
+	}
 	if !config.Load(ws.RepoDir()).Toolkit.DelegatesTo("speckit") {
 		return true
 	}
@@ -211,6 +277,53 @@ func toolkitDone(ws *workspace.Workspace) bool {
 func toolkitInstalled(ws *workspace.Workspace) bool {
 	st, err := os.Stat(filepath.Join(ws.RepoDir(), provision.SpecKitDir))
 	return err == nil && st.IsDir()
+}
+
+// specBranchSyncStep switches the sandbox back to the configured work
+// branch after the spec stage, undoing spec-kit's own checkout onto its
+// numbered feature branch (OR-459). Non-fatal: reported as Degraded rather
+// than stopping the chain, because a mismatched branch here costs later
+// SyncSandbox calls their fast-forward, not this run's own progress -- the
+// same reasoning ensureCITo and EnsureSandboxDun already apply in
+// toolkitStep for a failure that should not block the whole chain.
+func specBranchSyncStep(sio *stepIO, ws *workspace.Workspace) error {
+	branch := config.Load(ws.RepoDir()).VCS.WorkBranch
+	if branch == "" {
+		return nil // nothing configured to switch back to
+	}
+	msg, err := workspace.SwitchSandbox(ws, branch)
+	if err != nil {
+		return &Degraded{Reason: fmt.Sprintf("could not switch the sandbox back to %s: %v", branch, err)}
+	}
+	if msg == "" {
+		return nil // already on branch, or SwitchSandbox found nothing to do
+	}
+	if strings.HasPrefix(msg, "the sandbox has") || strings.HasPrefix(msg, "could not switch") {
+		return &Degraded{Reason: msg, Fix: "git -C <sandbox> checkout " + branch}
+	}
+	ui.Ok(sio.Out, "switched", "%s", msg)
+	return nil
+}
+
+// specBranchSyncDone is true once the sandbox is actually on the work
+// branch -- checked live rather than recorded, since a later stage or a
+// person could switch it away again and the chain should notice on resume
+// rather than trust a stamp from an earlier run.
+func specBranchSyncDone(ws *workspace.Workspace) bool {
+	branch := config.Load(ws.RepoDir()).VCS.WorkBranch
+	if branch == "" {
+		return true
+	}
+	cur, err := currentBranch(ws.RepoDir())
+	return err == nil && cur == branch
+}
+
+// currentBranch is git branch --show-current, read directly rather than
+// through workspace.SwitchSandbox: Done has to answer without switching
+// anything or taking the sandbox lock a concurrent job might be holding.
+func currentBranch(repo string) (string, error) {
+	out, err := exec.Command("git", "-C", repo, "branch", "--show-current").CombinedOutput()
+	return strings.TrimSpace(string(out)), err
 }
 
 // planFromIndex resolves --from to an index into planStages, or -1 when

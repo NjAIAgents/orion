@@ -237,6 +237,64 @@ func TestAResolvedTicketIsSkippedAtClaimTime(t *testing.T) {
 	}
 }
 
+// OR-273: clearing a resolved ticket's labels so it can be requeued must clear
+// EXACTLY the state machine's labels -- all of them, so a survivor keeps the
+// ticket looking claimed or failed, and no MORE than them, so a label that
+// happens to share the request (a component tag, a priority marker) is not
+// swept off a ticket Orion does not own that label on.
+//
+// The two existing skip/no-op tests above check "all"; this one is the "only"
+// half, read off the literal remove list rather than a Contains check, which
+// would pass just as well on a superset.
+func TestClearingAResolvedTicketRemovesAllAndOnlyTheManagedLabels(t *testing.T) {
+	home := project(t, cfg)
+	j := &fakeJira{issue: &tracker.Issue{
+		Key: "FCIA-6", Summary: "fixed by hand", Status: "Done",
+		StatusCategory: "Done", URL: "https://x/browse/FCIA-6",
+	}}
+	var out strings.Builder
+
+	Run(Options{Keys: []string{"FCIA-6"}, Out: &out, Home: home},
+		Deps{
+			Jira: j,
+			Supervise: func(*workspace.Workspace, supervisor.Options) (*supervisor.Result, error) {
+				t.Fatal("an agent was started on a ticket that was already Done")
+				return nil, nil
+			},
+			Push:   func(string, string) error { t.Fatal("pushed"); return nil },
+			OpenPR: func(string, string, string, string, string) (string, error) { return "", nil },
+		})
+
+	if len(j.labelCalls) != 1 {
+		t.Fatalf("expected exactly one label write, got %v", j.labelCalls)
+	}
+	parts := strings.SplitN(j.labelCalls[0], " remove:", 2)
+	if len(parts) != 2 {
+		t.Fatalf("label call has no remove half: %q", j.labelCalls[0])
+	}
+	if parts[0] != "add:" {
+		t.Errorf("a requeue-clearing write added labels: %q", j.labelCalls[0])
+	}
+	removed := strings.Split(parts[1], ",")
+	want := tracker.Managed("ORION")
+	if len(removed) != len(want) {
+		t.Fatalf("removed %v (%d), want exactly %v (%d) -- the managed set, no more and no fewer",
+			removed, len(removed), want, len(want))
+	}
+	for _, w := range want {
+		found := false
+		for _, r := range removed {
+			if r == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("removed %v is missing managed label %q", removed, w)
+		}
+	}
+}
+
 // An unresolved ticket must still be worked. The category is "indeterminate"
 // for In Progress, and empty for a tracker that did not report one -- neither
 // is a reason to refuse.

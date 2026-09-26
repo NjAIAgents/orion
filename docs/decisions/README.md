@@ -27,3 +27,4 @@ already have been decided against, on purpose.
 - [0021](0021-spec-kit-inside-stages.md) — spec-kit runs inside Orion's stages; its workflow engine, extension hooks and bundles are declined
 - [0022](0022-per-project-toolkit-install-via-specify-init.md) — spec-kit is installed per project by `specify init` at provisioning, and Orion pins the feature directory
 - [0023](0023-living-spec-project-vs-feature.md) — One tracker project is one `.specify/`; features accrue as `specs/NNN-*/`; the spec is a living document
+- [0024](0024-local-surface-authentication.md) — the local web surface is authenticated by a per-process token in a custom header; Origin and Host checks are additive layers, not alternatives

@@ -101,6 +101,25 @@ type Options struct {
 	// it belongs to no ticket, so there is nothing to attribute it to.
 	Actor string
 	Key   string
+	// Run is the caller's own run id -- work.go's log, opened once per ticket
+	// run with Run stamped in its base Event, so every stage/tool/say event
+	// for this run carries the same value. recordTicketCost below used to
+	// open a SECOND, independent log handle with no Run of its own (OR-461):
+	// events.Log.Emit only fills Run from a log's base when the emitted
+	// event's own Run is empty, so every usage event it wrote carried none at
+	// all -- and internal/web's ScanDetail matches events to a run by exact
+	// Run equality, so every usage event silently vanished from a run's
+	// reported cost and fan-out children, project-wide, not just on one
+	// ticket. Passed through so the usage line this package writes carries
+	// the SAME run its caller already established, rather than inventing (or
+	// omitting) one of its own.
+	//
+	// Empty is tolerated -- a caller with no ticket run to attribute to (a
+	// stage driven by hand, a test) still gets its usage logged, just without
+	// a run a detail page could ever correlate it to; that is the same
+	// silent-but-harmless gap Actor/Key's own doc comment describes for an
+	// empty Actor.
+	Run string
 	// About is one short phrase naming what THIS run was given -- the package
 	// it owns, the question it was asked, how many cases it is writing. Used
 	// only by the fan's narration, and only there because the fan is the one
@@ -160,6 +179,12 @@ type Result struct {
 	// deciding whether to hold a ticket or fail it would otherwise have to
 	// pattern-match Reason, which is prose written for a person (OR-214).
 	QuotaUnwaitable bool
+	// HealedArtifact names any repo-relative file the artifact gate had to
+	// commit on the stage's behalf (OR-441): the agent wrote it, but exited
+	// without committing it, and the gate completed that one committed act
+	// rather than fail the run over a mechanical oversight. Empty on the
+	// ordinary path, where the stage committed its own artifact.
+	HealedArtifact []string
 	// Started reports that the CLI got far enough to emit a stream frame.
 	//
 	// False is the honest reading of "this never began": the process died in
@@ -249,6 +274,21 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 		if stageNeedsSpec(opts.Stage) {
 			specPath := filepath.Join(ws.RepoDir(), filepath.FromSlash(specArtifact(cfgEarly, ws.Task.Slug)))
 			if a := discovery.AssessSpec(specPath); a.Found && a.Open > 0 {
+				return &Result{ExitCode: 0, Reason: "stopped at the discovery gate"},
+					fmt.Errorf("%s", a.GateMessage(ws.ID))
+			}
+		}
+		// And the plan, for the stages that read it (OR-445): a plan makes
+		// stack, platform and architecture decisions the intent never
+		// settled, and one it genuinely could not decide is exactly the
+		// shape of open question this gate already exists to catch --
+		// found on a real project after a plan committed to Bash-only with
+		// a "Windows is not validated (see Risks)" line that Risks never
+		// actually addressed, with nobody ever asked whether that was
+		// acceptable.
+		if stageNeedsPlan(opts.Stage) {
+			planPath := filepath.Join(ws.RepoDir(), filepath.FromSlash(planArtifact(cfgEarly, ws.Task.Slug)))
+			if a := discovery.Assess(planPath); a.Found && a.Open > 0 {
 				return &Result{ExitCode: 0, Reason: "stopped at the discovery gate"},
 					fmt.Errorf("%s", a.GateMessage(ws.ID))
 			}
@@ -425,7 +465,10 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 	// A dry run is excluded for the obvious reason: nothing was asked to write
 	// anything.
 	if !opts.DryRun && opts.Prompt == "" {
-		if err := checkStageArtifact(ws.RepoDir(), cfg, opts.Stage, ws.Task.Slug); err != nil {
+		// heal:true -- this is the moment "did this stage actually finish" is
+		// being asked in earnest, right after its own agent exited (OR-441).
+		healed, err := checkStageArtifact(ws.RepoDir(), cfg, opts.Stage, ws.Task.Slug, true)
+		if err != nil {
 			failRun(ws, last, "the stage left no artifact")
 			notify.Send(notify.Event{
 				Level: notify.Blocked, Workspace: ws.ID, Channel: channelFor(ws),
@@ -434,6 +477,7 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 			})
 			return last, err
 		}
+		last.HealedArtifact = healed
 		// The analyze stage owes no file; it owes a verdict, and the verdict
 		// is read from its report rather than trusted from its exit code
 		// (docs/decisions/0001: the toolkit reports, Orion gates).
@@ -508,6 +552,20 @@ func stageNeedsIntent(stage string) bool {
 func stageNeedsSpec(stage string) bool {
 	switch strings.ToLower(stage) {
 	case "plan", "analyze", "scaffold", "decompose":
+		return true
+	}
+	return false
+}
+
+// stageNeedsPlan reports whether a stage designs from the plan, so a
+// decision the plan could not make -- the same shape as an open intent
+// question -- blocks the stage rather than getting silently defaulted
+// somewhere downstream (OR-445). The plan stage itself is excluded: it is
+// the one writing the file. Same list stageNeedsSpec names minus "plan",
+// because everything that reads the spec also reads the plan built on it.
+func stageNeedsPlan(stage string) bool {
+	switch strings.ToLower(stage) {
+	case "analyze", "scaffold", "decompose":
 		return true
 	}
 	return false
@@ -626,7 +684,7 @@ func recordTicketCost(ws *workspace.Workspace, opts Options, res *Result, out st
 	if res == nil || opts.DryRun || opts.Actor == "" || opts.Key == "" {
 		return
 	}
-	log, err := events.Open(events.Path(ws.Dir), events.Event{})
+	log, err := events.Open(events.Path(ws.Dir), events.Event{Run: opts.Run})
 	if err != nil {
 		return
 	}
@@ -639,6 +697,7 @@ func recordTicketCost(ws *workspace.Workspace, opts Options, res *Result, out st
 	r.NeverStarted = !res.Started && !ok
 	r.Model, r.Effort, r.Stage = opts.Model, opts.Effort, opts.Stage
 	r.Project, r.Session = registry.ProjectOf(opts.Key), res.SessionID
+	r.About = opts.About
 	if err := cost.Record(log, workspace.Home(), opts.Actor, opts.Key, r); err != nil {
 		if errors.Is(err, procsafe.ErrLockTimeout) {
 			fmt.Fprintf(ui.Console(),

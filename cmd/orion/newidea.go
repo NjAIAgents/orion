@@ -2,8 +2,13 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/orion-sdlc/orion/internal/tracker"
 )
@@ -36,6 +41,95 @@ var ideaKey = regexp.MustCompile(`^[A-Z][A-Z0-9]+-[0-9]+$`)
 // describing an idea.
 func looksLikeIdeaKey(s string) bool {
 	return ideaKey.MatchString(strings.ToUpper(strings.TrimSpace(s)))
+}
+
+// A DOCUMENT IS A THIRD WAY TO ARRIVE ALREADY WRITTEN DOWN (OR-443), same
+// shape as the tracker-key path above: someone has already put the idea in
+// words -- a design doc on disk, a spec somebody wrote and shared as a link
+// -- and re-typing it at the interview prompt would lose the actual wording
+// while asking the same five questions a real document usually answers
+// already. `orion new ./doc.md` or `orion new https://.../doc.md` reads the
+// document's content as the idea text; the interview still runs on
+// whatever the document leaves unanswered, exactly as it does for prose
+// typed directly.
+//
+// This is deliberately NOT the same path as looksLikeIdeaKey's
+// writtenDown/fetchIdea: those read a STRUCTURED Jira issue (Summary,
+// Description, a template to detect). A document is unstructured prose,
+// read once and handed to elaborate() as the idea text, the same as if it
+// had been typed inline -- simpler, and correct for a format this command
+// has no schema for.
+
+// looksLikeFilePath reports whether s names a file that exists on disk,
+// rather than describing an idea in prose. Existence-checked, not
+// extension-checked: a document does not have to be .md to be a document,
+// and an idea that happens to start with "./" or contain a "/" but names no
+// real file is exactly what falling through to prose handles correctly.
+func looksLikeFilePath(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	info, err := os.Stat(s)
+	return err == nil && !info.IsDir()
+}
+
+// looksLikeURL reports whether s is an http(s) URL, as opposed to prose
+// that merely mentions one ("check https://example.com for background" is
+// an idea ABOUT a URL, not a request to fetch it -- the same distinction
+// ideaKey draws between a bare key and a sentence naming one). Anchored to
+// the whole trimmed argument for that reason.
+var urlWholeArg = regexp.MustCompile(`^https?://\S+$`)
+
+func looksLikeURL(s string) bool {
+	return urlWholeArg.MatchString(strings.TrimSpace(s))
+}
+
+// docHTTPTimeout bounds the one network call this human-run, terminal-gated
+// command ever makes -- unlike an agent stage (which is denied WebFetch/
+// curl/wget entirely as an egress control, prompts.go), `orion new` is
+// invoked directly by a person, the same trust level as them running curl
+// themselves, so a fetch here crosses no boundary the sandbox exists to
+// enforce. Still bounded: a hung server must not hang the interview.
+const docHTTPTimeout = 15 * time.Second
+
+// readDocument returns the idea text from a local file or a URL. Verbatim,
+// like fetchIdea's own description -- this command has no standing to
+// summarise someone else's document, and a later stage designing from a
+// paraphrase would be designing from Orion's reading of it rather than
+// from what was actually written.
+func readDocument(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if looksLikeURL(s) {
+		if _, err := url.Parse(s); err != nil {
+			return "", fmt.Errorf("%s does not parse as a URL: %w", s, err)
+		}
+		client := &http.Client{Timeout: docHTTPTimeout}
+		resp, err := client.Get(s)
+		if err != nil {
+			return "", fmt.Errorf("fetching %s: %w", s, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("fetching %s: server said %s", s, resp.Status)
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if err != nil {
+			return "", fmt.Errorf("reading the response from %s: %w", s, err)
+		}
+		if strings.TrimSpace(string(body)) == "" {
+			return "", fmt.Errorf("%s returned an empty document", s)
+		}
+		return string(body), nil
+	}
+	body, err := os.ReadFile(s)
+	if err != nil {
+		return "", fmt.Errorf("reading %s: %w", s, err)
+	}
+	if strings.TrimSpace(string(body)) == "" {
+		return "", fmt.Errorf("%s is empty", s)
+	}
+	return string(body), nil
 }
 
 // ideaReader is the slice of the tracker this path needs: find one issue, and

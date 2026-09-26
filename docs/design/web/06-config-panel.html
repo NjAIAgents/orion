@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orion web mockup — 06 config panel</title>
+<style>
+:root{
+  --ink:#e6e6e6; --ink-dim:#9aa0a6; --ink-faint:#6b7178;
+  --bg:#0b0d10; --panel:#12161b; --panel2:#151a20; --line:#242a33; --line-soft:rgba(36,42,51,.55);
+  --ok:#4bb543; --fail:#e05252; --warn:#d6a231; --wait:#4f8ff0; --work:#2fb3c4;
+  --t-orange:#d98a3d; --t-violet:#b58cf0; --t-teal:#4fc7c7;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:12px;}
+.app{position:relative;height:1180px;overflow:hidden;}
+.behind{position:absolute;inset:0;filter:brightness(.4);}
+.topbar{display:flex;align-items:center;gap:16px;padding:0 18px;height:44px;
+  border-bottom:1px solid var(--line);background:var(--panel);}
+.brand{font-weight:600;font-size:13px;} .brand .dot{color:var(--work);}
+.nav{display:flex;gap:2px;}
+.nav .item{padding:5px 11px;border-radius:5px;color:var(--ink-faint);font-size:11.5px;}
+.nav .item.on{background:rgba(47,179,196,.12);color:var(--work);}
+.spacer{flex:1;}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:4px;
+  border:1px solid var(--line);color:var(--ink-dim);font-size:11px;}
+.ghosthead{padding:18px 20px 10px;font-size:14px;font-weight:600;}
+.ghostcards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:0 20px;}
+.gc{background:var(--panel);border:1px solid var(--line);border-radius:7px;height:104px;}
+.scrim{position:absolute;inset:0;background:rgba(0,0,0,.58);}
+.slide{position:absolute;top:0;right:0;bottom:0;width:640px;background:var(--panel2);
+  border-left:1px solid var(--line);display:flex;flex-direction:column;
+  box-shadow:-24px 0 60px rgba(0,0,0,.5);}
+.sh{display:flex;align-items:center;gap:12px;padding:15px 18px;border-bottom:1px solid var(--line);}
+.sh .t{font-size:13px;font-weight:600;}
+.sh .p{font-size:10.5px;color:var(--ink-faint);margin-top:2px;}
+.x{margin-left:auto;color:var(--ink-faint);font-size:14px;}
+.tabs{display:flex;gap:2px;padding:11px 18px 0;border-bottom:1px solid var(--line);}
+.tab{padding:6px 12px;border-radius:5px 5px 0 0;font-size:11px;color:var(--ink-faint);}
+.tab.on{background:rgba(47,179,196,.1);color:var(--work);box-shadow:inset 0 -2px 0 var(--work);}
+.sc{flex:1;overflow:auto;padding:16px 18px 24px;min-height:0;}
+.note{padding:10px 12px;border-radius:6px;font-size:10.5px;line-height:1.65;margin-bottom:8px;
+  color:var(--ink-dim);background:rgba(79,143,240,.06);border:1px solid rgba(79,143,240,.22);}
+.filepath{font-size:10px;color:var(--ink-faint);margin-bottom:16px;line-height:1.6;}
+.filepath b{color:var(--ink-dim);font-weight:400;}
+.grp{font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-faint);
+  font-weight:600;margin:22px 0 10px;padding-bottom:7px;border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:9px;}
+.grp:first-of-type{margin-top:0;}
+.grp .tail{margin-left:auto;text-transform:none;letter-spacing:0;font-weight:400;font-size:10px;}
+.f{display:flex;align-items:flex-start;gap:12px;padding:10px 0;border-bottom:1px solid var(--line-soft);}
+.f .lbl{flex:1;min-width:0;}
+.f .n{font-size:11.5px;color:var(--ink);margin-bottom:3px;}
+.f .d{font-size:10.5px;color:var(--ink-faint);line-height:1.6;}
+.f .ctl{flex:none;display:flex;align-items:center;gap:8px;}
+.num{border:1px solid var(--line);border-radius:5px;padding:5px 10px;color:var(--ink);
+  font-size:11.5px;background:rgba(0,0,0,.28);min-width:58px;text-align:center;}
+.num.edited{border-color:rgba(47,179,196,.5);background:rgba(47,179,196,.08);color:var(--work);}
+.src{font-size:9.5px;color:var(--ink-faint);padding:1.5px 6px;border:1px solid var(--line);border-radius:3px;white-space:nowrap;}
+.src.file{border-color:rgba(47,179,196,.3);color:var(--work);}
+.tog{width:28px;height:15px;border-radius:8px;background:var(--line);position:relative;flex:none;}
+.tog i{position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;background:var(--ink-faint);}
+.tog.on{background:rgba(75,181,67,.32);} .tog.on i{left:15px;background:var(--ok);}
+.warnf{background:rgba(214,162,49,.08);border:1px solid rgba(214,162,49,.3);border-radius:6px;
+  padding:9px 11px;font-size:10.5px;color:#e7d3a8;line-height:1.65;margin:8px 0 2px;}
+.warnf b{color:#f0dcb0;}
+.locked{background:rgba(224,82,82,.055);border:1px solid rgba(224,82,82,.26);border-radius:7px;
+  padding:12px 13px;margin:10px 0;}
+.locked .lh{display:flex;align-items:center;gap:9px;margin-bottom:7px;}
+.locked .ln{font-size:11.5px;color:#eeb4b4;}
+.lockbadge{font-size:9px;letter-spacing:.08em;text-transform:uppercase;padding:2px 7px;border-radius:3px;
+  background:rgba(224,82,82,.14);color:#e07878;border:1px solid rgba(224,82,82,.3);}
+.locked .val{margin-left:auto;font-size:11.5px;color:var(--ink-dim);}
+.locked .why{font-size:10.5px;color:#d8a8a8;line-height:1.65;margin-bottom:9px;}
+.runit{background:#07090b;border:1px solid rgba(224,82,82,.22);border-radius:5px;
+  padding:8px 10px;font-size:10.5px;line-height:1.7;}
+.runit .lab{color:var(--ink-faint);font-size:9px;letter-spacing:.1em;text-transform:uppercase;margin-bottom:5px;}
+.runit .c{color:var(--work);} .runit .k{color:var(--t-orange);} .runit .p{color:var(--ink-faint);}
+.cmdbar{border-top:1px solid var(--line);background:#07090b;padding:12px 18px;}
+.cmdbar .lab{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:7px;}
+.cmd{font-size:11px;line-height:1.9;white-space:pre-wrap;word-break:break-all;}
+.cmd .p{color:var(--ink-faint);} .cmd .c{color:var(--work);} .cmd .k{color:var(--t-orange);}
+.foot{display:flex;gap:8px;padding:12px 18px 16px;border-top:1px solid var(--line);align-items:center;}
+.btn{padding:8px 14px;border-radius:6px;border:1px solid var(--line);font-size:11.5px;color:var(--ink-dim);}
+.btn.primary{background:rgba(75,181,67,.14);border-color:rgba(75,181,67,.42);color:var(--ok);}
+.btn.ghost{color:var(--ink-faint);}
+.count{font-size:10.5px;color:var(--ink-faint);margin-right:auto;}
+.dim{color:var(--ink-faint);}
+</style>
+</head><body>
+<div class="app">
+  <div class="behind">
+    <div class="topbar">
+      <div class="brand">orion<span class="dot">·</span>web</div>
+      <div class="nav">
+        <div class="item">gate board</div>
+        <div class="item on">run</div>
+        <div class="item">history</div>
+        <div class="item">agents</div>
+      </div>
+      <div class="spacer"></div>
+      <div class="chip">config</div>
+    </div>
+    <div class="ghosthead">Running 5 agents</div>
+    <div class="ghostcards">
+      <div class="gc"></div><div class="gc"></div><div class="gc"></div>
+      <div class="gc"></div><div class="gc"></div><div class="gc"></div>
+    </div>
+  </div>
+  <div class="scrim"></div>
+
+  <div class="slide">
+    <div class="sh">
+      <div>
+        <div class="t">Configuration</div>
+        <div class="p">opens over whatever you were looking at · nothing is written until you save</div>
+      </div>
+      <span class="x">✕</span>
+    </div>
+
+    <div class="tabs">
+      <div class="tab on">limits</div>
+      <div class="tab">collect</div>
+      <div class="tab">agents</div>
+      <div class="tab">credentials</div>
+    </div>
+
+    <div class="sc">
+      <div class="note">
+        Every row says <b>where the value came from</b> — the shipped default, or this project's file. The file
+        holds only what was overridden, so neither the file nor the build alone answers “what will a run use”.
+        <b>Zero here restores the shipped default; it does not mean unlimited.</b>
+      </div>
+      <div class="filepath">
+        writing to <b>~/work/orion/orion.json</b> · resolved through the project registry, which is not always the
+        directory you are in — so the path is shown rather than assumed.
+      </div>
+
+      <div class="grp">Concurrency <span class="tail dim">how many agents exist at once</span></div>
+      <div class="f">
+        <div class="lbl">
+          <div class="n">max_concurrent_tickets</div>
+          <div class="d">How many tickets a watcher works at the same time. It does not bound one agent's
+          behaviour; it bounds how many agents exist.</div>
+        </div>
+        <div class="ctl"><span class="src file">orion.json</span><span class="num edited">3</span></div>
+      </div>
+      <div class="warnf">
+        Above <b>10</b> the CLI stops and asks, listing five hazards — conflicts grow with the <b>square</b> of
+        this number (six pairs at four, forty-five at ten), every run holds a worktree off one shared clone that
+        git serialises on, one rate limit is shared by all of them, a budget checkpoint is only read between runs
+        so runs already in flight sail past it together, and approvals do not parallelise: N tickets finishing
+        means N approvals waiting on one person. <b>This panel refuses values above 10 outright</b> — a browser
+        button that auto-answers that prompt would delete the only guard the code has.
+      </div>
+      <div class="f">
+        <div class="lbl">
+          <div class="n">max_concurrent_children</div>
+          <div class="d">Caps how many subagents a fan runs at once. Low by default: unbounded fan-out against a
+          rate-limited API converts a queue into a stampede. This is the hard ceiling — raising a stage's own
+          agent count cannot widen the real fan past it.</div>
+        </div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">2</span></div>
+      </div>
+
+      <div class="grp">Circuit breakers <span class="tail dim">what stops one runaway run</span></div>
+      <div class="f">
+        <div class="lbl"><div class="n">max_tool_calls</div>
+        <div class="d">Ceiling on tool calls in a single run.</div></div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">400</span></div>
+      </div>
+      <div class="f">
+        <div class="lbl"><div class="n">max_session_minutes</div>
+        <div class="d">Wall-clock ceiling for one session.</div></div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">90</span></div>
+      </div>
+      <div class="f">
+        <div class="lbl"><div class="n">max_consecutive_failures</div>
+        <div class="d">Stop after this many failures in a row.</div></div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">3</span></div>
+      </div>
+      <div class="f">
+        <div class="lbl"><div class="n">max_repeat_identical</div>
+        <div class="d">Stop when the same call repeats this many times — a loop that is going nowhere.</div></div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">4</span></div>
+      </div>
+      <div class="f">
+        <div class="lbl"><div class="n">max_edits_without_verify</div>
+        <div class="d">Edits allowed before something must be run to check them.</div></div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">25</span></div>
+      </div>
+      <div class="f">
+        <div class="lbl"><div class="n">max_files_touched</div>
+        <div class="d">Blast-radius ceiling for one run.</div></div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">60</span></div>
+      </div>
+      <div class="f">
+        <div class="lbl"><div class="n">max_consecutive_polls</div>
+        <div class="d">Bounds waiting. The one limit where a written <b>0</b> stays 0 rather than restoring the
+        default — the panel says so on the row rather than in a footnote.</div></div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">12</span></div>
+      </div>
+      <div class="f">
+        <div class="lbl"><div class="n">max_same_command_failures</div>
+        <div class="d">Stop when one command keeps failing.</div></div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">3</span></div>
+      </div>
+
+      <div class="grp">Per-stage rounds <span class="tail dim">each round is another paid run</span></div>
+      <div class="f">
+        <div class="lbl">
+          <div class="n">qa.max_rounds</div>
+          <div class="d">QA never blocks on its own authority, so this loop is the only way the stage can stop a
+          run — and it would do it by spending. Each round is a full findings-fix-reverify exchange, and the cost
+          lands on the implementer, the actor that dominates per-ticket spend.</div>
+        </div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">3</span></div>
+      </div>
+      <div class="f">
+        <div class="lbl">
+          <div class="n">ci.max_fix_attempts</div>
+          <div class="d">Outer bound only — an identical repeated failure already ends the loop at once. Each
+          attempt is an agent run <i>plus</i> a full CI run, and the count <b>survives a restart</b>.</div>
+        </div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">3</span></div>
+      </div>
+      <div class="f">
+        <div class="lbl">
+          <div class="n">discovery.max_rounds</div>
+          <div class="d">A round buys <b>more questions</b>, not another attempt at one answer — and each round is
+          the whole fan, not one agent. The most expensive round in the system to raise. Past the ceiling Orion
+          escalates what is still open to a person, so a higher number buys elaboration, never a decision.</div>
+        </div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">2</span></div>
+      </div>
+      <div class="f">
+        <div class="lbl">
+          <div class="n">dba.max_rounds</div>
+          <div class="d">Runs on opus, and only on tickets that touch data — a schema decision is inherited by
+          everything written against it afterwards.</div>
+        </div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">3</span></div>
+      </div>
+      <div class="f">
+        <div class="lbl">
+          <div class="n">qa.verdict_minutes</div>
+          <div class="d"><b>The one field where LOW is the dangerous direction.</b> This is the floor for the
+          verdict re-ask, not the ceiling — the real budget scales with the run it resumes. A re-ask killed by the
+          clock produces neither a verdict nor a fix round: just an unverified branch and a person sent to read it.</div>
+        </div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">5</span></div>
+      </div>
+      <div class="f">
+        <div class="lbl"><div class="n">qa.author_agents</div>
+        <div class="d">Bounds agents, which contend for one rate limit — not processes. Capped in practice by
+        max_concurrent_children above.</div></div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">5</span></div>
+      </div>
+      <div class="f">
+        <div class="lbl"><div class="n">qa.exec_procs</div>
+        <div class="d">Bounds processes on this machine, not agents. Too high contends for CPU, disk, and any
+        port the tests bind.</div></div>
+        <div class="ctl"><span class="src">shipped</span><span class="num">5</span></div>
+      </div>
+      <div class="warnf">Above <b>5</b> on any row in this group, the CLI stops and asks. The panel allows up to 5
+      and sends you to the terminal beyond it — the confirmation exists because the evidence runs out there.</div>
+
+      <div class="grp">Terminal only <span class="tail dim">shown here, changed there</span></div>
+      <div class="note" style="margin-bottom:12px">
+        These are readable in the panel and <b>not editable from a browser</b>. Each one either widens what a run
+        may do, removes a human step, or spends without being asked — and each is one keystroke from a very bad
+        afternoon. The exact command is given; run it in a terminal where the confirmation prompt is real.
+      </div>
+
+      <div class="locked">
+        <div class="lh"><span class="ln">budget.weekly_usd</span><span class="lockbadge">terminal only</span>
+        <span class="val">200</span></div>
+        <div class="why">The budget window across every project. <b>Here zero means UNLIMITED</b> — the exact
+        opposite of zero everywhere else in this tab. A panel that treats a cleared field as zero removes the
+        ceiling while looking like it did nothing.</div>
+        <div class="runit"><div class="lab">to change it</div>
+        <span class="p">$</span> edit <span class="k">budget.weekly_usd</span> in orion.json</div>
+      </div>
+
+      <div class="locked">
+        <div class="lh"><span class="ln">vcs.allow_release_branch_merges</span><span class="lockbadge">terminal only</span>
+        <span class="val">false</span></div>
+        <div class="why">Turning this on means Orion merges agent work directly into the release branch and
+        <b>there is no human promotion step left</b>. It is a named key rather than a side effect of editing a
+        string, because giving up that step should take a sentence that says so.</div>
+        <div class="runit"><div class="lab">to change it</div>
+        <span class="p">$</span> edit <span class="k">vcs.allow_release_branch_merges</span> in orion.json</div>
+      </div>
+
+      <div class="locked">
+        <div class="lh"><span class="ln">delegation.inherit_operator_config</span><span class="lockbadge">terminal only</span>
+        <span class="val">off</span></div>
+        <div class="why">Hands runs your own Claude Code config — plugins, MCP servers, subagents — instead of
+        Orion's curated set. Empty by default, and that is the point: what a run can do is Orion's decision.</div>
+        <div class="runit"><div class="lab">to change it</div>
+        <span class="p">$</span> edit <span class="k">delegation.inherit_operator_config</span> in orion.json</div>
+      </div>
+
+      <div class="locked">
+        <div class="lh"><span class="ln">ci.auto_fix</span><span class="lockbadge">terminal only</span>
+        <span class="val">false</span></div>
+        <div class="why">It spends money without being asked — and on a repository whose tests are flaky it will
+        spend it on nothing.</div>
+        <div class="runit"><div class="lab">to change it</div>
+        <span class="p">$</span> edit <span class="k">ci.auto_fix</span> in orion.json</div>
+      </div>
+
+      <div class="locked">
+        <div class="lh"><span class="ln">slack.merge_approvers</span><span class="lockbadge">terminal only</span>
+        <span class="val">2 set</span></div>
+        <div class="why">Empty means <b>nobody</b>, never everybody — a gate any member can satisfy is decoration.
+        Editing an approver list from a page that approves things is the wrong place to edit it from.</div>
+        <div class="runit"><div class="lab">to change it</div>
+        <span class="p">$</span> edit <span class="k">slack.merge_approvers</span> in orion.json</div>
+      </div>
+
+      <div class="locked">
+        <div class="lh"><span class="ln">qa.e2e_base_url</span><span class="lockbadge">terminal only</span>
+        <span class="val">not set</span></div>
+        <div class="why">Empty means <b>no E2E</b>, never “guess one”. A suite that quietly found production is the
+        failure that rule exists to prevent.</div>
+        <div class="runit"><div class="lab">to change it</div>
+        <span class="p">$</span> edit <span class="k">qa.e2e_base_url</span> in orion.json</div>
+      </div>
+
+      <div class="locked">
+        <div class="lh"><span class="ln">dba.non_prod_dsn</span><span class="lockbadge">terminal only</span>
+        <span class="val">set · masked</span></div>
+        <div class="why">A connection string, so it is credential-shaped — and it is written into the agent's
+        prompt, and a prompt is not a secret store. Never rendered here, at any privilege.</div>
+        <div class="runit"><div class="lab">to change it</div>
+        <span class="p">$</span> edit <span class="k">dba.non_prod_dsn</span> in orion.json</div>
+      </div>
+
+      <div class="locked">
+        <div class="lh"><span class="ln">orion config agents --reset</span><span class="lockbadge">terminal only</span>
+        <span class="val">—</span></div>
+        <div class="why">With no agent ids it wipes the <b>global</b> roster for every project on this machine, with
+        no confirmation of any kind. The panel resets one agent at a time and never offers the bare form.</div>
+        <div class="runit"><div class="lab">if you really mean all of them</div>
+        <span class="p">$</span> <span class="c">orion config agents --reset</span></div>
+      </div>
+    </div>
+
+    <div class="cmdbar">
+      <div class="lab">what saving runs</div>
+      <div class="cmd"><span class="p">$</span> <span class="c">orion config limits</span> <span class="k">max_concurrent_tickets 3</span></div>
+    </div>
+
+    <div class="foot">
+      <span class="count">1 change staged · was 4 · a watcher already running keeps the value it started with</span>
+      <span class="btn ghost">discard</span>
+      <span class="btn primary">save</span>
+    </div>
+  </div>
+</div>
+</body></html>

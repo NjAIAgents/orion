@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/events"
 	"github.com/orion-sdlc/orion/internal/notify"
@@ -99,6 +100,11 @@ func settleTripResidue(jobPath, branch, key, summary, issueURL string, runFailed
 		// an operator to release. Saying "the breaker tripped, run orion reset"
 		// on a healthy ending would be the first line they learn to ignore, and
 		// the OR-232 lines below are the ones that have to be read.
+		//
+		// Also the clean-settle case for OR-458's stranded counter: this run
+		// ended holding nothing, so whatever streak an earlier run built up is
+		// over. Best-effort, same as every other write in this function.
+		_ = collect.ClearStranded(ws.Dir, key)
 		return
 	}
 
@@ -134,6 +140,23 @@ func settleTripResidue(jobPath, branch, key, summary, issueURL string, runFailed
 			outcome = fmt.Sprintf("could NOT commit %d uncommitted file(s) (%v); KEPT them, uncommitted, in the worktree", files, commitErr)
 			verb, unresolved = ui.VerbFail, true
 		}
+	}
+
+	// OR-458: queue.Facts.Trips/.Stranded exist to evict a ticket that keeps
+	// tripping the breaker, or whose worktree keeps failing to settle,
+	// without landing -- and had no writer anywhere. This is the one place
+	// both facts are already known together: kind is set only when a trip is
+	// on record, and unresolved is set only when the snapshot commit itself
+	// failed, leaving the worktree stranded. Best-effort, same as every
+	// other write in this function -- a lost count costs one extra retry
+	// before eviction, not a stopped run.
+	if kind != "" {
+		_ = collect.RecordTrip(ws.Dir, key, kind, detail)
+	}
+	if unresolved {
+		_ = collect.RecordStranded(ws.Dir, key, outcome)
+	} else {
+		_ = collect.ClearStranded(ws.Dir, key)
 	}
 
 	ui.Say(w, key, events.ActorOrion, verb,

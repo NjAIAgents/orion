@@ -71,6 +71,12 @@ var expectedDecisions = []string{
 	// SPECIFY_FEATURE_DIRECTORY unset lets spec-kit name the feature itself,
 	// which is the second name 0009 exists to prevent.
 	"0022-per-project-toolkit-install-via-specify-init.md",
+	// OR-267. Load-bearing: without it, "the surface is on 127.0.0.1, an
+	// Origin check is enough" reads as the proportionate amount of security
+	// for a local tool, and leaves the write endpoints open to every other
+	// process on the machine -- which is the one threat an Origin check
+	// cannot touch, because a local process is not a browser.
+	"0024-local-surface-authentication.md",
 }
 
 func TestEveryDecisionHasContextDecisionConsequences(t *testing.T) {
@@ -226,6 +232,23 @@ func TestDecisionContentMatchesTicket(t *testing.T) {
 				"nj-agents remains the shipped default",
 				"absent", "zero-change",
 				"0001", "enforced by shape",
+			},
+		},
+		{
+			// The three layers, and the reason each cannot stand alone, are
+			// the whole substance of OR-267. A file that kept the sections
+			// but lost the local-process argument would leave "just check the
+			// Origin" available as the obvious cheaper answer; one that lost
+			// the cookie or query-string rejection would leave two transports
+			// open that each re-enable the CSRF the token exists to stop.
+			"0024-local-surface-authentication.md",
+			[]string{
+				"OR-266", "OR-267", "OR-268", "OR-269", "OR-270", "OR-35",
+				"crypto/rand", "128 bits", "ConstantTimeCompare",
+				"X-Orion-Token", "cookie is ambient authority", "query string",
+				"missing header is a rejection", "localhost.evil.com",
+				"127.0.0.1.evil.com", "DNS rebinding", "default-deny",
+				"local process is not a browser",
 			},
 		},
 	}

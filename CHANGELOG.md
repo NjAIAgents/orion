@@ -55,6 +55,518 @@ now refuses to do**.
   declined; installation is per project; a spec is a living document — are ADRs 0021,
   0022 and 0023. The chain steps that use them land under OR-355.
 
+## v0.10.0
+
+### Added
+
+- **The board's columns are derived from the label state machine** rather than
+  spelled out beside it. A copy stays correct until the state machine changes and
+  is then silently wrong, so a test now scans the package for any hardcoded queue
+  label and fails on a hit.
+
+- **`orion prioritise KEY KEY...` reorders the queue from the command line.** The queue
+  is worked in "priority DESC, Rank ASC" order, and until now Rank could only be changed
+  by dragging a ticket in Jira's backlog -- a gesture, with no command behind it. The
+  tickets named are ranked in the order typed, each one behind the one before it, and
+  `orion queue` shows the result.
+
+  It refuses rather than half-works. A ticket that is not in the queue -- claimed,
+  failed, or never labelled -- stops the run and names how to bring it in, because an
+  ordering is one intention and applying the part that resolved leaves a queue nobody
+  asked for. So does a set whose priorities differ: priority is read before Rank, so
+  ranking a Medium ticket above a High one writes an order the queue would never show,
+  and reporting that as a reorder is worse than refusing it. Levelling the priorities is
+  the operator's call.
+
+- **`orion request-plan-changes KEY <what you want changed>` sends free-text feedback to
+  the plan stage.** The text is written and committed as `plan-feedback.md` beside the
+  plan -- under `plans/` or the feature directory, whichever layout the project's plan
+  stage uses -- and the plan stage reads it on its next run and revises the plan against
+  it, keeping every earlier round. It records the input and names the command that acts
+  on it (`orion plan KEY --from plan`); it runs no stage itself.
+
+  Everything after the key is the feedback, verbatim: no flag is parsed there, so
+  "-1 on the cache" or "drop the `rm -rf` step" is the request rather than a flag or a
+  shell fragment.
+
+  Both commands are what a web UI shells out to for a gate response; neither needs a
+  terminal, so the behaviour is the same from either.
+
+- **An agent whose deliverable is a description rewrite can now reach the approval
+  gate.** The capability existed — Orion can write a tracker description, but only
+  after a human approves a before/after comment — and nothing called it. Such a run
+  composed the right answer, made no commits because there was nothing in the repo
+  to change, and ended as an ordinary blocked question, leaving the drafted text in
+  a comment for a human to extract and apply by hand.
+
+- **A ticket whose description names a dependency no link records is held, not
+  dispatched.** A dependency written by hand, or written by an agent that put it in
+  prose, never reached the link-based check — so tickets saying "Depends on: the
+  server skeleton" were queued and dispatched with no links at all, twice in one
+  night. Matching is deterministic over a fixed set of phrases rather than a model
+  call: a bare key mention is deliberately not enough, since tickets cite each other
+  constantly and treating every mention as a dependency would hold most of the backlog.
+
+- **A watcher whose cycles achieve nothing now stops.** Every existing guard was
+  blind to the case: the spend breaker watches dollars, and assembling a batch and
+  reading CI back involves no model call, so spend stayed flat all night and no
+  checkpoint could fire. The existing "the batch landed nothing" warning was right
+  more than thirty times, into an empty room — and a warning that repeats unheard is
+  not a guard.
+
+- **The ask-broker panel**, drawn verbatim from the mockup: an implementer blocked
+  on a question, routed through a dispatcher to an architect who refuses and a PM who
+  answers. Static for now — nothing in the codebase yet emits which advisor was asked
+  or what they said, so it renders the mockup's own sample rather than inventing data.
+
+- **The stage-flow panel**, drawn verbatim from the mockup: the whole pipeline by
+  default, with the advisor exchange as swim lanes and the QA fan-out as an
+  expandable section. Chosen over the alternatives because it needs no pan, zoom or
+  minimap layout maths to keep looking right once real pipeline data varies in length.
+
+- **A persistent left sidebar reaching every registered panel.** The horizontal tabs
+  only had room for a few, so the destination pages were reachable only by typing
+  their hash URL — no menu or link surface pointed at them. The sidebar splits pages
+  meant to be opened cold from views that want a ticket to be useful, both read from
+  the panel registry rather than a second hand-maintained list.
+
+- **`orion new` accepts a document — a local file or a URL — as the idea.** A design
+  doc or a spec somebody already wrote is the most common way an idea exists before
+  Orion sees it, and it had no path in: the only ways to arrive already-written-down
+  were the interview or a tracker key. The document's content is read verbatim.
+
+- **`plan.md` gets the same Open Questions gate `intent.md` already had.** Found on
+  a real project: the plan stage decided the whole implementation would be POSIX
+  Bash, with a one-line note that Windows was not validated for the MVP — and the
+  Risks section never revisited it. Nobody was ever asked whether that platform
+  scope was acceptable, because nothing gated a plan's decisions.
+
+- **The orchestrator, the QA fan-out and click-to-log in the run view.** The
+  orchestrator never appeared in the pipeline at all, and QA's five concurrent
+  authors were invisible because every child shared the same actor, ticket and model
+  in the event log with no way to tell them apart.
+
+- **Each card on the run view carries a per-ticket colour** — a left-edge rail and
+  a matching key colour, in the mockup's own palette. Colours are a stable hash of
+  the ticket key, so a ticket keeps its colour across reloads; they are not
+  guaranteed to match the colour the terminal gives the same ticket.
+
+- **`orion` now reports which sessions are actually alive.** A session is a
+  process, and liveness is a heartbeat file rather than a PID check — `os.FindProcess`
+  always succeeds on Windows, and PIDs are reused everywhere. A stopped session's
+  record vanishes rather than lingering as history; the event log already owns that.
+
+- **A ticket's full history is derivable from the event log.** One `(key, run)`
+  pair yields its ordered step list with model attribution, the ask/answer/refuse
+  exchange paired in order, every recorded decision carried verbatim, and the pull
+  request's URL with its CI verdict once one arrives. A run that never asked a
+  question reports no asks rather than an empty list the reader has to interpret.
+
+- **The agent roster and past runs are readable from the web surface.** Which
+  actor runs on which model, what was overridden and what shipped as the default,
+  and the run history per workspace — newest first.
+
+- **Workspace enumeration now covers every workspace, bound or not.** The registry
+  maps a project key to a workspace, but `orion new` and `orion plan` create
+  workspaces before anything binds them, and a run that failed before adoption is
+  never bound at all. Reading either source alone silently omits exactly the
+  workspaces somebody goes looking for, so both are unioned.
+
+- **One card per `(key, run)`, derived from the event stream.** Grouping by ticket
+  key alone folds two runs into a card whose step count is their sum and which is
+  still running because the second has no end — a card describing no run that ever
+  happened. A step is a tool call, not an event, so a chatty run no longer outranks
+  a working one.
+
+- **Card derivation is exercised over log files, not slices.** A workspace log can
+  be absent, empty, cut off mid-line by a kill, carrying two runs at once, or missing
+  its first half to rotation — none of those states is reachable from a slice literal,
+  and each one has a card it can produce that describes no run that ever happened.
+
+- `orion web` starts the run-view server on loopback and prints the URL to open.
+  It listens on port 7061 by default; `--port N` overrides it, and `--port 0`
+  asks the operating system for a free port and prints the one it got. The
+  surface has no authentication in front of it, which is why it binds
+  127.0.0.1 only and there is no flag to widen that.
+
+- **The web UI ships inside the binary.** The real UI tree is embedded, so `go build`
+  from a clean tree yields one binary that serves it — no build step, no bundler.
+
+- **Log lines stream to the browser over `/api/stream`.**
+
+- **A fresh install is verified across every endpoint.** With an empty home, the
+  server starts and every endpoint returns an empty-but-valid body — exercised over
+  the real boot path, because a unit test calling a handler directly cannot catch a
+  route that was never registered. For the stream, empty-but-valid means "connects
+  and stays open": there is nothing to push on a machine that has never run anything,
+  and that absence is the valid answer.
+
+- **The vendored front-end runtime is embedded alongside the UI**, so neither needs
+  fetching at runtime.
+
+- **The card grid renders the snapshot.**
+
+- **The log panel filters, autoscrolls, and pauses when you scroll up.** Verb and
+  trace filters narrow what is shown; new lines scroll the view; scrolling away from
+  the bottom pauses that until you return or click resume. The browser and the
+  terminal agree on what a run looks like — the panel's verb mapping is a port of the
+  terminal's, kind by kind, not a reinvention. Stage boundaries are never filtered
+  out, because a handoff you cannot find is a handoff that may as well not be drawn.
+
+- **Adding a page to the web UI takes one file plus one import**, not an edit to a
+  central router — the same seam the server already offers Go files for registering
+  their own routes. Two panels added at once now collide on one import line rather
+  than on logic.
+
+- **CI proves the UI builds with no Node installed.** `PATH` is scrubbed to the Go
+  toolchain's own directory before the build subprocess runs, rather than relying on
+  CI's runners happening not to have Node on them.
+
+- **A ticket's own story is reachable from the web UI** — the stage-by-stage detail
+  panel wired to the endpoint that had shipped without a front end.
+
+- **The agent roster panel.** The configured actors and their models over
+  `/api/config`, with per-field "overridden" tags rather than one blanket tag per
+  row, since a row can be part-shipped and part-overridden.
+
+- **The run history panel** — past runs per workspace, newest first.
+
+### Changed
+
+- **The vendored front-end runtime's exemption is documented, with the one rule
+  that keeps it valid.** The original trade rested on four grounds — localhost-bound,
+  read-only, no auth, no user input — and three have since changed, so it needed
+  re-arguing rather than inheriting.
+
+- **QA runs the packages a change can break, not all of them.** Seven concurrent
+  agents each ran the full suite; the per-run parallelism bound says nothing about
+  runs against each other, so they starved one another and the packages that lost
+  were the ones with a clock in them. Three of six tickets went red on a timeout and
+  then passed on retry reporting no fix rounds — nothing had been repaired, because
+  nothing was broken. Each false red costs a CI run, a fix agent, and the operator's
+  trust in a red.
+
+- **The plan stage gates on what the intent authorized, not on how confident the
+  agent feels.** The Open Questions section alone left the loophole open: an agent
+  confident in a stack or platform choice could state it as a settled decision and
+  leave the section empty, so the gate had nothing to block on. A language, runtime
+  or target-platform choice the intent never named now belongs in Open Questions
+  even when one option is obviously easier to build.
+
+- **Clicking a ticket shows its real stage flow and ask exchange**, not a flat
+  terminal-style step table. The stage-flow and ask-broker panels stop being
+  unreachable mockups drawing a hardcoded sample regardless of what was clicked.
+
+- **The Continuity plugin's session state is tracked in the repository**, as the
+  plugin's own metadata declares it should be. Scanned for secrets before it was
+  committed.
+
+- **The agent roster shown on the page is resolved rather than restated**, so the
+  page cannot drift from the roster Orion actually runs.
+
+### Fixed
+
+- **The blocked row's instruction names the real labels.** It tells the operator
+  what to do about a stopped agent, naming the label the ticket wears and the one
+  that requeues it — both were literals, and both are now derived.
+
+- **A run that commits its artifact under `docs/decisions/` no longer closes with
+  the work stranded.** Bookkeeping commits were excluded by path, which made any
+  commit touching only that path invisible to the count — including real
+  ticket-assigned work. Such a run read as zero commits, was routed to "no change",
+  and closed Done with the work unpushed in the worktree. Bookkeeping is now
+  excluded by commit subject instead, so a real commit there counts like any other.
+
+- **The test suite no longer registers throwaway sandboxes with the attribution
+  tool.** `dun init` records a path permanently, and Orion instruments the sandbox
+  clone on every supervised job — so each test run left an entry behind for a
+  directory that had already been deleted. Measured before the fix: 8,782
+  registered repositories, of which seven existed. `dun init` now points at a
+  throwaway registry while the caller is a test; a real run is unchanged.
+
+- **`orion release ship` collates the changelog into the promotion pull request.**
+  It never called the collator, so two releases in a row shipped with no CHANGELOG
+  section at all and the fragments sat in `.changelog.d/` until someone noticed and
+  collated them by hand after the fact. The entry now rides in the same pull request
+  and gets the same approval the promotion already gets.
+
+- **A batch whose fault belongs to no single member is stopped instead of retried.**
+  Two branches were each green alone and red together — one spelled a literal the
+  other's new test forbade — and no subset bisection could convict either, because
+  neither was at fault by itself. The integrator spent 91 CI runs over 13.5 hours
+  and merged nothing.
+
+- **A claim whose work is already finished is reconciled rather than left to expire.**
+  A ticket finished at 00:49 — feature plus eight test files, pushed — then wore the
+  working label for twelve hours, because the collector reads labels rather than
+  branches. Two other tickets on the same file queued behind a concurrency slot
+  nobody was using, until a human moved the label by hand.
+
+- **The web UI no longer paints a blank screen.** The template library was bound to
+  the component base class instead of the hyperscript function, so every template
+  evaluated to `undefined` — and rendering `undefined` is a silent no-op. The server
+  served a real page, real JavaScript and a real payload, and the app stayed empty
+  with no thrown exception and no console error.
+
+- **The run view's CSS matches the mockup.** It had been hand-transcribed rather
+  than copied and had drifted: wrong widths, several rules missing entirely, a
+  stacked header where the mockup aligns a row, and a line clamp the mockup never had.
+
+- **Named HTML entities render as their glyph, not as literal text.** The template
+  parser is a hand-rolled tokenizer over the raw template string and never runs an
+  entity-decode pass, so `&middot;` and friends reached the screen as the literal
+  characters — the topbar read `orion&middot;web`.
+
+- **The run page shows the current batch, not every run ever recorded.** The
+  snapshot read each workspace's entire event log with no time or liveness boundary,
+  so release tags and months-old tickets rendered alongside live work — 95 cards on
+  one machine, where the page is meant to answer "what is running right now". A
+  finished run stays visible for a short grace period rather than vanishing the
+  instant it ends.
+
+- **A stage that writes its artifact but forgets to commit it now self-heals.** The
+  gate correctly detected the uncommitted file and stopped the pipeline — it did its
+  job — but the only recovery was a person noticing the log, reading it, and
+  committing or re-running by hand. Found on a real run whose intent file was
+  complete and simply never committed.
+
+- **A question spanning several lines is no longer silently truncated.** Everything
+  past a question's first physical line was invisible to the parser, so a question
+  with nine further lines of real content displayed and stored only its opening
+  clause. Questions are also now visually distinguished, and one can no longer be
+  skipped silently.
+
+- **Four defects in the run view, all found live watching a real batch.** Cards
+  never showed which stage a ticket was in; a working card had no progress
+  indicator; a long stage-name pair overflowed its column and rendered as
+  overlapping text; and clicking a card then navigating back lost the entire log
+  tail, because the shell swapped the whole panel on a hash change and the log's
+  connection and buffer died with the component.
+
+- **A project scaffolded by `orion new` / `orion plan` gets the canonical
+  `orion.json`.** It was written by a path only `orion init` ever took, so a
+  chain-scaffolded project had a much shorter config missing whole sections —
+  found live.
+
+- **The `orion.json` config race is gone.** A second, minimal config was written
+  during workspace creation, before the chain's toolkit step wrote the canonical
+  one — and since that step never overwrites an existing file, the minimal template
+  always won. The previous fix never actually reached a real chain-scaffolded
+  project, because its regression test used a hand-built fixture.
+
+- **A chain-scaffolded project gets CI, the same as one adopted by `orion init`.**
+  The test script and workflow were written only by `orion init`, so a project
+  scaffolded by `orion new` / `orion plan` reached its first supervised stage with
+  no CI at all — nothing for auto-fix, a CI-gated merge, or a release's check
+  requirements to gate on, unless the scaffold agent improvised something
+  uninstructed.
+
+- **The plan chain instruments its own scaffolded repo for attribution**, so the
+  commits the chain itself makes carry a trailer rather than landing unattributed.
+
+- **A repo the plan chain creates deletes merged head branches**, the same as one
+  adopted by `orion init`. Without it a chain-created repo accumulated merged
+  branches forever — and the collector's own logic assumes the setting is on, which
+  had only ever been true for an init-adopted repo.
+
+- **The queue's escalation rule can actually fire.** Escalating to a person after a
+  ticket is evicted twice reads a ledger that nothing ever loaded and nothing ever
+  appended to, so the rule could never trigger no matter how many times a ticket was
+  really evicted. The fix-round eviction rule was disabled the same way, even though
+  the counter it needed already existed and was ready to use.
+
+- **A long-running job keeps its claim.** The heartbeat function existed, was
+  documented as cheap enough to call on every tick, and had no callers at all — so
+  the staleness check degenerated into "has this job run longer than two hours"
+  rather than "has the heartbeat gone stale". A job still alive and working past
+  that point had its claim read as dead and its ticket started a second time.
+
+- **Breaker trips and stranded worktrees now feed the queue's eviction rules.**
+  Both rules had no reader anywhere: the breaker's trip state is keyed by session
+  rather than by ticket, and nothing tracked how many consecutive passes a ticket's
+  worktree failed to settle. The stranded count is a consecutive streak reset on a
+  clean settle, not a lifetime total.
+
+- **The sandbox returns to the work branch after the spec stage.** The spec stage
+  delegates to spec-kit, which creates and checks out its own numbered feature
+  branch as its convention, and nothing switched back — so one project's sandbox sat
+  on that branch for its whole life. Every tick detected the mismatch and warned,
+  correctly refusing to force a checkout over unknown state, but nothing ever
+  corrected it either.
+
+- **A chain-scaffolded project gets its Slack channel.** Channel creation was gated
+  on a config flag that nothing in the plan chain ever sets, so the channel was
+  silently never created no matter what credentials were configured.
+
+- **Usage events carry the run they belong to.** The cost recorder opened its own
+  event log with an empty base, so every usage event it ever wrote carried no run
+  id at all — project-wide, not specific to one stage. The web surface matches
+  events to a run by exact equality, so every one of them silently vanished from a
+  run's reported cost: a QA fan-out of five concurrent sessions rendered as a single
+  node with no fan-out box.
+
+- **A stage told to file its work in the tracker no longer reports success
+  having published nothing.** The per-workspace sandbox's network allowlist was
+  a constant, and the tracker host is configured per installation — so it was
+  never on the list. An intent stage reached Jira, the OS sandbox refused the
+  egress, and the stage exited 0: the file was written and committed, the
+  ticket was never created, and the only trace was a line that scrolled away.
+  The allowlist now includes the host of `ORION_JIRA_URL` when a tracker is
+  configured, and `raw.githubusercontent.com` alongside the GitHub API hosts.
+  An installation with no tracker keeps exactly the old list. Existing
+  sandboxes pick this up on the next `orion init`.
+
+- **`orion watch` prints colour again, and its CI wait line names the tickets in
+  the batch.** The watcher's output wrapper hid the terminal from the colour check,
+  so every line it wrote was treated as non-terminal output — the same bug OR-184
+  fixed, one layer further out. The wait line used to repeat "3 branch(es), 6m0s
+  elapsed" once a minute; it now says which tickets are at risk while CI runs, and
+  which to open when it goes red.
+
+- **The local-auth token test no longer fails about one run in sixteen.** It
+  substituted a hardcoded `0` as the "wrong" first byte, and a hex token that
+  already began with `0` was thereby reconstructed exactly — so the middleware
+  correctly accepted it and the test reported a false failure.
+
+- **A shipped agent name no longer appears in a doc comment.** Every default agent
+  name is renameable, so a frozen copy eventually points at somebody this build no
+  longer has — which is why the rule covers comments too, and why the example that
+  broke it was itself explaining that names are operator-configurable.
+
+- **`gofmt` applied to `timing_test.go`.**
+
+- **Closing the web server before it ever served no longer leaks the port.**
+  `http.Server.Close` closes only the listeners `Serve` was handed, so a server
+  closed before `Serve` ran had nothing closed at all. Binding without serving is
+  deliberate — it lets a caller print the address first — and a caller that bound,
+  printed, then hit an error took exactly that path.
+
+- **The embedded UI tree is served read-only, and anything not in it returns 404**
+  rather than reaching the filesystem.
+
+- **Cards show a status again.** `Verb` was never assigned anywhere in production
+  code, so every card rendered blank regardless of age — a run finished two weeks ago
+  and one genuinely in progress were visually indistinguishable. Failed is sticky;
+  everything else is newest-wins.
+
+- **An allocation in scoped test runs no longer trips CodeQL's size-overflow
+  check.** The capacity hint on the scoped package list summed two slice lengths,
+  which CodeQL reads as an allocation size that may overflow. It cannot in
+  practice, but the hint saved almost nothing, so it is gone.
+
+### Security
+
+- The local web surface will be authenticated. The epic's original "Localhost
+  only, no auth" no longer holds now that the surface approves gates, edits
+  agent config and starts runs: binding to 127.0.0.1 does not keep out other
+  processes on the machine, or websites the operator visits. The mechanism is
+  a per-process token sent in an `X-Orion-Token` header — never a cookie,
+  never a query string — plus a default-deny Origin check and an exact-string
+  Host allowlist, applied as one middleware over the whole mux so an endpoint
+  added later is protected without anyone remembering to protect it. Recorded
+  in `docs/decisions/0024-local-surface-authentication.md`.
+
+- **The board is held to template escaping by test.** Every string a card carries
+  is somebody else's input: the title is whatever the tracker accepted, and the
+  activity and gate text come off logs that agents and other tooling write. None of
+  it is reviewed before the board draws it, and once the write endpoints exist that
+  board is the control plane — so a summary that executes is script on the
+  operator's own origin, not a cosmetic defect.
+
+- **A workspace id that would escape the projects directory is refused.**
+  `repos.json` is a plain file a person or a bad init can edit, and an entry whose
+  workspace id was `../..` pointed every read that joins it onto the projects path
+  at a file outside the tree. A bad entry fails the whole scan rather than being
+  skipped: dropping it would forget a binding silently and leave the traversal
+  unreported.
+
+- **The tracker credential stays out of everything Orion writes down.** A poller
+  that survives a restart unattended is exactly where a token ends up stored beside
+  the state Orion already keeps, and anything that then reads that tree reads the
+  token with it — a backup, a synced dotfiles repo, or the page rendering its own
+  state. A Jira token usually carries issue-read and issue-write scope across every
+  project the account can see, so one such reader leaks all of them.
+
+## v0.9.1 — 2026-09-09
+
+### Added
+
+- **`orion new` accepts a tracker key.** `orion new PRIOR-3` reads an idea already
+  written down -- a Jira Product Discovery idea, or any issue -- and skips the
+  interview, because the questions it would ask have already been answered. The
+  idea's own words go into the project description verbatim rather than
+  paraphrased, and the new project key is commented back onto the idea so a
+  reader of one can find the other. Since nothing needs typing, this path works
+  from a script, where `orion new` previously required a terminal.
+
+  An idea that is still the unfilled template is refused rather than planned
+  from: a description reading "Define customer problems, why they're urgent"
+  would otherwise be designed against as if it were the problem statement. Orion
+  says which idea is empty and interviews instead.
+
+### Changed
+
+- **`orion new` with no idea now asks for one** instead of printing a usage error.
+  The command's job is to interview, so a missing idea is its first question
+  rather than a mistake. It is asked after the tracker permission check, so a run
+  that cannot create a project fails before anything is typed. With no terminal
+  attached the command still refuses rather than waiting on a prompt nobody can
+  answer.
+
+- **A run says what the attribution hook recorded, while you are still watching it.**
+  whodunit stamps each commit with an `AI-Attribution` trailer and says nothing on the
+  way past -- it is a git hook, and its output goes nowhere a supervised run can see. So
+  the one record of whether an agent's work was attributed sat unread in a commit message
+  until someone ran a report weeks later. Orion now reads that trailer off the commits a
+  run produced and reports it in the run output, in `orion log` and in `orion watch`. A
+  correctly attributed run says nothing: the reader is watching a run, not auditing a
+  ledger.
+
+  The case worth surfacing is a commit stamped `unassisted` -- a positive claim that no
+  AI was involved, made over work an agent wrote end to end, and indistinguishable in the
+  data from the truth. It happens when whodunit cannot find the run's transcript at all:
+  it sees a repository with no agent sessions and concludes, correctly from what it can
+  see, that a human wrote the code. That is now reported as wrong rather than passing as
+  a finding.
+
+### Changed
+
+- **A pull request runs macOS and Windows; Linux runs where work lands.** The split is
+  by what breaks rather than by what is cheap. Windows produced a week of real platform
+  defects and is worth waiting for on every attempt. macOS is the platform Orion is
+  developed on, so a break there is felt immediately by everyone working on the repo --
+  worth its 1.6-2.6x cost over Linux, measured across 200 runs. Linux is the leg that
+  can wait: a POSIX assumption holding on macOS almost always holds there too. Pushes to
+  `develop` and `main` still run all three, so nothing reaches a release tag without a
+  verdict from every platform.
+
+### Fixed
+
+- **A release no longer refuses a CI run that is still going.** The gate read only
+  the run's conclusion, which is empty both for "no run exists" and for "a run is in
+  flight" -- two states needing opposite answers. A promotion merge triggered CI and
+  the gate refused it seventeen seconds later, on a build that was running and went
+  on to pass. It now reads the run's status too and waits, bounded, refusing only if
+  the run never finishes or never started.
+
+### Added
+
+- **`orion` can correct a tracker project's description.** It carries the answers given
+  to `orion new` and is what `orion plan` designs from, so a typo in it mattered more
+  than it looked -- and Jira will not let you delete a project to start over.
+
+- **`orion release add` refuses to move a ticket off a milestone that already shipped.**
+  Adding *to* a released milestone was already blocked; moving *off* one was not, so a
+  ticket could silently leave the release that records it -- leaving the changelog and
+  the release notes naming a version Jira no longer did. Overridable with `--force`.
+
+- **A gate test no longer depends on which branch you are standing on.** A
+  refspec-less `git push` resolves against the checked-out branch, and
+  `TestGatePushProtection` ran without a fixture repository -- so it inherited the
+  developer's own working tree, passed on a feature branch, and failed on CI, which
+  checks out `develop`. It now stands in a throwaway repository on a branch no gate
+  protects.
+
 ## v0.9.0
 
 ### Added

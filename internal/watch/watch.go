@@ -61,6 +61,7 @@ import (
 	"github.com/orion-sdlc/orion/internal/fanout"
 	"github.com/orion-sdlc/orion/internal/queue"
 	"github.com/orion-sdlc/orion/internal/registry"
+	"github.com/orion-sdlc/orion/internal/session"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
@@ -98,6 +99,11 @@ type Options struct {
 	// clamped to the same ceiling, so a caller cannot widen the control by
 	// passing a number the config file would have refused.
 	MaxConcurrent int
+
+	// NoProgressMinutes is how long the watcher may cycle without achieving
+	// anything before it stops and says so (OR-428). Zero means the shipped
+	// default; negative disables the breaker.
+	NoProgressMinutes int
 	// WorkOpts are passed through to each job.
 	MaxMinutes int
 	MaxTurns   int
@@ -185,6 +191,16 @@ func Run(opts Options, deps Deps) error {
 		deps.Sleep = sleepInterruptible
 	}
 	opts.MaxConcurrent = config.Limits{MaxConcurrentTickets: opts.MaxConcurrent}.ConcurrentTickets()
+	noProgressWindow := config.Limits{NoProgressMinutes: opts.NoProgressMinutes}.NoProgress()
+
+	// This process's liveness record (OR-52): a bare `orion watch` covers
+	// every project, so an empty Projects list here means exactly that --
+	// the dashboard shows the scope this watcher was actually given, not a
+	// guess at what "every project" expands to. Start degrades to a no-op
+	// heartbeat on failure (its own doc comment); nothing here checks its
+	// error, the same posture as events.Log.Emit.
+	sess := session.Start(opts.Home, session.KindWatch, opts.Projects)
+	defer sess.Stop()
 
 	// Every job writes its progress to the same terminal from its own
 	// goroutine. Serialised so a line is whole: two agents' output interleaves
@@ -260,6 +276,9 @@ func Run(opts Options, deps Deps) error {
 	// moment; without this each would independently decide to sleep, and the
 	// pause would be re-derived n times from n copies of the same reading.
 	var pausedUntil time.Time
+	// The no-progress breaker (OR-428). Outside the loop: its whole job is
+	// to remember across ticks.
+	stall := newNoProgress(noProgressWindow)
 
 	for tick := 1; ; tick++ {
 		if stopping.Load() {
@@ -271,7 +290,9 @@ func Run(opts Options, deps Deps) error {
 		// rate-limit verdict that decides whether anything starts at all.
 		jobsUnfinished := false
 		faulted := ""
+		reaped := 0
 		for _, r := range p.reap() {
+			reaped++
 			reportFinished(w, r)
 			// Remembered, not acted on here: the check belongs after the whole
 			// batch has been reaped, or a second job finishing in the same tick
@@ -356,8 +377,8 @@ func Run(opts Options, deps Deps) error {
 			s.free = 0
 		}
 
-		unfinished, err := oneTick(opts, deps, w, s, p)
-		unfinished = unfinished || jobsUnfinished || p.len() > 0
+		tk, err := oneTick(opts, deps, w, s, p)
+		unfinished := tk.Unfinished || jobsUnfinished || p.len() > 0
 		if err != nil {
 			// A misconfiguration will NEVER fix itself, so retrying it every
 			// two minutes forever is not resilience -- it is a watcher that
@@ -418,6 +439,25 @@ func Run(opts Options, deps Deps) error {
 						"starting nothing more, but staying up until they finish", started)
 			}
 		}
+		// THE NO-PROGRESS BREAKER (OR-428). Checked here, after the tick has
+		// been accounted for and before the sleep, so the window measures
+		// wall-clock time spent getting nowhere rather than a tick count.
+		//
+		// A finished job counts as movement even when it failed: a ticket
+		// that reached a verdict moved, and the fix loop that follows is
+		// bounded by its own attempt ceiling.
+		if tk.Moved || reaped > 0 {
+			stall.progressed()
+		} else if stall.idled(deps.Now()) {
+			// Printed and returned, the same way the max-jobs stop and a
+			// permanent fault already end a run. Deliberately NOT a Slack
+			// call from here: the watcher has no Slack dependency, collect
+			// and work own that seam, and reaching around them for one
+			// message would put a second notifier in the system.
+			ui.Say(w, "", events.ActorOrion, ui.VerbFail, "%s",
+				stall.reason(deps.Now(), tk.Stuck))
+			return nil
+		}
 		if !deps.Sleep(opts.Interval) {
 			break
 		}
@@ -451,7 +491,23 @@ func permanent(err error) bool {
 // The unfinished flag is what lets the loop know it must not exit yet. A
 // ticket that has been pushed and is awaiting CI is Orion's responsibility
 // until it merges or fails, and nothing else in the system will pick it up.
-func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished bool, err error) {
+// tickOutcome is what one cycle achieved, for the no-progress breaker
+// (OR-428). A third bool return would have done, and would have made the
+// call site read `unfinished, moved, err` -- three unlabelled results whose
+// order is the only thing telling them apart.
+type tickOutcome struct {
+	// Unfinished means work is still owed: exiting now would strand it.
+	Unfinished bool
+	// Moved means SOMETHING happened -- a merge, a failure, a reconcile that
+	// changed state, a job started. Waiting on CI is not movement, which is
+	// the distinction the whole breaker rests on.
+	Moved bool
+	// Stuck are the keys that are owed and did not move, for the message the
+	// operator reads. Best effort: a name is a courtesy, not the verdict.
+	Stuck []string
+}
+
+func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (out tickOutcome, err error) {
 	// 1. Finish what is already in flight. Cheap, and it can free the job
 	// slot this tick is about to look for.
 	//
@@ -473,7 +529,29 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 			// and a human has not approved yet. Both are work this watcher
 			// still owes, and exiting on either strands the ticket.
 			if r.Verdict == collect.VerdictPending || r.Verdict == collect.VerdictPassing {
-				unfinished = true
+				out.Unfinished = true
+				// Owed and not moving. Named for the breaker's message, so
+				// an operator woken at 06:00 reads which tickets were stuck
+				// rather than only that something was (OR-428).
+				out.Stuck = append(out.Stuck, r.Key)
+			}
+			// PROGRESS (OR-428). A terminal verdict means the ticket moved,
+			// and Changed means collect did work whatever the outcome. Both
+			// reset the no-progress clock.
+			//
+			// Pending and Passing are deliberately absent: the first is CI
+			// working elsewhere and the second is a person holding the door,
+			// and treating either as movement would make the breaker
+			// unable to see the exact loop it exists for -- a batch that
+			// re-assembles and re-tests forever is Pending on every tick.
+			switch r.Verdict {
+			case collect.VerdictMerged, collect.VerdictFailing,
+				collect.VerdictClosed, collect.VerdictStale,
+				collect.VerdictConflicted:
+				out.Moved = true
+			}
+			if r.Changed {
+				out.Moved = true
 			}
 			// Only PENDING counts as "in CI" for the live header. A passing
 			// pull request is waiting on a person, and counting it as CI
@@ -499,7 +577,7 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 	if deps.InFlight != nil {
 		keys, err := deps.InFlight(opts.Home, opts.Projects)
 		if err != nil {
-			return unfinished, err
+			return out, err
 		}
 		s.elsewhere = claimedElsewhere(keys, p.keys())
 		s.free -= len(s.elsewhere)
@@ -510,7 +588,7 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 	// others run still has a row to keep current (OR-325).
 	q, err := deps.Queued(opts.Home, opts.Projects, opts.QueueLabel)
 	if err != nil {
-		return unfinished, err
+		return out, err
 	}
 	ui.LiveQueue(queueRows(q.All))
 
@@ -524,7 +602,7 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 				"%s; starting nothing else", s)
 			ui.Say(w, s.elsewhere[0], events.ActorOrion, ui.VerbWarn, residueHint)
 		}
-		return unfinished, nil
+		return out, nil
 	}
 
 	// 3. Start the next tickets.
@@ -534,12 +612,12 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 	reportHeld(w, q.Held)
 	queued := q.Ready
 	if len(queued) == 0 {
-		return unfinished, nil
+		return out, nil
 	}
 
 	if opts.DryRun {
 		rehearse(w, opts, queued)
-		return unfinished, nil
+		return out, nil
 	}
 
 	next, basis := pick(queued, s.free)
@@ -566,7 +644,12 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (unfinished
 		ui.Say(w, key, events.ActorOrion, ui.VerbWorking, "claimed")
 		p.dispatch(deps, opts, w, key)
 	}
-	return unfinished, nil
+	// Starting an agent is progress by definition: an LLM is now running and
+	// the spend breaker owns what happens next (OR-428).
+	if len(next) > 0 {
+		out.Moved = true
+	}
+	return out, nil
 }
 
 // reportHeld names the labelled tickets the queue refused, and why.
@@ -1233,11 +1316,15 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 	// rule cannot be expressed in JQL at all, because it depends on links
 	// written on OTHER tickets in the same result set.
 	//
-	// The eviction signals are left nil here. Queued has a Jira and no
-	// workspace, and reading a fix-round count it cannot see would report
-	// "no evidence" as "no rounds spent" -- the one reading queue.Facts
-	// documents as the way this gate disappears. The tick supplies them where
-	// it has the repository.
+	// OR-456: the eviction signals used to be left nil here unconditionally,
+	// with a comment saying "the tick supplies them where it has the
+	// repository" -- but nothing ever did. Queued has a home directory and a
+	// registry, which is everything registry.Lookup needs to find each
+	// candidate's own workspace, so it can supply FixRounds itself; the
+	// escalation ledger lives at home directly (queue.LoadLedger), the same
+	// way holds.json does (internal/work/hold.go), since a ticket key is
+	// unique across every project one watcher manages.
+	ledger := queue.LoadLedger(home)
 	ds := queue.Plan(queue.Facts{
 		Candidates: candidates,
 		// Every eligible ticket, not a slice of them: the concurrency limit
@@ -1249,10 +1336,26 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 		// query rather than a second search: those tickets are excluded from
 		// the claim query by their working label, which is exactly why they
 		// would otherwise be invisible to the scope rule.
-		Working:   working(all),
-		Resolved:  resolvedLookup(j, candidates),
-		Scheduled: func(i tracker.Issue) string { return sched.HoldReason(i, label) },
+		Working:      working(all),
+		Resolved:     resolvedLookup(j, candidates),
+		Scheduled:    func(i tracker.Issue) string { return sched.HoldReason(i, label) },
+		FixRounds:    fixRoundsLookup(home),
+		MaxFixRounds: maxFixRounds(home, keys),
+		// OR-458: Trips and Stranded were the other two eviction signals left
+		// unwired alongside FixRounds -- unlike FixRounds, no reader existed
+		// at all until collect.Trips/collect.Stranded (recorded from
+		// internal/work/residue.go's settleTripResidue, the one place both a
+		// tripped session and its ticket key are known together).
+		Trips:       tripsLookup(home),
+		MaxTrips:    maxLimit(home, keys, func(cfg config.Config) int { return cfg.Limits.BreakerTrips() }),
+		Stranded:    strandedLookup(home),
+		MaxStranded: maxLimit(home, keys, func(cfg config.Config) int { return cfg.Limits.StrandedRounds() }),
+		Ledger:      ledger,
 	})
+	// Best-effort, same as every other durable-state write in this package: a
+	// failed save costs one re-evicted ticket next pass (the ledger still
+	// reads zero for it), not a stopped tick.
+	_ = recordEvictions(home, ledger, ds, time.Now())
 
 	q := Queue{All: all}
 	byKey := make(map[string]tracker.Issue, len(candidates))
@@ -1287,6 +1390,103 @@ func Queued(j *tracker.Jira, home string, projects []string, label string) (Queu
 		}
 	}
 	return q, nil
+}
+
+// fixRoundsLookup resolves a candidate's fix-round count by finding its own
+// workspace first -- collect.FixRounds is keyed by workspace directory, and
+// Queued only ever sees a ticket key, so registry.Lookup bridges the two the
+// same way work.go and collect.go already do for other per-ticket state.
+//
+// A key the registry has never heard of is unknown, not zero (OR-456): a
+// ticket that has not been worked yet says nothing about fix rounds, and
+// reading that silence as "none spent" is indistinguishable from a ticket
+// that has genuinely spent none.
+func fixRoundsLookup(home string) func(key string) (int, bool) {
+	return func(key string) (int, bool) {
+		entry, err := registry.Lookup(home, key)
+		if err != nil {
+			return 0, false
+		}
+		return collect.FixRounds(entry.Workspace, key)
+	}
+}
+
+// tripsLookup bridges the registry to collect.Trips the same way
+// fixRoundsLookup bridges it to collect.FixRounds (OR-458).
+func tripsLookup(home string) func(key string) (int, bool) {
+	return func(key string) (int, bool) {
+		entry, err := registry.Lookup(home, key)
+		if err != nil {
+			return 0, false
+		}
+		return collect.Trips(entry.Workspace, key)
+	}
+}
+
+// strandedLookup bridges the registry to collect.Stranded the same way
+// fixRoundsLookup bridges it to collect.FixRounds (OR-458).
+func strandedLookup(home string) func(key string) (int, bool) {
+	return func(key string) (int, bool) {
+		entry, err := registry.Lookup(home, key)
+		if err != nil {
+			return 0, false
+		}
+		return collect.Stranded(entry.Workspace, key)
+	}
+}
+
+// maxFixRounds resolves the fix-round ceiling the same way Concurrency
+// resolves the concurrency cap: the smallest value among the watched
+// projects, because a watcher spans several and the only safe direction to
+// reconcile a per-project setting into one number is down.
+func maxFixRounds(home string, keys []string) int {
+	return maxLimit(home, keys, func(cfg config.Config) int { return cfg.CI.Attempts() })
+}
+
+// maxLimit is maxFixRounds generalised (OR-458): the smallest value among the
+// watched projects' configs, per an extractor naming which ceiling to read.
+// One implementation of "reconcile a per-project setting into one number for
+// a multi-project watcher" so MaxFixRounds, MaxTrips and MaxStranded cannot
+// drift into three different reconciliation rules.
+func maxLimit(home string, keys []string, extract func(config.Config) int) int {
+	f, err := registry.Load(home)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, k := range keys {
+		e, ok := f.Repos[strings.ToUpper(k)]
+		if !ok {
+			continue
+		}
+		c := extract(config.Load(e.Source))
+		if n == 0 || c < n {
+			n = c
+		}
+	}
+	return n
+}
+
+// recordEvictions appends every new Escalate/Evict verdict this pass decided
+// to the ledger and saves it, so the NEXT pass's Ledger.Count sees it.
+//
+// Without this the ledger loaded above always reads zero evictions no matter
+// how many times a ticket has actually been evicted, which is the bug
+// OR-456 fixed: the "evicted twice, escalate to a person" rule could never
+// fire because nothing ever wrote to the ledger it reads.
+func recordEvictions(home string, l queue.Ledger, ds []queue.Decision, now time.Time) error {
+	changed := false
+	for _, d := range ds {
+		if d.Verdict != queue.Evict {
+			continue
+		}
+		l.Record(queue.Eviction{Key: d.Key, Reason: d.Reason, Rule: d.Rule}, now)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return queue.SaveLedger(home, l)
 }
 
 // queuedJQL is the claim criterion: what a watcher will turn an agent loose
@@ -1466,6 +1666,24 @@ type LockAPI interface {
 	SetLabels(key string, add, remove []string) error
 }
 
+// workspaceOf is the workspace directory for the project a ticket belongs
+// to, or "" when there is nothing registered to read.
+//
+// Empty is a real answer and must stay one: a ticket whose project is not
+// registered has no log to reconcile from, and guessing a path would be a
+// worse failure than declining to reconcile.
+func workspaceOf(home, key string) string {
+	f, err := registry.Load(home)
+	if err != nil {
+		return ""
+	}
+	e, ok := f.Repos[strings.ToUpper(registry.ProjectOf(key))]
+	if !ok {
+		return ""
+	}
+	return e.Workspace
+}
+
 // InFlight returns the tickets currently claimed, in the tracker's order.
 //
 // A LIST rather than a yes/no. With one job at a time "is anything running"
@@ -1534,6 +1752,39 @@ func InFlight(j LockAPI, home string, projects []string, w io.Writer) ([]string,
 				ui.Say(w, i.Key, events.ActorOrion, ui.VerbOK,
 					"released: the run holding this ended without finishing%s. "+
 						"Re-label it %s to pick it up again", where, tracker.QueueLabelDefault)
+				continue
+			}
+			// THE HOLDER IS ALIVE, BUT IS THE WORK? (OR-429)
+			//
+			// claim.Dead answered honestly above: the process is up and
+			// heartbeating. That is the right answer to the question it was
+			// asked, and it is the wrong question when the AGENT finished and
+			// the label did not follow.
+			//
+			// OR-269 sat here for twelve hours. Its work was pushed at 00:49
+			// and readyForBatch's label swap reached Jira as a 2xx that
+			// changed nothing -- no error, so no warning, so nothing to retry
+			// on. collect reads labels rather than branches, so the finished
+			// work was invisible, and two tickets on the same file queued
+			// behind a slot nobody was using.
+			//
+			// Reconciled from the ticket's OWN log rather than inferred: the
+			// pipeline records its terminal boundary, and a ticket carrying
+			// it is finished by the pipeline's account of itself.
+			if ws := workspaceOf(home, i.Key); ws != "" && finishedWork(ws, i.Key) {
+				if err := j.SetLabels(i.Key,
+					[]string{tracker.LabelReady},
+					append([]string{tracker.LabelWorking}, actors.StageLabels()...)); err != nil {
+					ui.Say(w, i.Key, events.ActorOrion, ui.VerbWarn,
+						"its work is finished but the label could not be moved: %v", err)
+					running = append(running, i.Key)
+					continue
+				}
+				_ = claim.Release(home, i.Key)
+				ui.Say(w, i.Key, events.ActorOrion, ui.VerbOK,
+					"its work finished but the ticket still said %s; moved it to %s "+
+						"so the integration queue can see it",
+					tracker.LabelWorking, tracker.LabelReady)
 				continue
 			}
 			running = append(running, i.Key)

@@ -192,12 +192,33 @@ func newRun(t tracker.Tracker, opts newOptions) error {
 		}
 	}
 
+	// A document already written down (OR-443): a local file or a URL, read
+	// verbatim as the idea's own words. The interview still runs afterward
+	// on whatever the document leaves unanswered -- this only replaces the
+	// one-line idea argument with the document's actual text, the same as
+	// if that text had been typed inline. No heading printed here: the
+	// block below is the one place "The idea" is announced, whether idea
+	// came from the command line, a document, or the prompt -- printing it
+	// twice was the first version of this fix (caught before it shipped).
+	fromDocument := false
+	if description == "" && (looksLikeFilePath(idea) || looksLikeURL(idea)) {
+		doc, err := readDocument(idea)
+		if err != nil {
+			return err
+		}
+		fromDocument = true
+		idea = strings.TrimSpace(doc)
+	}
+
 	if description == "" {
 		fmt.Fprintln(out, ui.Heading(out, "The idea"))
 		// Given on the command line it is echoed; absent, it becomes the
 		// interview's first question rather than a usage error, since asking
 		// is what this command does.
-		if idea == "" {
+		if fromDocument {
+			fmt.Fprintf(out, "  %s\n", idea)
+			fmt.Fprintf(out, "  %s\n\n", ui.Dim(out, "read from the document; carried verbatim into the interview"))
+		} else if idea == "" {
 			fmt.Fprintln(out, "One or two sentences is plenty -- the questions after")
 			fmt.Fprintln(out, "this one go into the detail.")
 			fmt.Fprintln(out)
