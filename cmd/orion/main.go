@@ -1908,6 +1908,8 @@ func createProjectChannel(ws *workspace.Workspace) *workspace.SlackChannel {
 }
 
 func runSupervised(id string, rest []string) {
+	// Ctrl-C must stop the stage run too, not only orion (OR-484).
+	defer killRunsOnInterrupt(os.Stderr)()
 	ws, err := workspace.Open(id)
 	exitOn(err)
 	opts := supervisor.Options{

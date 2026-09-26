@@ -424,6 +424,8 @@ type projectReader interface {
 }
 
 func runPlan(args []string) {
+	// Ctrl-C must stop the stage run too, not only orion (OR-484).
+	defer killRunsOnInterrupt(os.Stderr)()
 	key := strings.ToUpper(strings.TrimSpace(args[0]))
 
 	// The globally configured roster (docs/decisions/0005), so the
