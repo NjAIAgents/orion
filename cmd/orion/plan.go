@@ -220,7 +220,15 @@ func toolkitStep(sio *stepIO, ws *workspace.Workspace) error {
 		return fmt.Errorf("writing orion.json: %w", err)
 	} else if created {
 		ui.Ok(sio.Out, "created", "orion.json (the canonical template, before anything reads it)")
+		// OR-491: a project designed from scratch lands its tickets in
+		// batches. Only on a file written here: an existing orion.json is a
+		// choice somebody made, and batching is turned on per repository.
+		if err := setBlockFields(ws.RepoDir(), "collect",
+			map[string][]byte{"batch_integration": []byte("true")}); err != nil {
+			ui.Warn(sio.Out, "could not turn on batch integration in orion.json: %v", err)
+		}
 	}
+	projectSlack(sio.Out, ws)
 
 	// OR-453: orion init's ensureCI never had a plan-chain equivalent, so a
 	// project scaffolded via `orion new`/`orion plan` had no scripts/test.sh
@@ -940,6 +948,15 @@ func orNone(s string) string {
 // answer "which project is this" are touched and every other byte is left
 // as it was found.
 func setProjectKey(repo, key string) error {
+	// Enabled too: a key with the tracker off is a project nothing reads.
+	return setBlockFields(repo, "tracker", map[string][]byte{
+		"project_key": mustJSON(key), "enabled": []byte("true")})
+}
+
+// setBlockFields sets fields inside one top-level block of the repository's
+// orion.json, creating the block when it is absent, and writes nothing when
+// every field already holds its value.
+func setBlockFields(repo, block string, fields map[string][]byte) error {
 	path := filepath.Join(repo, "orion.json")
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -949,25 +966,26 @@ func setProjectKey(repo, key string) error {
 	if err := json.Unmarshal(b, &doc); err != nil {
 		return err
 	}
-	var tr map[string]json.RawMessage
-	if raw, ok := doc["tracker"]; ok {
-		if err := json.Unmarshal(raw, &tr); err != nil {
+	blk := map[string]json.RawMessage{}
+	if raw, ok := doc[block]; ok {
+		if err := json.Unmarshal(raw, &blk); err != nil {
 			return err
 		}
-	} else {
-		tr = map[string]json.RawMessage{}
 	}
-	if bytes.Equal(tr["project_key"], mustJSON(key)) && bytes.Equal(tr["enabled"], []byte("true")) {
+	changed := false
+	for k, v := range fields {
+		if !bytes.Equal(blk[k], v) {
+			blk[k], changed = v, true
+		}
+	}
+	if !changed {
 		return nil
 	}
-	tr["project_key"] = mustJSON(key)
-	// Enabled too: a key with the tracker off is a project nothing reads.
-	tr["enabled"] = []byte("true")
-	merged, err := json.Marshal(tr)
+	merged, err := json.Marshal(blk)
 	if err != nil {
 		return err
 	}
-	doc["tracker"] = merged
+	doc[block] = merged
 	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
@@ -978,4 +996,24 @@ func setProjectKey(repo, key string) error {
 func mustJSON(s string) []byte {
 	b, _ := json.Marshal(s)
 	return b
+}
+
+// projectSlack turns Slack on in orion.json when the workspace has a project
+// channel (OR-491). `orion init` always did this after binding a channel;
+// the plan chain made the channel and left slack.enabled false, so every run
+// said "slack is disabled in orion.json" to a channel that existed.
+//
+// No channel is said here, in the plan's own output, rather than left to a
+// stderr line printed while the workspace was being created.
+func projectSlack(out io.Writer, ws *workspace.Workspace) {
+	if ws.Task.Slack == nil || ws.Task.Slack.ID == "" {
+		ui.Warn(out, "no project Slack channel, so Slack stays off for this project")
+		fmt.Fprintf(out, "  %s\n", ui.Dim(out,
+			"set ORION_SLACK_TOKEN and run `orion init` in the project repo"))
+		return
+	}
+	if err := setBlockFields(ws.RepoDir(), "slack",
+		map[string][]byte{"enabled": []byte("true")}); err != nil {
+		ui.Warn(out, "could not turn on Slack in orion.json: %v", err)
+	}
 }
