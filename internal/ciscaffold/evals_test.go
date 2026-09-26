@@ -157,3 +157,40 @@ func TestUndecidedHarnessFailsLoudly(t *testing.T) {
 		t.Fatalf("a TBD harness reported success:\n%s", out)
 	}
 }
+
+// jq on Windows ends its lines with CRLF. Before the fix a needle kept its \r,
+// so must_contain never matched and -- worse -- must_not_contain never fired:
+// every negative check passed silently. This runs the harness behind a jq shim
+// that adds \r to every line, which reproduces that on any OS.
+func TestHarnessToleratesCRLFFromJq(t *testing.T) {
+	for _, bin := range []string{"bash", "jq", "awk", "sed"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s not on PATH", bin)
+		}
+	}
+	realJQ, _ := exec.LookPath("jq")
+	shim := t.TempDir()
+	script := "#!/usr/bin/env bash\n\"" + realJQ + "\" \"$@\" | sed 's/$/\\r/'\n"
+	if err := os.WriteFile(filepath.Join(shim, "jq"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Case 2's forbidden string IS in its own prompt, and `cat` echoes the
+	// prompt, so a working must_not_contain has to fail it.
+	plan := strings.Replace(goodPlan, `"prompt": "one error"`, `"prompt": "one error, opened 5 tickets"`, 1)
+	dir := t.TempDir()
+	p, _ := ParseEvalPlan([]byte(specWith(plan)))
+	if _, err := EnsureEvals(dir, p); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", filepath.Join(dir, "evals", "run.sh"))
+	cmd.Env = append(os.Environ(), "PATH="+shim+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out, _ := cmd.CombinedOutput()
+	s := string(out)
+	if !strings.Contains(s, "found forbidden: opened 5 tickets") {
+		t.Errorf("must_not_contain did not fire under CRLF jq output:\n%s", s)
+	}
+	if !strings.Contains(s, "pass rate: 1/2") {
+		t.Errorf("want must_contain to pass and must_not_contain to fail (1/2):\n%s", s)
+	}
+}

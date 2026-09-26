@@ -220,9 +220,11 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 command -v jq >/dev/null || { echo "evals/run.sh needs jq on PATH"; exit 2; }
-cmd=$(jq -r '.harness_command // ""' evals/gate.json)
-min=$(jq -r '.pass_rate // 0.95' evals/gate.json)
-mincases=$(jq -r '.min_cases // 0' evals/gate.json)
+# jq on Windows ends lines with CRLF; strip it from everything read back.
+jqr() { jq -r "$@" | tr -d '\r'; }
+cmd=$(jqr '.harness_command // ""' evals/gate.json)
+min=$(jqr '.pass_rate // 0.95' evals/gate.json)
+mincases=$(jqr '.min_cases // 0' evals/gate.json)
 
 if [ -z "$cmd" ] || [ "$cmd" = "TBD" ]; then
   echo "evals/gate.json has no harness_command yet -- name how to run the agent on one prompt."
@@ -234,9 +236,9 @@ pass=0; total=0
 shopt -s nullglob
 for case_file in evals/cases/*.json; do
   total=$((total+1))
-  name=$(jq -r '.name' "$case_file")
+  name=$(jqr '.name' "$case_file")
   echo "-- $name"
-  if jq -r '.prompt' "$case_file" | bash -c "$cmd" > "$RESULTS/$name.out" 2> "$RESULTS/$name.err" \
+  if jqr '.prompt' "$case_file" | bash -c "$cmd" > "$RESULTS/$name.out" 2> "$RESULTS/$name.err" \
      && ./evals/check.sh "$case_file" "$RESULTS/$name.out"; then
     echo "   PASS"; pass=$((pass+1))
   else
@@ -265,21 +267,25 @@ const evalCheckScript = `#!/usr/bin/env bash
 set -uo pipefail
 case_file="$1"; result="$2"
 
+# jq on Windows ends lines with CRLF; a needle read with its \r never matches,
+# which turns every must_not_contain into a silent pass.
+jqr() { jq -r "$@" | tr -d '\r'; }
+
 # must_contain: strings that have to appear in the answer
 while IFS= read -r needle; do
   [ -z "$needle" ] && continue
   grep -qF -- "$needle" "$result" || { echo "   missing expected: $needle"; exit 1; }
-done < <(jq -r '.must_contain[]? // empty' "$case_file")
+done < <(jqr '.must_contain[]? // empty' "$case_file")
 
 # must_not_contain: the negative cases matter more, because they catch an
 # agent doing something plausible and wrong
 while IFS= read -r needle; do
   [ -z "$needle" ] && continue
   if grep -qF -- "$needle" "$result"; then echo "   found forbidden: $needle"; exit 1; fi
-done < <(jq -r '.must_not_contain[]? // empty' "$case_file")
+done < <(jqr '.must_not_contain[]? // empty' "$case_file")
 
 # shell_check: an arbitrary command that must exit 0
-cmd=$(jq -r '.shell_check // empty' "$case_file")
+cmd=$(jqr '.shell_check // empty' "$case_file")
 if [ -n "$cmd" ]; then
   bash -c "$cmd" >/dev/null 2>&1 || { echo "   shell_check failed: $cmd"; exit 1; }
 fi
