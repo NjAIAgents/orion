@@ -56,7 +56,12 @@ func Preview(w io.Writer, p *Plan) {
 	if n := humanCount(p); n > 0 {
 		fmt.Fprintf(w, "  %d of them are [human]: created as tickets, never offered to an agent.\n", n)
 	}
-	previewBlocks(w, p.Tree.Blocks)
+	if n := len(p.Tree.DoneTasks); n > 0 {
+		fmt.Fprintf(w, "  %d already done in the task list [done]: created, then closed as Done --\n"+
+			"  never offered to an agent and never an ordering link: %s\n",
+			n, strings.Join(p.Tree.DoneTasks, ", "))
+	}
+	previewBlocks(w, p.Tree.Blocks, p.Tree.DependencyLines)
 	previewCoupled(w, p.Tree.Coupled)
 }
 
@@ -110,6 +115,9 @@ func sharedNote(shared []string) string {
 // humanNote marks an item no agent will be offered, so a reader sees before
 // creating the tree which work is waiting on a person.
 func humanNote(it *Item) string {
+	if it.Done {
+		return "  [done]"
+	}
 	if it.Human {
 		return "  [human]"
 	}
@@ -129,8 +137,16 @@ func humanCount(p *Plan) int {
 // previewBlocks says what the queue will be able to read, before anything
 // is created: which task waits on which, from the artifact's own
 // Dependencies section.
-func previewBlocks(w io.Writer, edges []Edge) {
+func previewBlocks(w io.Writer, edges []Edge, dependencyLines int) {
 	if len(edges) == 0 {
+		if dependencyLines > 0 {
+			// OR-487: the section names phases, but nothing in it was read
+			// as ordering. Saying "no dependencies" here misreports it.
+			fmt.Fprintf(w, "\n  No ordering links READ: the Dependencies section names %d phase(s), but\n"+
+				"  none says what it waits on in a form Orion reads -- write \"after Phase N\"\n"+
+				"  or \"after T012\". As it stands, every item is startable at once.\n", dependencyLines)
+			return
+		}
 		fmt.Fprintf(w, "\n  No ordering links: the task list states no dependencies, so every\n"+
 			"  item is startable at once.\n")
 		return

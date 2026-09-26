@@ -122,6 +122,10 @@ func Build(t *Tree, b Backend, project string) (*Plan, error) {
 
 // Result is what Apply did, whether or not it finished.
 type Result struct {
+	// Closed are the tasks created and then moved to Done because the
+	// artifact marks them done; CloseFailed the ones left open (OR-486).
+	Closed      []string
+	CloseFailed []string
 	// Keys is every item's key, created or already there, by summary.
 	Keys map[string]string
 	// Linked ordering: the edges created, and the ones that could not be.
@@ -194,7 +198,44 @@ func Apply(p *Plan, b Backend) (Result, error) {
 	// The ordering, after every item exists: a link needs both keys, and
 	// the artifact states its dependencies in its own ids.
 	applyLinks(p, b, &res)
+	closeDone(p, b, &res)
 	return res, nil
+}
+
+// Closer is a backend that can move an issue to Done. Optional: a task the
+// artifact marks done is still created without it, and the result names it
+// as left open (OR-486).
+type Closer interface {
+	Close(key string) error
+}
+
+// ErrNoClose is a Closer that cannot transition in this configuration.
+var ErrNoClose = errors.New("this tracker client cannot change an issue's status")
+
+func closeDone(p *Plan, b Backend, res *Result) {
+	if p.Tree == nil {
+		return
+	}
+	c, ok := b.(Closer)
+	_ = p.Tree.Walk(func(it, _ *Item) error {
+		if !it.Done {
+			return nil
+		}
+		key := res.Keys[it.Summary]
+		if key == "" {
+			return nil
+		}
+		if !ok {
+			res.CloseFailed = append(res.CloseFailed, key+": "+ErrNoClose.Error())
+			return nil
+		}
+		if err := c.Close(key); err != nil {
+			res.CloseFailed = append(res.CloseFailed, key+": "+err.Error())
+			return nil
+		}
+		res.Closed = append(res.Closed, key)
+		return nil
+	})
 }
 
 // applyLinks creates the tree's ordering edges, by tracker key.

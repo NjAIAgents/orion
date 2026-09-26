@@ -72,6 +72,10 @@ func label(t *Tree) {
 		it.Labels = []string{id}
 		switch it.Kind {
 		case KindTask:
+			// A done task is recorded, never offered to an agent (OR-486).
+			if it.Done {
+				break
+			}
 			if m := marker(signals(it)...); m != "" {
 				it.Labels = append(it.Labels, m)
 			}

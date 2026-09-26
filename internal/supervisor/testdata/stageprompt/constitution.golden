@@ -12,7 +12,14 @@ comes from, rather than inventing principles the project never chose:
 
 - Branch model: feature branches are cut from develop and merge
   back by reviewed pull request; main is the release branch.
-  Both are protected; nothing pushes to either directly (orion.json vcs).
+  Both are protected once the remote exists; nothing pushes to either directly
+  (orion.json vcs). State the one exception Orion's own chain relies on: before the
+  remote exists, the planning chain commits the planning artifacts -- this
+  constitution, the intent, spec, plan, tasks and their companion documents, and
+  amendments to them -- on develop, because no pull request can carry them yet.
+  Every implementation change still lands on a feature branch (prefix orion/)
+  by reviewed pull request. Without this exception the constitution forbids the very
+  commits that produced it, and the analyze stage reports that as critical (OR-480).
 - Tests are not edited while fixing the code they cover (gates.protect_tests_during_fix).
 - A production change needs explicit authorisation (gates.production_requires_authorization).
 - No direct push to the default branch (gates.block_direct_push_to_default_branch).

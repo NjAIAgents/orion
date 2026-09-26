@@ -26,6 +26,10 @@ import (
 // GitHub, which is not a thing a unit test gets to do.
 var remoteFn = provision.Remote
 
+// makePublicFn is a seam over provision.MakePublic, so the offer below is
+// testable without a forge.
+var makePublicFn = provision.MakePublic
+
 // remoteOptions is the one place the remote's options are assembled, for
 // the chain and for `orion provision` alike, so the two cannot drift: same
 // name, same description, same branch model, same visibility.
@@ -52,11 +56,29 @@ func remoteOptions(ws *workspace.Workspace, cfg config.Config, confirm func(stri
 // step can proceed without a remote.
 func remoteStep(sio *stepIO, ws *workspace.Workspace) error {
 	cfg := config.Load(ws.RepoDir())
-	res, err := remoteFn(remoteOptions(ws, cfg, sio.Confirm, sio.Out, ws.Task.RemoteOrg))
+	opts := remoteOptions(ws, cfg, sio.Confirm, sio.Out, ws.Task.RemoteOrg)
+	res, err := remoteFn(opts)
 	if err != nil {
 		return err
 	}
 	fmt.Fprint(sio.Out, res.Summary())
+
+	// GitHub protects a private repository only on a paid plan, and a public
+	// one on any plan. Offer the trade explicitly rather than leaving the
+	// operator to know it (OR-485). Asked only for that cause, default no,
+	// and never without a person to answer: a confirmer that cannot ask
+	// returns false, so CI stays private and unprotected.
+	if opts.Private && provision.NeedsPaidPlan(res) && sio.Confirm != nil &&
+		sio.Confirm(publicQuestion(res.RemoteURL, cfg)) {
+		if err := makePublicFn(opts, res); err != nil {
+			ui.Warn(sio.Out, "%v -- the repository stays private and unprotected", err)
+		} else {
+			ui.Ok(sio.Out, "public", "%s", res.RemoteURL)
+			for _, br := range sortedBranches(res.Protection) {
+				fmt.Fprintf(sio.Out, "protect    %-6s %s\n", br, res.Protection[br])
+			}
+		}
+	}
 
 	// OR-455: orion init calls ensureRepoSettings right after adopting a
 	// remote; this step never did, so a repo created here accumulated
@@ -72,6 +94,22 @@ func remoteStep(sio *stepIO, ws *workspace.Workspace) error {
 	if err := ws.SaveTask(); err != nil {
 		ui.Warn(sio.Out, "could not record the remote in task.json: %v", err)
 	}
+	// A private repository on a plan that cannot protect it, kept private by
+	// choice (or with nobody there to choose): the remote exists with both
+	// branches, and the only thing missing is something the plan does not
+	// offer. That is a decision, not a failure, so the step completes -- and
+	// says so plainly, which is the part OR-408 exists to guarantee (OR-485).
+	// Every other protection failure still stops below.
+	if opts.Private && provision.NeedsPaidPlan(res) {
+		ui.Warn(sio.Out, "%s and %s are NOT protected: the repository stays private, and GitHub "+
+			"protects private branches only on a paid plan. Orion's gate hook still refuses the "+
+			"agent's pushes to them; nothing stops a person.",
+			cfg.VCS.DefaultBranch, cfg.VCS.WorkBranch)
+		fmt.Fprintf(sio.Out, "          %s\n", ui.Dim(sio.Out,
+			"to protect them later (paid plan or public repository): orion provision "+ws.ID))
+		return nil
+	}
+
 	// The remote exists, so this is not a failure -- but a branch left
 	// unprotected is the step not having done what it exists to do, and
 	// saying "done" about it is how an unprotected main ships (OR-408).
@@ -107,4 +145,15 @@ func sortedBranches(m map[string]string) []string {
 // record costs one re-run that reports what exists rather than a duplicate.
 func remoteDone(ws *workspace.Workspace) bool {
 	return strings.TrimSpace(ws.Task.Remote) != ""
+}
+
+// publicQuestion names what going public exposes, because that is the whole
+// cost of the trade and it cannot be undone by switching back.
+func publicQuestion(url string, cfg config.Config) string {
+	return fmt.Sprintf("GitHub protects %s and %s on a private repository only with a paid plan.\n"+
+		"  Make %s PUBLIC so both can be protected? Anyone could then read every file and\n"+
+		"  the full history -- including the intent, spec, plan and constitution -- and\n"+
+		"  switching back to private later does not undo copies already made.\n"+
+		"  Make it public",
+		cfg.VCS.DefaultBranch, cfg.VCS.WorkBranch, url)
 }

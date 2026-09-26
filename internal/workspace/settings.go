@@ -169,6 +169,15 @@ func writeSettings(ws *Workspace) error {
 	return nil
 }
 
+// RefreshSettings regenerates a workspace's sandbox and permission policy
+// from this build's rules.
+//
+// The policy is Orion's, not the user's, so there is nothing in it to preserve:
+// a workspace created by an older release otherwise keeps that release's
+// allowlist for every later stage. Worktree jobs already refresh per job; this
+// is the same guarantee for supervised stage runs (OR-479).
+func RefreshSettings(ws *Workspace) error { return writeSettings(ws) }
+
 // defaultAllowedDomains is the minimum a build needs. Anything else is a
 // deliberate addition, and every addition widens what a compromised
 // dependency could reach.

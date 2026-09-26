@@ -295,6 +295,17 @@ func Run(ws *workspace.Workspace, opts Options) (*Result, error) {
 		}
 	}
 
+	// Regenerate the sandbox policy before every run, not only when the
+	// workspace was created. A workspace from an older release otherwise runs
+	// every plan-chain stage under that release's allowlist: log-triage-agent,
+	// created before OR-466 added the tracker host, could not reach Jira from
+	// any stage even after upgrading, because nothing on this path rewrote its
+	// settings.json (OR-479). Fatal on failure: launching under a policy that
+	// could not be written means launching under one nobody chose.
+	if err := workspace.RefreshSettings(ws); err != nil {
+		return nil, fmt.Errorf("refreshing the sandbox policy: %w", err)
+	}
+
 	// Budget checkpoint BEFORE spending, not after. Checking afterwards
 	// reports an overrun that has already happened, which is a receipt
 	// rather than a control.

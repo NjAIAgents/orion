@@ -86,6 +86,13 @@ var answeredRe = regexp.MustCompile(`(?i)(^\s*[-*]?\s*\[x\]|~~|(^|\s)answer\s*:)
 // bulletRe matches a list item, with or without a checkbox.
 var bulletRe = regexp.MustCompile(`^\s*[-*+]\s+(.*)$`)
 
+// continuationAnsweredRe spots an answer written on a bullet's continuation
+// line -- the indented "Answer: ..." shape `orion answer` itself produces, and
+// the one a person writes by hand when told to mark an answer with "Answer:"
+// (OR-481). Anchored at the start of the line, so question prose that merely
+// mentions "the answer: depends" is not read as an answer.
+var continuationAnsweredRe = regexp.MustCompile(`(?i)^\s*(answer\s*:|~~)`)
+
 // markerRe matches spec-kit's own way of saying "undecided":
 // [NEEDS CLARIFICATION: the question]. The same statement as an open bullet,
 // in a different spelling, and it used to walk straight through this gate.
@@ -195,6 +202,16 @@ func assess(path string, markers bool) Assessment {
 		// what the bullet actually contains.
 		k := bulletContinuationEnd(lines, i+1)
 		text = joinContinuation(text, lines, i+1, k)
+
+		// The answer may sit on a continuation line. Checking only the first
+		// line meant a hand-written "Answer:" under an unticked box was never
+		// seen, while the refusal quoted that same answer back (OR-481).
+		for _, l := range lines[i+1 : k] {
+			if answered {
+				break
+			}
+			answered = continuationAnsweredRe.MatchString(l)
+		}
 
 		q := Question{Text: text, Answered: answered, Line: n, ID: questionID(text)}
 		if !q.Answered {

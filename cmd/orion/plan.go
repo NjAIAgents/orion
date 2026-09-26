@@ -159,6 +159,11 @@ var planStages = []planStage{
 	// It owes no file, so its Done is the recorded verdict of its last run.
 	{Stage: "analyze", Actor: events.ActorArchitect, What: "read-only consistency check of spec, plan and tasks; blocks on critical issues", Done: stageDone("analyze")},
 	{Stage: "scaffold", Actor: events.ActorDevOps, What: "repository skeleton on the OpenSSF baseline", Done: stageDone("scaffold")},
+	// After scaffold so the repository exists; before remote so what it
+	// writes is committed and pushed with everything else. Free, and a no-op
+	// for a project whose spec carries no eval plan (OR-478).
+	{Stage: "evals", Actor: events.ActorOrion, What: "eval cases and harness from the spec's agentic design, when it has one",
+		Frame: evalsStep, Done: evalsDone},
 	// The remote comes AFTER scaffold and BEFORE decompose. After scaffold,
 	// because creating a repository on GitHub is outward and irreversible
 	// enough to want every gate before it passed first -- a chain stopped
@@ -169,6 +174,12 @@ var planStages = []planStage{
 	// after the chain; the chain runs it now (docs/decisions/0022).
 	{Stage: "remote", Actor: events.ActorOrion, What: "the GitHub repository: create it, push main and develop, protect both",
 		Frame: remoteStep, Done: remoteDone},
+	// Right after remote: the scaffold stage worked on a feature branch, and
+	// remote pushes only the default and work branches. This pushes that
+	// branch, opens its pull request into the work branch, and puts the
+	// sandbox back on the work branch before decompose commits (OR-482).
+	{Stage: "scaffold-publish", Actor: events.ActorOrion, What: "the scaffold branch pushed and opened as a pull request into the work branch",
+		Frame: scaffoldPublishStep, Done: scaffoldPublishDone},
 	// Native when the plan stage left a tasks.md -- Orion creates the tree
 	// itself, stamping the queue label so `orion watch` can claim it -- and
 	// the supervised /pm-plan stage otherwise. One entry with both, because
@@ -413,6 +424,8 @@ type projectReader interface {
 }
 
 func runPlan(args []string) {
+	// Ctrl-C must stop the stage run too, not only orion (OR-484).
+	defer killRunsOnInterrupt(os.Stderr)()
 	key := strings.ToUpper(strings.TrimSpace(args[0]))
 
 	// The globally configured roster (docs/decisions/0005), so the
