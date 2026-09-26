@@ -80,6 +80,10 @@ type Item struct {
 	// a person holds, a console click, a conversation with another team.
 	// The queue label is withheld from these (OR-414).
 	Human bool
+	// Done is a task the artifact marks [x]. It is created and then closed,
+	// never labelled for the queue, and never part of an ordering link
+	// (OR-486).
+	Done bool
 	// DoneWhen is the exit condition: what a reviewer checks to say this is
 	// finished. Stated by the artifact when the orion preset asked for it
 	// (OR-411), derived from what the line already names when it did not
@@ -129,6 +133,13 @@ type Tree struct {
 	// Prose until now, pasted into the epic body, which meant the queue saw
 	// none of it and admitted every task at once (docs/decisions/0023).
 	Blocks []Edge
+	// DoneTasks are the task ids the artifact marks [x]: created, then
+	// closed as Done, and never part of an ordering link (OR-486).
+	DoneTasks []string
+	// DependencyLines counts the Dependencies section's phase bullets, so a
+	// preview with no edges can tell an empty section from one whose wording
+	// was not read (OR-487).
+	DependencyLines int
 }
 
 // Edge is one ordering statement: Blocker must finish before Blocked can
@@ -191,7 +202,7 @@ var (
 	// description opening with a stray "a" -- two tasks then shared one id,
 	// and the tree carried a duplicate and a ticket titled "a Run the
 	// reconciliation spike" (FOUND ON A REAL PROJECT).
-	taskLine = regexp.MustCompile(`^\s*[-*]\s*\[[ xX]\]\s*\*{0,2}(T\d+[a-zA-Z]?)\*{0,2}\s+(.*)$`)
+	taskLine = regexp.MustCompile(`^\s*[-*]\s*\[([ xX])\]\s*\*{0,2}(T\d+[a-zA-Z]?)\*{0,2}\s+(.*)$`)
 	// storyTag is the [USn] group marker, and parallelTag the [P] marker.
 	// Matched anywhere in the remainder rather than only at the front:
 	// real output writes them in either order, and one template revision
@@ -249,6 +260,7 @@ func Parse(text, source string) (*Tree, error) {
 		storyTitle  = map[string]string{}
 		phases      []string
 		depends     []string
+		doneTasks   []string
 		inDepends   bool
 		// defer0 are the tasks whose bodies are written after the file is
 		// read, because a task's own "Done when:" line comes after it.
@@ -380,7 +392,8 @@ func Parse(text, source string) (*Tree, error) {
 		if m == nil {
 			continue
 		}
-		id, rest := m[1], m[2]
+		done := strings.EqualFold(m[1], "x")
+		id, rest := m[2], m[3]
 
 		parallel := parallelTag.MatchString(rest)
 		rest = parallelTag.ReplaceAllString(rest, "")
@@ -408,6 +421,12 @@ func Parse(text, source string) (*Tree, error) {
 			Human:    human,
 			Phase:    phase,
 			rawDesc:  desc,
+		}
+		if done {
+			// OR-486: kept, as OR-302 decided a completed task belongs in the
+			// tracker -- but created as Done, never queued, never a link.
+			task.Done = true
+			doneTasks = append(doneTasks, id)
 		}
 		lastTask = task
 		defer0 = append(defer0, task)
@@ -484,6 +503,7 @@ func Parse(text, source string) (*Tree, error) {
 		st := storyByNum[num]
 		st.Body = storyBody(st, storyGoal[num], tree.Coupled)
 	}
+	tree.DoneTasks = doneTasks
 	tree.Blocks = dependencyEdges(depends, tree)
 	epic.Body = epicBody(tree, phases, depends)
 
@@ -825,10 +845,10 @@ func closeBrackets(s string) string {
 }
 
 // afterTask reads "after T012" / "after T000" from a dependency line.
-var afterTask = regexp.MustCompile(`(?i)\bafter\s+(T\d+[a-zA-Z]?)\b`)
+var afterTask = regexp.MustCompile(`(?i)\b(?:after|needs|requires|depends\s+on|blocked\s+by)\s+(T\d+[a-zA-Z]?)\b`)
 
 // afterPhase reads "after Phase 3" from a dependency line.
-var afterPhase = regexp.MustCompile(`(?i)\bafter\s+Phase\s+(\d+)`)
+var afterPhase = regexp.MustCompile(`(?i)\b(?:after|needs|requires|depends\s+on|blocked\s+by)\s+Phase\s+(\d+)`)
 
 // phaseOf reads the phase number a heading opens with: "Phase 3: ..." -> 3.
 var phaseNum = regexp.MustCompile(`(?i)^\s*\**\s*Phase\s+(\d+)`)
@@ -863,7 +883,7 @@ func dependencyEdges(depends []string, t *Tree) []Edge {
 	}
 	var all []placed
 	_ = t.Walk(func(it, _ *Item) error {
-		if it.Kind != KindTask || it.ID == "" {
+		if it.Kind != KindTask || it.ID == "" || it.Done {
 			return nil
 		}
 		n := 0
@@ -888,8 +908,17 @@ func dependencyEdges(depends []string, t *Tree) []Edge {
 
 	var edges []Edge
 	seen := map[string]bool{}
+	open := map[string]bool{}
+	for _, p := range all {
+		open[p.id] = true
+	}
 	add := func(blocker, blocked, why string) {
 		if blocker == "" || blocked == "" || blocker == blocked {
+			return
+		}
+		// A done or undefined task blocks nothing, and a done task needs no
+		// blocker (OR-486).
+		if !open[blocker] || !open[blocked] {
 			return
 		}
 		k := blocker + ">" + blocked
@@ -919,6 +948,7 @@ func dependencyEdges(depends []string, t *Tree) []Edge {
 		if m == nil {
 			continue
 		}
+		t.DependencyLines++
 		target, _ := strconv.Atoi(m[1])
 		blocked := inPhase(target)
 		if len(blocked) == 0 {
@@ -930,17 +960,40 @@ func dependencyEdges(depends []string, t *Tree) []Edge {
 				add(am[1], b, line)
 			}
 		}
-		// "after Phase 3": that phase's LAST task blocks this phase's
-		// first. One edge rather than a cross product -- the phases are
-		// already sequential within themselves, and N x M links on a
-		// ninety-task tree is a board nobody can read.
+		// "after Phase 3": that phase's last OPEN task blocks EVERY task of
+		// this phase (OR-488). It used to block only the first, on the
+		// premise that a phase runs in order -- but the queue orders by
+		// blocking links alone, so the rest of the phase started at once.
+		// Done tasks are not in the tree, so prev ends at the last open one.
 		for _, pm := range afterPhase.FindAllStringSubmatch(line, -1) {
 			n, _ := strconv.Atoi(pm[1])
 			prev := inPhase(n)
 			if len(prev) == 0 {
 				continue
 			}
-			add(prev[len(prev)-1], blocked[0], line)
+			for _, b := range blocked {
+				add(prev[len(prev)-1], b, line)
+			}
+		}
+	}
+	// OR-489: the queue dispatches STORIES, and reads only a ticket's own
+	// blocking links -- so a link that lands on a task inside a story never
+	// held the story back. Each edge into a story's task also blocks the
+	// story, unless the blocker is inside the same story.
+	storyOf := map[string]string{}
+	_ = t.Walk(func(it, parent *Item) error {
+		if it.Kind == KindTask && parent != nil && parent.Kind == KindStory {
+			storyOf[it.ID] = parent.ID
+		}
+		return nil
+	})
+	for _, e := range append([]Edge(nil), edges...) {
+		if st := storyOf[e.Blocked]; st != "" && storyOf[e.Blocker] != st {
+			k := e.Blocker + ">" + st
+			if !seen[k] {
+				seen[k] = true
+				edges = append(edges, Edge{Blocker: e.Blocker, Blocked: st, Why: e.Why})
+			}
 		}
 	}
 	return edges

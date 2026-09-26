@@ -51,6 +51,19 @@ func NewJiraBackend(c JiraClient) *JiraBackend {
 
 func (b *JiraBackend) Name() string { return "jira" }
 
+// Close moves an issue to Done, for a task the artifact already marks done
+// (OR-486). Optional: a client that cannot transition leaves it open, and
+// the result says so.
+func (b *JiraBackend) Close(key string) error {
+	tc, ok := b.c.(interface {
+		TransitionTo(key, status string) error
+	})
+	if !ok {
+		return ErrNoClose
+	}
+	return tc.TransitionTo(key, "Done")
+}
+
 // Existing finds what a previous run of the same task list created.
 //
 // By the identity label, not by summary text alone: two features decomposed

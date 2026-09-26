@@ -168,7 +168,15 @@ func decomposeTree(out io.Writer, root, project, path string, ask confirmer) err
 	if res.Links > 0 {
 		fmt.Fprintf(out, ", %d ordering link(s)", res.Links)
 	}
+	if len(res.Closed) > 0 {
+		fmt.Fprintf(out, ", %d closed as already done", len(res.Closed))
+	}
 	fmt.Fprintln(out, ".")
+	// A task the artifact marks done that could not be closed is open in the
+	// tracker while the artifact says it is finished (OR-486).
+	for _, f := range res.CloseFailed {
+		ui.Warn(out, "left open although the task list marks it done: %s", f)
+	}
 	// An ordering statement that could not be made is said plainly: the
 	// tree exists either way, but the queue will start work the artifact
 	// meant to hold back, and that is the operator's to know.
