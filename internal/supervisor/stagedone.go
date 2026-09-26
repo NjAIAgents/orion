@@ -18,6 +18,7 @@ package supervisor
 // writes for every run, not a new one.
 
 import (
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -41,6 +42,14 @@ func StageDone(ws *workspace.Workspace, stage string) bool {
 		// times, and answering it must never have the side effect of writing
 		// a commit (OR-441).
 		if _, err := checkStageArtifact(ws.RepoDir(), cfg, stage, ws.Task.Slug, false); err != nil {
+			// The scaffold stage commits on a feature branch, and the sandbox
+			// goes back to the work branch before its pull request merges
+			// (OR-482). Reading only the checked-out branch then called the
+			// scaffold missing, and a resumed chain scaffolded again (OR-483).
+			if strings.EqualFold(strings.TrimSpace(stage), "scaffold") &&
+				artifactOnPrefixedBranch(ws.RepoDir(), cfg.VCS.BranchPrefix, rel) {
+				return true
+			}
 			return false
 		}
 		switch strings.ToLower(strings.TrimSpace(stage)) {
@@ -66,6 +75,27 @@ func StageDone(ws *workspace.Workspace, stage string) bool {
 		r := ws.Task.Runs[i]
 		if strings.EqualFold(r.Stage, stage) {
 			return r.ExitCode == 0 && r.Reason == "completed"
+		}
+	}
+	return false
+}
+
+// artifactOnPrefixedBranch reports whether any local branch under prefix
+// carries a non-empty copy of rel. Local branches only: this answers "has the
+// stage produced its work", not "has it reached the remote" -- that is the
+// scaffold-publish step's job, and it checks for itself.
+func artifactOnPrefixedBranch(repo, prefix, rel string) bool {
+	if strings.TrimSpace(prefix) == "" {
+		return false
+	}
+	out, err := exec.Command("git", "-C", repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/"+prefix).Output()
+	if err != nil {
+		return false
+	}
+	for _, br := range strings.Fields(string(out)) {
+		size, err := exec.Command("git", "-C", repo, "cat-file", "-s", br+":"+rel).Output()
+		if err == nil && strings.TrimSpace(string(size)) != "0" {
+			return true
 		}
 	}
 	return false
