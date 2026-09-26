@@ -174,6 +174,12 @@ var planStages = []planStage{
 	// after the chain; the chain runs it now (docs/decisions/0022).
 	{Stage: "remote", Actor: events.ActorOrion, What: "the GitHub repository: create it, push main and develop, protect both",
 		Frame: remoteStep, Done: remoteDone},
+	// Right after remote: the scaffold stage worked on a feature branch, and
+	// remote pushes only the default and work branches. This pushes that
+	// branch, opens its pull request into the work branch, and puts the
+	// sandbox back on the work branch before decompose commits (OR-482).
+	{Stage: "scaffold-publish", Actor: events.ActorOrion, What: "the scaffold branch pushed and opened as a pull request into the work branch",
+		Frame: scaffoldPublishStep, Done: scaffoldPublishDone},
 	// Native when the plan stage left a tasks.md -- Orion creates the tree
 	// itself, stamping the queue label so `orion watch` can claim it -- and
 	// the supervised /pm-plan stage otherwise. One entry with both, because
