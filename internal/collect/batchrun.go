@@ -403,6 +403,11 @@ func landResumed(st batchState, members []Member, cfg config.Config, deps Deps,
 	clearBatchState(ws.Dir)
 	_ = g.DropRef(st.Ref)
 	_ = g.DeleteRemoteRef(st.Ref)
+	// Its members landed: said on the board before the batch closes, or
+	// the summary reads "ended without a result" over a merge (OR-553).
+	for _, m := range members {
+		ui.LiveBatchMember(m.Key, ui.MemberLanded)
+	}
 	ui.LiveBatchEnd()
 
 	// WHAT WAS SKIPPED, and what was not (OR-336).

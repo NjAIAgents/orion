@@ -688,6 +688,12 @@ func heldSummary(w io.Writer) string {
 		reason := g[1]
 		if r, ok := strings.CutPrefix(reason, "blocked by "); ok {
 			reason = "on " + r
+		} else if _, by, ok := strings.Cut(reason, " is already spoken for by "); ok {
+			// A file-overlap hold (fanout.scope) names every shared path and
+			// a paragraph of why; the board has room for who, not what
+			// (OR-553). The full reason stays in the log line.
+			by, _, _ = strings.Cut(by, ";")
+			reason = "sharing files with " + by
 		}
 		parts = append(parts, fmt.Sprintf("%d %s", n, reason))
 	}
