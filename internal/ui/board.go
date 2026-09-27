@@ -21,6 +21,7 @@ package ui
 import (
 	"fmt"
 	"io"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -74,6 +75,7 @@ var board struct {
 	jobs    map[string]*boardJob
 	queue   map[string]int // stage word -> count, from LiveQueue
 	held    int
+	heldBy  [][2]string // reason groups: keys, reason
 	inCI    int
 	checks  []Check
 	spend   float64
@@ -111,6 +113,14 @@ func BoardActive() bool {
 func BoardHeld(n int) {
 	board.mu.Lock()
 	board.held = n
+	board.mu.Unlock()
+}
+
+// BoardHeldBy records why they are held, one group per reason, so the board
+// can say "12 on LTA-30" instead of the scroll repeating twelve keys.
+func BoardHeldBy(groups [][2]string) {
+	board.mu.Lock()
+	board.heldBy = append([][2]string(nil), groups...)
 	board.mu.Unlock()
 }
 
@@ -369,9 +379,14 @@ func splitKey(k string) (string, int) {
 
 // renderBoard draws the block. Caller holds board.mu.
 func renderBoard(w io.Writer, now time.Time) string {
+	// The terminal's own width, so the rules span it; 100 when it cannot be
+	// read (a pipe, a log file).
 	width := columns()
-	if width <= 0 || width > 100 {
+	if width <= 0 {
 		width = 100
+	}
+	if width > 200 {
+		width = 200
 	}
 	rule := Dim(w, strings.Repeat("─", width))
 	label := func(verb, s string) string { return paint(w, statusColor(verb), iconFor(verb)+s) }
@@ -421,41 +436,70 @@ func renderBoard(w io.Writer, now time.Time) string {
 		}
 	}
 
-	// Queue and totals.
+	// Queue and totals: counts that add up. Waiting is labelled and not yet
+	// started; in integration is finished and being batched or in CI.
 	q := board.queue
-	queued := q["queued"]
-	ready := queued - board.held
+	waiting := q["queued"]
+	ready := waiting - board.held
 	if ready < 0 {
 		ready = 0
 	}
-	fmt.Fprintf(&b, " %s %s  %s  %s  %s\n", head("QUEUE"),
-		label(VerbWaiting, fmt.Sprintf("%d queued", queued)),
-		Dim(w, fmt.Sprintf("%d ready · %d blocked · %d in CI · %d failed", ready, board.held, q["ci-wait"]+q["ready"], q["failed"])),
-		label(VerbOK, fmt.Sprintf("%d landed", board.landed)),
-		Dim(w, fmt.Sprintf("$%.2f", board.spend)))
+	integ := q["ci-wait"] + q["ready"]
+	wait := fmt.Sprintf("%d waiting", waiting)
+	switch {
+	case waiting > 0 && ready == 0:
+		wait += " · all blocked"
+	case board.held > 0:
+		wait += fmt.Sprintf(" · %d ready · %d blocked", ready, board.held)
+	}
+	fmt.Fprintf(&b, " %s %s%s\n", head("QUEUE"), label(VerbWaiting, wait), heldSummary(w))
+	totals := []string{label(VerbWorking, fmt.Sprintf("%d in integration", integ)),
+		label(VerbOK, fmt.Sprintf("%d landed", board.landed))}
+	if q["failed"] > 0 {
+		totals = append(totals, label(VerbFail, fmt.Sprintf("%d failed", q["failed"])))
+	}
+	totals = append(totals, Dim(w, fmt.Sprintf("$%.2f", board.spend)))
+	fmt.Fprintf(&b, " %s %s\n", head(""), strings.Join(totals, Dim(w, " · ")))
 
 	// Batch and CI.
+	failedCheck := false
+	for _, c := range board.checks {
+		if c.State == CheckFailed {
+			failedCheck = true
+		}
+	}
 	if bt := board.batch; bt != nil {
 		since := bt.started
 		if !bt.testing.IsZero() {
 			since = bt.testing
 		}
-		var keys []string
+		var in, out []string
 		for _, m := range bt.members {
-			keys = append(keys, m.key)
+			switch m.state {
+			case MemberEjected:
+				out = append(out, m.key+" ("+shortReason(m.detail)+")")
+			default:
+				in = append(in, m.key)
+			}
 		}
-		fmt.Fprintf(&b, " %s %s %s  %s\n", head("BATCH"), paint(w, bold, bt.ref),
-			strings.Join(keys, " "), Dim(w, roundDur(now.Sub(since))))
-		fmt.Fprintf(&b, " %s %s\n", head(""), batchPipeline(w, bt.phase))
+		ref := paint(w, bold, bt.ref)
+		if failedCheck {
+			ref = paint(w, statusColor(VerbFail), bt.ref+" red")
+		}
+		fmt.Fprintf(&b, " %s %s  %s  %s\n", head("BATCH"), ref, strings.Join(in, " "), Dim(w, roundDur(now.Sub(since))))
+		fmt.Fprintf(&b, " %s %s\n", head(""), batchPipeline(w, bt.phase, failedCheck))
 		var ms []string
 		for _, m := range bt.members {
-			s := memberWord(w, m)
-			if s != "" {
-				ms = append(ms, s)
+			if m.state == MemberLanded || m.state == MemberCulprit {
+				ms = append(ms, memberWord(w, m))
 			}
 		}
 		if len(ms) > 0 {
 			fmt.Fprintf(&b, " %s %s\n", head(""), strings.Join(ms, "  "))
+		}
+		if len(out) > 0 {
+			fmt.Fprintf(&b, " %s %s\n", head(""), paint(w, statusColor(VerbWarn),
+				strings.TrimSpace(iconFor(VerbWarn))+" ejected, next batch: "+strings.Join(out, ", ")))
 		}
 	}
 	if len(board.checks) > 0 {
@@ -496,7 +540,7 @@ func needsGlyph() string {
 	return "?"
 }
 
-func batchPipeline(w io.Writer, p BatchPhase) string {
+func batchPipeline(w io.Writer, p BatchPhase, failed bool) string {
 	steps := []struct {
 		name  string
 		phase BatchPhase
@@ -505,6 +549,9 @@ func batchPipeline(w io.Writer, p BatchPhase) string {
 	var out []string
 	for _, s := range steps {
 		switch {
+		case s.phase == p && failed && p == BatchTesting:
+			out = append(out, paint(w, statusColor(VerbFail), s.name+" "+strings.TrimSpace(iconFor(VerbFail))))
+			reached = false
 		case s.phase == p:
 			out = append(out, paint(w, statusColor(VerbWorking), s.name+" "+strings.TrimSpace(iconFor(VerbWorking))))
 			reached = false
@@ -621,4 +668,39 @@ func renderFan(w io.Writer, f *boardFan, indent string) string {
 				n-shown, rest["done"]+rest["failed"], rest["running"], rest["pending"])))
 	}
 	return b.String()
+}
+
+// heldSummary is the held groups as one clause: "12 on LTA-30 · 10 on
+// LTA-137". Caller holds board.mu.
+func heldSummary(w io.Writer) string {
+	if len(board.heldBy) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, g := range board.heldBy {
+		n := len(strings.Split(g[0], ", "))
+		reason := g[1]
+		if r, ok := strings.CutPrefix(reason, "blocked by "); ok {
+			reason = "on " + r
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", n, reason))
+	}
+	return Dim(w, ": "+strings.Join(parts, " · "))
+}
+
+// shortReason makes an ejection reason fit a row: the conflicting file when
+// the git output names one, the reason otherwise.
+func shortReason(r string) string {
+	for _, marker := range []string{"Merge conflict in ", "CONFLICT (content): Merge conflict in ", "Auto-merging "} {
+		if i := strings.LastIndex(r, marker); i >= 0 {
+			f := strings.Fields(r[i+len(marker):])
+			if len(f) > 0 {
+				return "conflict in " + path.Base(strings.TrimRight(f[0], ")."))
+			}
+		}
+	}
+	if len(r) > 40 {
+		return r[:39] + "…"
+	}
+	return r
 }

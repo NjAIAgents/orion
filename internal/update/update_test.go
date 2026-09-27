@@ -374,3 +374,17 @@ func ttyWriter(t *testing.T) *os.File {
 	t.Cleanup(func() { _ = f.Close() })
 	return f
 }
+
+// OR-544: a local build from develop is AFTER the release it names, so the
+// release is not offered to it as an update.
+func TestADevBuildIsNotOfferedTheReleaseItFollows(t *testing.T) {
+	if Newer("v0.11.0", "v0.11.0+dev.f52458b") {
+		t.Error("v0.11.0 offered as an update to a build made after it")
+	}
+	if Newer("v0.11.0", "v0.11.0+dev.f52458b.dirty") {
+		t.Error("v0.11.0 offered as an update to a dirty build made after it")
+	}
+	if !Newer("v0.12.0", "v0.11.0+dev.f52458b") {
+		t.Error("a genuinely newer release was not offered")
+	}
+}

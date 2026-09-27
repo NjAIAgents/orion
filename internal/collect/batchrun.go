@@ -891,7 +891,9 @@ func resumeTesting(st batchState, members []Member, cfg config.Config, opts Opti
 			ui.Warn(w, "the batch is red but its record could not be updated (%v); "+
 				"the next pass will test it again", err)
 		}
-		ui.Warn(w, "%s went red; the next pass will isolate the cause", st.Ref)
+		// A failure, not a warning (OR-544): red CI is the outcome, and the
+		// isolation that follows is what it costs.
+		ui.Fail(w, "%s went red; the next pass will isolate the cause", st.Ref)
 		return pendingResults(members)
 	}
 

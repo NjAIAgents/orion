@@ -3,14 +3,16 @@
 
 BINARY  := orion
 # A tagged commit -- every release -- is exactly its tag. Anything else is the
-# newest release tag plus -dev+<sha>: release tags live on main's promotion
+# newest release tag plus +dev.<sha> -- semver BUILD metadata, not a
+# prerelease: "-dev" sorted below the release it came after, so the update
+# check offered v0.11.0 to a build newer than it. Release tags live on main's promotion
 # merges, which are never ancestors of develop, so `git describe` from develop
 # fell back to an old tag and a fresh local build read as v0.8.10 (OR-544 F).
 VERSION := $(shell git describe --tags --exact-match --dirty 2>/dev/null || \
 	{ t=$$(git tag --list 'v*' --sort=-v:refname 2>/dev/null | head -1); \
 	  s=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown); \
 	  d=$$(git diff --quiet 2>/dev/null || echo .dirty); \
-	  echo "$${t:-v0.0.0}-dev+$$s$$d"; })
+	  echo "$${t:-v0.0.0}+dev.$$s$$d"; })
 # RELVER is VERSION with any leading v stripped. Archive names always carry
 # exactly one v (orion_v<RELVER>_<os>_<arch>), matching the whodunit tap and
 # bucket. Deriving it rather than reusing VERSION keeps the name identical
