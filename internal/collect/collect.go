@@ -232,8 +232,8 @@ type Options struct {
 	// Empty means every registered project. A watcher started for one
 	// project collects only that project's tickets (OR-539).
 	Projects []string
-	Out  io.Writer
-	Home string
+	Out      io.Writer
+	Home     string
 	// DryRun reports the verdicts and changes nothing.
 	DryRun bool
 	// NoPrune keeps merged worktrees. For anyone who wants the checkout
