@@ -249,8 +249,8 @@ func parentKindOf(calls []CreateRequest, id string) Kind {
 // link needs both keys.
 func TestApplyCreatesTheOrderingLinks(t *testing.T) {
 	src := "# Tasks: Thing\n\n" +
-		"## Phase 1: Setup\n\n- [ ] T001 Do a in a.go\n- [ ] T002 Do b in b.go\n\n" +
-		"## Phase 2: Build\n\n- [ ] T010 Do c in c.go\n- [ ] T011 Do d in d.go\n\n" +
+		"## Phase 1: Setup\n\n- [ ] T001 [P] Do a in a.go\n- [ ] T002 [P] Do b in b.go\n\n" +
+		"## Phase 2: Build\n\n- [ ] T010 [P] Do c in c.go\n- [ ] T011 [P] Do d in d.go\n\n" +
 		"## Dependencies\n\n- **Phase 2 (Build)**: after T001.\n"
 	tree, err := Parse(src, "specs/001-thing/tasks.md")
 	if err != nil {

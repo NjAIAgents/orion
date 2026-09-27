@@ -873,7 +873,7 @@ var dependencyLine = regexp.MustCompile(`(?i)^\s*[-*]\s*\**\s*Phase\s+(\d+)`)
 // produces no edge, and the epic body still carries the whole section for a
 // person to read.
 func dependencyEdges(depends []string, t *Tree) []Edge {
-	if t == nil || t.Epic == nil || len(depends) == 0 {
+	if t == nil || t.Epic == nil {
 		return nil
 	}
 	// Every task, and the phase number its heading carries.
@@ -927,6 +927,27 @@ func dependencyEdges(depends []string, t *Tree) []Edge {
 		}
 		seen[k] = true
 		edges = append(edges, Edge{Blocker: blocker, Blocked: blocked, Why: strings.TrimSpace(why)})
+	}
+
+	// ORDER WITHIN A PHASE (OR-540). A task without [P] runs in phase order;
+	// only consecutive [P] tasks may run together. The marker was parsed and
+	// written into each description ("Parallel: no -- run this in phase
+	// order") but never became a link, and the queue orders by links alone --
+	// so a whole phase was claimable at once. On log-triage-agent that put
+	// T013 (model.py), T014 (errors.py) and the tasks that import them in
+	// flight together: each wrote its own copy of the module, and the
+	// branches conflicted add/add or failed on the missing import.
+	//
+	// Only the epic's own tasks. A story is claimed and worked as one unit,
+	// by one agent in one branch, so the tasks inside it are ordered by that
+	// agent -- links between them would hold back nothing the queue sees.
+	for _, g := range phaseGroups(t) {
+		for _, blocker := range g.prev {
+			for _, blocked := range g.tasks {
+				add(blocker, blocked, blocked+" runs after "+blocker+
+					" in phase order (the task list does not mark it [P])")
+			}
+		}
 	}
 
 	// ONLY THE PHASE-DEPENDENCY BULLETS. The section also carries a
@@ -997,4 +1018,42 @@ func dependencyEdges(depends []string, t *Tree) []Edge {
 		}
 	}
 	return edges
+}
+
+// phaseGroup is one run of a phase's epic-level tasks that may start together,
+// and the run that must finish before it.
+type phaseGroup struct {
+	prev, tasks []string
+}
+
+// phaseGroups splits each phase's open, epic-level tasks, in file order, into
+// runs: consecutive [P] tasks form one run, and every task without [P] is a
+// run of its own (OR-540). Each run after the first carries the run before it.
+func phaseGroups(t *Tree) []phaseGroup {
+	var phases []string
+	byPhase := map[string][]*Item{}
+	for _, it := range t.Epic.Children {
+		if it.Kind != KindTask || it.ID == "" || it.Done {
+			continue
+		}
+		if _, seen := byPhase[it.Phase]; !seen {
+			phases = append(phases, it.Phase)
+		}
+		byPhase[it.Phase] = append(byPhase[it.Phase], it)
+	}
+	var out []phaseGroup
+	for _, ph := range phases {
+		var runs [][]string
+		for i, it := range byPhase[ph] {
+			if it.Parallel && i > 0 && byPhase[ph][i-1].Parallel {
+				runs[len(runs)-1] = append(runs[len(runs)-1], it.ID)
+				continue
+			}
+			runs = append(runs, []string{it.ID})
+		}
+		for i := 1; i < len(runs); i++ {
+			out = append(out, phaseGroup{prev: runs[i-1], tasks: runs[i]})
+		}
+	}
+	return out
 }
