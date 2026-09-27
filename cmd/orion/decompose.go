@@ -134,7 +134,12 @@ func decomposeTree(out io.Writer, root, project, path string, ask confirmer) err
 
 	decompose.Preview(out, plan)
 
-	if plan.NewCount() == 0 {
+	// Nothing new is not nothing to do while the tree has ordering links
+	// (OR-542): a re-run is how a task list's ordering reaches tickets
+	// created before the rule that produces it -- OR-540's phase order on
+	// log-triage-agent was exactly that. Jira keeps one link per pair and
+	// type, so re-applying the tree's links adds only the missing ones.
+	if plan.NewCount() == 0 && len(tree.Blocks) == 0 {
 		fmt.Fprintln(out)
 		ui.Ok(out, "nothing to do", "every item is already in %s", project)
 		return nil
@@ -145,7 +150,12 @@ func decomposeTree(out io.Writer, root, project, path string, ask confirmer) err
 			"  withdrawn, so this asks once for the whole tree and creates nothing without\n"+
 			"  an answer."))
 
-	if !ask(fmt.Sprintf("Create %d items in %s?", plan.NewCount(), project)) {
+	prompt := fmt.Sprintf("Create %d items in %s?", plan.NewCount(), project)
+	if plan.NewCount() == 0 {
+		prompt = fmt.Sprintf("Every item is already in %s. Apply the %d ordering link(s)? (existing ones are kept, not duplicated)",
+			project, len(tree.Blocks))
+	}
+	if !ask(prompt) {
 		return errDeclined
 	}
 
