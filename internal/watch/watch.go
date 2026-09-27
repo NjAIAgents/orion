@@ -560,6 +560,12 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (out tickOu
 			// "nothing is waiting on CI" once a minute all night.
 			Unattended: true,
 		}) {
+			// SAID, never dropped (OR-552). A batch whose landing failed on
+			// every tick returned its error here and nothing printed it: the
+			// board showed the batch in integration for hours, silently.
+			if r.Err != nil {
+				ui.Say(w, r.Key, events.ActorOrion, ui.VerbFail, "%v", r.Err)
+			}
 			// Pending means CI is still running; passing means CI is green
 			// and a human has not approved yet. Both are work this watcher
 			// still owes, and exiting on either strands the ticket.

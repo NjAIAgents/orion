@@ -1129,3 +1129,20 @@ func TestQueueLabelOnStoriesAndEpicLevelTasksAdmitsEachOnce(t *testing.T) {
 		t.Errorf("a labelled sub-task under a labelled story is dropped anyway (%v); the label there is noise", got)
 	}
 }
+
+// OR-552: an error collect returns is printed. The watcher used to drop it,
+// so a batch that failed to land on every tick sat "in integration" for
+// hours with nothing on screen saying why.
+func TestACollectErrorIsPrinted(t *testing.T) {
+	stopping.Store(false)
+	s := &spy{maxSleeps: 0}
+	d := s.deps()
+	d.Collect = func(collect.Options) []collect.Result {
+		return []collect.Result{{Err: errors.New("landing the approved batch orion/batch: not rebaseable")}}
+	}
+	var buf bytes.Buffer
+	_ = Run(Options{Out: &buf, Home: t.TempDir(), Interval: time.Millisecond, Once: true}, d)
+	if !strings.Contains(buf.String(), "not rebaseable") {
+		t.Fatalf("the collect error never reached the screen:\n%s", buf.String())
+	}
+}
