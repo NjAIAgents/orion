@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -78,7 +79,7 @@ func watchInterval(args []string) time.Duration {
 }
 
 func runWatch(args []string) {
-	w := os.Stdout
+	var w io.Writer = os.Stdout
 
 	projects, err := projectKeys(
 		positional(args, "--interval", "--max-jobs", "--max-minutes", "--max-turns"))
@@ -103,6 +104,13 @@ func runWatch(args []string) {
 
 	j, err := tracker.NewJiraFromEnv()
 	exitOn(err)
+
+	// The full-screen view (OR-548), once nothing ahead of the loop can exit.
+	// The banner is written again into it, so it heads the log file too.
+	if s := watchScreen(args, projects, once, dry); s != nil {
+		w = s
+		watchBanner(w, projects, interval, maxJobs, concurrent, concurrentFrom, dry)
+	}
 
 	watch.Listen(w)
 
@@ -149,7 +157,7 @@ func runWatch(args []string) {
 			return watch.Queued(j, home, ps, label)
 		},
 		InFlight: func(home string, ps []string) ([]string, error) {
-			return watch.InFlight(j, home, ps, os.Stdout)
+			return watch.InFlight(j, home, ps, w)
 		},
 		// Automatic retries of failed tickets (OR-543): the same label and
 		// status change `orion queue --reset` makes, and the work-branch head
@@ -172,7 +180,27 @@ func runWatch(args []string) {
 				append([]string{tracker.LabelWorking}, actors.StageLabels()...))
 		},
 	})
+	ui.CloseScreen()
 	exitOn(err)
+}
+
+// watchScreen starts the top-style view when stdout is a terminal, unless
+// --plain asks for the scrolling log. A single pass (--once, --dry-run) keeps
+// the log: it ends before a view would be worth drawing.
+func watchScreen(args, projects []string, once, dry bool) *ui.Screen {
+	if hasFlag(args, "--plain") || once || dry || os.Getenv("TERM") == "dumb" || !ui.IsTerminal(os.Stdout) {
+		return nil
+	}
+	title := strings.Join(projects, " ")
+	if title == "" {
+		title = "all projects"
+	}
+	logPath := ""
+	dir := filepath.Join(workspace.Home(), "logs")
+	if os.MkdirAll(dir, 0o700) == nil {
+		logPath = filepath.Join(dir, "watch-"+time.Now().Format("20060102-150405")+".log")
+	}
+	return ui.StartScreen(os.Stdout, title, logPath)
 }
 
 // workBranchHead is the project's work-branch head in its sandbox clone, as

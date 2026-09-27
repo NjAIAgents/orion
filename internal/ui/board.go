@@ -310,7 +310,8 @@ func boardBatchEnd() {
 func BoardTick(w io.Writer) {
 	board.mu.Lock()
 	defer board.mu.Unlock()
-	if !board.active {
+	// The full-screen view draws the board itself (OR-548).
+	if !board.active || ScreenOn() {
 		return
 	}
 	sig := boardSignature()

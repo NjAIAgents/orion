@@ -2057,7 +2057,14 @@ const forceExit = 130
 
 // Listen installs the signal handler. Separate from Run so a caller can
 // install it before any long-running work begins.
-func Listen(w io.Writer) { listen(w, os.Exit) }
+func Listen(w io.Writer) {
+	listen(w, func(code int) {
+		// A forced exit skips every defer, so the full-screen view is given
+		// back here or the shell is left on the alternate screen (OR-548).
+		ui.CloseScreen()
+		os.Exit(code)
+	})
+}
 
 // listen is Listen with its exit seam exposed, and returns a function that
 // unregisters the handler. Tests use both; nothing else needs them.

@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,6 +62,18 @@ func TestBoardPreview(t *testing.T) {
 	BoardNeedsYou([]string{"LTA-112 is out of automatic retries -- look at it, then requeue"})
 
 	now = at(7, 12)
+	if sp := os.Getenv("SCREEN_PREVIEW"); sp != "" {
+		// The top-style view (OR-548): the same state, one frame.
+		log := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+		h := " " + Heading(&out, "orion watch LTA") + "  " + Dim(&out, now.Format("15:04:05")) +
+			Dim(&out, "   log ~/.orion/logs/watch-20260927-130000.log   ctrl-c stops")
+		f := frame(&out, 32, 118, h, renderBoard(&out, now), log)
+		f = strings.ReplaceAll(f, escHome, "")
+		f = strings.ReplaceAll(strings.ReplaceAll(f, escEOL, ""), escBelow, "")
+		if err := os.WriteFile(sp, []byte(strings.ReplaceAll(f, "\r\n", "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	BoardTick(&out)
 
 	out.WriteString("\n   ...later, QA has finished and a batch went red:\n\n")
