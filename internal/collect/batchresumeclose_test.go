@@ -2,6 +2,7 @@ package collect
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -242,5 +243,41 @@ func TestTheLandingLineNamesWhatWasNotTestedAgain(t *testing.T) {
 	// The old wording claimed more than it meant.
 	if strings.Contains(got, "no further CI run") {
 		t.Errorf("the line still reads as a claim about CI in general:\n%s", got)
+	}
+}
+
+// OR-552: a batch GitHub will not rebase -- its members carry merge commits
+// -- lands as a merge commit instead of failing on every pass.
+func TestABatchThatCannotBeRebasedLandsAsAMergeCommit(t *testing.T) {
+	ms := members("OR-150")
+	st, g, ws, cfg := landResumedFixture(t, ms)
+	var tried []string
+	g.merge = func(_, _, _, strategy string) error {
+		tried = append(tried, strategy)
+		if strategy == "" {
+			return fmt.Errorf("Pull request is not rebaseable")
+		}
+		return nil
+	}
+	var buf bytes.Buffer
+	res := landResumed(st, ms, cfg, Deps{Jira: newTracker()}, g, ws, &buf)
+
+	if strings.Join(tried, ",") != ",merge" {
+		t.Fatalf("strategies tried = %q, want rebase then merge", tried)
+	}
+	if len(res) != 1 || res[0].Verdict != VerdictMerged {
+		t.Fatalf("results = %+v, want the member merged", res)
+	}
+}
+
+// Both refused: the error names both, so the operator sees why.
+func TestABatchRefusedBothWaysSaysBoth(t *testing.T) {
+	ms := members("OR-150")
+	st, g, ws, cfg := landResumedFixture(t, ms)
+	g.merge = func(_, _, _, strategy string) error { return fmt.Errorf("refused %q", strategy) }
+	res := landResumed(st, ms, cfg, Deps{Jira: newTracker()}, g, ws, &bytes.Buffer{})
+	if len(res) != 1 || res[0].Err == nil ||
+		!strings.Contains(res[0].Err.Error(), `refused ""`) || !strings.Contains(res[0].Err.Error(), `refused "merge"`) {
+		t.Fatalf("results = %+v, want one error naming both refusals", res)
 	}
 }

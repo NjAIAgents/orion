@@ -241,8 +241,15 @@ func (r repoGit) LandRef(ref, base string) (string, error) {
 			return "", fmt.Errorf("opening the batch pull request: %w", err)
 		}
 	}
+	// Rebase first, for the reason config.VCS.MergeStrategy gives: linear
+	// history with the agent's authorship. A batch whose members carry merge
+	// commits -- a conflict resolved by merging the base in -- cannot be
+	// rebased, and GitHub refuses it on every attempt (OR-552). A merge
+	// commit then lands the very tree CI tested and keeps every author.
 	if err := r.merge(r.dir(), ref, "batch validated as one set", ""); err != nil {
-		return "", err
+		if err2 := r.merge(r.dir(), ref, "batch validated as one set", "merge"); err2 != nil {
+			return "", fmt.Errorf("%w; and as a merge commit: %v", err, err2)
+		}
 	}
 	// Read AFTER the merge, so what is recorded is where base actually ended
 	// up rather than where it was predicted to.
