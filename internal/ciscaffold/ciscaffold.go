@@ -340,6 +340,14 @@ if ! "$PY" -c "import pytest" >/dev/null 2>&1; then
   exit 1
 fi
 
+# This tree's src/ first on the import path (OR-541). A worktree shares the
+# main worktree's .venv, which has the project installed editable from the
+# MAIN tree -- so in a src/ layout, "import pkg" would resolve to that copy
+# and the suite would test code this branch never changed.
+if [ -d src ]; then
+  export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+fi
+
 echo "==> tests"
 "$PY" -m pytest -q
 
