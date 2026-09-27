@@ -14,6 +14,11 @@ import (
 )
 
 func projectConfig(t *testing.T, w *workspace.Workspace) (slackOn bool, batch bool) {
+	slackOn, batch, _ = projectConfigAll(t, w)
+	return
+}
+
+func projectConfigAll(t *testing.T, w *workspace.Workspace) (slackOn, batch, autoFix bool) {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(w.RepoDir(), "orion.json"))
 	if err != nil {
@@ -24,11 +29,14 @@ func projectConfig(t *testing.T, w *workspace.Workspace) (slackOn bool, batch bo
 		Collect struct {
 			BatchIntegration bool `json:"batch_integration"`
 		} `json:"collect"`
+		CI struct {
+			AutoFix bool `json:"auto_fix"`
+		} `json:"ci"`
 	}
 	if err := json.Unmarshal(b, &c); err != nil {
 		t.Fatal(err)
 	}
-	return c.Slack.Enabled, c.Collect.BatchIntegration
+	return c.Slack.Enabled, c.Collect.BatchIntegration, c.CI.AutoFix
 }
 
 func TestANewProjectWithAChannelHasSlackAndBatchingOn(t *testing.T) {
@@ -75,5 +83,34 @@ func TestAnExistingOrionJSONKeepsItsBatchSetting(t *testing.T) {
 	}
 	if _, batch := projectConfig(t, w); batch {
 		t.Error("batch integration was turned on in an orion.json that already existed")
+	}
+}
+
+// OR-546: a project designed by orion plan starts with the CI fix loop on, so
+// a ticket a batch convicts is fixed on its own branch, not failed and rerun.
+func TestANewProjectHasTheCIFixLoopOn(t *testing.T) {
+	w := chainWSWithRepo(t)
+	var out strings.Builder
+	if err := toolkitStep(&stepIO{Out: &out}, w); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, autoFix := projectConfigAll(t, w); !autoFix {
+		t.Error("a new project's orion.json has ci.auto_fix off")
+	}
+}
+
+// An adopted repository's existing choice is kept.
+func TestAnExistingOrionJSONKeepsItsAutoFixSetting(t *testing.T) {
+	w := chainWSWithRepo(t)
+	path := filepath.Join(w.RepoDir(), "orion.json")
+	if err := os.WriteFile(path, []byte(`{"version": 1, "ci": {"auto_fix": false}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := toolkitStep(&stepIO{Out: &out}, w); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, autoFix := projectConfigAll(t, w); autoFix {
+		t.Error("auto_fix was turned on in an orion.json that already existed")
 	}
 }
