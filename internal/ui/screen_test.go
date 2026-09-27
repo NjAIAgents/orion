@@ -146,3 +146,26 @@ func TestTheBoardIsNotPrintedWhileTheScreenDrawsIt(t *testing.T) {
 	}
 	_ = s
 }
+
+// The in-progress icon turns only while the full-screen view draws the board
+// (OR-551); the plain log keeps the still one it always printed.
+func TestTheWorkingIconTurnsOnlyOnTheScreen(t *testing.T) {
+	resetBoard()
+	t.Cleanup(resetBoard)
+	board.mu.Lock()
+	defer board.mu.Unlock()
+	if boardIcon(VerbWorking) != iconFor(VerbWorking) {
+		t.Fatal("the plain log's working icon changed")
+	}
+	board.spinning = true
+	seen := map[string]bool{}
+	for board.spin = 0; board.spin < 4; board.spin++ {
+		seen[boardIcon(VerbWorking)] = true
+	}
+	if len(seen) != 4 {
+		t.Fatalf("four frames drew %d distinct icons, want 4", len(seen))
+	}
+	if boardIcon(VerbOK) != iconFor(VerbOK) {
+		t.Fatal("a finished icon spins too")
+	}
+}
