@@ -25,6 +25,7 @@ type spy struct {
 	worked    []string
 	queued    []tracker.Issue
 	held      []HeldTicket
+	all       []tracker.Issue
 	queueErr  error
 	busy      []string
 	busyErr   error
@@ -107,7 +108,7 @@ func (s *spy) deps() Deps {
 		Queued: func(string, []string, string) (Queue, error) {
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			return Queue{Ready: s.queued, Held: s.held}, s.queueErr
+			return Queue{Ready: s.queued, Held: s.held, All: s.all}, s.queueErr
 		},
 		InFlight: func(string, []string) ([]string, error) {
 			s.mu.Lock()

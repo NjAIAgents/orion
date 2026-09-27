@@ -72,7 +72,7 @@ func TestTheReasonNamesWhatDidNotHappen(t *testing.T) {
 	n.idled(t0)
 	n.idled(t0.Add(time.Hour))
 
-	got := n.reason(t0.Add(time.Hour), []string{"OR-59", "OR-273", "OR-274"})
+	got := n.reason(t0.Add(time.Hour), []string{"OR-59", "OR-273", "OR-274"}, nil)
 
 	for _, want := range []string{"OR-59", "OR-273", "OR-274", "1h0m0s"} {
 		if !strings.Contains(got, want) {

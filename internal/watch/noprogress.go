@@ -93,12 +93,21 @@ func (n *noProgress) idled(now time.Time) bool {
 // The stuck keys are the part worth reading at breakfast: "nothing landed"
 // sends someone to the logs, "OR-59 OR-273 OR-274 never landed" sends them
 // to the tickets.
-func (n *noProgress) reason(now time.Time, stuck []string) string {
+//
+// failed names the orion-failed tickets the queue was waiting behind (OR-423):
+// "achieved nothing" alone read as a watcher fault, when the queue was idle
+// because every remaining ticket depended on work a person has to requeue.
+func (n *noProgress) reason(now time.Time, stuck, failed []string) string {
 	elapsed := now.Sub(n.since).Round(time.Minute)
 	s := fmt.Sprintf("stopping: %d cycle(s) over %s achieved nothing",
 		n.cycles, elapsed)
 	if len(stuck) > 0 {
 		s += fmt.Sprintf("; %s never landed", joinKeys(stuck))
+	}
+	if len(failed) > 0 {
+		s += fmt.Sprintf("; the queue is waiting on %s, which are orion-failed and never "+
+			"retried -- requeue them (remove orion-failed, add the queue label) and start "+
+			"the watcher again", joinKeys(failed))
 	}
 	return s + ". Nothing was changed -- the branches and labels are as they were."
 }
