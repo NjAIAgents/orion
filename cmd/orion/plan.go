@@ -229,9 +229,8 @@ func toolkitStep(sio *stepIO, ws *workspace.Workspace) error {
 		}
 		// OR-546: and the CI fix loop, so a ticket a batch convicts gets a fix
 		// round on its own branch instead of orion-failed and a full rerun.
-		// Only here: the default stays off for an adopted repository, whose
-		// suite Orion did not write and which may be flaky; a project designed
-		// from scratch runs the suite its own tasks wrote.
+		// The template carries it on too; this states it for a file written
+		// from an older template.
 		if err := setBlockFields(ws.RepoDir(), "ci",
 			map[string][]byte{"auto_fix": []byte("true")}); err != nil {
 			ui.Warn(sio.Out, "could not turn on the CI fix loop in orion.json: %v", err)
