@@ -226,3 +226,36 @@ func colourOn(t *testing.T) {
 		t.Cleanup(func() { os.Setenv("NO_COLOR", v) })
 	}
 }
+
+// OR-555: the whole top panel -- header and board -- is dark, and the log
+// rows beneath it are not.
+func TestTheTopPanelIsDarkAndTheLogIsNot(t *testing.T) {
+	colourOn(t)
+	var w bytes.Buffer
+	f := frame(&w, 6, 80, "head", "row one\nrow two", []string{"log line"})
+	rows := strings.Split(strings.TrimSuffix(strings.TrimPrefix(f, escHome), escBelow), "\r\n")
+	if !strings.HasPrefix(rows[1], panelBg) || !strings.HasPrefix(rows[2], panelBg) {
+		t.Fatalf("board rows are not on the dark panel: %q", rows[1:3])
+	}
+	if strings.Contains(rows[3], panelBg) || strings.Contains(rows[3], headerBg) {
+		t.Fatalf("the log row carries the panel colour: %q", rows[3])
+	}
+}
+
+// OR-555: plain blue and dim are unreadable on the dark panel, so the panel
+// swaps them for bright variants; the log keeps them as they were.
+func TestDarkPanelTextIsBrightened(t *testing.T) {
+	colourOn(t)
+	var w bytes.Buffer
+	f := frame(&w, 5, 80, "head", "\x1b[34mLTA-2\x1b[0m \x1b[2mqueued\x1b[0m", []string{"\x1b[34mlog\x1b[0m"})
+	rows := strings.Split(strings.TrimSuffix(strings.TrimPrefix(f, escHome), escBelow), "\r\n")
+	if strings.Contains(rows[1], "\x1b[34m") || strings.Contains(rows[1], "\x1b[2m") {
+		t.Fatalf("dark panel row still carries plain blue or dim: %q", rows[1])
+	}
+	if !strings.Contains(rows[1], "\x1b[94m") {
+		t.Fatalf("blue was not brightened on the panel: %q", rows[1])
+	}
+	if !strings.Contains(rows[2], "\x1b[34m") {
+		t.Fatalf("the log row's colour was changed: %q", rows[2])
+	}
+}

@@ -67,8 +67,11 @@ const (
 	escHome  = "\x1b[H"
 	escEOL   = "\x1b[K"
 	escBelow = "\x1b[J"
-	// headerBg is the header bar: white on a dark slate (OR-555).
-	headerBg = "\x1b[97;48;5;236m"
+	// headerBg is the header bar and panelBg the board beneath it: a dark
+	// theme for the frozen top of the screen, white text on near-black, the
+	// header a shade lighter so it reads as a title (OR-555).
+	headerBg = "\x1b[97;48;5;237m"
+	panelBg  = "\x1b[97;48;5;234m"
 )
 
 // StartScreen takes over the terminal and returns the writer to print
@@ -240,13 +243,18 @@ func frame(w io.Writer, rows, cols int, header, board string, log []string) stri
 	var b strings.Builder
 	b.WriteString(escHome)
 	for i, l := range all {
-		// The header is a full-width bar (OR-555): its background is set
-		// before the erase, and erase-to-end-of-line fills with it.
-		if i == 0 && enabled(w) {
-			// Every reset inside it re-applies the bar, or the first dim
-			// word would end the colour halfway along.
-			bar := strings.ReplaceAll(clipVisible(l, cols-1), reset, reset+headerBg)
-			b.WriteString(headerBg + bar + headerBg + escEOL + reset)
+		// The header and the board sit on a dark panel (OR-555): the
+		// background is set before the erase, and erase-to-end-of-line fills
+		// the row with it. The log below keeps the terminal's own colours.
+		if i < len(top) && enabled(w) {
+			bg := panelBg
+			if i == 0 {
+				bg = headerBg
+			}
+			// Every reset inside re-applies the panel, or the first dim word
+			// would end the colour halfway along the row.
+			row := strings.ReplaceAll(onDark.Replace(clipVisible(l, cols-1)), reset, reset+bg)
+			b.WriteString(bg + row + bg + escEOL + reset)
 		} else {
 			b.WriteString(clipVisible(l, cols-1))
 			b.WriteString(escEOL)
@@ -301,3 +309,18 @@ func runeWidth(r rune) int {
 	}
 	return 1
 }
+
+// onDark swaps the colours written for a terminal's own background for
+// their bright variants, which stay readable on the dark panel: plain blue
+// on near-black is close to invisible, and dim is dimmer still (OR-555).
+// The 256-colour palettes are already light enough and pass through.
+var onDark = strings.NewReplacer(
+	"\x1b[30m", "\x1b[37m",
+	"\x1b[31m", "\x1b[91m",
+	"\x1b[32m", "\x1b[92m",
+	"\x1b[33m", "\x1b[93m",
+	"\x1b[34m", "\x1b[94m",
+	"\x1b[35m", "\x1b[95m",
+	"\x1b[36m", "\x1b[96m",
+	"\x1b[2m", "\x1b[38;5;248m",
+)
