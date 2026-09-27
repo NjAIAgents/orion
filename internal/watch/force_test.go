@@ -2,12 +2,15 @@ package watch
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/orion-sdlc/orion/internal/ui"
 )
 
 // noKill stands in for a force that had nothing left to kill.
@@ -206,24 +209,111 @@ func TestMixedSignalTypesStillForce(t *testing.T) {
 	}
 }
 
-// TestFirstSignalWarningStatesTheRiskCorrectly is the positive half of
-// TestTheFirstSignalStillOnlyDrains's negative check: it is not enough that
-// the old, backwards "nothing running" text is gone, the replacement must
-// actually say an agent keeps running and spending, and that the ticket
-// stays claimed -- the two things a person forcing a second time needs to
-// know before they do it.
-func TestFirstSignalWarningStatesTheRiskCorrectly(t *testing.T) {
+// TestFirstSignalNamesWhatItWaitsFor is OR-547: "after the current step"
+// with no step named read as a hang for hours. The first signal names each
+// running ticket with its stage, and says what a second one does now: kill
+// the agents and put their tickets back in the queue.
+func TestFirstSignalNamesWhatItWaitsFor(t *testing.T) {
 	quiet(t)
+	p := newPool(2)
+	p.live["OR-193"] = true
+	running.Store(p)
+	ui.LiveStart("OR-193")
+	t.Cleanup(func() { ui.LiveDone("OR-193", "done") })
+
 	out := &safeBuf{}
 	sig := make(chan os.Signal, 2)
-	exited := make(chan int, 1)
-	go handle(out, sig, func(code int) { exited <- code })
-
+	go handle(out, sig, func(int) {})
 	sig <- os.Interrupt
 	got := waitFor(t, out, "stopping after the current step")
-	for _, want := range []string{"kills the running agents now", "leaves their tickets claimed"} {
+	for _, want := range []string{"waiting for OR-193 (starting", "kills the agents", "back in the queue"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("the drain warning does not say %q:\n%s", want, got)
+			t.Fatalf("the drain message does not say %q:\n%s", want, got)
 		}
+	}
+}
+
+// fakeUnclaim publishes release as the force path's unclaim for one test.
+func fakeUnclaim(t *testing.T, release func(string) error) {
+	t.Helper()
+	unclaim.Store(&release)
+	t.Cleanup(func() { unclaim.Store(nil) })
+}
+
+// TestForceQuitPutsKilledTicketsBackInTheQueue is the other half of OR-547:
+// a forced stop used to leave every ticket claimed and ask a person to clear
+// the label. Now it releases them itself and says so per ticket.
+func TestForceQuitPutsKilledTicketsBackInTheQueue(t *testing.T) {
+	quiet(t)
+	p := newPool(2)
+	p.live["OR-193"] = true
+	p.live["OR-42"] = true
+	running.Store(p)
+	var released []string
+	fakeUnclaim(t, func(k string) error { released = append(released, k); return nil })
+
+	var out bytes.Buffer
+	if code := forceQuit(&out, noKill); code == 0 {
+		t.Fatal("a forced quit must exit non-zero")
+	}
+	if strings.Join(released, ",") != "OR-193,OR-42" {
+		t.Fatalf("released %v, want both tickets", released)
+	}
+	got := out.String()
+	if strings.Contains(got, "NOT released") {
+		t.Fatalf("every ticket was released but the report says otherwise:\n%s", got)
+	}
+	if strings.Count(got, "back in the queue") != 2 {
+		t.Fatalf("the report does not name each released ticket:\n%s", got)
+	}
+}
+
+// TestForceQuitNamesTicketsItCouldNotRelease: a refused write is named with
+// its error, and the ticket is listed as still claimed for a person.
+func TestForceQuitNamesTicketsItCouldNotRelease(t *testing.T) {
+	quiet(t)
+	p := newPool(2)
+	p.live["OR-193"] = true
+	p.live["OR-42"] = true
+	running.Store(p)
+	fakeUnclaim(t, func(k string) error {
+		if k == "OR-42" {
+			return errors.New("403 from jira")
+		}
+		return nil
+	})
+
+	var out bytes.Buffer
+	forceQuit(&out, noKill)
+	got := out.String()
+	for _, want := range []string{"403 from jira", "NOT released: OR-42\n"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the report never says %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestReleaseAllGivesUpOnAHungTracker: the release is a network write inside
+// a signal handler. A tracker that never answers costs the limit, not the
+// force, and everything unanswered is reported as still claimed.
+func TestReleaseAllGivesUpOnAHungTracker(t *testing.T) {
+	hang := make(chan struct{})
+	defer close(hang)
+	var out bytes.Buffer
+	start := time.Now()
+	stuck := releaseAll(&out, []string{"OR-1", "OR-2"}, func(k string) error {
+		if k == "OR-2" {
+			<-hang
+		}
+		return nil
+	}, 50*time.Millisecond)
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("releaseAll waited on a hung tracker past its limit")
+	}
+	if strings.Join(stuck, ",") != "OR-2" {
+		t.Fatalf("stuck = %v, want only the unanswered OR-2", stuck)
+	}
+	if !strings.Contains(out.String(), "did not answer") {
+		t.Fatalf("the timeout was not reported:\n%s", out.String())
 	}
 }
