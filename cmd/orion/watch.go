@@ -27,44 +27,40 @@ import (
 // call" guarantee is reachable from a test; runWatch itself needs a
 // configured tracker and exits the process on failure.
 func watchBanner(w io.Writer, projects []string, interval time.Duration, maxJobs, concurrent int, concurrentFrom string, dry bool) {
-	fmt.Fprintf(w, "%s\n", ui.Heading(w, "watching"))
+	// Five lines, every fact kept (OR-544). The ten-line version restated
+	// itself and wrapped mid-word on a normal terminal; nothing here is
+	// longer than it has to be to be unambiguous.
 	scope := "every registered project"
 	if len(projects) > 0 {
 		scope = strings.Join(projects, ", ")
 	}
-	fmt.Fprintf(w, "  %s\n", ui.Dim(w, "scope     "+scope))
+	fmt.Fprintf(w, "%s %s\n", ui.Heading(w, "watching "+scope), ui.Dim(w, "· every "+interval.String()))
 	// Both halves of the claim criterion, because half of it is new (OR-221)
 	// and a ticket held back for the second half is otherwise a ticket that
 	// looks labelled and never runs.
-	fmt.Fprintf(w, "  %s\n", ui.Dim(w, "queue     tickets labelled "+tracker.QueueLabelDefault+
-		", and -- where the project uses releases -- attached to an open one"))
-	fmt.Fprintf(w, "  %s\n", ui.Dim(w, "interval  "+interval.String()))
-	// Said up front, with its source, because it is the setting that decides
-	// how much money is in flight at once and it is read from a file the
-	// operator may not have opened.
+	fmt.Fprintf(w, "  %s\n", ui.Dim(w, "queue     labelled "+tracker.QueueLabelDefault+
+		", on an open release where the project uses releases"))
+	// Its own line, word for word what `orion config limits` prints: it is
+	// the setting that decides how much money is in flight at once, read from
+	// a file the operator may not have opened (OR-184).
 	fmt.Fprintf(w, "  %s\n", ui.Dim(w, fmt.Sprintf("at once   %d ticket(s) (%s)", concurrent, concurrentFrom)))
-	// What is on screen, and what is being kept back. An operator who is not
-	// told the console is filtered reads a quiet run as a stalled one -- and
-	// the answer to "where did the rest go" has to be on screen before the
-	// question is asked (OR-217).
-	if ui.Verbose() {
-		fmt.Fprintf(w, "  %s\n", ui.Dim(w, "printing  --verbose: every tool call the agents make"))
-	} else {
-		fmt.Fprintf(w, "  %s\n", ui.Dim(w,
-			"printing  stages, outcomes and anything awaiting you; --verbose adds "+
-				"the agents' tool calls (always in the event log: orion logs KEY)"))
-	}
 	switch {
 	case dry:
-		fmt.Fprintf(w, "  %s\n", ui.Dim(w, "limit     --dry-run: nothing will be started"))
+		fmt.Fprintf(w, "  %s\n", ui.Dim(w, "limit     --dry-run: nothing will be started · ctrl-c stops after the current step"))
 	case maxJobs > 0:
-		fmt.Fprintf(w, "  %s\n", ui.Dim(w, fmt.Sprintf("limit     %d job(s), then stop", maxJobs)))
+		fmt.Fprintf(w, "  %s\n", ui.Dim(w, fmt.Sprintf("limit     %d job(s), then stop · ctrl-c stops after the current step", maxJobs)))
 	default:
-		ui.Warn(w, "no job limit: this will keep starting tickets, and spending, until stopped.")
-		fmt.Fprintf(w, "  %s\n", ui.Dim(w,
-			"          Use --max-jobs N for an unattended run you have not watched before."))
+		ui.Warn(w, "no job limit: keeps starting tickets, and spending, until stopped · "+
+			"--max-jobs N to cap · ctrl-c stops after the current step")
 	}
-	fmt.Fprintf(w, "  %s\n\n", ui.Dim(w, "ctrl-c to stop after the current step"))
+	// What is on screen, and what is being kept back (OR-217): a quiet run
+	// must not read as a stalled one.
+	if ui.Verbose() {
+		fmt.Fprintf(w, "  %s\n\n", ui.Dim(w, "printing  --verbose: every tool call the agents make"))
+	} else {
+		fmt.Fprintf(w, "  %s\n\n", ui.Dim(w,
+			"printing  stages and outcomes · --verbose adds tool calls · orion logs KEY has everything"))
+	}
 }
 
 // watchInterval reads --interval S, in seconds, and applies the SAME

@@ -663,6 +663,7 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (out tickOu
 		}
 	}
 	ui.BoardHeld(len(q.Held))
+	ui.BoardHeldBy(groupHeld(q.Held))
 	ui.BoardNeedsYou(needs)
 	sayStanding(w, standing)
 	if len(queued) == 0 {
@@ -732,8 +733,18 @@ func sayStanding(w io.Writer, lines [][2]string) {
 	}
 	lastStanding = sig.String()
 	for _, l := range lines {
-		ui.Say(w, "", events.ActorOrion, ui.VerbWarn, "%s: %s", l[0], l[1])
+		ui.Say(w, "", events.ActorOrion, ui.VerbWarn, "%s: %s", shortKeys(l[0]), l[1])
 	}
+}
+
+// shortKeys keeps a long key list to one line: the first and last and a
+// count. The full list is on the board's groups and in `orion queue`.
+func shortKeys(list string) string {
+	keys := strings.Split(list, ", ")
+	if len(keys) <= 4 {
+		return list
+	}
+	return fmt.Sprintf("%s … %s (%d tickets)", keys[0], keys[len(keys)-1], len(keys))
 }
 
 // groupHeld is reportHeld's grouping -- one entry per reason, keys in queue
