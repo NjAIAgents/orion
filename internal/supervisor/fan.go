@@ -117,6 +117,9 @@ func Fan(ws *workspace.Workspace, jobs []Options) []FanResult {
 			defer wg.Done()
 			defer func() { <-sem }()
 			childWS := *ws
+			if announce {
+				ui.BoardFanChild(o.Key, i, "running", 0)
+			}
 			res, err := Run(&childWS, o)
 			// Written at index i, captured by value: a fan that pairs a
 			// result with the wrong job is worse than the serial work it
@@ -132,7 +135,27 @@ func Fan(ws *workspace.Workspace, jobs []Options) []FanResult {
 		}(i, o)
 	}
 	wg.Wait()
+	if announce && ui.BoardActive() {
+		announceFanDone(jobs, results)
+	}
 	return results
+}
+
+// announceFanDone is the one line a fan leaves in the scroll under a watcher,
+// whose board carried each child while it ran (OR-544).
+func announceFanDone(jobs []Options, results []FanResult) {
+	failed := 0
+	for _, r := range results {
+		if r.Err != nil || r.Result == nil || r.Result.ExitCode != 0 {
+			failed++
+		}
+	}
+	verb, tail := ui.VerbOK, ""
+	if failed > 0 {
+		verb, tail = ui.VerbWarn, fmt.Sprintf(", %d failed", failed)
+	}
+	ui.Say(fanWriter(), jobs[0].Key, jobs[0].Actor, verb,
+		"fan-out finished: %d/%d children%s", len(results)-failed, len(results), tail)
 }
 
 // announceLanding marks one child as it finishes, per nj-agents
@@ -189,6 +212,16 @@ func announceFan(jobs []Options, maxConcurrent int) {
 	ui.Say(fanWriter(), jobs[0].Key, jobs[0].Actor, ui.VerbWorking,
 		"fanning out %d children, %d at a time -- models: %s",
 		len(jobs), maxConcurrent, strings.Join(models, ", "))
+	// Under a watcher the children live on the board as a tree under the
+	// ticket, not as one roster line each in the scroll (OR-544).
+	if ui.BoardActive() {
+		labels := make([]string, len(jobs))
+		for i, o := range jobs {
+			labels[i] = labelOf(i, o)
+		}
+		ui.BoardFan(jobs[0].Key, labels, maxConcurrent)
+		return
+	}
 	for i, o := range jobs {
 		ui.SayModel(fanWriter(), o.Key, o.Actor, o.Model, ui.VerbWorking,
 			"  ... %s", labelOf(i, o))
@@ -211,6 +244,22 @@ func announceFan(jobs []Options, maxConcurrent int) {
 // carrying both says one thing twice. A non-zero exit still names its code,
 // because there the number is the finding rather than a restatement.
 func announceLanded(i int, o Options, res *Result, err error, n, total int) {
+	// Under a watcher the child's verdict goes to the board's tree (OR-544).
+	// A failed child still says why in the scroll: that is a line a person
+	// may need, and the board has room only for the verdict.
+	if ui.BoardActive() {
+		state, took := "done", time.Duration(0)
+		if err != nil || res == nil || res.ExitCode != 0 {
+			state = "failed"
+		}
+		if res != nil {
+			took = res.Duration
+		}
+		ui.BoardFanChild(o.Key, i, state, took)
+		if state == "done" {
+			return
+		}
+	}
 	verb, verdict := ui.VerbOK, ""
 	switch {
 	case err != nil && res == nil:

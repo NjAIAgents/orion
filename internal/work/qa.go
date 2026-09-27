@@ -763,8 +763,8 @@ func qaPostRound(deps Deps, r qaRoundReport) {
 		fix = "nothing was recorded."
 	}
 	body := fmt.Sprintf("QA round %d found:\n\n%s\n\n%s changed: %s\n\n%s",
-		r.Round, strings.TrimSpace(r.Findings), actors.Attribution(r.FixActor), fix, r.Verdict)
-	_ = deps.Jira.Comment(r.Key, actors.Comment(events.ActorQA, body))
+		r.Round, strings.TrimSpace(r.Findings), actors.AttributionFor(r.Key, r.FixActor), fix, r.Verdict)
+	_ = deps.Jira.Comment(r.Key, actors.CommentFor(r.Key, events.ActorQA, body))
 }
 
 // qaPostNothingFound is the one line a clean run leaves. Without it, silence
@@ -774,7 +774,7 @@ func qaPostNothingFound(deps Deps, key string) {
 	if deps.Jira == nil {
 		return
 	}
-	_ = deps.Jira.Comment(key, actors.Comment(events.ActorQA,
+	_ = deps.Jira.Comment(key, actors.CommentFor(key, events.ActorQA,
 		"verified this change independently and found nothing: every case passes, "+
 			"and no fix rounds were needed."))
 }
@@ -809,7 +809,7 @@ func qaNoVerdict(job qaJob, deps Deps, log *events.Log, w io.Writer) {
 			"QA reports, it does not block -- and a person needs to look.")
 
 	if deps.Jira != nil {
-		_ = deps.Jira.Comment(key, actors.Comment(events.ActorQA, why+
+		_ = deps.Jira.Comment(key, actors.CommentFor(key, events.ActorQA, why+
 			".\n\nSo this change is UNVERIFIED, which is not the same as failing -- and is why "+
 			"no fix round ran: there was nothing described to fix. The branch is going to "+
 			"review anyway -- QA reports, it does not block -- so read it as a change QA did "+
@@ -856,7 +856,7 @@ func qaEscalate(job qaJob, out qaOutcome, cfg config.Config, deps Deps,
 		"does not block -- so these are for whoever reviews it. If a finding is wrong, the test "+
 		"that produced it is on the branch and can be read.", out.Rounds, out.Findings)
 	if deps.Jira != nil {
-		_ = deps.Jira.Comment(key, actors.Comment(events.ActorQA, body))
+		_ = deps.Jira.Comment(key, actors.CommentFor(key, events.ActorQA, body))
 	}
 
 	title := fmt.Sprintf("%s: QA findings are still open", key)

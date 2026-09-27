@@ -113,6 +113,7 @@ func Stage(w io.Writer, log *events.Log, h Handoff) {
 	// printed before it rather than after, and the first line of the new
 	// stage states its actor in full (OR-217).
 	Reset(w)
+	boardStage(h.Key, h.To, h.Next)
 	fmt.Fprintln(w, RenderStage(w, h))
 	log.Emit(events.Event{
 		Kind: events.KindStage, Key: h.Key,
@@ -214,9 +215,9 @@ func handoffClause(h Handoff) string {
 	if h.By == events.ActorHuman {
 		hands = " hand to "
 	}
-	clause := party(h.By) + hands + party(h.Next)
+	clause := party(h.Key, h.By) + hands + party(h.Key, h.Next)
 	if h.By == h.Next {
-		clause = party(h.By) + " continues"
+		clause = party(h.Key, h.By) + " continues"
 	}
 	parts := []string{clause}
 	if h.Detail != "" {
@@ -247,9 +248,9 @@ func agentSide(id string) bool {
 // party is what a side is called. Display resolves ci to "ci" and human to
 // "you", which is why a machine and a person need no special case: the
 // registry is already the one place that knows what anything is called.
-func party(id string) string {
+func party(key, id string) string {
 	if id == "" {
 		return noModel // "not applicable" reads better than a blank
 	}
-	return actors.Display(id)
+	return actors.DisplayFor(key, id)
 }

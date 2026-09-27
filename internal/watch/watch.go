@@ -195,6 +195,10 @@ func Run(opts Options, deps Deps) error {
 	if deps.Sleep == nil {
 		deps.Sleep = sleepInterruptible
 	}
+	// The board carries per-ticket progress for a watcher (OR-544), and the
+	// standing reasons start unprinted for this run.
+	ui.BoardEnable()
+	lastStanding = ""
 	opts.MaxConcurrent = config.Limits{MaxConcurrentTickets: opts.MaxConcurrent}.ConcurrentTickets()
 	noProgressWindow := config.Limits{NoProgressMinutes: opts.NoProgressMinutes}.NoProgress()
 
@@ -383,6 +387,7 @@ func Run(opts Options, deps Deps) error {
 		}
 
 		tk, err := oneTick(opts, deps, w, s, p)
+		ui.BoardTick(w)
 		unfinished := tk.Unfinished || jobsUnfinished || p.len() > 0
 		if err != nil {
 			// A misconfiguration will NEVER fix itself, so retrying it every
@@ -557,6 +562,9 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (out tickOu
 			// and treating either as movement would make the breaker
 			// unable to see the exact loop it exists for -- a batch that
 			// re-assembles and re-tests forever is Pending on every tick.
+			if r.Verdict == collect.VerdictMerged {
+				ui.BoardLanded()
+			}
 			switch r.Verdict {
 			case collect.VerdictMerged, collect.VerdictFailing,
 				collect.VerdictClosed, collect.VerdictStale,
@@ -628,25 +636,36 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (out tickOu
 	// Before the empty check, because "nothing is queued" and "everything
 	// queued is unschedulable" are the two states this most has to tell
 	// apart, and the second one prints nothing at all without this.
-	reportHeld(w, q.Held)
+	// The queue's standing reasons -- held tickets, failed ones waiting to be
+	// retried, failed ones out of retries -- print when they CHANGE, not on
+	// every tick (OR-544). The console's collapse of identical lines could
+	// not do this: agent lines land between the repeats, and the same three
+	// lines filled a third of the screen every minute. The board carries the
+	// counts in between.
 	queued := q.Ready
-	if len(queued) == 0 {
-		// Nothing claimable and nothing running: if tickets sit in
-		// orion-failed, they are what the queue is waiting on, since a
-		// failed ticket is never retried (OR-423). One unchanging line, so
-		// the console collapses it rather than repeating it all night.
-		if p.len() == 0 && !retried {
-			if len(waiting) > 0 {
-				ui.Say(w, "", events.ActorOrion, ui.VerbWarn, "%s: %s",
-					strings.Join(waiting, ", "), waitingHint)
-			}
-			// Only the ones out of retries need a person (OR-423, OR-543).
-			if len(exhausted) > 0 {
-				out.Failed = exhausted
-				ui.Say(w, "", events.ActorOrion, ui.VerbWarn, "%s: %s",
-					strings.Join(exhausted, ", "), failedHint)
-			}
+	idle := len(queued) == 0 && p.len() == 0 && !retried
+	var standing [][2]string
+	for _, h := range groupHeld(q.Held) {
+		standing = append(standing, h)
+	}
+	if idle && len(waiting) > 0 {
+		standing = append(standing, [2]string{strings.Join(waiting, ", "), waitingHint})
+	}
+	// Only the ones out of retries need a person (OR-423, OR-543).
+	var needs []string
+	if len(exhausted) > 0 {
+		for _, k := range exhausted {
+			needs = append(needs, k+" is out of automatic retries -- look at it, then requeue")
 		}
+		if idle {
+			out.Failed = exhausted
+			standing = append(standing, [2]string{strings.Join(exhausted, ", "), failedHint})
+		}
+	}
+	ui.BoardHeld(len(q.Held))
+	ui.BoardNeedsYou(needs)
+	sayStanding(w, standing)
+	if len(queued) == 0 {
 		return out, nil
 	}
 
@@ -698,6 +717,43 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (out tickOu
 // version names so it stays groupable.
 //
 // Keyed to no ticket, because it is about several.
+// lastStanding is what sayStanding last printed, so it prints only a change.
+var lastStanding string
+
+// sayStanding prints the queue's standing reasons when they differ from what
+// was last printed (OR-544). Keyed to no ticket, because each is about several.
+func sayStanding(w io.Writer, lines [][2]string) {
+	var sig strings.Builder
+	for _, l := range lines {
+		sig.WriteString(l[0] + "\x00" + l[1] + "\n")
+	}
+	if sig.String() == lastStanding {
+		return
+	}
+	lastStanding = sig.String()
+	for _, l := range lines {
+		ui.Say(w, "", events.ActorOrion, ui.VerbWarn, "%s: %s", l[0], l[1])
+	}
+}
+
+// groupHeld is reportHeld's grouping -- one entry per reason, keys in queue
+// order -- without the printing.
+func groupHeld(held []HeldTicket) [][2]string {
+	var reasons []string
+	keys := map[string][]string{}
+	for _, h := range held {
+		if _, seen := keys[h.Reason]; !seen {
+			reasons = append(reasons, h.Reason)
+		}
+		keys[h.Reason] = append(keys[h.Reason], h.Key)
+	}
+	out := make([][2]string, 0, len(reasons))
+	for _, r := range reasons {
+		out = append(out, [2]string{strings.Join(keys[r], ", "), r})
+	}
+	return out
+}
+
 func reportHeld(w io.Writer, held []HeldTicket) {
 	if len(held) == 0 {
 		return

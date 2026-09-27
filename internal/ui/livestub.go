@@ -173,39 +173,51 @@ func ConsoleEngaged() bool {
 func LiveReset()                             {}
 func LiveWindowCap(int)                      {}
 func LiveMedians(func(string) time.Duration) {}
-func LiveStart(string)                       {}
+func LiveStart(key string)                   { boardStart(key) }
 
 // toberetired: OR-334 removed the live region, and nothing calls this any
 // more. Kept only so the removal did not have to touch its callers' files in
 // the same change; delete once nobody wants a live view back.
-func LiveEnd(string)          {}
-func LiveDone(string, string) {}
+func LiveEnd(string)         {}
+func LiveDone(key, _ string) { boardDone(key) }
 
 // toberetired: OR-334 removed the live region, and nothing calls this any
 // more. Kept only so the removal did not have to touch its callers' files in
 // the same change; delete once nobody wants a live view back.
 func LiveStage(string, string, string) {}
-func LiveTitle(string, string)         {}
+func LiveTitle(key, title string)      { boardTitle(key, title) }
 
 // toberetired: OR-334 removed the live region, and nothing calls this any
 // more. Kept only so the removal did not have to touch its callers' files in
 // the same change; delete once nobody wants a live view back.
-func LiveActivity(string, string)                         {}
-func LiveActivityNote(string, string, string)             {}
-func LiveAgents(string)                                   {}
-func LiveSpend(float64)                                   {}
-func LiveCI(int)                                          {}
-func LiveChecks([]Check)                                  {}
-func LiveQueue([]QueueRow)                                {}
-func LiveBatchStart(string, string, []string)             {}
-func LiveBatchPhase(BatchPhase)                           {}
-func LiveBatchMember(string, MemberState)                 {}
-func LiveBatchMemberDetail(string, MemberState, string)   {}
-func LiveBatchMemberCost(string, time.Duration, float64)  {}
-func LiveBatchSplit([]string, bool, int, int, bool)       {}
-func LiveBatchMedian(time.Duration)                       {}
-func LiveBatchResume(string, string, []string, time.Time) {}
-func LiveBatchEnd()                                       {}
+func LiveActivity(string, string)              {}
+func LiveActivityNote(key, actor, note string) { boardNote(key, actor, note) }
+func LiveAgents(key string)                    { boardAgents(key) }
+func LiveSpend(usd float64)                    { board.mu.Lock(); board.spend += usd; board.mu.Unlock() }
+func LiveCI(n int)                             { board.mu.Lock(); board.inCI = n; board.mu.Unlock() }
+func LiveChecks(c []Check) {
+	board.mu.Lock()
+	board.checks = append([]Check(nil), c...)
+	board.mu.Unlock()
+}
+func LiveQueue(rows []QueueRow)                                 { boardQueue(rows) }
+func LiveBatchStart(ref, _ string, members []string)            { boardBatchStart(ref, members) }
+func LiveBatchPhase(p BatchPhase)                               { boardBatchPhase(p) }
+func LiveBatchMember(key string, s MemberState)                 { boardBatchMember(key, s, "") }
+func LiveBatchMemberDetail(key string, s MemberState, d string) { boardBatchMember(key, s, d) }
+func LiveBatchMemberCost(string, time.Duration, float64)        {}
+func LiveBatchSplit([]string, bool, int, int, bool)             {}
+func LiveBatchMedian(time.Duration)                             {}
+func LiveBatchResume(ref, _ string, members []string, since time.Time) {
+	boardBatchStart(ref, members)
+	boardBatchPhase(BatchTesting)
+	board.mu.Lock()
+	if board.batch != nil && !since.IsZero() {
+		board.batch.testing = since
+	}
+	board.mu.Unlock()
+}
+func LiveBatchEnd() { boardBatchEnd() }
 
 // toberetired: OR-334 removed the live region, and nothing calls this any
 // more.

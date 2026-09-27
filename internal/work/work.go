@@ -407,7 +407,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// having been recorded (OR-201).
 	actorID, routeWhy := Route(*issue)
 	log.Emitf(events.KindDecision, events.ActorOrion, "routed to the %s: %s", actorID, routeWhy)
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "routed to %s: %s", actors.Display(actorID), routeWhy)
+	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "routed to %s: %s", actors.DisplayFor(key, actorID), routeWhy)
 
 	// Is it already finished? The queue query excludes resolved tickets, but
 	// between that search and this claim a person can close one -- and `orion
@@ -983,7 +983,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 				res.Advice.Reason +
 				"\n\nDecide it, then amend the artifact so the next ticket does not ask again."
 		}
-		_ = deps.Jira.Comment(key, actors.Comment(actorID, body))
+		_ = deps.Jira.Comment(key, actors.CommentFor(key, actorID, body))
 		blTitle, blBody := msgBlocked(key, issue.Summary, res.Question, issue.URL, res.Advice)
 		tell(w, log, ws, notify.Event{
 			Key: key, Level: notify.Blocked, Workspace: ws.ID, Actor: actorID,
