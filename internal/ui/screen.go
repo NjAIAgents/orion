@@ -34,8 +34,9 @@ import (
 // shows, few enough to cost nothing.
 const screenKeep = 500
 
-// screenEvery is how often the view redraws.
-const screenEvery = time.Second
+// screenEvery is how often the view redraws: the same 250ms `orion plan`'s
+// live line turns its spinner at (OR-551).
+const screenEvery = 250 * time.Millisecond
 
 // Screen is the full-screen view. It is an io.Writer: everything the watcher
 // prints goes into it and appears under the board.
@@ -45,6 +46,7 @@ type Screen struct {
 	log     io.WriteCloser
 	logPath string
 	title   string
+	started time.Time
 	lines   []string
 	partial string
 	stop    chan struct{}
@@ -71,7 +73,7 @@ const (
 // through. logPath is where every line is also written; empty, or a file
 // that cannot be created, means the view alone.
 func StartScreen(term io.Writer, title, logPath string) *Screen {
-	s := &Screen{term: term, title: title, stop: make(chan struct{}), done: make(chan struct{})}
+	s := &Screen{term: term, title: title, started: clock(), stop: make(chan struct{}), done: make(chan struct{})}
 	if logPath != "" {
 		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
 			s.log, s.logPath = f, logPath
@@ -171,12 +173,17 @@ func (s *Screen) loop() {
 	defer close(s.done)
 	t := time.NewTicker(screenEvery)
 	defer t.Stop()
+	frames := 0
 	for {
 		select {
 		case <-s.stop:
 			return
 		case <-t.C:
-			invalidateTerminalSize()
+			// The size is asked once a second, not every frame: asking forks
+			// stty, and four a second beside the agents is the cost OR-317 cut.
+			if frames++; frames%4 == 0 {
+				invalidateTerminalSize()
+			}
 			s.draw()
 		}
 	}
@@ -191,7 +198,10 @@ func (s *Screen) draw() {
 		cols = 100
 	}
 	board.mu.Lock()
+	board.spinning = true
+	board.spin++
 	b := renderBoard(s, clock())
+	board.spinning = false
 	board.mu.Unlock()
 
 	s.mu.Lock()
@@ -203,7 +213,9 @@ func (s *Screen) draw() {
 }
 
 func (s *Screen) header() string {
-	h := fmt.Sprintf(" %s  %s", Heading(s, "orion watch "+s.title), Dim(s, clock().Format("15:04:05")))
+	now := clock()
+	h := fmt.Sprintf(" %s  %s", Heading(s, "orion watch "+s.title),
+		Dim(s, now.Format("15:04:05")+" · up "+roundDur(now.Sub(s.started))))
 	if s.logPath != "" {
 		h += Dim(s, "   log "+s.logPath)
 	}

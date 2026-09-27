@@ -70,23 +70,27 @@ type boardBatch struct {
 }
 
 var board struct {
-	mu      sync.Mutex
-	active  bool
-	jobs    map[string]*boardJob
-	queue   map[string]int // stage word -> count, from LiveQueue
-	held    int
-	heldBy  [][2]string // reason groups: keys, reason
-	inCI    int
-	checks  []Check
-	spend   float64
-	landed  int
-	batch   *boardBatch
-	last    string // the last finished batch, one line
-	lastOK  bool
-	lastAt  time.Time
-	needs   []string
-	sig     string
-	printed time.Time
+	mu     sync.Mutex
+	active bool
+	// spinning turns the in-progress icon, at frame spin, while the
+	// full-screen view draws the board; the plain log keeps it still (OR-551).
+	spinning bool
+	spin     int
+	jobs     map[string]*boardJob
+	queue    map[string]int // stage word -> count, from LiveQueue
+	held     int
+	heldBy   [][2]string // reason groups: keys, reason
+	inCI     int
+	checks   []Check
+	spend    float64
+	landed   int
+	batch    *boardBatch
+	last     string // the last finished batch, one line
+	lastOK   bool
+	lastAt   time.Time
+	needs    []string
+	sig      string
+	printed  time.Time
 }
 
 // BoardEnable turns the board on for this process. A watcher does; a single
@@ -390,7 +394,7 @@ func renderBoard(w io.Writer, now time.Time) string {
 		width = 200
 	}
 	rule := Dim(w, strings.Repeat("─", width))
-	label := func(verb, s string) string { return paint(w, statusColor(verb), iconFor(verb)+s) }
+	label := func(verb, s string) string { return paint(w, statusColor(verb), boardIcon(verb)+s) }
 	head := func(s string) string { return paint(w, bold, fmt.Sprintf("%-8s", s)) }
 
 	var b strings.Builder
@@ -500,7 +504,7 @@ func renderBoard(w io.Writer, now time.Time) string {
 		}
 		if len(out) > 0 {
 			fmt.Fprintf(&b, " %s %s\n", head(""), paint(w, statusColor(VerbWarn),
-				strings.TrimSpace(iconFor(VerbWarn))+" ejected, next batch: "+strings.Join(out, ", ")))
+				strings.TrimSpace(boardIcon(VerbWarn))+" ejected, next batch: "+strings.Join(out, ", ")))
 		}
 	}
 	if len(board.checks) > 0 {
@@ -551,13 +555,13 @@ func batchPipeline(w io.Writer, p BatchPhase, failed bool) string {
 	for _, s := range steps {
 		switch {
 		case s.phase == p && failed && p == BatchTesting:
-			out = append(out, paint(w, statusColor(VerbFail), s.name+" "+strings.TrimSpace(iconFor(VerbFail))))
+			out = append(out, paint(w, statusColor(VerbFail), s.name+" "+strings.TrimSpace(boardIcon(VerbFail))))
 			reached = false
 		case s.phase == p:
-			out = append(out, paint(w, statusColor(VerbWorking), s.name+" "+strings.TrimSpace(iconFor(VerbWorking))))
+			out = append(out, paint(w, statusColor(VerbWorking), s.name+" "+strings.TrimSpace(boardIcon(VerbWorking))))
 			reached = false
 		case reached:
-			out = append(out, paint(w, statusColor(VerbOK), s.name+" "+strings.TrimSpace(iconFor(VerbOK))))
+			out = append(out, paint(w, statusColor(VerbOK), s.name+" "+strings.TrimSpace(boardIcon(VerbOK))))
 		default:
 			out = append(out, Dim(w, s.name))
 		}
@@ -587,11 +591,11 @@ func detailSuffix(d string) string {
 func checkIcon(w io.Writer, state string) string {
 	switch state {
 	case CheckPassed:
-		return paint(w, statusColor(VerbOK), strings.TrimSpace(iconFor(VerbOK)))
+		return paint(w, statusColor(VerbOK), strings.TrimSpace(boardIcon(VerbOK)))
 	case CheckFailed:
-		return paint(w, statusColor(VerbFail), strings.TrimSpace(iconFor(VerbFail)))
+		return paint(w, statusColor(VerbFail), strings.TrimSpace(boardIcon(VerbFail)))
 	}
-	return paint(w, statusColor(VerbWorking), strings.TrimSpace(iconFor(VerbWorking)))
+	return paint(w, statusColor(VerbWorking), strings.TrimSpace(boardIcon(VerbWorking)))
 }
 
 func roundDur(d time.Duration) string {
@@ -612,6 +616,7 @@ func resetBoard() {
 	board.held, board.inCI, board.checks, board.spend, board.landed = 0, 0, nil, 0, 0
 	board.batch, board.last, board.lastOK, board.lastAt, board.needs = nil, "", false, time.Time{}, nil
 	board.sig, board.printed = "", time.Time{}
+	board.spinning, board.spin = false, 0
 	actors.ResetTeams()
 }
 
@@ -657,7 +662,7 @@ func renderFan(w io.Writer, f *boardFan, indent string) string {
 			}
 		}
 		fmt.Fprintf(&b, " %s     %s%s%s%s\n", indent, Dim(w, mark),
-			paint(w, statusColor(verb), iconFor(verb)), c.label, tail)
+			paint(w, statusColor(verb), boardIcon(verb)), c.label, tail)
 	}
 	if shown < n {
 		rest := map[string]int{}
@@ -720,4 +725,19 @@ func BoardWhere(key string) (stage string, took time.Duration) {
 		took = clock().Sub(j.started)
 	}
 	return j.stage, took
+}
+
+// boardIcon is iconFor, with the in-progress icon turning while the
+// full-screen view redraws it (OR-551), as `orion plan`'s live line does.
+// Caller holds board.mu.
+func boardIcon(verb string) string {
+	if verb == VerbWorking && board.spinning {
+		set := spinASCII
+		if glyphs() {
+			set = spinGlyphs
+		}
+		g := set[board.spin%len(set)]
+		return g + strings.Repeat(" ", iconWidth-cells(g))
+	}
+	return iconFor(verb)
 }
