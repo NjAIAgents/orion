@@ -30,9 +30,15 @@ import (
 // say what was PROVED and what it was proved against, which is the only pair
 // that can answer "may this still merge?" on a later pass.
 type batchState struct {
-	Ref     string    `json:"ref"`
-	Base    string    `json:"base"`
-	Members []string  `json:"members"`
+	Ref     string   `json:"ref"`
+	Base    string   `json:"base"`
+	Members []string `json:"members"`
+	// Offered is every branch the pass offered the batch, Members the ones
+	// that actually merged into the ref (OR-554). They differ when assembly
+	// ejects a member on a conflict: the set is recognised on the next pass
+	// by what was OFFERED, and only what MERGED may be landed or closed. A
+	// record without it (written before OR-554) offered exactly its members.
+	Offered []string  `json:"offered,omitempty"`
 	Status  string    `json:"status"`
 	SavedAt time.Time `json:"saved_at"`
 
@@ -162,7 +168,15 @@ func (s batchState) resumable(base, baseSHA string, members []Member) bool {
 	if s.BaseSHA == "" || s.BaseSHA != baseSHA {
 		return false
 	}
-	return sameMembers(s.Members, members)
+	return sameMembers(s.offered(), members)
+}
+
+// offered is the set this record was assembled from.
+func (s batchState) offered() []string {
+	if len(s.Offered) > 0 {
+		return s.Offered
+	}
+	return s.Members
 }
 
 // sameMembers reports whether a recorded member list is the set now on offer.
