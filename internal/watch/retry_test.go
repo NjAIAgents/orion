@@ -15,9 +15,11 @@ type retryRig struct {
 	home     string
 	head     string
 	requeued []string
+	all      strings.Builder // everything printed across ticks
 }
 
 func newRetryRig(t *testing.T) *retryRig {
+	lastStanding = ""
 	r := &retryRig{home: t.TempDir(), head: "aaa"}
 	r.s = &spy{all: []tracker.Issue{{Key: "LTA-2", Labels: []string{tracker.LabelFailed}}}}
 	return r
@@ -33,6 +35,7 @@ func (r *retryRig) tick(t *testing.T) (string, tickOutcome) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r.all.WriteString(b.String())
 	return b.String(), out
 }
 
@@ -77,9 +80,9 @@ func TestRetriesStopAtTheCapAndThenAskAPerson(t *testing.T) {
 	if len(r.requeued) != maxFailedRetries {
 		t.Fatalf("requeued %d times, want the cap of %d", len(r.requeued), maxFailedRetries)
 	}
-	out, res := r.tick(t)
-	if !strings.Contains(out, "LTA-2: orion-failed and out of automatic retries") {
-		t.Errorf("an exhausted ticket was not handed to a person:\n%s", out)
+	_, res := r.tick(t)
+	if !strings.Contains(r.all.String(), "LTA-2: orion-failed and out of automatic retries") {
+		t.Errorf("an exhausted ticket was not handed to a person:\n%s", r.all.String())
 	}
 	if !slices.Equal(res.Failed, []string{"LTA-2"}) {
 		t.Errorf("the stop message would not name it: Failed = %v", res.Failed)

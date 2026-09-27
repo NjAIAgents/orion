@@ -406,8 +406,8 @@ func dbaPostRound(deps Deps, job dbaJob, round int, findings, verdict string) {
 		return
 	}
 	body := fmt.Sprintf("Database review round %d found:\n\n%s\n\nHanded to %s.\n\n%s",
-		round, strings.TrimSpace(findings), actors.Attribution(job.Actor), verdict)
-	_ = deps.Jira.Comment(job.Key, actors.Comment(events.ActorDBA, body))
+		round, strings.TrimSpace(findings), actors.AttributionFor(job.Key, job.Actor), verdict)
+	_ = deps.Jira.Comment(job.Key, actors.CommentFor(job.Key, events.ActorDBA, body))
 }
 
 // dbaPostNothingFound is the one line a clean review leaves, and it says WHICH
@@ -417,7 +417,7 @@ func dbaPostNothingFound(deps Deps, key string, target supervisor.DBATarget) {
 	if deps.Jira == nil {
 		return
 	}
-	_ = deps.Jira.Comment(key, actors.Comment(events.ActorDBA,
+	_ = deps.Jira.Comment(key, actors.CommentFor(key, events.ActorDBA,
 		"reviewed the schema, the migrations and the indexes in this change and found "+
 			"nothing to raise. This was "+target.Path()+"."))
 }
@@ -445,7 +445,7 @@ func dbaNoVerdict(job dbaJob, deps Deps, log *events.Log, w io.Writer) {
 		"gave no verdict on the data model. A person needs to look.")
 
 	if deps.Jira != nil {
-		_ = deps.Jira.Comment(key, actors.Comment(events.ActorDBA, why+
+		_ = deps.Jira.Comment(key, actors.CommentFor(key, events.ActorDBA, why+
 			".\n\nSo the data model in this change is UNREVIEWED, which is not the same as "+
 			"unsound -- and is why no fix round ran: there was nothing described to fix. The "+
 			"branch is going to review anyway; this stage reports, it does not block."))
@@ -483,7 +483,7 @@ func dbaEscalate(job dbaJob, out dbaOutcome, deps Deps, log *events.Log, w io.Wr
 		"%d fix round(s) did not clear these schema findings. A person needs to look.", out.Rounds)
 
 	if deps.Jira != nil {
-		_ = deps.Jira.Comment(key, actors.Comment(events.ActorDBA, fmt.Sprintf(
+		_ = deps.Jira.Comment(key, actors.CommentFor(key, events.ActorDBA, fmt.Sprintf(
 			"reviewed the data model in this change and these findings are still open after "+
 				"%d fix round(s):\n\n%s\n\nThe branch is going to review anyway -- this stage "+
 				"reports, it does not block. A schema decision is inherited by everything "+

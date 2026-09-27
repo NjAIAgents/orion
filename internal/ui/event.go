@@ -262,7 +262,7 @@ func renderLine(w io.Writer, l Line, identity bool) string {
 	if identity {
 		who := ""
 		if l.Actor != "" {
-			who = actors.Display(l.Actor)
+			who = actors.DisplayFor(l.Key, l.Actor)
 		}
 		b.WriteString(paint(w, actorColor(l.Actor), pad(who, actorWidth)) + " ")
 
@@ -287,7 +287,9 @@ func renderLine(w io.Writer, l Line, identity bool) string {
 	// the terminal wraps itself.
 	msg := strings.TrimRight(l.Msg, "\n")
 	msg = strings.ReplaceAll(msg, "\n", " ")
-	if cols := columns(); cols > 0 {
+	// Never a failure or a warning (OR-544): "the suite is red" cut before
+	// what failed is the line a person most needed whole. Those wrap.
+	if cols := columns(); cols > 0 && l.Verb != VerbFail && l.Verb != VerbWarn {
 		if room := cols - metaWidth(l, identity); room > 12 && utf8.RuneCountInString(msg) > room {
 			msg = string([]rune(msg)[:room-1]) + "…"
 		}
@@ -338,7 +340,7 @@ func Banner(w io.Writer, key, summary, actor, model, branch string) {
 	if model == "" {
 		model = noModel
 	}
-	who := actors.Display(actor)
+	who := actors.DisplayFor(key, actor)
 	c := ticketColor(key)
 	// ONE LINE, not a five-line block between two 60-character rules.
 	//
@@ -547,7 +549,7 @@ func metaWidth(l Line, identity bool) int {
 	// An actor or key wider than its column widens the metadata rather than
 	// being cut, so the message must be clipped that much harder. A blanked
 	// identity column is exactly its own width and can never overflow.
-	if over := utf8.RuneCountInString(actors.Display(l.Actor)) - actorWidth; over > 0 && identity {
+	if over := utf8.RuneCountInString(actors.DisplayFor(l.Key, l.Actor)) - actorWidth; over > 0 && identity {
 		n += over
 	}
 	if over := utf8.RuneCountInString(l.Key) - keyWidth; over > 0 {

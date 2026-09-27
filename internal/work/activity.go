@@ -117,7 +117,11 @@ func activityLoggerAt(log *events.Log, w io.Writer, key, actor string, now func(
 			//
 			// Suppressed under --verbose: every tool call is already on screen
 			// there, and a summary of lines the reader can see is noise.
-			if t := now(); !ui.Verbose() && (lastBeat.IsZero() || t.Sub(lastBeat) >= heartbeatEvery) {
+			//
+			// And not under a watcher, whose status board carries the same
+			// row -- elapsed and last action -- once per change instead of
+			// once per ticket per interval (OR-544).
+			if t := now(); !ui.Verbose() && !ui.BoardActive() && (lastBeat.IsZero() || t.Sub(lastBeat) >= heartbeatEvery) {
 				lastBeat = t
 				ui.SayModel(w, key, actor, a.Model, ui.VerbWorking, "%s · %s %s",
 					t.Sub(started).Round(time.Second), verbFor(a.Tool), a.Detail)
