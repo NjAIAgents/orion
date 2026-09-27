@@ -455,7 +455,7 @@ func Run(opts Options, deps Deps) error {
 			// and work own that seam, and reaching around them for one
 			// message would put a second notifier in the system.
 			ui.Say(w, "", events.ActorOrion, ui.VerbFail, "%s",
-				stall.reason(deps.Now(), tk.Stuck))
+				stall.reason(deps.Now(), tk.Stuck, tk.Failed))
 			return nil
 		}
 		if !deps.Sleep(opts.Interval) {
@@ -505,6 +505,10 @@ type tickOutcome struct {
 	// Stuck are the keys that are owed and did not move, for the message the
 	// operator reads. Best effort: a name is a courtesy, not the verdict.
 	Stuck []string
+	// Failed are the orion-failed tickets in scope when the queue could start
+	// nothing (OR-423). A failed ticket is never retried, so when it is all
+	// that remains the queue waits on a person -- and says who to requeue.
+	Failed []string
 }
 
 func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (out tickOutcome, err error) {
@@ -616,6 +620,15 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (out tickOu
 	reportHeld(w, q.Held)
 	queued := q.Ready
 	if len(queued) == 0 {
+		// Nothing claimable and nothing running: if tickets sit in
+		// orion-failed, they are what the queue is waiting on, since a
+		// failed ticket is never retried (OR-423). One unchanging line, so
+		// the console collapses it rather than repeating it all night.
+		if failed := failedKeys(q.All); len(failed) > 0 && p.len() == 0 {
+			out.Failed = failed
+			ui.Say(w, "", events.ActorOrion, ui.VerbWarn, "%s: %s",
+				strings.Join(failed, ", "), failedHint)
+		}
 		return out, nil
 	}
 
@@ -2012,4 +2025,23 @@ func sleepInterruptible(d time.Duration) bool {
 			}
 		}
 	}
+}
+
+// failedHint is what a person does about an orion-failed ticket. Constant, so
+// the line it ends stays groupable.
+const failedHint = "orion-failed, which is never retried -- nothing else queued can start " +
+	"until they are requeued (remove orion-failed, add the queue label)"
+
+// failedKeys lists the orion-failed tickets among rows, in queue order.
+func failedKeys(rows []tracker.Issue) []string {
+	var out []string
+	for _, i := range rows {
+		for _, l := range i.Labels {
+			if l == tracker.LabelFailed {
+				out = append(out, i.Key)
+				break
+			}
+		}
+	}
+	return out
 }
