@@ -275,8 +275,9 @@ type CI struct {
 	// AutoFix sends a failing build back to an agent on the same branch
 	// rather than stopping for a person.
 	//
-	// Off by default. It spends money without being asked, and on a
-	// repository whose tests are flaky it will spend it on nothing.
+	// On by default (OR-546). It spends money without being asked, which is
+	// what an autonomous watcher is for; a flaky suite is bounded by
+	// MaxFixAttempts and stopped at once by an identical repeated failure.
 	AutoFix bool `json:"auto_fix"`
 	// MaxFixAttempts bounds that loop. Zero means the built-in default,
 	// applied by Attempts -- never "unlimited", which is this package's rule
@@ -1075,7 +1076,11 @@ func Defaults() Config {
 		Budget: Budget{PauseAtPercent: []int{50, 75, 90, 95}},
 		// On by default: Orion performs the merge, so merging on a verdict
 		// that no longer describes the code is a correctness failure.
-		CI: CI{RequireUpToDate: true},
+		// AutoFix on too (OR-546, owner's decision): a red build goes back to
+		// the agent on its own branch rather than waiting for a person. Its
+		// brakes -- the attempt ceiling and the repeated-failure stop -- are
+		// what keep a flaky suite from spending, not a default of off.
+		CI: CI{RequireUpToDate: true, AutoFix: true},
 		// On by default too, and for the same reason turned inside out: the
 		// gate above is what makes every merge invalidate every other open
 		// branch, so shipping it without the mechanical half leaves a person

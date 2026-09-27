@@ -393,16 +393,22 @@ func TestDryRunDoesNotSpendAnAttempt(t *testing.T) {
 	}
 }
 
-// Off by default: it spends money without being asked, and on a repository
-// with flaky tests it will spend it on nothing.
-func TestTheFixLoopIsOffUnlessConfigured(t *testing.T) {
-	home, _ := bound(t) // no ci.auto_fix
+// The fix loop is on by default (OR-546): a red check an agent can fix is
+// not a reason to wait for a person. A project that sets ci.auto_fix false
+// still gets exactly that.
+func TestTheFixLoopRunsUnlessSwitchedOff(t *testing.T) {
+	home, _ := ciRepoWithCI(t, `"max_fix_attempts":3`)
 	f := &fixSpy{pushed: true}
-
 	runFix(t, home, f, "some failure", Options{})
+	if f.calls == 0 {
+		t.Fatal("the fix loop did not run with ci.auto_fix left out")
+	}
 
+	home, _ = ciRepoWithCI(t, `"auto_fix":false,"max_fix_attempts":3`)
+	f = &fixSpy{pushed: true}
+	runFix(t, home, f, "some failure", Options{})
 	if f.calls != 0 {
-		t.Fatal("the fix loop ran without being switched on")
+		t.Fatal("the fix loop ran with ci.auto_fix false")
 	}
 }
 

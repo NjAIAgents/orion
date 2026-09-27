@@ -227,6 +227,14 @@ func toolkitStep(sio *stepIO, ws *workspace.Workspace) error {
 			map[string][]byte{"batch_integration": []byte("true")}); err != nil {
 			ui.Warn(sio.Out, "could not turn on batch integration in orion.json: %v", err)
 		}
+		// OR-546: and the CI fix loop, so a ticket a batch convicts gets a fix
+		// round on its own branch instead of orion-failed and a full rerun.
+		// The template carries it on too; this states it for a file written
+		// from an older template.
+		if err := setBlockFields(ws.RepoDir(), "ci",
+			map[string][]byte{"auto_fix": []byte("true")}); err != nil {
+			ui.Warn(sio.Out, "could not turn on the CI fix loop in orion.json: %v", err)
+		}
 	}
 	projectSlack(sio.Out, ws)
 
