@@ -3,6 +3,7 @@ package watch
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -600,6 +601,58 @@ func TestStoppingWaitsForEveryJobAlreadyRunning(t *testing.T) {
 		t.Errorf("stopping must be reported: %s", buf.String())
 	}
 	stopping.Store(false)
+}
+
+// "stopped" is said only once the drain has finished (OR-547). It was
+// printed at the loop's end, before the deferred wait for running agents, so
+// it claimed the watcher had stopped while an agent ran on for hours.
+func TestStoppedIsSaidOnlyAfterTheLastAgentFinishes(t *testing.T) {
+	stopping.Store(false)
+	defer stopping.Store(false)
+	s := &spy{queued: issues("FCIA-7"), maxSleeps: 99}
+	d := s.deps()
+	inner := d.Work
+	d.Work = func(o work.Options) []work.Result {
+		for !stopping.Load() {
+			time.Sleep(time.Millisecond)
+		}
+		// Long enough for the loop to see the stop and reach its end.
+		time.Sleep(100 * time.Millisecond)
+		fmt.Fprintln(o.Out, "agent finished")
+		return inner(o)
+	}
+	sleep := d.Sleep
+	d.Sleep = func(dur time.Duration) bool {
+		stopping.Store(true)
+		return sleep(dur)
+	}
+
+	out := &safeBuf{}
+	if err := Run(Options{Out: out, Home: t.TempDir(), Interval: time.Millisecond, MaxConcurrent: 1}, d); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	agent, stopped := strings.Index(got, "agent finished"), strings.Index(got, "stopped.")
+	if agent < 0 || stopped < agent {
+		t.Fatalf("\"stopped\" came before the agent finished:\n%s", got)
+	}
+}
+
+// A drain says what it still waits for, so an hour-long agent is not an hour
+// of silence (OR-547).
+func TestADrainSaysWhatItIsStillWaitingFor(t *testing.T) {
+	p := newPool(1)
+	p.live["OR-7"] = true
+	running.Store(p)
+	defer running.Store(nil)
+	p.wg.Add(1)
+	go func() { time.Sleep(60 * time.Millisecond); p.wg.Done() }()
+
+	out := &safeBuf{}
+	p.waitSaying(out, 10*time.Millisecond)
+	if !strings.Contains(out.String(), "still waiting for OR-7") {
+		t.Fatalf("the drain never said what it waits for:\n%s", out.String())
+	}
 }
 
 // A mistyped project must FAIL, not look like an empty queue.

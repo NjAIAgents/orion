@@ -146,6 +146,10 @@ type Deps struct {
 	// cannot be read). Both nil disables automatic retries (OR-543).
 	Requeue  func(key, label string) error
 	BaseHead func(home, project string) string
+	// Unclaim takes the claim off a ticket whose agent a forced stop killed
+	// -- orion-working and the stage labels -- so the queue picks it up
+	// again. Nil leaves forced tickets claimed, as before OR-547.
+	Unclaim func(key string) error
 }
 
 // maxLimitSleep caps how long one rate-limit reading may park the watcher.
@@ -259,12 +263,23 @@ func Run(opts Options, deps Deps) error {
 	// run does not report a pool that finished.
 	running.Store(p)
 	defer running.Store(nil)
+	if deps.Unclaim != nil {
+		fn := func(key string) error {
+			if err := deps.Unclaim(key); err != nil {
+				return err
+			}
+			_ = claim.Release(opts.Home, key)
+			return nil
+		}
+		unclaim.Store(&fn)
+		defer unclaim.Store(nil)
+	}
 	// Nothing exits while an agent is still running. Killing one leaves a
 	// ticket claimed with a half-written branch and no process to finish it,
 	// which is the state an unattended tool must never create -- and that is
 	// as true of the nth concurrent job as it was of the only one (OR-141).
 	defer func() {
-		for _, r := range p.wait() {
+		for _, r := range p.waitSaying(w, drainEvery) {
 			reportFinished(w, r)
 		}
 		// One last plain tick, so the endings recorded by that drain reach a
@@ -276,6 +291,12 @@ func Run(opts Options, deps Deps) error {
 		// Off a terminal only: on one, the region has been drawing this
 		// continuously and Close leaves it on screen.
 		live.Tick()
+		// Only now, with every agent finished: printed at the loop's end it
+		// said "stopped" while the drain above still had hours to run (OR-547).
+		if stopping.Load() {
+			fmt.Fprintln(w, "\nstopped. Nothing was left half-done: a ticket's labels say\n"+
+				"where it got to, so the next watcher picks it up from there.")
+		}
 	}()
 
 	started := 0
@@ -473,10 +494,6 @@ func Run(opts Options, deps Deps) error {
 		}
 	}
 
-	if stopping.Load() {
-		fmt.Fprintln(w, "\nstopped. Nothing was left half-done: a ticket's labels say\n"+
-			"where it got to, so the next watcher picks it up from there.")
-	}
 	return nil
 }
 
@@ -1310,6 +1327,25 @@ func (p *pool) wait() []work.Result {
 	return p.reap()
 }
 
+// waitSaying is wait that says, every interval, what it is still waiting
+// for. A drain that runs for an hour in silence reads as a hang (OR-547).
+func (p *pool) waitSaying(w io.Writer, every time.Duration) []work.Result {
+	done := make(chan struct{})
+	go func() { p.wg.Wait(); close(done) }()
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			return p.reap()
+		case <-t.C:
+			if what := waitingFor(); what != "" {
+				fmt.Fprintf(w, "still waiting for %s. Ctrl-c again stops now and requeues it.\n", what)
+			}
+		}
+	}
+}
+
 // outcomeWord is what a finished run's row says in its stage column.
 //
 // The Outcome vocabulary as-is: it is already the word Orion uses for this
@@ -2048,21 +2084,59 @@ func handle(w io.Writer, sig <-chan os.Signal, exit func(int)) {
 	// this line lands below the pinned region and the next redraw erases it,
 	// so the instruction for how to force a quit would vanish a quarter of a
 	// second after being printed (OR-240).
-	fmt.Fprintln(out(w), "\nstopping after the current step. Press ctrl-c again to force,\n"+
-		"which kills the running agents now and leaves their tickets claimed.")
+	//
+	// It names what it waits for (OR-547). "After the current step" with no
+	// step named read as a hang: an implementer can run for an hour, and
+	// nothing said which ticket, doing what, for how long.
+	if what := waitingFor(); what != "" {
+		fmt.Fprintf(out(w), "\nstopping after the current step: waiting for %s. Nothing new starts.\n"+
+			"Press ctrl-c again to stop now: that kills the agents and puts their tickets back in the queue.\n", what)
+	} else {
+		fmt.Fprintln(out(w), "\nstopping after the current step. Press ctrl-c again to force.")
+	}
 	<-sig
 	exit(forceQuit(out(w), supervisor.KillAll))
 }
 
-// forceQuit kills every agent this watcher started and reports what it left
-// behind, returning the code the process should exit with.
+// unclaim is how the force path puts a killed ticket back in the queue;
+// published by Run like running, nil when no tracker was wired (OR-547).
+var unclaim atomic.Pointer[func(key string) error]
+
+// unclaimWithin bounds the tracker writes a forced stop makes. The force path
+// has to be quicker than draining, and a hung Jira must not hang it.
+const unclaimWithin = 10 * time.Second
+
+// drainEvery is how often a stopping watcher says it is still waiting.
+const drainEvery = time.Minute
+
+// waitingFor names the tickets still running, each with its stage and how
+// long it has run where the board knows them: "LTA-2 (implementing, 8m)".
+func waitingFor() string {
+	p := running.Load()
+	if p == nil {
+		return ""
+	}
+	keys := p.keys()
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k
+		if stage, took := ui.BoardWhere(k); stage != "" {
+			parts[i] = fmt.Sprintf("%s (%s, %s)", k, stage, took.Round(time.Minute))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// forceQuit kills every agent this watcher started, puts their tickets back
+// in the queue, and reports what it could not, returning the code the
+// process should exit with.
 //
-// The claim is NOT released here, and says so rather than going quiet. The
-// alternative is a tracker write per ticket from inside a signal handler,
-// which is a network call with no timeout on the one path whose whole point
-// is to be immediate -- a hung Jira would hang the force, and the next
-// ctrl-c would have nothing left to fall back to. Killing is local and
-// always works; naming the ticket is what a person needs to finish the job.
+// Releasing is a tracker write from a signal handler, so it runs under
+// unclaimWithin: a hung Jira costs ten seconds and a named ticket, never the
+// force itself. It used to leave every ticket claimed and ask a person to
+// clear the label, a human step on the one path where nobody is waiting to
+// do it (OR-547).
 func forceQuit(w io.Writer, kill func(time.Duration) []int) int {
 	var keys []string
 	if p := running.Load(); p != nil {
@@ -2079,11 +2153,57 @@ func forceQuit(w io.Writer, kill func(time.Duration) []int) int {
 		fmt.Fprintln(w, "  no ticket was in flight; nothing is left claimed.")
 		return forceExit
 	}
-	fmt.Fprintf(w, "  still claimed and NOT released: %s\n"+
-		"  Their agents are dead, but the %s label is still on them, so no\n"+
-		"  watcher will pick them up until it is removed in the tracker.\n",
-		strings.Join(keys, ", "), tracker.LabelWorking)
+	stuck := keys
+	if fn := unclaim.Load(); fn != nil {
+		stuck = releaseAll(w, keys, *fn, unclaimWithin)
+	}
+	if len(stuck) > 0 {
+		fmt.Fprintf(w, "  still claimed and NOT released: %s\n"+
+			"  Their agents are dead, but the %s label is still on them, so no\n"+
+			"  watcher will pick them up until it is removed in the tracker.\n",
+			strings.Join(stuck, ", "), tracker.LabelWorking)
+	}
 	return forceExit
+}
+
+// releaseAll unclaims each key in turn and returns the ones not released
+// within the limit, in order. One goroutine for all of them, so a slow write
+// delays only the keys behind it and the deadline covers the whole set.
+func releaseAll(w io.Writer, keys []string, release func(string) error, within time.Duration) []string {
+	type result struct {
+		key string
+		err error
+	}
+	results := make(chan result, len(keys))
+	go func() {
+		for _, k := range keys {
+			results <- result{k, release(k)}
+		}
+	}()
+	done := map[string]bool{}
+	deadline := time.After(within)
+wait:
+	for range keys {
+		select {
+		case r := <-results:
+			if r.err != nil {
+				fmt.Fprintf(w, "  %s: could not put it back in the queue: %v\n", r.key, r.err)
+				continue
+			}
+			done[r.key] = true
+			fmt.Fprintf(w, "  %s: agent stopped, ticket back in the queue.\n", r.key)
+		case <-deadline:
+			fmt.Fprintf(w, "  the tracker did not answer within %s.\n", within)
+			break wait
+		}
+	}
+	var stuck []string
+	for _, k := range keys {
+		if !done[k] {
+			stuck = append(stuck, k)
+		}
+	}
+	return stuck
 }
 
 func sleepInterruptible(d time.Duration) bool {

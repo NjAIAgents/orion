@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
 	"github.com/orion-sdlc/orion/internal/registry"
@@ -168,6 +169,12 @@ func runWatch(args []string) {
 			return nil
 		},
 		BaseHead: workBranchHead,
+		// A forced stop puts a killed ticket back in the queue (OR-547): the
+		// claim and stage labels off; the queue label never left.
+		Unclaim: func(key string) error {
+			return j.SetLabels(key, nil,
+				append([]string{tracker.LabelWorking}, actors.StageLabels()...))
+		},
 	})
 	exitOn(err)
 }

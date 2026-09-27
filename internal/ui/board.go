@@ -622,3 +622,19 @@ func renderFan(w io.Writer, f *boardFan, indent string) string {
 	}
 	return b.String()
 }
+
+// BoardWhere is what a ticket's row says now: its stage and how long it has
+// run. Empty when the board holds no row for it -- a stop that names what it
+// waits for must not invent a stage (OR-547).
+func BoardWhere(key string) (stage string, took time.Duration) {
+	board.mu.Lock()
+	defer board.mu.Unlock()
+	j := board.jobs[key]
+	if j == nil {
+		return "", 0
+	}
+	if !j.started.IsZero() {
+		took = clock().Sub(j.started)
+	}
+	return j.stage, took
+}
