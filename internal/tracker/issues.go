@@ -85,29 +85,70 @@ var ErrIssueNotFound = errors.New("no such issue")
 // silently working through it is the failure this whole design guards
 // against.
 func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
+	out, _, err := j.searchPage(jql, maxResults, "")
+	return out, err
+}
+
+// maxSearchPages bounds SearchAll: 50 pages of 100 is 5,000 issues, well past
+// any task tree, and a loop that follows a token has to end even if a server
+// keeps returning one.
+const maxSearchPages = 50
+
+// SearchAll is Search without the cap, following Jira's page token to the
+// end (OR-542).
+//
+// For the callers that need EVERY match, not a working set: reconciling a
+// decomposed tree against what a previous run created. Search's cap is right
+// for a queue and wrong here -- a 150-ticket tree was read as 100, and a
+// re-run would have created the other 50 again.
+func (j *Jira) SearchAll(jql string) ([]Issue, error) {
+	var all []Issue
+	token := ""
+	for page := 0; page < maxSearchPages; page++ {
+		issues, next, err := j.searchPage(jql, 100, token)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, issues...)
+		if next == "" {
+			return all, nil
+		}
+		token = next
+	}
+	return nil, fmt.Errorf("searching issues: more than %d pages; narrow the query", maxSearchPages)
+}
+
+// searchPage runs one page of a search and returns the token for the next,
+// empty on the last page.
+func (j *Jira) searchPage(jql string, maxResults int, token string) ([]Issue, string, error) {
 	if maxResults <= 0 || maxResults > 100 {
 		maxResults = 100
 	}
 	q := url.Values{}
 	q.Set("jql", jql)
 	q.Set("maxResults", fmt.Sprint(maxResults))
+	if token != "" {
+		q.Set("nextPageToken", token)
+	}
 	q.Set("fields", "summary,description,status,labels,priority,parent,issuetype,components,fixVersions,issuelinks")
 
 	code, body, err := j.do("GET", "/rest/api/3/search/jql?"+q.Encode(), nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if code == 400 {
 		// A bad JQL is a configuration mistake, and Jira explains it well.
 		// Passing that explanation through beats "search failed".
-		return nil, fmt.Errorf("Jira rejected the query: %s\n  JQL: %s", snippet(body), jql)
+		return nil, "", fmt.Errorf("Jira rejected the query: %s\n  JQL: %s", snippet(body), jql)
 	}
 	if code >= 400 {
-		return nil, fmt.Errorf("searching issues: %d %s", code, snippet(body))
+		return nil, "", fmt.Errorf("searching issues: %d %s", code, snippet(body))
 	}
 
 	var res struct {
-		Issues []struct {
+		NextPageToken string `json:"nextPageToken"`
+		IsLast        bool   `json:"isLast"`
+		Issues        []struct {
 			Key    string `json:"key"`
 			Fields struct {
 				Summary     string          `json:"summary"`
@@ -139,7 +180,7 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 		} `json:"issues"`
 	}
 	if err := json.Unmarshal(body, &res); err != nil {
-		return nil, fmt.Errorf("parsing search results: %w", err)
+		return nil, "", fmt.Errorf("parsing search results: %w", err)
 	}
 
 	out := make([]Issue, 0, len(res.Issues))
@@ -162,7 +203,11 @@ func (j *Jira) Search(jql string, maxResults int) ([]Issue, error) {
 			URL:            j.BaseURL + "/browse/" + i.Key,
 		})
 	}
-	return out, nil
+	next := res.NextPageToken
+	if res.IsLast {
+		next = ""
+	}
+	return out, next, nil
 }
 
 // issueLink is Jira's link shape, trimmed to what ordering needs.
