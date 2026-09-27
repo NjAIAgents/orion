@@ -403,6 +403,7 @@ func landResumed(st batchState, members []Member, cfg config.Config, deps Deps,
 	clearBatchState(ws.Dir)
 	_ = g.DropRef(st.Ref)
 	_ = g.DeleteRemoteRef(st.Ref)
+	ui.LiveBatchEnd()
 
 	// WHAT WAS SKIPPED, and what was not (OR-336).
 	//
@@ -901,6 +902,9 @@ func resumeTesting(st batchState, members []Member, cfg config.Config, opts Opti
 	// first-pass green batch goes through; nothing here is a second copy of
 	// that decision.
 	st.Status, st.ValidatedSHA = batchValidated, st.Ref
+	// Out of CI on the board too: a resumed batch otherwise showed "CI ◐"
+	// with its clock running for as long as the landing took (OR-548).
+	ui.LiveBatchPhase(ui.BatchDone)
 	// Test just read the pull request, so this is the freshest the record will
 	// get before an approver is asked to look at it.
 	if url := batchPR(); url != "" {
