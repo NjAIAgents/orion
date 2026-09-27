@@ -33,12 +33,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/adopt"
 	"github.com/orion-sdlc/orion/internal/advise"
 	"github.com/orion-sdlc/orion/internal/budget"
+	"github.com/orion-sdlc/orion/internal/ciscaffold"
 	"github.com/orion-sdlc/orion/internal/claim"
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
@@ -679,6 +681,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "attribution: %v", err)
 		}
 	}
+	ensureSandboxVenv(ws.CloneDir(), key, w)
 	res.Branch = job.Branch
 	// Record the ACTUAL branch now, while it is known -- AddWorktree may have
 	// suffixed it. Best-effort: a write failure here must not lose an agent
@@ -1738,4 +1741,41 @@ func clamp(v, lo, hi int) int {
 		return hi
 	}
 	return v
+}
+
+// venvMu serialises EnsureVenv across the tickets one watcher runs at once:
+// they share one sandbox clone, and two pip installs into one virtualenv
+// corrupt it.
+//
+// ponytail: in-process only; two watchers on one project could still race,
+// a file lock in the clone if that ever happens.
+var venvMu sync.Mutex
+
+// ensureVenvFn is a seam over ciscaffold.EnsureVenv, so a test can see it is
+// called without a pip install.
+var ensureVenvFn = ciscaffold.EnsureVenv
+
+// ensureSandboxVenv gives the sandbox clone the project's virtualenv before
+// any agent runs (OR-538).
+//
+// `orion init` built it at adoption and nothing else ever did, so a project
+// created by `orion plan` -- whose pyproject.toml the scaffold stage writes
+// long after adoption -- had none: QA could not run the suite, and fix rounds
+// were spent building a .venv by hand inside a worktree. EnsureVenv is a stat
+// when the environment is current and a refresh when the dependencies
+// changed, so calling it per ticket costs nothing once it exists.
+//
+// Best-effort: a project with no Python manifest is skipped by EnsureVenv
+// itself, and a failed build is said, not fatal -- the run can still do work
+// that needs no tests.
+func ensureSandboxVenv(dir, key string, w io.Writer) {
+	venvMu.Lock()
+	defer venvMu.Unlock()
+	res, err := ensureVenvFn(dir)
+	switch {
+	case err != nil:
+		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not build the sandbox virtualenv: %v", err)
+	case res.Action == "created" || res.Action == "refreshed":
+		ui.Say(w, key, events.ActorOrion, ui.VerbOK, "sandbox virtualenv %s at %s", res.Action, res.Path)
+	}
 }

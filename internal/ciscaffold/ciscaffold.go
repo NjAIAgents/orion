@@ -51,7 +51,13 @@ const (
 	// it was hired to catch.
 	//
 	// --exit-code 1 because CI has no implementer to negotiate with.
-	scanCommand = "gitleaks git . --verbose --redact=100 --no-banner --exit-code 1"
+	//
+	// --log-opts=HEAD: the history of the ref under test, not of every ref
+	// the checkout fetched. gitleaks' default range is --all, and
+	// fetch-depth: 0 fetches every branch -- so one pushed branch carrying a
+	// finding failed the scan on EVERY run in the repository, and batch
+	// isolation convicted tickets that never touched the file (OR-538).
+	scanCommand = "gitleaks git . --log-opts=HEAD --verbose --redact=100 --no-banner --exit-code 1"
 )
 
 // Stack is the toolchain detected in a repository. Detection is by marker
@@ -140,6 +146,11 @@ func ensureFlow(dir string, res *Result) error {
 	res.FlowPath = ".github/workflows/orion-ci.yml"
 	switch _, err := os.Stat(flow); {
 	case err == nil:
+		if upgradeGenerated(flow, workflowWith(""), workflowFor(res.Stack)) {
+			res.Notes = append(res.Notes, "updated the workflow Orion wrote before the toolchain existed, so it installs one")
+			res.FlowCreated = true
+			return nil
+		}
 		res.Notes = append(res.Notes, "the workflow already exists and was left alone")
 	default:
 		if existing, _ := filepath.Glob(filepath.Join(dir, ".github", "workflows", "*.y*ml")); len(existing) > 0 {
@@ -177,6 +188,11 @@ func ensureScan(dir string, res *Result) error {
 	res.ScanPath = ".github/workflows/orion-secret-scan.yml"
 
 	if _, err := os.Stat(scan); err == nil {
+		if upgradeGenerated(scan, scanWorkflowWith(legacyScanCommand), scanWorkflow()) {
+			res.Notes = append(res.Notes, "updated the secret scan Orion wrote to scan only the branch under test")
+			res.ScanCreated = true
+			return nil
+		}
 		res.Notes = append(res.Notes, "the secret-scan workflow already exists and was left alone")
 		return nil
 	}
@@ -399,8 +415,42 @@ func workflowFor(s Stack) string {
         with:
           node-version: lts/*
 `
+	case StackUnknown:
+		// Chosen when the workflow runs, not when it is written (OR-538).
+		// The plan chain writes CI before the scaffold stage has created
+		// go.mod or pyproject.toml, and an existing workflow is never
+		// rewritten -- so a toolchain fixed at write time left a Python
+		// project on a bare runner, red on every branch with "No module
+		// named pytest". Each step runs only when its marker file exists.
+		setup = `      - uses: actions/setup-go@v5
+        if: hashFiles('go.mod') != ''
+        with:
+          go-version: stable
+          cache-dependency-path: go.mod
+      - uses: actions/setup-python@v5
+        if: hashFiles('pyproject.toml', 'setup.py', 'requirements.txt') != '' && hashFiles('go.mod') == ''
+        with:
+          python-version: '3.x'
+      - name: install python dependencies
+        if: hashFiles('pyproject.toml', 'setup.py', 'requirements.txt') != '' && hashFiles('go.mod') == ''
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f pyproject.toml ]; then pip install -e ".[dev]" || pip install -e . || true; fi
+      - uses: actions/setup-node@v4
+        if: hashFiles('package.json') != '' && hashFiles('go.mod', 'pyproject.toml', 'setup.py', 'requirements.txt') == ''
+        with:
+          node-version: lts/*
+`
 	}
 
+	return workflowWith(setup)
+}
+
+// workflowWith is the test workflow around a setup block. The unknown
+// toolchain's block was empty before OR-538; that exact file is what
+// upgradeGenerated recognises and replaces.
+func workflowWith(setup string) string {
 	return `# Written by orion init. Runs the same script you run by hand.
 #
 # The job name matters: it is what Orion reads to decide whether a branch is
@@ -454,7 +504,13 @@ jobs:
 // which discovers contexts from real check runs, so once this has reported
 // once the scan can be made required without either feature knowing about
 // the other.
-func scanWorkflow() string {
+func scanWorkflow() string { return scanWorkflowWith(scanCommand) }
+
+// legacyScanCommand is the command every scan workflow written before OR-538
+// ran: the whole fetched history, --all, instead of the ref under test.
+const legacyScanCommand = "gitleaks git . --verbose --redact=100 --no-banner --exit-code 1"
+
+func scanWorkflowWith(command string) string {
 	return `# Written by orion init.
 #
 # A hard gate, unlike the agent loop: CI has no implementer to talk to, and a
@@ -505,7 +561,7 @@ jobs:
       # are readable by whoever can read the repository, and a scanner that
       # prints its find has published the thing it was hired to catch.
       - name: scan
-        run: ` + scanCommand + `
+        run: ` + command + `
 `
 }
 
@@ -539,4 +595,17 @@ func init() {
 			panic("ciscaffold: test script template lost its shebang")
 		}
 	}
+}
+
+// upgradeGenerated replaces path with current when it is byte-for-byte the
+// earlier file Orion itself generated, and reports whether it did. Anything a
+// person has edited -- one character -- is left alone: the rule that an
+// existing workflow is never overwritten still holds for every file Orion
+// cannot prove it wrote (OR-538).
+func upgradeGenerated(path, previous, current string) bool {
+	b, err := os.ReadFile(path)
+	if err != nil || string(b) != previous || previous == current {
+		return false
+	}
+	return os.WriteFile(path, []byte(current), 0o644) == nil
 }

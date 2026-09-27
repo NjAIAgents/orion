@@ -801,9 +801,12 @@ func qaNoVerdict(job qaJob, deps Deps, log *events.Log, w io.Writer) {
 	log.Emit(events.Event{Kind: events.KindEscalate, Actor: events.ActorQA,
 		Model: actors.Model(events.ActorQA),
 		Msg:   why + "; no fix round was dispatched, because nothing was described to fix"})
-	ui.Say(w, key, events.ActorQA, ui.VerbFail,
-		"gave no verdict, even when asked for one. This change is unverified and a "+
-			"person needs to look.")
+	// A warning, not a failure (OR-538): the run continues to CI and review
+	// by design, and "failed" followed by "ready for the next batch" read as
+	// two contradictory outcomes for one ticket.
+	ui.Say(w, key, events.ActorQA, ui.VerbWarn,
+		"gave no verdict, even when asked for one. Continuing UNVERIFIED -- "+
+			"QA reports, it does not block -- and a person needs to look.")
 
 	if deps.Jira != nil {
 		_ = deps.Jira.Comment(key, actors.Comment(events.ActorQA, why+
