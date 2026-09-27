@@ -160,7 +160,7 @@ func TestTheWatchIntervalDefaultsToAMinuteAndTheBannerSaysSo(t *testing.T) {
 
 		var buf bytes.Buffer
 		watchBanner(&buf, nil, got, 0, 1, "default", false)
-		if want := "interval  " + got.String(); !strings.Contains(buf.String(), want) {
+		if want := "every " + got.String(); !strings.Contains(buf.String(), want) {
 			t.Errorf("%s: the banner does not print the interval in use (%q):\n%s",
 				tc.name, want, buf.String())
 		}

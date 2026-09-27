@@ -41,8 +41,8 @@ func TestTheBoardShowsRunningQueueBatchAndNeeds(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"RUNNING", "LTA-2", "LTA-117", "1/3 done", "#1 qa", "#3 qa  queued",
-		"2 queued", "1 ready · 1 blocked", "1 failed",
-		"BATCH", "orion/batch LTA-119 LTA-120", "CI", "test >", "secret scan +",
+		"2 waiting · 1 ready · 1 blocked", "1 failed", "in integration",
+		"BATCH", "orion/batch  LTA-119 LTA-120", "CI", "test >", "secret scan +",
 		"NEEDS YOU", "LTA-112 is out of automatic retries",
 	} {
 		if !strings.Contains(got, want) {
@@ -101,5 +101,34 @@ func TestAFailureLineIsNotClipped(t *testing.T) {
 	Print(out, Line{Key: "LTA-117", Actor: "qa", Verb: VerbFail, Msg: long})
 	if !strings.Contains(out.String(), strings.TrimSpace(long)) {
 		t.Errorf("a failure line was clipped:\n%s", out.String())
+	}
+}
+
+// OR-544: a failed check turns the batch red, an ejected ticket leaves the
+// member list with a short reason, and held tickets are grouped by blocker.
+func TestARedBatchAndAnEjectionReadCorrectly(t *testing.T) {
+	out, now := boardRig(t)
+	LiveQueue([]QueueRow{{Stage: "queued"}, {Stage: "queued"}, {Stage: "queued"}})
+	BoardHeld(3)
+	BoardHeldBy([][2]string{{"LTA-31, LTA-44", "blocked by LTA-30"}, {"LTA-77", "blocked by LTA-30, LTA-98"}})
+	LiveBatchStart("orion/batch", "develop", []string{"LTA-2", "LTA-117", "LTA-118"})
+	LiveBatchPhase(BatchTesting)
+	LiveBatchMemberDetail("LTA-118", MemberEjected,
+		"conflicts with the batch: orion/lta-118-2 does not merge into the batch: Auto-merging specs/001-log-triage-agent/tasks.md")
+	LiveChecks([]Check{{Name: "test", State: CheckFailed}})
+	*now = now.Add(time.Minute)
+	BoardTick(out)
+	got := out.String()
+	for _, want := range []string{
+		"3 waiting · all blocked", "2 on LTA-30", "1 on LTA-30, LTA-98",
+		"orion/batch red", "LTA-2 LTA-117", "CI x",
+		"ejected, next batch: LTA-118 (conflict in tasks.md)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("board lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "LTA-117 LTA-118") {
+		t.Errorf("an ejected ticket is still listed as a member:\n%s", got)
 	}
 }
