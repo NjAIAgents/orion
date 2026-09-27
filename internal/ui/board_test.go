@@ -132,3 +132,35 @@ func TestARedBatchAndAnEjectionReadCorrectly(t *testing.T) {
 		t.Errorf("an ejected ticket is still listed as a member:\n%s", got)
 	}
 }
+
+// OR-553: a file-overlap hold names who it waits on, not every shared path
+// and a paragraph of why -- that line overflowed the board's QUEUE row.
+func TestAFileOverlapHoldIsShortOnTheBoard(t *testing.T) {
+	resetBoard()
+	t.Cleanup(resetBoard)
+	BoardEnable()
+	BoardHeldBy([][2]string{{"LTA-44", "src/log_triage/store.py, src/log_triage/cli.py is already spoken for by LTA-31; two tickets that declare the same ground collide"}})
+	board.mu.Lock()
+	got := stripANSI(heldSummary(&bytes.Buffer{}))
+	board.mu.Unlock()
+	if !strings.Contains(got, "1 sharing files with LTA-31") || strings.Contains(got, "store.py") {
+		t.Fatalf("held summary = %q", got)
+	}
+}
+
+// OR-553: a batch whose members are marked landed before it ends reads as
+// landed, not "ended without a result" -- the resumed-landing path.
+func TestAResumedBatchThatLandedSaysSo(t *testing.T) {
+	resetBoard()
+	t.Cleanup(resetBoard)
+	BoardEnable()
+	LiveBatchResume("orion/batch", "develop", []string{"LTA-2", "LTA-118"}, time.Time{})
+	LiveBatchMember("LTA-2", MemberLanded)
+	LiveBatchMember("LTA-118", MemberLanded)
+	LiveBatchEnd()
+	board.mu.Lock()
+	defer board.mu.Unlock()
+	if !board.lastOK || board.last != "landed LTA-2 LTA-118" {
+		t.Fatalf("last = %q ok=%v", board.last, board.lastOK)
+	}
+}
