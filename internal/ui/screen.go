@@ -67,6 +67,8 @@ const (
 	escHome  = "\x1b[H"
 	escEOL   = "\x1b[K"
 	escBelow = "\x1b[J"
+	// headerBg is the header bar: white on a dark slate (OR-555).
+	headerBg = "\x1b[97;48;5;236m"
 )
 
 // StartScreen takes over the terminal and returns the writer to print
@@ -238,8 +240,17 @@ func frame(w io.Writer, rows, cols int, header, board string, log []string) stri
 	var b strings.Builder
 	b.WriteString(escHome)
 	for i, l := range all {
-		b.WriteString(clipVisible(l, cols-1))
-		b.WriteString(escEOL)
+		// The header is a full-width bar (OR-555): its background is set
+		// before the erase, and erase-to-end-of-line fills with it.
+		if i == 0 && enabled(w) {
+			// Every reset inside it re-applies the bar, or the first dim
+			// word would end the colour halfway along.
+			bar := strings.ReplaceAll(clipVisible(l, cols-1), reset, reset+headerBg)
+			b.WriteString(headerBg + bar + headerBg + escEOL + reset)
+		} else {
+			b.WriteString(clipVisible(l, cols-1))
+			b.WriteString(escEOL)
+		}
 		if i < len(all)-1 {
 			b.WriteString("\r\n")
 		}

@@ -395,7 +395,7 @@ func renderBoard(w io.Writer, now time.Time) string {
 	}
 	rule := Dim(w, strings.Repeat("─", width))
 	label := func(verb, s string) string { return paint(w, statusColor(verb), boardIcon(verb)+s) }
-	head := func(s string) string { return paint(w, bold, fmt.Sprintf("%-8s", s)) }
+	head := func(s string) string { return sectionChip(w, s) }
 
 	var b strings.Builder
 	b.WriteString(rule + "\n")
@@ -530,7 +530,7 @@ func renderBoard(w io.Writer, now time.Time) string {
 			if i == 0 {
 				h = "NEEDS YOU"
 			}
-			fmt.Fprintf(&b, " %s %s\n", paint(w, bold+brightMagenta, fmt.Sprintf("%-9s", h)),
+			fmt.Fprintf(&b, " %s %s\n", sectionChip(w, h),
 				paint(w, brightMagenta, needsGlyph()+" "+n))
 		}
 	}
@@ -746,4 +746,31 @@ func boardIcon(verb string) string {
 		return g + strings.Repeat(" ", iconWidth-cells(g))
 	}
 	return iconFor(verb)
+}
+
+// sectionBg is each board section's label colour (OR-555): a filled chip
+// per section, so the eye finds RUNNING, QUEUE or NEEDS YOU without reading.
+// 256-colour backgrounds dark enough for white text on a light or a dark
+// terminal, and none of them green or red, which are verdicts.
+var sectionBg = map[string]string{
+	"RUNNING":   "\x1b[48;5;25m",
+	"QUEUE":     "\x1b[48;5;60m",
+	"BATCH":     "\x1b[48;5;30m",
+	"CI":        "\x1b[48;5;24m",
+	"LAST":      "\x1b[48;5;240m",
+	"NEEDS YOU": "\x1b[48;5;127m",
+}
+
+// sectionChipWidth fits the longest label, NEEDS YOU, with a space each side.
+const sectionChipWidth = 11
+
+// sectionChip is a section's label as a coloured chip, or blank space of the
+// same width on its continuation rows, so every row's content starts in the
+// same column. Plain text off a terminal or under NO_COLOR.
+func sectionChip(w io.Writer, s string) string {
+	cell := " " + s + strings.Repeat(" ", sectionChipWidth-1-len(s))
+	if s == "" || sectionBg[s] == "" {
+		return cell
+	}
+	return paint(w, bold+"\x1b[97m"+sectionBg[s], cell)
 }

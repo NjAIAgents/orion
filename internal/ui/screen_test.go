@@ -183,3 +183,46 @@ func TestTheHeaderSaysHowLongItHasRun(t *testing.T) {
 		t.Fatalf("header = %q, want the uptime", h)
 	}
 }
+
+// OR-555: section labels are filled chips of one width, so content lines up
+// under them, and plain text when colour is off.
+func TestSectionChipsAreColouredAndAligned(t *testing.T) {
+	colourOn(t)
+	var w bytes.Buffer
+	for _, s := range []string{"RUNNING", "QUEUE", "NEEDS YOU", ""} {
+		c := sectionChip(&w, s)
+		if n := visibleWidth(stripANSI(c)); n != sectionChipWidth {
+			t.Fatalf("chip %q is %d wide, want %d", s, n, sectionChipWidth)
+		}
+		if s != "" && !strings.Contains(c, sectionBg[s]) {
+			t.Fatalf("chip %q has no background", s)
+		}
+	}
+	t.Setenv("NO_COLOR", "1")
+	if c := sectionChip(&w, "QUEUE"); strings.Contains(c, "\x1b") {
+		t.Fatalf("a chip carries colour with NO_COLOR set: %q", c)
+	}
+}
+
+// The header bar keeps its background across the resets inside it.
+func TestTheHeaderBarSurvivesInnerResets(t *testing.T) {
+	colourOn(t)
+	var w bytes.Buffer
+	h := Heading(&w, "orion watch LTA") + " " + Dim(&w, "16:00")
+	f := frame(&w, 5, 80, h, "", nil)
+	first := strings.SplitN(strings.TrimPrefix(f, escHome), "\r\n", 2)[0]
+	if !strings.Contains(first, headerBg) || strings.Count(first, headerBg) < strings.Count(first, reset) {
+		t.Fatalf("a reset in the header is not followed by the bar colour: %q", first)
+	}
+}
+
+// colourOn forces colour for one test: NO_COLOR unset (set to anything, even
+// empty, it wins) and CLICOLOR_FORCE on.
+func colourOn(t *testing.T) {
+	t.Helper()
+	t.Setenv("CLICOLOR_FORCE", "1")
+	if v, ok := os.LookupEnv("NO_COLOR"); ok {
+		os.Unsetenv("NO_COLOR")
+		t.Cleanup(func() { os.Setenv("NO_COLOR", v) })
+	}
+}
