@@ -22,7 +22,7 @@ func TestAnIdleQueueNamesTheFailedTicketsItWaitsBehind(t *testing.T) {
 		},
 	}
 	out := runWatch(t, s, Options{Once: true, MaxConcurrent: 1})
-	if !strings.Contains(out, "LTA-2, LTA-112: orion-failed, which is never retried") {
+	if !strings.Contains(out, "LTA-2, LTA-112: orion-failed and out of automatic retries") {
 		t.Errorf("the failed tickets the queue waits on were not named:\n%s", out)
 	}
 }
@@ -46,7 +46,7 @@ func TestTheStopMessageNamesTheFailedBlockers(t *testing.T) {
 	t0 := time.Now()
 	n.idled(t0)
 	got := n.reason(t0.Add(time.Hour), nil, []string{"LTA-2", "LTA-112"})
-	if !strings.Contains(got, "waiting on LTA-2 LTA-112, which are orion-failed") {
+	if !strings.Contains(got, "waiting on LTA-2 LTA-112, which are orion-failed and out of automatic retries") {
 		t.Errorf("stop message = %q", got)
 	}
 }

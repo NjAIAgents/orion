@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/orion-sdlc/orion/internal/collect"
+	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
 	"github.com/orion-sdlc/orion/internal/ui"
@@ -151,6 +154,39 @@ func runWatch(args []string) {
 		InFlight: func(home string, ps []string) ([]string, error) {
 			return watch.InFlight(j, home, ps, os.Stdout)
 		},
+		// Automatic retries of failed tickets (OR-543): the same label and
+		// status change `orion queue --reset` makes, and the work-branch head
+		// collect's sandbox sync keeps fresh.
+		Requeue: func(key, label string) error {
+			if label == "" {
+				label = tracker.QueueLabelDefault
+			}
+			if err := j.SetLabels(key, []string{label}, []string{tracker.LabelFailed}); err != nil {
+				return err
+			}
+			_ = j.TransitionTo(key, "To Do") // best effort, as queueedit.go judges it
+			return nil
+		},
+		BaseHead: workBranchHead,
 	})
 	exitOn(err)
+}
+
+// workBranchHead is the project's work-branch head in its sandbox clone, as
+// last fetched; empty when anything along the way cannot be read.
+func workBranchHead(home, project string) string {
+	e, err := registry.Lookup(home, project)
+	if err != nil {
+		return ""
+	}
+	ws, err := workspace.Open(e.Workspace)
+	if err != nil {
+		return ""
+	}
+	branch := config.Load(e.Source).VCS.WorkBranch
+	out, err := exec.Command("git", "-C", ws.CloneDir(), "rev-parse", "--verify", "-q", "origin/"+branch).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
