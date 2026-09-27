@@ -1918,6 +1918,13 @@ func TestQAWithNoVerdictTwiceGoesToAPersonAndNotToAFixRound(t *testing.T) {
 	if !strings.Contains(out.String(), "gave no verdict") {
 		t.Errorf("the console never said the verdict was missing:\n%s", out.String())
 	}
+	// OR-538: the run continues, so the line must not read as a failure --
+	// "failed" then "ready for the next batch" was two outcomes for one ticket.
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.Contains(line, "gave no verdict") && strings.Contains(line, "failed") {
+			t.Errorf("a non-blocking missing verdict is printed as a failure: %q", line)
+		}
+	}
 }
 
 // An empty closing message is the same unknown -- and its stand-in text is
