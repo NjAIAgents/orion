@@ -519,6 +519,10 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (out tickOu
 		var pending []collect.Result
 		for _, r := range deps.Collect(collect.Options{
 			Out: w, Home: opts.Home, DryRun: opts.DryRun,
+			// Only the projects this watcher was started for (OR-539).
+			// Without it `orion watch LTA` reconciled every project's
+			// tickets, and a mixed pass batched only the first project.
+			Projects: opts.Projects,
 			// A tick is not a person at a terminal. Without this the
 			// collector told the watcher's operator to run the very command
 			// the watcher is already running -- and, since OR-240, printed
