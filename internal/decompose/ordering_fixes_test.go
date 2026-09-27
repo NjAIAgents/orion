@@ -15,13 +15,13 @@ const orderingList = `# Tasks: Thing
 ## Phase 1: Setup
 
 - [x] T001 Decide the version in pyproject.toml
-- [ ] T002 Create pyproject.toml
-- [ ] T003 Create src/thing/__init__.py
+- [ ] T002 [P] Create pyproject.toml
+- [ ] T003 [P] Create src/thing/__init__.py
 
 ## Phase 2: Foundational
 
-- [ ] T004 Implement src/thing/model.py
-- [ ] T005 Implement src/thing/errors.py
+- [ ] T004 [P] Implement src/thing/model.py
+- [ ] T005 [P] Implement src/thing/errors.py
 
 ## Phase 3: User Story 1 — Do the thing (Priority: P1)
 
