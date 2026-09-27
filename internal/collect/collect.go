@@ -228,6 +228,10 @@ type Options struct {
 	// Keys limits the pass to specific tickets. Empty means every ticket
 	// currently in orion-ci-wait, across every registered project.
 	Keys []string
+	// Projects limits the search to these project keys when Keys is empty.
+	// Empty means every registered project. A watcher started for one
+	// project collects only that project's tickets (OR-539).
+	Projects []string
 	Out  io.Writer
 	Home string
 	// DryRun reports the verdicts and changes nothing.
@@ -318,7 +322,7 @@ func Run(opts Options, deps Deps) []Result {
 		if !opts.Unattended {
 			fmt.Fprintln(w, "checking for tickets awaiting CI...")
 		}
-		found, err := waiting(deps.Jira, opts.Home)
+		found, err := waiting(deps.Jira, opts.Home, opts.Projects)
 		if err != nil {
 			ui.Fail(w, "%v", err)
 			return []Result{{Err: err}}
@@ -345,6 +349,22 @@ func Run(opts Options, deps Deps) []Result {
 	for i, key := range keys {
 		pass[i] = strings.ToUpper(strings.TrimSpace(key))
 	}
+	// One project per pass (OR-539). Everything below -- the batch's
+	// workspace and config, the landing queue's leader -- is read from the
+	// pass as a whole, and a pass that mixed two projects ran the FIRST
+	// one's batch and skipped every other project's tickets, on the batch
+	// path and the per-branch path both. `orion collect` with no key sweeps
+	// every project, so this is reachable by design, not only by accident.
+	if groups := byProject(pass); len(groups) > 1 {
+		var all []Result
+		for _, g := range groups {
+			sub := opts
+			sub.Keys = g
+			all = append(all, Run(sub, deps)...)
+		}
+		return all
+	}
+	runPassHook(pass)
 	// Batch integration (OR-236), when the repository has turned it on.
 	//
 	// Checked here rather than inside one(): the per-branch path below is what
@@ -452,12 +472,18 @@ func waitingJQL(projects []string) string {
 	) + " ORDER BY updated ASC"
 }
 
-func waiting(j TrackerAPI, home string) ([]string, error) {
+func waiting(j TrackerAPI, home string, only []string) ([]string, error) {
 	f, err := registry.Load(home)
 	if err != nil {
 		return nil, err
 	}
 	projects := f.Keys()
+	if len(only) > 0 {
+		projects = nil
+		for _, k := range only {
+			projects = append(projects, strings.ToUpper(strings.TrimSpace(k)))
+		}
+	}
 	if len(projects) == 0 {
 		return nil, nil
 	}
@@ -1020,4 +1046,26 @@ func closeChildren(key, prURL, queueLabel string, deps Deps, w io.Writer) {
 		ui.Ok(w, "closed", "%d sub-task(s) delivered by %s: %s",
 			len(closed), key, strings.Join(closed, ", "))
 	}
+}
+
+// runPassHook observes each single-project pass. A test seam only.
+var runPassHook = func([]string) {}
+
+// byProject splits keys by project, keeping the order in which each project
+// first appears and the order of keys within it.
+func byProject(keys []string) [][]string {
+	var order []string
+	groups := map[string][]string{}
+	for _, k := range keys {
+		p := registry.ProjectOf(k)
+		if _, seen := groups[p]; !seen {
+			order = append(order, p)
+		}
+		groups[p] = append(groups[p], k)
+	}
+	out := make([][]string, 0, len(order))
+	for _, p := range order {
+		out = append(out, groups[p])
+	}
+	return out
 }
