@@ -334,7 +334,7 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 	// build being waited on is testing a tree that no longer exists.
 	if err == nil && st.Status == batchTesting &&
 		st.Base == base && st.BaseSHA != "" && st.BaseSHA == baseSHA &&
-		sameMembers(st.Members, members) {
+		sameMembers(st.offered(), members) {
 		return resumeTesting(st, members, cfg, opts, deps, g, ws, log, w), true
 	}
 
@@ -342,7 +342,7 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 	// which assembles the set and isolates at once (OR-324).
 	if err == nil && st.Status == batchRed &&
 		st.Base == base && st.BaseSHA != "" && st.BaseSHA == baseSHA &&
-		sameMembers(st.Members, members) {
+		sameMembers(st.offered(), members) {
 		return nil, false
 	}
 
@@ -383,8 +383,13 @@ func resumeBatch(ref string, members []Member, cfg config.Config, opts Options,
 // The base is re-read one final time even though resumable() just compared
 // it: approval is a human-length gap, and the whole point of ADR 0017's
 // precondition is that the base can move in exactly such a gap.
-func landResumed(st batchState, members []Member, cfg config.Config, deps Deps,
+func landResumed(st batchState, offered []Member, cfg config.Config, deps Deps,
 	g repoGit, ws *workspace.Workspace, w io.Writer) []Result {
+
+	// Only what the record says MERGED into the ref lands, and only that is
+	// closed (OR-554). A member the assembly ejected was offered, not tested:
+	// it is left ready for the next batch.
+	members, left := splitRecorded(st, offered)
 
 	now, err := g.SHAOf(st.Base)
 	if err != nil || now != st.BaseSHA {
@@ -438,7 +443,27 @@ func landResumed(st batchState, members []Member, cfg config.Config, deps Deps,
 	for _, m := range members {
 		out = append(out, Result{Key: m.Key, Verdict: VerdictMerged, Changed: true})
 	}
+	for _, m := range left {
+		out = append(out, Result{Key: m.Key, Verdict: VerdictStale})
+	}
 	return out
+}
+
+// splitRecorded divides the members on offer into those the record says
+// merged into the ref and the rest.
+func splitRecorded(st batchState, offered []Member) (merged, left []Member) {
+	in := map[string]bool{}
+	for _, k := range st.Members {
+		in[k] = true
+	}
+	for _, m := range offered {
+		if in[m.Key] {
+			merged = append(merged, m)
+		} else {
+			left = append(left, m)
+		}
+	}
+	return merged, left
 }
 
 // runBatch lands the pass as one set.
@@ -557,6 +582,11 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		landOpts = append(landOpts, WithKnownRed())
 	}
 	b, err := Land(g, t, ref, cfg.VCS.WorkBranch, members, liveObserver{}, landOpts...)
+	// What actually merged into the ref: the members assembly did not eject
+	// or defer. Only these may be recorded as the batch, landed or closed
+	// (OR-554) -- recording every candidate closed a ticket whose branch
+	// conflicted and never reached the base.
+	merged := mergedMembers(b, members)
 
 	// Local ref and its worktree, then the published branch. Both, and only
 	// here: Test used to drop the remote ref as it returned, which cannot
@@ -575,7 +605,7 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	// the meantime, which is the whole point.
 	if b.Pending {
 		if err := saveBatchState(ws.Dir, batchState{
-			Ref: ref, Base: cfg.VCS.WorkBranch, Members: keysOf(members),
+			Ref: ref, Base: cfg.VCS.WorkBranch, Members: keysOf(merged), Offered: keysOf(members),
 			Status: batchTesting, BaseSHA: b.BaseSHA, PRURL: batchPR(),
 			TestingSince: time.Now(),
 		}); err != nil {
@@ -584,12 +614,8 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		}
 		ui.Say(w, "", events.ActorOrion, ui.VerbOK,
 			"%d branch(es) assembled into %s; CI is running and the next tick reads it",
-			len(members), ref)
-		var out []Result
-		for _, m := range members {
-			out = append(out, Result{Key: m.Key, Verdict: VerdictPending})
-		}
-		return out
+			len(merged), ref)
+		return pendingWithEjected(b, merged, members, w)
 	}
 
 	if b.AwaitingApproval {
@@ -599,7 +625,7 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		// repeated CI run, not a wrong merge -- resumable() still refuses
 		// anything it cannot verify.
 		if err := saveBatchState(ws.Dir, batchState{
-			Ref: ref, Base: cfg.VCS.WorkBranch, Members: keysOf(members),
+			Ref: ref, Base: cfg.VCS.WorkBranch, Members: keysOf(merged), Offered: keysOf(members),
 			Status: batchValidated, BaseSHA: b.BaseSHA, ValidatedSHA: b.ValidatedSHA,
 			PRURL: batchPR(),
 		}); err != nil {
@@ -994,7 +1020,7 @@ func knownStuck(wsDir, base string, g repoGit, members []Member) (bool, []string
 	if err != nil || baseSHA != st.BaseSHA {
 		return false, nil
 	}
-	if !sameMembers(st.Members, members) {
+	if !sameMembers(st.offered(), members) {
 		return false, nil
 	}
 	return true, st.Members
@@ -1011,5 +1037,47 @@ func knownRed(wsDir, base string, g repoGit, members []Member) bool {
 	if err != nil || baseSHA != st.BaseSHA {
 		return false
 	}
-	return sameMembers(st.Members, members)
+	return sameMembers(st.offered(), members)
+}
+
+// mergedMembers is members less those the batch ejected or deferred.
+func mergedMembers(b Batch, members []Member) []Member {
+	out := map[string]bool{}
+	for _, r := range b.Results {
+		if r.Outcome == Ejected || r.Outcome == Deferred {
+			out[r.Key] = true
+		}
+	}
+	var kept []Member
+	for _, m := range members {
+		if !out[m.Key] {
+			kept = append(kept, m)
+		}
+	}
+	return kept
+}
+
+// pendingWithEjected is the pass's answer while CI runs: the merged members
+// pending, and each ejected one said out loud and left for the next batch
+// (OR-554). The ejection used to reach only the board.
+func pendingWithEjected(b Batch, merged, members []Member, w io.Writer) []Result {
+	in := map[string]bool{}
+	for _, m := range merged {
+		in[m.Key] = true
+	}
+	reason := map[string]string{}
+	for _, r := range b.Results {
+		reason[r.Key] = r.Reason
+	}
+	var out []Result
+	for _, m := range members {
+		if in[m.Key] {
+			out = append(out, Result{Key: m.Key, Verdict: VerdictPending})
+			continue
+		}
+		ui.Say(w, m.Key, events.ActorOrion, ui.VerbWarn,
+			"left out of %s: %s; it stays ready for the next batch", b.Ref, reason[m.Key])
+		out = append(out, Result{Key: m.Key, Verdict: VerdictStale})
+	}
+	return out
 }
