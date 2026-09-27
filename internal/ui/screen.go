@@ -46,6 +46,7 @@ type Screen struct {
 	log     io.WriteCloser
 	logPath string
 	title   string
+	started time.Time
 	lines   []string
 	partial string
 	stop    chan struct{}
@@ -72,7 +73,7 @@ const (
 // through. logPath is where every line is also written; empty, or a file
 // that cannot be created, means the view alone.
 func StartScreen(term io.Writer, title, logPath string) *Screen {
-	s := &Screen{term: term, title: title, stop: make(chan struct{}), done: make(chan struct{})}
+	s := &Screen{term: term, title: title, started: clock(), stop: make(chan struct{}), done: make(chan struct{})}
 	if logPath != "" {
 		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
 			s.log, s.logPath = f, logPath
@@ -212,7 +213,9 @@ func (s *Screen) draw() {
 }
 
 func (s *Screen) header() string {
-	h := fmt.Sprintf(" %s  %s", Heading(s, "orion watch "+s.title), Dim(s, clock().Format("15:04:05")))
+	now := clock()
+	h := fmt.Sprintf(" %s  %s", Heading(s, "orion watch "+s.title),
+		Dim(s, now.Format("15:04:05")+" · up "+roundDur(now.Sub(s.started))))
 	if s.logPath != "" {
 		h += Dim(s, "   log "+s.logPath)
 	}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type lockedBuf struct {
@@ -167,5 +168,18 @@ func TestTheWorkingIconTurnsOnlyOnTheScreen(t *testing.T) {
 	}
 	if boardIcon(VerbOK) != iconFor(VerbOK) {
 		t.Fatal("a finished icon spins too")
+	}
+}
+
+// The header says how long the watcher has been running.
+func TestTheHeaderSaysHowLongItHasRun(t *testing.T) {
+	base := time.Date(2026, 9, 27, 16, 0, 0, 0, time.Local)
+	now := base
+	clock = func() time.Time { return now }
+	t.Cleanup(func() { clock = time.Now })
+	s := &Screen{title: "LTA", started: base, term: &bytes.Buffer{}}
+	now = base.Add(8*time.Minute + 30*time.Second)
+	if h := stripANSI(s.header()); !strings.Contains(h, "up 8m") {
+		t.Fatalf("header = %q, want the uptime", h)
 	}
 }
