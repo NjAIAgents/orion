@@ -75,7 +75,17 @@ func (b *JiraBackend) Existing(project, identityLabel string) (map[string]string
 		tracker.JQLEq("labels", identityLabel),
 	) + " ORDER BY created ASC"
 
-	issues, err := b.c.Search(jql, 100)
+	// Every match, not the first page (OR-542): Search stops at 100, and a
+	// 150-ticket tree read as 100 would have its other 50 created again.
+	var issues []tracker.Issue
+	var err error
+	if all, ok := b.c.(interface {
+		SearchAll(jql string) ([]tracker.Issue, error)
+	}); ok {
+		issues, err = all.SearchAll(jql)
+	} else {
+		issues, err = b.c.Search(jql, 100)
+	}
 	if err != nil {
 		return nil, err
 	}
