@@ -105,8 +105,8 @@ func (n *noProgress) reason(now time.Time, stuck, failed []string) string {
 		s += fmt.Sprintf("; %s never landed", joinKeys(stuck))
 	}
 	if len(failed) > 0 {
-		s += fmt.Sprintf("; the queue is waiting on %s, which are orion-failed and never "+
-			"retried -- requeue them (remove orion-failed, add the queue label) and start "+
+		s += fmt.Sprintf("; the queue is waiting on %s, which are orion-failed and out of automatic "+
+			"retries -- requeue them (remove orion-failed, add the queue label) and start "+
 			"the watcher again", joinKeys(failed))
 	}
 	return s + ". Nothing was changed -- the branches and labels are as they were."

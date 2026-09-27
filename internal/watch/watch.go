@@ -141,6 +141,11 @@ type Deps struct {
 	// re-check, so nothing is verifiable. What that means for each fault is
 	// work.Release's to decide, not this loop's.
 	Release work.ReleaseDeps
+	// Requeue takes a ticket out of orion-failed and gives it the queue label
+	// again, and BaseHead reports a project's work-branch head (empty when it
+	// cannot be read). Both nil disables automatic retries (OR-543).
+	Requeue  func(key, label string) error
+	BaseHead func(home, project string) string
 }
 
 // maxLimitSleep caps how long one rate-limit reading may park the watcher.
@@ -599,6 +604,12 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (out tickOu
 		return out, err
 	}
 	ui.LiveQueue(queueRows(q.All))
+	// Failed tickets whose base has moved go back in the queue before
+	// anything is picked, so they compete for this tick's slots (OR-543).
+	waiting, exhausted, retried := retryFailed(opts, deps, w, q.All)
+	if retried {
+		out.Moved = true
+	}
 
 	if s.free <= 0 && !opts.DryRun {
 		// Worth a line only when a claim held elsewhere is WHY. A rate-limit
@@ -624,10 +635,17 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (out tickOu
 		// orion-failed, they are what the queue is waiting on, since a
 		// failed ticket is never retried (OR-423). One unchanging line, so
 		// the console collapses it rather than repeating it all night.
-		if failed := failedKeys(q.All); len(failed) > 0 && p.len() == 0 {
-			out.Failed = failed
-			ui.Say(w, "", events.ActorOrion, ui.VerbWarn, "%s: %s",
-				strings.Join(failed, ", "), failedHint)
+		if p.len() == 0 && !retried {
+			if len(waiting) > 0 {
+				ui.Say(w, "", events.ActorOrion, ui.VerbWarn, "%s: %s",
+					strings.Join(waiting, ", "), waitingHint)
+			}
+			// Only the ones out of retries need a person (OR-423, OR-543).
+			if len(exhausted) > 0 {
+				out.Failed = exhausted
+				ui.Say(w, "", events.ActorOrion, ui.VerbWarn, "%s: %s",
+					strings.Join(exhausted, ", "), failedHint)
+			}
 		}
 		return out, nil
 	}
@@ -2029,8 +2047,8 @@ func sleepInterruptible(d time.Duration) bool {
 
 // failedHint is what a person does about an orion-failed ticket. Constant, so
 // the line it ends stays groupable.
-const failedHint = "orion-failed, which is never retried -- nothing else queued can start " +
-	"until they are requeued (remove orion-failed, add the queue label)"
+const failedHint = "orion-failed and out of automatic retries -- nothing else queued can start " +
+	"until a person looks at them and requeues (remove orion-failed, add the queue label)"
 
 // failedKeys lists the orion-failed tickets among rows, in queue order.
 func failedKeys(rows []tracker.Issue) []string {
