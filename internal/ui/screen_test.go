@@ -183,3 +183,79 @@ func TestTheHeaderSaysHowLongItHasRun(t *testing.T) {
 		t.Fatalf("header = %q, want the uptime", h)
 	}
 }
+
+// OR-555: section labels are filled chips of one width, so content lines up
+// under them, and plain text when colour is off.
+func TestSectionChipsAreColouredAndAligned(t *testing.T) {
+	colourOn(t)
+	var w bytes.Buffer
+	for _, s := range []string{"RUNNING", "QUEUE", "NEEDS YOU", ""} {
+		c := sectionChip(&w, s)
+		if n := visibleWidth(stripANSI(c)); n != sectionChipWidth {
+			t.Fatalf("chip %q is %d wide, want %d", s, n, sectionChipWidth)
+		}
+		if s != "" && !strings.Contains(c, sectionBg[s]) {
+			t.Fatalf("chip %q has no background", s)
+		}
+	}
+	t.Setenv("NO_COLOR", "1")
+	if c := sectionChip(&w, "QUEUE"); strings.Contains(c, "\x1b") {
+		t.Fatalf("a chip carries colour with NO_COLOR set: %q", c)
+	}
+}
+
+// The header bar keeps its background across the resets inside it.
+func TestTheHeaderBarSurvivesInnerResets(t *testing.T) {
+	colourOn(t)
+	var w bytes.Buffer
+	h := Heading(&w, "orion watch LTA") + " " + Dim(&w, "16:00")
+	f := frame(&w, 5, 80, h, "", nil)
+	first := strings.SplitN(strings.TrimPrefix(f, escHome), "\r\n", 2)[0]
+	if !strings.Contains(first, headerBg) || strings.Count(first, headerBg) < strings.Count(first, reset) {
+		t.Fatalf("a reset in the header is not followed by the bar colour: %q", first)
+	}
+}
+
+// colourOn forces colour for one test: NO_COLOR unset (set to anything, even
+// empty, it wins) and CLICOLOR_FORCE on.
+func colourOn(t *testing.T) {
+	t.Helper()
+	t.Setenv("CLICOLOR_FORCE", "1")
+	if v, ok := os.LookupEnv("NO_COLOR"); ok {
+		os.Unsetenv("NO_COLOR")
+		t.Cleanup(func() { os.Setenv("NO_COLOR", v) })
+	}
+}
+
+// OR-555: the whole top panel -- header and board -- is dark, and the log
+// rows beneath it are not.
+func TestTheTopPanelIsDarkAndTheLogIsNot(t *testing.T) {
+	colourOn(t)
+	var w bytes.Buffer
+	f := frame(&w, 6, 80, "head", "row one\nrow two", []string{"log line"})
+	rows := strings.Split(strings.TrimSuffix(strings.TrimPrefix(f, escHome), escBelow), "\r\n")
+	if !strings.HasPrefix(rows[1], panelBg) || !strings.HasPrefix(rows[2], panelBg) {
+		t.Fatalf("board rows are not on the dark panel: %q", rows[1:3])
+	}
+	if strings.Contains(rows[3], panelBg) || strings.Contains(rows[3], headerBg) {
+		t.Fatalf("the log row carries the panel colour: %q", rows[3])
+	}
+}
+
+// OR-555: plain blue and dim are unreadable on the dark panel, so the panel
+// swaps them for bright variants; the log keeps them as they were.
+func TestDarkPanelTextIsBrightened(t *testing.T) {
+	colourOn(t)
+	var w bytes.Buffer
+	f := frame(&w, 5, 80, "head", "\x1b[34mLTA-2\x1b[0m \x1b[2mqueued\x1b[0m", []string{"\x1b[34mlog\x1b[0m"})
+	rows := strings.Split(strings.TrimSuffix(strings.TrimPrefix(f, escHome), escBelow), "\r\n")
+	if strings.Contains(rows[1], "\x1b[34m") || strings.Contains(rows[1], "\x1b[2m") {
+		t.Fatalf("dark panel row still carries plain blue or dim: %q", rows[1])
+	}
+	if !strings.Contains(rows[1], "\x1b[94m") {
+		t.Fatalf("blue was not brightened on the panel: %q", rows[1])
+	}
+	if !strings.Contains(rows[2], "\x1b[34m") {
+		t.Fatalf("the log row's colour was changed: %q", rows[2])
+	}
+}

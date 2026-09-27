@@ -69,7 +69,7 @@ func TestBoardPreview(t *testing.T) {
 			Dim(&out, "   log ~/.orion/logs/watch-20260927-130000.log   ctrl-c stops")
 		f := frame(&out, 32, 118, h, renderBoard(&out, now), log)
 		f = strings.ReplaceAll(f, escHome, "")
-		f = strings.ReplaceAll(strings.ReplaceAll(f, escEOL, ""), escBelow, "")
+		f = strings.ReplaceAll(f, escBelow, "")
 		if err := os.WriteFile(sp, []byte(strings.ReplaceAll(f, "\r\n", "\n")+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
