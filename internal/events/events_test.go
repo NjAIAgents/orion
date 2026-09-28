@@ -367,3 +367,22 @@ func TestTheDecisionVersusNoteRuleIsDocumentedNextToTheConstants(t *testing.T) {
 		}
 	}
 }
+
+// OR-556: a sink sees every emitted event with the log's defaults filled in,
+// and removing it stops delivery.
+func TestTheSinkSeesEveryEventWithDefaults(t *testing.T) {
+	var got []Event
+	SetSink(func(e Event) { got = append(got, e) })
+	t.Cleanup(func() { SetSink(nil) })
+	l, err := Open(filepath.Join(t.TempDir(), "events.jsonl"), Event{Project: "LTA", Key: "LTA-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	l.Emitf(KindNote, "orion", "hello")
+	SetSink(nil)
+	l.Emitf(KindNote, "orion", "unseen")
+	if len(got) != 1 || got[0].Project != "LTA" || got[0].Key != "LTA-2" || got[0].At.IsZero() {
+		t.Fatalf("sink got %+v", got)
+	}
+}
