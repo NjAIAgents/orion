@@ -41,6 +41,24 @@ var depPhraseRe = regexp.MustCompile(
 		`(?i)\bonce\s+([A-Z][A-Z0-9]*-[0-9]+)\s+is\s+done\b`,
 )
 
+// statedAtStart reports whether the match at i opens a line or a sentence
+// -- "Depends on: server skeleton", "- Blocked by: design sign-off" -- as
+// opposed to sitting mid-sentence.
+//
+// OR-569: an UNMAPPED dependency (no key) is held forever, since nothing
+// can ever satisfy it. LTA-145's own title reads "record which are met and
+// which are blocked by an open question": a description of the work, not a
+// dependency, and the ticket sat held for a day. A keyless phrase therefore
+// counts only where dependency lines are written; one naming a key still
+// counts anywhere, because that one can be checked and resolved.
+func statedAtStart(text string, i int) bool {
+	j := i - 1
+	for j >= 0 && (text[j] == ' ' || text[j] == '\t' || text[j] == '-' || text[j] == '*') {
+		j--
+	}
+	return j < 0 || text[j] == '\n' || text[j] == '.' || text[j] == '!' || text[j] == '?' || text[j] == ':'
+}
+
 // keyRe pulls a ticket key out of matched text -- the same shape
 // cmd/orion/keys.go's ticketKeyRe uses, defined again here rather than
 // imported: cmd/orion depends on internal/queue, not the other way round.
@@ -91,7 +109,13 @@ func proseDependencies(description string) []ProseDependency {
 		return nil
 	}
 	var out []ProseDependency
-	for _, m := range depPhraseRe.FindAllStringSubmatch(description, -1) {
+	for _, loc := range depPhraseRe.FindAllStringSubmatchIndex(description, -1) {
+		m := make([]string, len(loc)/2)
+		for g := range m {
+			if loc[2*g] >= 0 {
+				m[g] = description[loc[2*g]:loc[2*g+1]]
+			}
+		}
 		switch {
 		case m[1] != "":
 			// "depends on|blocked by|requires|prerequisite" + free text.
@@ -99,9 +123,13 @@ func proseDependencies(description string) []ProseDependency {
 			if rest == "" {
 				continue
 			}
+			key := firstKeyIn(rest)
+			if key == "" && !statedAtStart(description, loc[0]) {
+				continue
+			}
 			out = append(out, ProseDependency{
 				Sentence: strings.TrimSpace(m[0]),
-				Key:      firstKeyIn(rest),
+				Key:      key,
 			})
 		case m[3] != "":
 			// "after <KEY> lands"

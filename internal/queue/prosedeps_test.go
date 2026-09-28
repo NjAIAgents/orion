@@ -193,3 +193,23 @@ func TestDecideHoldsOnTheLinkCheckNotTheProseCheckWhenBothWouldFire(t *testing.T
 		t.Errorf("Rule = %q, want blocked (the link check, not prose-dependency)", decisions[0].Rule)
 	}
 }
+
+// OR-569: LTA-145's own title used "blocked by" as description, not as a
+// dependency, and was held forever as unmapped. A keyless phrase counts only
+// where a dependency line starts; a keyed one counts anywhere.
+func TestAKeylessPhraseMidSentenceIsNotADependency(t *testing.T) {
+	desc := "Run the full quickstart.md validation, every scenario, and record which are met and which are blocked by an open question"
+	if got := proseDependencies(desc); len(got) != 0 {
+		t.Fatalf("a description of the work was read as a dependency: %+v", got)
+	}
+	for _, still := range []string{
+		"Depends on: server skeleton",
+		"Implement X.\n- Blocked by: design sign-off",
+		"Do the thing. Requires the staging bucket",
+		"this work is blocked by LTA-60 landing",
+	} {
+		if got := proseDependencies(still); len(got) != 1 {
+			t.Errorf("%q: got %+v, want one dependency", still, got)
+		}
+	}
+}
