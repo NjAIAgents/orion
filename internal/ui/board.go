@@ -937,18 +937,24 @@ const sectionChipWidth = 11
 // same column. Without colour -- off a terminal, NO_COLOR, the mono theme --
 // a chip is the label in brackets, which still reads as a heading and keeps
 // the width (OR-559).
+// chipMargin sets the section labels in from the screen edge, so a label
+// reads as a heading on the panel rather than a tab stuck to its border
+// (approved mockup C, 2026-09-28). Every row carries it -- blank-chip rows
+// too -- so the columns behind the labels stay aligned.
+const chipMargin = "  "
+
 func sectionChip(w io.Writer, s string) string {
 	if s == "" {
-		return strings.Repeat(" ", sectionChipWidth)
+		return chipMargin + strings.Repeat(" ", sectionChipWidth)
 	}
 	if !enabled(w) {
-		return pad("["+s+"]", sectionChipWidth)
+		return chipMargin + pad("["+s+"]", sectionChipWidth)
 	}
 	bg := chipBg
 	if s == "NEEDS YOU" {
 		bg = needsBg
 	}
-	return paint(w, bold+"\x1b[97m"+bg, pad(" "+s, sectionChipWidth))
+	return chipMargin + paint(w, bold+"\x1b[97m"+bg, pad(" "+s, sectionChipWidth))
 }
 
 // renderBatch writes the batch, its CI checks and the last batch's result.

@@ -215,7 +215,7 @@ func fullFrame(t *testing.T, rows, cols int) []string {
 	t.Helper()
 	var w bytes.Buffer
 	s := &Screen{title: "LTA", started: clock().Add(-2 * time.Hour), term: &w, logPath: "/tmp/watch.log"}
-	h := s.header(cols, boardSummary())
+	h := s.header(cols-6, boardSummary())
 	board.mu.Lock()
 	top, foot := renderBoardParts(&w, clock(), true)
 	board.mu.Unlock()
@@ -344,8 +344,8 @@ func TestTheLightThemeUsesLightPanels(t *testing.T) {
 	t.Setenv("ORION_THEME", "light")
 	designRig(t)
 	rows := fullFrame(t, 30, 118)
-	if !strings.HasPrefix(rows[0], lightHeaderBg) || !strings.HasPrefix(rows[1], lightPanelBg) ||
-		!strings.HasPrefix(rows[len(rows)-1], lightFootBg) {
+	if !strings.HasPrefix(rows[0], lightHeaderBg) || !strings.HasPrefix(inside(rows[1]), lightPanelBg) ||
+		!strings.HasPrefix(inside(rows[len(rows)-2]), lightFootBg) {
 		t.Fatalf("panels are not light: header %q, top %q, foot %q", rows[0][:24], rows[1][:24], rows[len(rows)-1][:24])
 	}
 	all := strings.Join(rows, "\n")
