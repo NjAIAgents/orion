@@ -293,6 +293,11 @@ func boardBatchMember(key string, s MemberState, detail string) {
 	if b == nil {
 		return
 	}
+	// A landed member's work is over, whoever put its row on the board
+	// (OR-568).
+	if s == MemberLanded {
+		delete(board.jobs, key)
+	}
 	for _, m := range b.members {
 		if m.key == key {
 			m.state, m.detail = s, detail

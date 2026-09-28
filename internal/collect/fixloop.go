@@ -112,6 +112,10 @@ func tryFix(res Result, key string, pr PR, cfg config.Config, branch string,
 	})
 
 	pushed, summary, denied, err := deps.Fix(ws, key, branch, pr.FailedOn, pr.Detail, log)
+	// The fix run's activity put a row on the board; nothing else ends it,
+	// because only the watch's dispatch does and a CI fix runs inside
+	// collect. It stayed "working" after the ticket landed (OR-568).
+	ui.LiveDone(key, "")
 	if err != nil {
 		giveUp(key, ws, log, w, "the fix run failed: "+err.Error())
 		res.Err = err

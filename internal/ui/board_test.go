@@ -440,3 +440,19 @@ func TestTheBatchStepsShowTheirTimesAndCIProgress(t *testing.T) {
 		t.Errorf("with no median the CI step should show only its time:\n%s", p)
 	}
 }
+
+// OR-568: a CI fix runs inside collect, so the watch's dispatch never ends
+// its row; a batch landing the ticket must.
+func TestALandedBatchMemberLeavesTheRunningRows(t *testing.T) {
+	resetBoard()
+	t.Cleanup(resetBoard)
+	boardNote("LTA-144", "", "fixing CI")
+	boardBatchStart("orion/batch", []string{"LTA-144", "LTA-77"})
+	boardBatchMember("LTA-144", MemberLanded, "")
+	board.mu.Lock()
+	_, stale := board.jobs["LTA-144"]
+	board.mu.Unlock()
+	if stale {
+		t.Fatal("LTA-144 landed but its running row stayed on the board")
+	}
+}
