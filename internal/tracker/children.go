@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"regexp"
 	"strings"
 )
 
@@ -83,6 +84,29 @@ func Workable(children []Issue) []Issue {
 	}
 	return out
 }
+
+// humanMarker is the line decompose writes into a task the task list tagged
+// [HUMAN]: "HUMAN: the task list marks this as work no agent can do, so Orion
+// does not offer it to the queue. A person picks it up."
+//
+// The DESCRIPTION is the only tracker-visible trace of that tag. The bracket
+// is stripped out of the summary when the tree is parsed, and no label is
+// applied -- deliberately, because the whole point of the tag is that the
+// ticket is never offered to the queue (decompose.Tree.Queue). Anchored to
+// the start of a line and case-sensitive so ordinary prose mentioning a
+// human does not read as the marker.
+var humanMarker = regexp.MustCompile(`(?m)^\s*HUMAN\b`)
+
+// HumanOnly reports whether this issue is work no agent can do -- a
+// credential a person holds, a console click, a conversation with another
+// team, a signature.
+//
+// Which is why it must never be reported as delivered by the work around it.
+// Landing a story closed all of its sub-tasks as "delivered by" the story, a
+// HUMAN-marked one among them, and nobody had done it (OR-558) -- it also
+// unblocked the twelve tickets linked behind it, so the board then said a
+// dozen tickets were ready on the strength of a task no agent could do.
+func HumanOnly(i Issue) bool { return humanMarker.MatchString(i.Description) }
 
 func isDone(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {

@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/orion-sdlc/orion/internal/tracker"
 )
 
 // OR-314 case 21. The per-branch path (merged, via closeTicket) and the batch
@@ -135,5 +137,89 @@ func TestTheClosingCommentCarriesTheExactPullRequestURL(t *testing.T) {
 	if !strings.HasSuffix(strings.TrimSpace(comment), prURL) {
 		t.Errorf("comment = %q, want the URL exactly as passed, with nothing "+
 			"appended or stripped from it", comment)
+	}
+}
+
+// OR-558. A story's HUMAN-marked sub-task was not delivered by the story's
+// pull request -- it was never offered to the queue, so no agent picked it up
+// and nobody did it. Landing the story closed all twenty-eight of LTA-2's
+// sub-tasks as "delivered by LTA-2", LTA-30 (a quickstart run a person does)
+// among them, which also released the twelve tickets linked behind it.
+//
+// So: the others close, that one stays open, and the landing comment says so
+// -- in the comment a reader is already looking at, not a second one.
+func TestALandedStoryLeavesItsHumanMarkedSubTasksOpenAndSaysSo(t *testing.T) {
+	const prURL = "https://forge/pull/507"
+	jira := newTracker()
+	jira.children["LTA-2"] = []tracker.Issue{
+		{Key: "LTA-29", StatusCategory: "indeterminate",
+			Description: "Wire the parser into the CLI.\n\nPhase: 3\n"},
+		{Key: "LTA-30", StatusCategory: "indeterminate",
+			Description: "Run quickstart scenario 1 end to end and read the filed issues.\n\n" +
+				"HUMAN: the task list marks this as work no agent can do, so Orion " +
+				"does not offer it to the queue. A person picks it up.\n"},
+		{Key: "LTA-31", StatusCategory: "indeterminate",
+			Description: "Add the regression test.\n\nPhase: 3\n"},
+	}
+	var buf bytes.Buffer
+
+	closeLanded([]string{"LTA-2"}, prURL, "orion-ready", Deps{Jira: jira}, &buf)
+
+	for _, key := range []string{"LTA-29", "LTA-31"} {
+		if jira.transitions[key] != "Done" {
+			t.Errorf("%s could have been delivered by the story and must close, "+
+				"got transition %q", key, jira.transitions[key])
+		}
+	}
+	if jira.transitions["LTA-30"] != "" {
+		t.Errorf("LTA-30 is a person's task; nobody did it, and closing it as "+
+			"delivered also releases everything linked behind it. Transition = %q",
+			jira.transitions["LTA-30"])
+	}
+	if len(jira.comments["LTA-30"]) > 0 {
+		t.Errorf("LTA-30 was told it was delivered: %v", jira.comments["LTA-30"])
+	}
+	if len(jira.removed["LTA-30"]) > 0 {
+		t.Errorf("LTA-30's labels were cleared as though it were finished: %v",
+			jira.removed["LTA-30"])
+	}
+
+	comments := jira.comments["LTA-2"]
+	if len(comments) == 0 {
+		t.Fatal("expected a landing comment on the story")
+	}
+	landing := comments[0]
+	if !strings.Contains(landing, prURL) {
+		t.Errorf("the landing comment lost the pull request URL: %q", landing)
+	}
+	if !strings.Contains(landing, "LTA-30") {
+		t.Errorf("the landing comment must name the sub-task left open, or the "+
+			"story reads as wholly delivered: %q", landing)
+	}
+	if strings.Contains(landing, "LTA-29") || strings.Contains(landing, "LTA-31") {
+		t.Errorf("only the held sub-tasks are named; the closed ones are not "+
+			"news: %q", landing)
+	}
+	if !strings.Contains(buf.String(), "LTA-30") {
+		t.Errorf("the console must say which sub-task stayed open, or 2 of 3 "+
+			"closing looks like a tracker failure:\n%s", buf.String())
+	}
+}
+
+// OR-558. One held sub-task reads as one and several read as several: a
+// landing comment is read by a person, and "LTA-30 are a person's tasks" is
+// the kind of line that makes a reader doubt the rest of it.
+func TestTheLandingNoteNamesHeldSubTasksInThePlainestForm(t *testing.T) {
+	const prURL = "https://forge/pull/507"
+	if got := landingNote(prURL, nil); got != "merged: "+prURL {
+		t.Errorf("with nothing held the note is the URL and nothing else, got %q", got)
+	}
+	one := landingNote(prURL, []string{"LTA-30"})
+	if !strings.Contains(one, "LTA-30 is a person's task and stays open.") {
+		t.Errorf("one held task: %q", one)
+	}
+	many := landingNote(prURL, []string{"LTA-30", "LTA-34"})
+	if !strings.Contains(many, "LTA-30, LTA-34 are a person's tasks and stay open.") {
+		t.Errorf("two held tasks: %q", many)
 	}
 }
