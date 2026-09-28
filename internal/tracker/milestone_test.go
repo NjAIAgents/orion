@@ -165,3 +165,26 @@ func TestSetFixVersionReportsAPermissionRefusal(t *testing.T) {
 		t.Errorf("a 403 did not come back as ErrNoPermission: %v", err)
 	}
 }
+
+// OR-571: comments come back as plain text, oldest first, and the request
+// asks for them -- Jira returns only the fields named.
+func TestGetIssueParsesComments(t *testing.T) {
+	var asked string
+	j := fakeJira(t, func(method, path string, body []byte) (int, string) {
+		asked = path
+		return 200, `{"key":"LTA-150","fields":{"summary":"x","status":{"name":"To Do"},
+		  "comment":{"comments":[
+		    {"body":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Orion:"}]},{"type":"paragraph","content":[{"type":"text","text":"claimed"}]}]}},
+		    {"body":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"the tests pin dfc8213"}]}]}}]}}}`
+	})
+	i, err := j.GetIssue("LTA-150")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(i.Comments) != 2 || !strings.Contains(i.Comments[1], "dfc8213") || !strings.HasPrefix(i.Comments[0], "Orion:") {
+		t.Fatalf("Comments = %q", i.Comments)
+	}
+	if !strings.Contains(asked, "comment") {
+		t.Errorf("GetIssue did not request comments: %s", asked)
+	}
+}

@@ -389,6 +389,9 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}
 	res.Summary, res.IssueURL = issue.Summary, issue.URL
 	ui.Say(w, key, events.ActorOrion, ui.VerbDone, "%s", issue.Summary)
+	// Everything downstream reads Description -- the implement prompt, QA,
+	// the case analyst -- so the notes a person left go in once, here (OR-571).
+	issue.Description = withPersonNotes(issue.Description, issue.Comments)
 
 	// Routed once, here, at the top -- before the claim, before the agent
 	// runs, before the QA fix loop that must resume whichever actor this
