@@ -108,7 +108,7 @@ func TestOnlyTheApprovalRequestMentionsAnybody(t *testing.T) {
 
 	_, merged := msgMerged("X-1", pr, "/repo", true,
 		"fetched and fast-forwarded develop", "develop", "main")
-	_, failed := msgCIFailed("X-1", pr)
+	_, failed, _ := msgCIFailed("X-1", pr, 0, 2)
 
 	for name, body := range map[string]string{"merged": merged, "ci-failed": failed} {
 		if strings.Contains(body, "<@") {
@@ -119,5 +119,34 @@ func TestOnlyTheApprovalRequestMentionsAnybody(t *testing.T) {
 		if strings.Contains(body, "<!") {
 			t.Errorf("the %s notice broadcasts:\n%s", name, body)
 		}
+	}
+}
+
+// OR-567: a failure Orion will retry is a heads-up that asks nothing; only
+// the last one asks for a person. And no message claims the ticket is never
+// re-queued automatically -- the watch does exactly that.
+func TestACIFailureAsksForAPersonOnlyWhenRetriesAreSpent(t *testing.T) {
+	pr := PR{URL: "https://pr/9", Detail: convictedPrefix + "secret scan (failure)"}
+
+	title, body, needs := msgCIFailed("LTA-144", pr, 1, 1)
+	if needs || !strings.Contains(title, "Orion will retry it") ||
+		!strings.Contains(body, "1 of 2 retries left") || strings.Contains(body, "Fix it there") {
+		t.Errorf("with a retry left, the notice should be a heads-up:\n%s\n%s", title, body)
+	}
+	title, body, needs = msgCIFailed("LTA-144", pr, 0, 2)
+	if !needs || !strings.Contains(title, "still fails CI after 2 retries") || !strings.Contains(body, "Fix it there") {
+		t.Errorf("with retries spent, the notice should ask for a person:\n%s\n%s", title, body)
+	}
+	for _, b := range []string{body} {
+		if strings.Contains(b, "not\nre-queued automatically") || strings.Contains(b, "not re-queued automatically") {
+			t.Errorf("the notice still says it is never retried:\n%s", b)
+		}
+	}
+	// A batch conviction is not the branch's own checks failing.
+	if !strings.Contains(body, "failed in a batch") || strings.Contains(body, "does not pass on the branch") {
+		t.Errorf("a batch conviction is described as the branch failing on its own:\n%s", body)
+	}
+	if _, own, _ := msgCIFailed("X-1", PR{Detail: "tests (failure)"}, 0, 0); !strings.Contains(own, "does not pass on the branch") {
+		t.Errorf("a branch's own failure lost its lead:\n%s", own)
 	}
 }

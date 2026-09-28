@@ -131,24 +131,44 @@ func msgApprovalWanted(key string, pr PR, branch string, approvers []string) (st
 	return title, body
 }
 
-func msgCIFailed(key string, pr PR) (string, string) {
-	title := fmt.Sprintf("%s failed CI", key)
-	body := strings.Join([]string{
-		"*The agent's work does not pass on the branch.*",
-		"",
-		"*What failed*",
-		quote(pr.Detail),
-		"",
-		"• pull request  " + link(pr.URL, "open it"),
-		"",
+// convictedPrefix opens the detail of a batch conviction (failCulprit): the
+// batch went red and isolation pointed here, which is not the same claim as
+// this branch's own checks failing.
+const convictedPrefix = "convicted by the batch's isolation: "
+
+// msgCIFailed is the CI-failure notice. left is how many automatic retries
+// the watch still has for this ticket; used is how many it has had.
+//
+// OR-567: it used to say "It is not re-queued automatically" to everyone, on
+// every failure, with a mention -- written before the watch learned to retry
+// a failed ticket once the work branch moves (OR-543). A person was paged
+// for failures Orion was about to retry itself. Now: while retries remain it
+// is a heads-up that asks nothing; only the last failure asks for a person.
+func msgCIFailed(key string, pr PR, left, used int) (title, body string, needsPerson bool) {
+	lead := "*The agent's work does not pass on the branch.*"
+	if strings.HasPrefix(pr.Detail, convictedPrefix) {
+		lead = "*It failed in a batch: the batch went red and isolation pointed at this branch.*"
+	}
+	what := []string{"*What failed*", quote(pr.Detail), "", "• pull request  " + link(pr.URL, "open it"), ""}
+
+	if left > 0 {
+		title = fmt.Sprintf("%s failed CI — Orion will retry it", key)
+		body = strings.Join(append(append([]string{lead, ""}, what...),
+			fmt.Sprintf("Orion retries it automatically when the work branch moves (%d of %d retries left).",
+				left, left+used),
+			"_Nothing is required of you yet. If it still fails after the last retry, you will get an action-needed message._",
+		), "\n")
+		return title, body, false
+	}
+	title = fmt.Sprintf("%s failed CI", key)
+	if used > 0 {
+		title = fmt.Sprintf("%s still fails CI after %d retries", key, used)
+	}
+	body = strings.Join(append(append([]string{lead, ""}, what...),
 		"_The branch is kept, so nothing the agent wrote is lost._",
 		"_Fix it there and push, or close the pull request and re-queue the ticket._",
-		"",
-		"The ticket is out of the queue and labelled `orion-failed`. It is not",
-		"re-queued automatically: the branch already has commits, so a fresh run",
-		"would cut a second branch for the same ticket and compete with this one.",
-	}, "\n")
-	return title, body
+	), "\n")
+	return title, body, true
 }
 
 func link(url, label string) string {
