@@ -22,7 +22,11 @@ type Issue struct {
 	Key         string
 	Summary     string
 	Description string
-	Status      string
+	// Comments are the ticket's comments as plain text, oldest first, from
+	// GetIssue only (OR-571). Orion's own are among them; internal/work
+	// keeps the ones a person wrote.
+	Comments []string
+	Status   string
 	// StatusCategory is Jira's coarse grouping of Status: "new",
 	// "indeterminate" or "done". Read as well as the name because the name is
 	// per-project -- Done, Closed, Cancelled, Won't Do are all different
@@ -313,7 +317,7 @@ func (j *Jira) GetIssue(key string) (*Issue, error) {
 	// `orion prioritise` cannot tell whether ranking will deliver the order
 	// it was asked for without knowing it (OR-280).
 	code, body, err := j.do("GET", "/rest/api/3/issue/"+url.PathEscape(key)+
-		"?fields=summary,description,status,labels,issuetype,components,fixVersions,priority", nil)
+		"?fields=summary,description,status,labels,issuetype,components,fixVersions,priority,comment", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -347,12 +351,24 @@ func (j *Jira) GetIssue(key string) (*Issue, error) {
 			Priority struct {
 				Name string `json:"name"`
 			} `json:"priority"`
+			Comment struct {
+				Comments []struct {
+					Body json.RawMessage `json:"body"`
+				} `json:"comments"`
+			} `json:"comment"`
 		} `json:"fields"`
 	}
 	if err := json.Unmarshal(body, &i); err != nil {
 		return nil, err
 	}
+	var comments []string
+	for _, c := range i.Fields.Comment.Comments {
+		if t := strings.TrimSpace(flattenADF(c.Body)); t != "" {
+			comments = append(comments, t)
+		}
+	}
 	return &Issue{
+		Comments:       comments,
 		Key:            i.Key,
 		Summary:        i.Fields.Summary,
 		Description:    flattenADF(i.Fields.Description),
