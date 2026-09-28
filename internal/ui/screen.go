@@ -228,7 +228,7 @@ func (s *Screen) draw() {
 	if s.closed {
 		return
 	}
-	fmt.Fprint(s.term, frame(s, rows, cols, s.header(cols, sum), b, s.lines, foot))
+	fmt.Fprint(s.term, frame(s, rows, cols, s.header(cols-6, sum), b, s.lines, foot))
 }
 
 // header is the summary bar (OR-559): what is watched and for how long, then
@@ -267,106 +267,131 @@ func (s *Screen) header(cols int, c boardCounts) string {
 }
 
 // frame is one full redraw: exactly rows lines or fewer, none wider than the
-// terminal, the log lines getting whatever the board leaves.
+// terminal, the log lines getting whatever the panels leave.
+//
+// One window, not three strips (approved mockup, 2026-09-28): a border
+// round the whole screen with the title in its top edge, and rules where the
+// top panel meets the log and the log meets the bottom panel. The panels
+// fill to the border; the log keeps the terminal's own ground. The frame
+// costs four columns (a border and a space each side) and three rows (the
+// bottom edge and the two rules -- the title shares the top edge).
 func frame(w io.Writer, rows, cols int, header, board string, log []string, bottom string) string {
-	top := append([]string{header}, strings.Split(strings.TrimRight(board, "\n"), "\n")...)
-	if len(top) > rows {
-		top = top[:rows]
+	g := boxFor()
+	inner := cols - 5
+	if inner < 1 {
+		inner = 1
 	}
-	// The bottom panel (OR-557) keeps its rows at the foot of the screen,
-	// and the log gets whatever is left between the two panels -- padded
-	// with blank rows, so the bottom panel does not ride up when the log is
-	// short.
+	panel := strings.Split(strings.TrimRight(board, "\n"), "\n")
 	var foot []string
 	if strings.TrimSpace(bottom) != "" {
 		foot = strings.Split(strings.TrimRight(bottom, "\n"), "\n")
 	}
-	if len(foot) > rows-len(top) {
-		foot = foot[:rows-len(top)]
-	}
-	room := rows - len(top) - len(foot)
-	shown := room
-	if shown > len(log) {
-		shown = len(log)
-	}
-	middle := append([]string(nil), log[len(log)-shown:]...)
+	// Top edge, bottom edge, the rule under the panel, and a second rule
+	// only when there is a foot to rule off.
+	fixed := 3
 	if len(foot) > 0 {
-		for len(middle) < room {
-			middle = append(middle, "")
-		}
+		fixed++
 	}
-
-	type row struct {
-		text string
-		bg   string // "" is the terminal's own background
+	if n := rows - fixed; len(panel) > n {
+		panel = panel[:max(n, 0)]
 	}
-	var all []row
-	for i, l := range top {
-		bg := panelBg
-		if i == 0 {
-			bg = headerBg
-		}
-		all = append(all, row{l, bg})
+	if n := rows - fixed - len(panel); len(foot) > n {
+		foot = foot[:max(n, 0)]
 	}
-	for _, l := range middle {
-		all = append(all, row{l, ""})
-	}
-	for _, l := range foot {
-		all = append(all, row{l, footBg})
+	// The log gets the rest, padded with blank rows so the foot and the
+	// bottom edge stay pinned to the bottom of the screen when it is short.
+	room := max(rows-fixed-len(panel)-len(foot), 0)
+	shown := min(room, len(log))
+	middle := append([]string(nil), log[len(log)-shown:]...)
+	for len(middle) < room {
+		middle = append(middle, "")
 	}
 
 	// The theme picks the panels' grounds and the recolouring their text
-	// gets (OR-559). Mono never reaches the panel branch below: enabled is
-	// false under it, so the frame carries no colour code at all.
-	recolor := onDark
+	// gets (OR-559). Mono never paints: enabled is false under it.
+	recolor, hb, pb, fb := onDark, headerBg, panelBg, footBg
 	if theme() == themeLight {
-		recolor = onLight
-		for i := range all {
-			switch all[i].bg {
-			case headerBg:
-				all[i].bg = lightHeaderBg
-			case panelBg:
-				all[i].bg = lightPanelBg
-			case footBg:
-				all[i].bg = lightFootBg
-			}
+		recolor, hb, pb, fb = onLight, lightHeaderBg, lightPanelBg, lightFootBg
+	}
+	paintOn := enabled(w)
+	edge := func(s string) string { return Dim(w, s) }
+	// Every reset inside a panel row re-applies the panel, or the first dim
+	// word would end the colour halfway along the row.
+	onBg := func(text, bg string) string {
+		return strings.ReplaceAll(recolor.Replace(text), reset, reset+bg)
+	}
+	body := func(text, bg string) string {
+		text = clipVisible(text, inner)
+		if !paintOn {
+			text = stripANSI(text)
 		}
+		gap := strings.Repeat(" ", max(inner-visibleCells(text), 0))
+		if bg != "" && paintOn {
+			return edge(g.v) + bg + " " + onBg(text, bg) + bg + gap + " " + reset + edge(g.v)
+		}
+		if paintOn && strings.Contains(text, "\x1b") {
+			text += reset
+		}
+		return edge(g.v) + " " + text + gap + " " + edge(g.v)
+	}
+	rule := func(l, r string) string { return edge(l + strings.Repeat(g.h, max(cols-3, 0)) + r) }
+
+	var out []string
+	title := clipVisible(header, max(cols-7, 0))
+	if !paintOn {
+		title = stripANSI(title)
+	}
+	tgap := strings.Repeat(" ", max(cols-7-visibleCells(title), 0))
+	if paintOn {
+		out = append(out, hb+g.tl+g.h+" "+onBg(title, hb)+hb+tgap+" "+g.h+g.tr+reset)
+	} else {
+		out = append(out, g.tl+g.h+" "+title+tgap+" "+g.h+g.tr)
+	}
+	for _, l := range panel {
+		out = append(out, body(l, pb))
+	}
+	out = append(out, rule(g.lt, g.rt))
+	for _, l := range middle {
+		out = append(out, body(l, ""))
+	}
+	if len(foot) > 0 {
+		out = append(out, rule(g.lt, g.rt))
+		for _, l := range foot {
+			out = append(out, body(l, fb))
+		}
+	}
+	out = append(out, rule(g.bl, g.br))
+	if len(out) > rows {
+		out = out[:rows]
 	}
 
 	var b strings.Builder
 	b.WriteString(escHome)
-	for i, r := range all {
-		// A panel row's background is set before the erase, and
-		// erase-to-end-of-line fills the row with it (OR-555). The log keeps
-		// the terminal's own colours.
-		if r.bg != "" && enabled(w) {
-			// Every reset inside re-applies the panel, or the first dim word
-			// would end the colour halfway along the row.
-			line := strings.ReplaceAll(recolor.Replace(clipVisible(r.text, cols-1)), reset, reset+r.bg)
-			b.WriteString(r.bg + line + r.bg + escEOL + reset)
-		} else {
-			text := r.text
-			if !enabled(w) {
-				// Mono means none (OR-559), even in a line that arrived
-				// already painted -- an agent's own output, say.
-				text = stripANSI(text)
-			}
-			b.WriteString(clipVisible(text, cols-1))
-			b.WriteString(escEOL)
-		}
-		if i < len(all)-1 {
+	for i, l := range out {
+		b.WriteString(l + escEOL)
+		if i < len(out)-1 {
 			b.WriteString("\r\n")
 		}
 	}
-	// Erase-below erases from the CURSOR, and the cursor sits after the last
-	// word of the last row -- so sent there it wiped the rest of the grey
-	// bottom panel back to the terminal's ground. Sent from the line under
-	// the frame instead, and only when there is one: a frame that fills the
-	// screen has nothing below it to clear.
-	if len(all) < rows {
+	// Erase-below erases from the CURSOR, and the cursor sits at the end of
+	// the last row -- so it is sent from the line under the frame, and only
+	// when there is one.
+	if len(out) < rows {
 		b.WriteString("\r\n" + escBelow)
 	}
 	return b.String()
+}
+
+// box is the frame's line-drawing set.
+type box struct{ tl, tr, bl, br, h, v, lt, rt string }
+
+// boxFor is rounded box drawing, or + - | where the terminal cannot show it
+// or the theme is mono.
+func boxFor() box {
+	if !glyphs() || theme() == themeMono {
+		return box{"+", "+", "+", "+", "-", "|", "+", "+"}
+	}
+	return box{"╭", "╮", "╰", "╯", "─", "│", "├", "┤"}
 }
 
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)

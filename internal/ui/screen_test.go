@@ -192,8 +192,8 @@ func TestSectionChipsAreColouredAndAligned(t *testing.T) {
 	var w bytes.Buffer
 	for _, s := range []string{"RUNNING", "QUEUE", "BATCH", "CI", "LAST", "NEEDS YOU", ""} {
 		c := sectionChip(&w, s)
-		if n := visibleWidth(stripANSI(c)); n != sectionChipWidth {
-			t.Fatalf("chip %q is %d wide, want %d", s, n, sectionChipWidth)
+		if n := visibleWidth(stripANSI(c)); n != len(chipMargin)+sectionChipWidth+len(chipGap) {
+			t.Fatalf("chip %q is %d wide, want %d", s, n, len(chipMargin)+sectionChipWidth+len(chipGap))
 		}
 		want := chipBg
 		if s == "NEEDS YOU" {
@@ -207,7 +207,7 @@ func TestSectionChipsAreColouredAndAligned(t *testing.T) {
 		}
 	}
 	t.Setenv("NO_COLOR", "1")
-	if c := sectionChip(&w, "QUEUE"); strings.Contains(c, "\x1b") || c != "[QUEUE]    " {
+	if c := sectionChip(&w, "QUEUE"); strings.Contains(c, "\x1b") || c != chipMargin+"[QUEUE]    "+chipGap {
 		t.Fatalf("a chip with NO_COLOR set = %q, want the bracketed label and no escapes", c)
 	}
 }
@@ -235,6 +235,17 @@ func colourOn(t *testing.T) {
 	}
 }
 
+// inside is a framed row without its border: what the panel colour, the
+// recolouring and the padding apply to.
+func inside(r string) string {
+	a := strings.Index(r, "│"+reset)
+	b := strings.LastIndex(r, "\x1b[2m│")
+	if a < 0 || b <= a {
+		return r
+	}
+	return r[a+len("│"+reset) : b]
+}
+
 // OR-555: the whole top panel -- header and board -- is dark, and the log
 // rows beneath it are not.
 func TestTheTopPanelIsDarkAndTheLogIsNot(t *testing.T) {
@@ -242,11 +253,11 @@ func TestTheTopPanelIsDarkAndTheLogIsNot(t *testing.T) {
 	var w bytes.Buffer
 	f := frame(&w, 6, 80, "head", "row one\nrow two", []string{"log line"}, "")
 	rows := strings.Split(strings.TrimSuffix(strings.TrimPrefix(f, escHome), escBelow), "\r\n")
-	if !strings.HasPrefix(rows[1], panelBg) || !strings.HasPrefix(rows[2], panelBg) {
+	if !strings.HasPrefix(inside(rows[1]), panelBg) || !strings.HasPrefix(inside(rows[2]), panelBg) {
 		t.Fatalf("board rows are not on the dark panel: %q", rows[1:3])
 	}
-	if strings.Contains(rows[3], panelBg) || strings.Contains(rows[3], headerBg) {
-		t.Fatalf("the log row carries the panel colour: %q", rows[3])
+	if strings.Contains(rows[4], panelBg) || strings.Contains(rows[4], headerBg) {
+		t.Fatalf("the log row carries the panel colour: %q", rows[4])
 	}
 }
 
@@ -257,6 +268,7 @@ func TestDarkPanelTextIsBrightened(t *testing.T) {
 	var w bytes.Buffer
 	f := frame(&w, 5, 80, "head", "\x1b[34mLTA-2\x1b[0m \x1b[2mqueued\x1b[0m", []string{"\x1b[34mlog\x1b[0m"}, "")
 	rows := strings.Split(strings.TrimSuffix(strings.TrimPrefix(f, escHome), escBelow), "\r\n")
+	rows[1] = inside(rows[1])
 	if strings.Contains(rows[1], "\x1b[34m") || strings.Contains(rows[1], "\x1b[2m") {
 		t.Fatalf("dark panel row still carries plain blue or dim: %q", rows[1])
 	}
@@ -268,8 +280,8 @@ func TestDarkPanelTextIsBrightened(t *testing.T) {
 			t.Fatalf("a theme-dependent blue survived on the panel: %q", rows[1])
 		}
 	}
-	if !strings.Contains(rows[2], "\x1b[34m") {
-		t.Fatalf("the log row's colour was changed: %q", rows[2])
+	if !strings.Contains(rows[3], "\x1b[34m") {
+		t.Fatalf("the log row's colour was changed: %q", rows[3])
 	}
 }
 
@@ -284,17 +296,21 @@ func TestTheBottomPanelIsPinnedAndGrey(t *testing.T) {
 	if len(rows) != 8 {
 		t.Fatalf("frame has %d rows, want the full 8 so the foot sits at the bottom", len(rows))
 	}
-	if !strings.HasPrefix(rows[6], footBg) || !strings.Contains(rows[6], "BATCH row") ||
-		!strings.HasPrefix(rows[7], footBg) || !strings.Contains(rows[7], "CI row") {
-		t.Fatalf("the last two rows are not the grey foot: %q", rows[6:])
+	// Framed: top edge, panel, rule, log, rule, the two foot rows, bottom edge.
+	if !strings.HasPrefix(inside(rows[5]), footBg) || !strings.Contains(rows[5], "BATCH row") ||
+		!strings.HasPrefix(inside(rows[6]), footBg) || !strings.Contains(rows[6], "CI row") {
+		t.Fatalf("the rows above the bottom edge are not the grey foot: %q", rows[5:])
 	}
-	// The grey runs to the end of the last row: nothing after it erases
-	// from the cursor, which sits mid-row (seen live, 2026-09-28).
-	if !strings.HasSuffix(f, footBg+escEOL+reset) {
-		t.Fatalf("the frame does not end with the grey row filled to its end: %q", f[len(f)-40:])
+	// The grey runs to the border: padded inside the panel colour, and
+	// nothing after the frame erases from the cursor (seen live, 2026-09-28).
+	if !strings.Contains(inside(rows[6]), footBg+strings.Repeat(" ", 40)) || strings.HasSuffix(f, escBelow) {
+		t.Fatalf("the grey foot does not reach the border: %q", rows[6])
 	}
-	if !strings.Contains(rows[2], "log one") || strings.Contains(rows[2], footBg) || strings.Contains(rows[2], panelBg) {
-		t.Fatalf("the log row is not between the panels on the terminal background: %q", rows[2])
+	if !strings.HasPrefix(stripANSI(rows[7]), "╰") || !strings.HasPrefix(stripANSI(rows[0]), "╭") {
+		t.Fatalf("the frame is not closed: first %q, last %q", stripANSI(rows[0]), stripANSI(rows[7]))
+	}
+	if !strings.Contains(rows[3], "log one") || strings.Contains(rows[3], footBg) || strings.Contains(rows[3], panelBg) {
+		t.Fatalf("the log row is not between the panels on the terminal background: %q", rows[3])
 	}
 }
 
@@ -324,5 +340,43 @@ func TestTheBoardSplitsBatchIntoTheFoot(t *testing.T) {
 	}
 	if !strings.Contains(top, "RUNNING") || !strings.Contains(whole, "BATCH") {
 		t.Fatal("the unsplit board lost the batch, or the top lost RUNNING")
+	}
+}
+
+// The frame (approved 2026-09-28): every row between the edges carries a
+// border at both ends, no row is wider than the terminal, and mono draws it
+// in + - | with no colour at all.
+func TestTheFrameClosesEveryRowAndFallsBackToASCII(t *testing.T) {
+	colourOn(t)
+	var w bytes.Buffer
+	f := frame(&w, 9, 60, "head", "top", []string{"log one", "log two"}, "BATCH row")
+	rows := strings.Split(strings.TrimPrefix(f, escHome), "\r\n")
+	for i, r := range rows {
+		plain := stripANSI(r)
+		if n := visibleCells(plain); n != 59 {
+			t.Errorf("row %d is %d wide, want 59: %q", i, n, plain)
+		}
+		if i > 0 && i < len(rows)-1 && (!strings.HasPrefix(plain, "│") && !strings.HasPrefix(plain, "├") ||
+			!strings.HasSuffix(plain, "│") && !strings.HasSuffix(plain, "┤")) {
+			t.Errorf("row %d is not closed by the frame: %q", i, plain)
+		}
+	}
+	t.Setenv("ORION_THEME", "mono")
+	m := frame(&w, 9, 60, "head", "top", []string{"log"}, "BATCH row")
+	if strings.Contains(m, "\x1b[2m") || strings.ContainsAny(m, "╭│─╯") || !strings.Contains(m, "+-") {
+		t.Fatalf("mono should draw the frame in ASCII with no colour:\n%s", m)
+	}
+}
+
+// 2026-09-28 review: a label sits in the middle of its chip, and a space
+// separates the chip from the icon after it.
+func TestAChipLabelIsCentredAndClearOfTheRow(t *testing.T) {
+	colourOn(t)
+	var w bytes.Buffer
+	for label, want := range map[string]string{"RUNNING": "  RUNNING  ", "QUEUE": "   QUEUE   ", "NEEDS YOU": " NEEDS YOU "} {
+		c := stripANSI(sectionChip(&w, label))
+		if got := strings.TrimPrefix(c, chipMargin); got != want+chipGap {
+			t.Errorf("chip %q = %q, want %q", label, got, want+chipGap)
+		}
 	}
 }
