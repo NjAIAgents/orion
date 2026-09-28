@@ -384,6 +384,14 @@ func splitKey(k string) (string, int) {
 
 // renderBoard draws the block. Caller holds board.mu.
 func renderBoard(w io.Writer, now time.Time) string {
+	top, bottom := renderBoardParts(w, now, false)
+	return top + bottom
+}
+
+// renderBoardParts renders the board; with split, the batch, CI and last
+// result come back separately as the full-screen view's bottom panel
+// (OR-557), and the top ends at the running tickets, the queue and NEEDS YOU.
+func renderBoardParts(w io.Writer, now time.Time, split bool) (string, string) {
 	// The terminal's own width, so the rules span it; 100 when it cannot be
 	// read (a pipe, a log file).
 	width := columns()
@@ -466,61 +474,12 @@ func renderBoard(w io.Writer, now time.Time) string {
 	totals = append(totals, Dim(w, fmt.Sprintf("$%.2f", board.spend)))
 	fmt.Fprintf(&b, " %s %s\n", head(""), strings.Join(totals, Dim(w, " · ")))
 
-	// Batch and CI.
-	failedCheck := false
-	for _, c := range board.checks {
-		if c.State == CheckFailed {
-			failedCheck = true
-		}
+	var bottom strings.Builder
+	batchTo := &b
+	if split {
+		batchTo = &bottom
 	}
-	if bt := board.batch; bt != nil {
-		since := bt.started
-		if !bt.testing.IsZero() {
-			since = bt.testing
-		}
-		var in, out []string
-		for _, m := range bt.members {
-			switch m.state {
-			case MemberEjected:
-				out = append(out, m.key+" ("+shortReason(m.detail)+")")
-			default:
-				in = append(in, m.key)
-			}
-		}
-		ref := paint(w, bold, bt.ref)
-		if failedCheck {
-			ref = paint(w, statusColor(VerbFail), bt.ref+" red")
-		}
-		fmt.Fprintf(&b, " %s %s  %s  %s\n", head("BATCH"), ref, strings.Join(in, " "), Dim(w, roundDur(now.Sub(since))))
-		fmt.Fprintf(&b, " %s %s\n", head(""), batchPipeline(w, bt.phase, failedCheck))
-		var ms []string
-		for _, m := range bt.members {
-			if m.state == MemberLanded || m.state == MemberCulprit {
-				ms = append(ms, memberWord(w, m))
-			}
-		}
-		if len(ms) > 0 {
-			fmt.Fprintf(&b, " %s %s\n", head(""), strings.Join(ms, "  "))
-		}
-		if len(out) > 0 {
-			fmt.Fprintf(&b, " %s %s\n", head(""), paint(w, statusColor(VerbWarn),
-				strings.TrimSpace(boardIcon(VerbWarn))+" ejected, next batch: "+strings.Join(out, ", ")))
-		}
-	}
-	if len(board.checks) > 0 {
-		var cs []string
-		for _, c := range board.checks {
-			cs = append(cs, c.Name+" "+checkIcon(w, c.State))
-		}
-		fmt.Fprintf(&b, " %s %s\n", head("CI"), strings.Join(cs, Dim(w, " · ")))
-	}
-	if board.last != "" {
-		verb := VerbOK
-		if !board.lastOK {
-			verb = VerbFail
-		}
-		fmt.Fprintf(&b, " %s %s %s\n", head("LAST"), label(verb, board.last), Dim(w, "· "+roundDur(now.Sub(board.lastAt))+" ago"))
-	}
+	renderBatch(batchTo, w, now, head, label)
 
 	// Needs you: only when there is something, and loudest.
 	if len(board.needs) > 0 {
@@ -535,7 +494,7 @@ func renderBoard(w io.Writer, now time.Time) string {
 		}
 	}
 	b.WriteString(rule + "\n")
-	return b.String()
+	return b.String(), bottom.String()
 }
 
 func needsGlyph() string {
@@ -773,4 +732,65 @@ func sectionChip(w io.Writer, s string) string {
 		return cell
 	}
 	return paint(w, bold+"\x1b[97m"+sectionBg[s], cell)
+}
+
+// renderBatch writes the batch, its CI checks and the last batch's result.
+func renderBatch(b *strings.Builder, w io.Writer, now time.Time,
+	head func(string) string, label func(string, string) string) {
+	// Batch and CI.
+	failedCheck := false
+	for _, c := range board.checks {
+		if c.State == CheckFailed {
+			failedCheck = true
+		}
+	}
+	if bt := board.batch; bt != nil {
+		since := bt.started
+		if !bt.testing.IsZero() {
+			since = bt.testing
+		}
+		var in, out []string
+		for _, m := range bt.members {
+			switch m.state {
+			case MemberEjected:
+				out = append(out, m.key+" ("+shortReason(m.detail)+")")
+			default:
+				in = append(in, m.key)
+			}
+		}
+		ref := paint(w, bold, bt.ref)
+		if failedCheck {
+			ref = paint(w, statusColor(VerbFail), bt.ref+" red")
+		}
+		fmt.Fprintf(b, " %s %s  %s  %s\n", head("BATCH"), ref, strings.Join(in, " "), Dim(w, roundDur(now.Sub(since))))
+		fmt.Fprintf(b, " %s %s\n", head(""), batchPipeline(w, bt.phase, failedCheck))
+		var ms []string
+		for _, m := range bt.members {
+			if m.state == MemberLanded || m.state == MemberCulprit {
+				ms = append(ms, memberWord(w, m))
+			}
+		}
+		if len(ms) > 0 {
+			fmt.Fprintf(b, " %s %s\n", head(""), strings.Join(ms, "  "))
+		}
+		if len(out) > 0 {
+			fmt.Fprintf(b, " %s %s\n", head(""), paint(w, statusColor(VerbWarn),
+				strings.TrimSpace(boardIcon(VerbWarn))+" ejected, next batch: "+strings.Join(out, ", ")))
+		}
+	}
+	if len(board.checks) > 0 {
+		var cs []string
+		for _, c := range board.checks {
+			cs = append(cs, c.Name+" "+checkIcon(w, c.State))
+		}
+		fmt.Fprintf(b, " %s %s\n", head("CI"), strings.Join(cs, Dim(w, " · ")))
+	}
+	if board.last != "" {
+		verb := VerbOK
+		if !board.lastOK {
+			verb = VerbFail
+		}
+		fmt.Fprintf(b, " %s %s %s\n", head("LAST"), label(verb, board.last), Dim(w, "· "+roundDur(now.Sub(board.lastAt))+" ago"))
+	}
+
 }

@@ -67,7 +67,8 @@ func TestBoardPreview(t *testing.T) {
 		log := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
 		h := " " + Heading(&out, "orion watch LTA") + "  " + Dim(&out, now.Format("15:04:05")) +
 			Dim(&out, "   log ~/.orion/logs/watch-20260927-130000.log   ctrl-c stops")
-		f := frame(&out, 32, 118, h, renderBoard(&out, now), log)
+		top, foot := renderBoardParts(&out, now, true)
+		f := frame(&out, 32, 118, h, top, log, foot)
 		f = strings.ReplaceAll(f, escHome, "")
 		f = strings.ReplaceAll(f, escBelow, "")
 		if err := os.WriteFile(sp, []byte(strings.ReplaceAll(f, "\r\n", "\n")+"\n"), 0o644); err != nil {

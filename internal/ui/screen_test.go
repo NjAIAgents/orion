@@ -36,7 +36,7 @@ func TestAFrameFitsTheTerminalExactly(t *testing.T) {
 		log = append(log, fmt.Sprintf("\x1b[31mline %d %s\x1b[0m", i, strings.Repeat("x", 300)))
 	}
 	board := strings.Repeat("board row ⏳ "+strings.Repeat("y", 200)+"\n", 5)
-	f := frame(&bytes.Buffer{}, 12, 80, "header", board, log)
+	f := frame(&bytes.Buffer{}, 12, 80, "header", board, log, "")
 
 	rows := strings.Split(strings.TrimSuffix(strings.TrimPrefix(f, escHome), escBelow), "\r\n")
 	if len(rows) != 12 {
@@ -209,7 +209,7 @@ func TestTheHeaderBarSurvivesInnerResets(t *testing.T) {
 	colourOn(t)
 	var w bytes.Buffer
 	h := Heading(&w, "orion watch LTA") + " " + Dim(&w, "16:00")
-	f := frame(&w, 5, 80, h, "", nil)
+	f := frame(&w, 5, 80, h, "", nil, "")
 	first := strings.SplitN(strings.TrimPrefix(f, escHome), "\r\n", 2)[0]
 	if !strings.Contains(first, headerBg) || strings.Count(first, headerBg) < strings.Count(first, reset) {
 		t.Fatalf("a reset in the header is not followed by the bar colour: %q", first)
@@ -232,7 +232,7 @@ func colourOn(t *testing.T) {
 func TestTheTopPanelIsDarkAndTheLogIsNot(t *testing.T) {
 	colourOn(t)
 	var w bytes.Buffer
-	f := frame(&w, 6, 80, "head", "row one\nrow two", []string{"log line"})
+	f := frame(&w, 6, 80, "head", "row one\nrow two", []string{"log line"}, "")
 	rows := strings.Split(strings.TrimSuffix(strings.TrimPrefix(f, escHome), escBelow), "\r\n")
 	if !strings.HasPrefix(rows[1], panelBg) || !strings.HasPrefix(rows[2], panelBg) {
 		t.Fatalf("board rows are not on the dark panel: %q", rows[1:3])
@@ -247,7 +247,7 @@ func TestTheTopPanelIsDarkAndTheLogIsNot(t *testing.T) {
 func TestDarkPanelTextIsBrightened(t *testing.T) {
 	colourOn(t)
 	var w bytes.Buffer
-	f := frame(&w, 5, 80, "head", "\x1b[34mLTA-2\x1b[0m \x1b[2mqueued\x1b[0m", []string{"\x1b[34mlog\x1b[0m"})
+	f := frame(&w, 5, 80, "head", "\x1b[34mLTA-2\x1b[0m \x1b[2mqueued\x1b[0m", []string{"\x1b[34mlog\x1b[0m"}, "")
 	rows := strings.Split(strings.TrimSuffix(strings.TrimPrefix(f, escHome), escBelow), "\r\n")
 	if strings.Contains(rows[1], "\x1b[34m") || strings.Contains(rows[1], "\x1b[2m") {
 		t.Fatalf("dark panel row still carries plain blue or dim: %q", rows[1])
@@ -257,5 +257,54 @@ func TestDarkPanelTextIsBrightened(t *testing.T) {
 	}
 	if !strings.Contains(rows[2], "\x1b[34m") {
 		t.Fatalf("the log row's colour was changed: %q", rows[2])
+	}
+}
+
+// OR-557: the batch and CI sit in a grey panel pinned to the foot of the
+// screen, the log between the two panels, padded so the foot does not ride
+// up when the log is short.
+func TestTheBottomPanelIsPinnedAndGrey(t *testing.T) {
+	colourOn(t)
+	var w bytes.Buffer
+	f := frame(&w, 8, 80, "head", "top", []string{"log one"}, "BATCH row\nCI row")
+	rows := strings.Split(strings.TrimSuffix(strings.TrimPrefix(f, escHome), escBelow), "\r\n")
+	if len(rows) != 8 {
+		t.Fatalf("frame has %d rows, want the full 8 so the foot sits at the bottom", len(rows))
+	}
+	if !strings.HasPrefix(rows[6], footBg) || !strings.Contains(rows[6], "BATCH row") ||
+		!strings.HasPrefix(rows[7], footBg) || !strings.Contains(rows[7], "CI row") {
+		t.Fatalf("the last two rows are not the grey foot: %q", rows[6:])
+	}
+	if !strings.Contains(rows[2], "log one") || strings.Contains(rows[2], footBg) || strings.Contains(rows[2], panelBg) {
+		t.Fatalf("the log row is not between the panels on the terminal background: %q", rows[2])
+	}
+}
+
+// With no batch, no foot: the log keeps every row.
+func TestNoBatchMeansNoBottomPanel(t *testing.T) {
+	colourOn(t)
+	var w bytes.Buffer
+	f := frame(&w, 8, 80, "head", "top", []string{"a", "b"}, "")
+	if strings.Contains(f, footBg) {
+		t.Fatal("a bottom panel was drawn with nothing to show")
+	}
+}
+
+// The split puts the batch in the foot and keeps RUNNING in the top.
+func TestTheBoardSplitsBatchIntoTheFoot(t *testing.T) {
+	resetBoard()
+	t.Cleanup(resetBoard)
+	BoardEnable()
+	LiveBatchStart("orion/batch", "develop", []string{"LTA-2"})
+	LiveChecks([]Check{{Name: "test", State: CheckRunning}})
+	board.mu.Lock()
+	top, foot := renderBoardParts(&bytes.Buffer{}, clock(), true)
+	whole, _ := renderBoardParts(&bytes.Buffer{}, clock(), false)
+	board.mu.Unlock()
+	if strings.Contains(top, "BATCH") || !strings.Contains(foot, "BATCH") || !strings.Contains(foot, "CI") {
+		t.Fatalf("split wrong:\ntop:\n%s\nfoot:\n%s", top, foot)
+	}
+	if !strings.Contains(top, "RUNNING") || !strings.Contains(whole, "BATCH") {
+		t.Fatal("the unsplit board lost the batch, or the top lost RUNNING")
 	}
 }

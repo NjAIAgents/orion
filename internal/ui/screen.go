@@ -72,6 +72,9 @@ const (
 	// header a shade lighter so it reads as a title (OR-555).
 	headerBg = "\x1b[97;48;5;237m"
 	panelBg  = "\x1b[97;48;5;234m"
+	// footBg is the bottom panel -- the batch, CI and last result -- in grey,
+	// set apart from the dark top so the two read as different things (OR-557).
+	footBg = "\x1b[97;48;5;239m"
 )
 
 // StartScreen takes over the terminal and returns the writer to print
@@ -205,7 +208,7 @@ func (s *Screen) draw() {
 	board.mu.Lock()
 	board.spinning = true
 	board.spin++
-	b := renderBoard(s, clock())
+	b, foot := renderBoardParts(s, clock(), true)
 	board.spinning = false
 	board.mu.Unlock()
 
@@ -214,7 +217,7 @@ func (s *Screen) draw() {
 	if s.closed {
 		return
 	}
-	fmt.Fprint(s.term, frame(s, rows, cols, s.header(), b, s.lines))
+	fmt.Fprint(s.term, frame(s, rows, cols, s.header(), b, s.lines, foot))
 }
 
 func (s *Screen) header() string {
@@ -229,34 +232,66 @@ func (s *Screen) header() string {
 
 // frame is one full redraw: exactly rows lines or fewer, none wider than the
 // terminal, the log lines getting whatever the board leaves.
-func frame(w io.Writer, rows, cols int, header, board string, log []string) string {
+func frame(w io.Writer, rows, cols int, header, board string, log []string, bottom string) string {
 	top := append([]string{header}, strings.Split(strings.TrimRight(board, "\n"), "\n")...)
 	if len(top) > rows {
 		top = top[:rows]
 	}
-	room := rows - len(top)
-	if room > len(log) {
-		room = len(log)
+	// The bottom panel (OR-557) keeps its rows at the foot of the screen,
+	// and the log gets whatever is left between the two panels -- padded
+	// with blank rows, so the bottom panel does not ride up when the log is
+	// short.
+	var foot []string
+	if strings.TrimSpace(bottom) != "" {
+		foot = strings.Split(strings.TrimRight(bottom, "\n"), "\n")
 	}
-	all := append(top, log[len(log)-room:]...)
+	if len(foot) > rows-len(top) {
+		foot = foot[:rows-len(top)]
+	}
+	room := rows - len(top) - len(foot)
+	shown := room
+	if shown > len(log) {
+		shown = len(log)
+	}
+	middle := append([]string(nil), log[len(log)-shown:]...)
+	if len(foot) > 0 {
+		for len(middle) < room {
+			middle = append(middle, "")
+		}
+	}
+
+	type row struct {
+		text string
+		bg   string // "" is the terminal's own background
+	}
+	var all []row
+	for i, l := range top {
+		bg := panelBg
+		if i == 0 {
+			bg = headerBg
+		}
+		all = append(all, row{l, bg})
+	}
+	for _, l := range middle {
+		all = append(all, row{l, ""})
+	}
+	for _, l := range foot {
+		all = append(all, row{l, footBg})
+	}
 
 	var b strings.Builder
 	b.WriteString(escHome)
-	for i, l := range all {
-		// The header and the board sit on a dark panel (OR-555): the
-		// background is set before the erase, and erase-to-end-of-line fills
-		// the row with it. The log below keeps the terminal's own colours.
-		if i < len(top) && enabled(w) {
-			bg := panelBg
-			if i == 0 {
-				bg = headerBg
-			}
+	for i, r := range all {
+		// A panel row's background is set before the erase, and
+		// erase-to-end-of-line fills the row with it (OR-555). The log keeps
+		// the terminal's own colours.
+		if r.bg != "" && enabled(w) {
 			// Every reset inside re-applies the panel, or the first dim word
 			// would end the colour halfway along the row.
-			row := strings.ReplaceAll(onDark.Replace(clipVisible(l, cols-1)), reset, reset+bg)
-			b.WriteString(bg + row + bg + escEOL + reset)
+			line := strings.ReplaceAll(onDark.Replace(clipVisible(r.text, cols-1)), reset, reset+r.bg)
+			b.WriteString(r.bg + line + r.bg + escEOL + reset)
 		} else {
-			b.WriteString(clipVisible(l, cols-1))
+			b.WriteString(clipVisible(r.text, cols-1))
 			b.WriteString(escEOL)
 		}
 		if i < len(all)-1 {
