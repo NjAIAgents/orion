@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -273,6 +274,9 @@ func (l *Log) Emit(e Event) {
 	if e.Run == "" {
 		e.Run = l.base.Run
 	}
+	if f := sink.Load(); f != nil {
+		(*f)(e)
+	}
 	b, err := json.Marshal(e)
 	if err != nil {
 		return
@@ -290,6 +294,20 @@ func (l *Log) Emit(e Event) {
 	n, _ := l.f.Write(b)
 	l.size += int64(n)
 	_ = l.f.Sync()
+}
+
+// sink receives every emitted event, defaults filled in, for an exporter to
+// ship to an observability backend (OR-556). Nil means nobody is listening.
+var sink atomic.Pointer[func(Event)]
+
+// SetSink installs f as the receiver of every emitted event; nil removes it.
+// Emit calls f inline, so f must not block.
+func SetSink(f func(Event)) {
+	if f == nil {
+		sink.Store(nil)
+		return
+	}
+	sink.Store(&f)
 }
 
 // Emitf is the common case: a kind, an actor and a message.
