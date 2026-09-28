@@ -72,6 +72,9 @@ const (
 	// header a shade lighter so it reads as a title (OR-555).
 	headerBg = "\x1b[97;48;5;237m"
 	panelBg  = "\x1b[97;48;5;234m"
+	// footBg is the bottom panel -- the batch, CI and last result -- in grey,
+	// set apart from the dark top so the two read as different things (OR-557).
+	footBg = "\x1b[97;48;5;239m"
 )
 
 // StartScreen takes over the terminal and returns the writer to print
@@ -205,7 +208,7 @@ func (s *Screen) draw() {
 	board.mu.Lock()
 	board.spinning = true
 	board.spin++
-	b := renderBoard(s, clock())
+	b, foot := renderBoardParts(s, clock(), true)
 	board.spinning = false
 	board.mu.Unlock()
 
@@ -214,7 +217,7 @@ func (s *Screen) draw() {
 	if s.closed {
 		return
 	}
-	fmt.Fprint(s.term, frame(s, rows, cols, s.header(), b, s.lines))
+	fmt.Fprint(s.term, frame(s, rows, cols, s.header(), b, s.lines, foot))
 }
 
 func (s *Screen) header() string {
@@ -229,34 +232,66 @@ func (s *Screen) header() string {
 
 // frame is one full redraw: exactly rows lines or fewer, none wider than the
 // terminal, the log lines getting whatever the board leaves.
-func frame(w io.Writer, rows, cols int, header, board string, log []string) string {
+func frame(w io.Writer, rows, cols int, header, board string, log []string, bottom string) string {
 	top := append([]string{header}, strings.Split(strings.TrimRight(board, "\n"), "\n")...)
 	if len(top) > rows {
 		top = top[:rows]
 	}
-	room := rows - len(top)
-	if room > len(log) {
-		room = len(log)
+	// The bottom panel (OR-557) keeps its rows at the foot of the screen,
+	// and the log gets whatever is left between the two panels -- padded
+	// with blank rows, so the bottom panel does not ride up when the log is
+	// short.
+	var foot []string
+	if strings.TrimSpace(bottom) != "" {
+		foot = strings.Split(strings.TrimRight(bottom, "\n"), "\n")
 	}
-	all := append(top, log[len(log)-room:]...)
+	if len(foot) > rows-len(top) {
+		foot = foot[:rows-len(top)]
+	}
+	room := rows - len(top) - len(foot)
+	shown := room
+	if shown > len(log) {
+		shown = len(log)
+	}
+	middle := append([]string(nil), log[len(log)-shown:]...)
+	if len(foot) > 0 {
+		for len(middle) < room {
+			middle = append(middle, "")
+		}
+	}
+
+	type row struct {
+		text string
+		bg   string // "" is the terminal's own background
+	}
+	var all []row
+	for i, l := range top {
+		bg := panelBg
+		if i == 0 {
+			bg = headerBg
+		}
+		all = append(all, row{l, bg})
+	}
+	for _, l := range middle {
+		all = append(all, row{l, ""})
+	}
+	for _, l := range foot {
+		all = append(all, row{l, footBg})
+	}
 
 	var b strings.Builder
 	b.WriteString(escHome)
-	for i, l := range all {
-		// The header and the board sit on a dark panel (OR-555): the
-		// background is set before the erase, and erase-to-end-of-line fills
-		// the row with it. The log below keeps the terminal's own colours.
-		if i < len(top) && enabled(w) {
-			bg := panelBg
-			if i == 0 {
-				bg = headerBg
-			}
+	for i, r := range all {
+		// A panel row's background is set before the erase, and
+		// erase-to-end-of-line fills the row with it (OR-555). The log keeps
+		// the terminal's own colours.
+		if r.bg != "" && enabled(w) {
 			// Every reset inside re-applies the panel, or the first dim word
 			// would end the colour halfway along the row.
-			row := strings.ReplaceAll(onDark.Replace(clipVisible(l, cols-1)), reset, reset+bg)
-			b.WriteString(bg + row + bg + escEOL + reset)
+			line := strings.ReplaceAll(onDark.Replace(clipVisible(r.text, cols-1)), reset, reset+r.bg)
+			b.WriteString(r.bg + line + r.bg + escEOL + reset)
 		} else {
-			b.WriteString(clipVisible(l, cols-1))
+			b.WriteString(clipVisible(r.text, cols-1))
 			b.WriteString(escEOL)
 		}
 		if i < len(all)-1 {
@@ -310,17 +345,18 @@ func runeWidth(r rune) int {
 	return 1
 }
 
-// onDark swaps the colours written for a terminal's own background for
-// their bright variants, which stay readable on the dark panel: plain blue
-// on near-black is close to invisible, and dim is dimmer still (OR-555).
-// The 256-colour palettes are already light enough and pass through.
+// onDark swaps the terminal's basic and bright colours for fixed light 256-colour
+// shades on the dark panels (OR-555). Basic colours follow the terminal's theme, and
+// several themes draw even "bright blue" as a dark blue that disappears on near-black;
+// a 256-colour value is the same on every theme. Dim becomes a light grey for the same
+// reason. The 256-colour identity palettes are already light and pass through.
 var onDark = strings.NewReplacer(
-	"\x1b[30m", "\x1b[37m",
-	"\x1b[31m", "\x1b[91m",
-	"\x1b[32m", "\x1b[92m",
-	"\x1b[33m", "\x1b[93m",
-	"\x1b[34m", "\x1b[94m",
-	"\x1b[35m", "\x1b[95m",
-	"\x1b[36m", "\x1b[96m",
+	"\x1b[30m", "\x1b[38;5;250m",
+	"\x1b[31m", "\x1b[38;5;210m", "\x1b[91m", "\x1b[38;5;210m",
+	"\x1b[32m", "\x1b[38;5;114m", "\x1b[92m", "\x1b[38;5;114m",
+	"\x1b[33m", "\x1b[38;5;221m", "\x1b[93m", "\x1b[38;5;221m",
+	"\x1b[34m", "\x1b[38;5;111m", "\x1b[94m", "\x1b[38;5;117m",
+	"\x1b[35m", "\x1b[38;5;213m", "\x1b[95m", "\x1b[38;5;219m",
+	"\x1b[36m", "\x1b[38;5;116m", "\x1b[96m", "\x1b[38;5;123m",
 	"\x1b[2m", "\x1b[38;5;248m",
 )
