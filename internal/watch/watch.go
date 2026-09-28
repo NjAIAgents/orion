@@ -45,6 +45,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -685,6 +686,10 @@ func oneTick(opts Options, deps Deps, w io.Writer, s slots, p *pool) (out tickOu
 			standing = append(standing, [2]string{strings.Join(exhausted, ", "), failedHint})
 		}
 	}
+	// A blocker nothing will ever start (OR-561): it is not in the queue, so
+	// every ticket behind it waits on a person. The held-behind line named it
+	// without saying that no one was coming for it.
+	needs = append(needs, unqueuedBlockers(q.Held, q.All)...)
 	ui.BoardHeld(len(q.Held))
 	ui.BoardHeldBy(groupHeld(q.Held))
 	ui.BoardNeedsYou(needs)
@@ -2260,6 +2265,50 @@ func failedKeys(rows []tracker.Issue) []string {
 				break
 			}
 		}
+	}
+	return out
+}
+
+// blockerKey matches one ticket key in a "blocked by …" reason.
+var blockerKey = regexp.MustCompile(`[A-Z][A-Z0-9]+-[0-9]+`)
+
+// unqueuedBlockers names each blocker that holds tickets back and is not in
+// the queue itself -- no queue label, no state label -- so the watch will
+// never start it and only a person can move what waits on it (OR-561). A
+// HUMAN-marked task in a spec-kit tree is the usual case; a ticket someone
+// forgot to label is the other. Ordered by how many tickets each one holds,
+// most first, because that is the order to clear them in.
+func unqueuedBlockers(held []HeldTicket, all []tracker.Issue) []string {
+	queued := make(map[string]bool, len(all))
+	for _, i := range all {
+		queued[i.Key] = true
+	}
+	holds := map[string]int{}
+	for _, h := range held {
+		rest, ok := strings.CutPrefix(h.Reason, "blocked by ")
+		if !ok {
+			continue
+		}
+		for _, k := range blockerKey.FindAllString(rest, -1) {
+			if !queued[k] {
+				holds[k]++
+			}
+		}
+	}
+	keys := make([]string, 0, len(holds))
+	for k := range holds {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(a, b int) bool {
+		if holds[keys[a]] != holds[keys[b]] {
+			return holds[keys[a]] > holds[keys[b]]
+		}
+		return keys[a] < keys[b]
+	})
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, fmt.Sprintf("%s holds %d ticket(s) and is not queued -- "+
+			"a person's task, or add the queue label to let Orion start it", k, holds[k]))
 	}
 	return out
 }
