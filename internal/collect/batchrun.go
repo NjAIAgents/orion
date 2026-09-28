@@ -423,7 +423,7 @@ func landResumed(st batchState, offered []Member, cfg config.Config, deps Deps,
 	// screen. What is actually skipped is a RE-TEST OF THE BATCH REF: it was
 	// already green, and the tree that merges is the tree that was tested,
 	// which is the whole saving batching exists for.
-	ui.Say(w, "", events.ActorOrion, ui.VerbOK,
+	ui.Say(w, "", events.ActorOrion, ui.VerbDone,
 		"landed %d approved branch(es) into %s as one commit; %s was already green, "+
 			"so it was not tested again (%s runs its own checks now)",
 		len(members), st.Base, st.Ref, st.Base)
@@ -612,7 +612,7 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 			ui.Warn(w, "the batch is building but its record could not be written "+
 				"(%v); the next pass will assemble it again", err)
 		}
-		ui.Say(w, "", events.ActorOrion, ui.VerbOK,
+		ui.Say(w, "", events.ActorOrion, ui.VerbDone,
 			"%d branch(es) assembled into %s; CI is running and the next tick reads it",
 			len(merged), ref)
 		return pendingWithEjected(b, merged, members, w)
@@ -644,7 +644,7 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	defer ui.LiveBatchEnd()
 
 	for _, line := range b.Describe() {
-		fmt.Fprintf(w, "          %s\n", ui.Dim(w, line))
+		ui.Under(w, line)
 	}
 	// The baseline is read from THIS repository's own history, not modelled
 	// (OR-250). Past per-branch landings are in the log as a push followed by
@@ -664,7 +664,7 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 		ui.Warn(w, "the batch landed nothing: %s",
 			costLine(b.Runs, len(members), b.Elapsed, base))
 	} else {
-		ui.Say(w, "", events.ActorOrion, ui.VerbOK,
+		ui.Say(w, "", events.ActorOrion, ui.VerbDone,
 			"the batch cost %s", costLine(b.Runs, len(members), b.Elapsed, base))
 	}
 

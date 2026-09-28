@@ -91,7 +91,7 @@ func triageDone(res Result, key string, pr PR, cfg config.Config, branch string,
 	if v.Done {
 		log.Emit(events.Event{Kind: events.KindNote, Actor: events.ActorDoneTriage,
 			Msg: "triaged the finished run: done. " + v.Note})
-		ui.Say(w, key, events.ActorDoneTriage, ui.VerbOK,
+		ui.Say(w, key, events.ActorDoneTriage, ui.VerbDone,
 			"this looks genuinely done; going on to ask for approval")
 		// The third question, on the evidence just gathered (OR-158). Done
 		// and QA both read the change against the TICKET; this reads it

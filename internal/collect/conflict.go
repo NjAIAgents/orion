@@ -53,15 +53,16 @@ func conflicted(res Result, key string, pr PR, cfg config.Config, branch string,
 	fresh := already == "" || already != pr.Head
 
 	ui.Warn(w, "%s: %s conflicts with its base; git cannot merge it", key, branch)
-	fmt.Fprintf(w, "          %s\n", ui.Dim(w,
-		"rebase it, push, and Orion picks it up again on the next pass:"))
+	ui.Under(w,
+		"rebase it, push, and Orion picks it up again on the next pass:")
+
 	// Name WHERE. The branch is checked out in the job's worktree and is
 	// almost never a local branch in the user's own clone -- so the obvious
 	// reading of this hint, run from the repository they are standing in,
 	// fails with "no such branch". A command that cannot be run where the
 	// reader is standing is not an instruction, it is a riddle.
 	for _, line := range rebaseSteps(ws, branch, base) {
-		fmt.Fprintf(w, "          %s\n", ui.Dim(w, line))
+		ui.Under(w, line)
 	}
 
 	if !fresh {

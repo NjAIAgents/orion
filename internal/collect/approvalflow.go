@@ -58,9 +58,9 @@ func awaitDecision(req Request, key string, cfg config.Config,
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(stop)
 
-	fmt.Fprintf(w, "          %s\n", ui.Dim(w, fmt.Sprintf(
+	ui.Under(w, fmt.Sprintf(
 		"waiting up to %s for a reaction; ctrl-c to stop waiting",
-		opts.AwaitApproval.Round(time.Second))))
+		opts.AwaitApproval.Round(time.Second)))
 
 	for {
 		d, err := read()
@@ -89,9 +89,10 @@ func awaitDecision(req Request, key string, cfg config.Config,
 
 // leaveNote says the request survives, and how to come back to it.
 func leaveNote(w io.Writer, key string) {
-	fmt.Fprintf(w, "          %s\n", ui.Dim(w, fmt.Sprintf(
+	ui.Under(w, fmt.Sprintf(
 		"the request is still in Slack and still valid -- react there, then run "+
-			"`orion collect %s` again. Nothing was cancelled.", key)))
+			"`orion collect %s` again. Nothing was cancelled.", key))
+
 }
 
 // The merge approval loop.
@@ -181,7 +182,7 @@ func approvalFlow(res Result, key string, pr PR, cfg config.Config, branch strin
 				// Inside a watcher there is nothing for the operator to run.
 				hint = "react there and the next tick merges it"
 			}
-			fmt.Fprintf(w, "          %s\n", ui.Dim(w, hint))
+			ui.Under(w, hint)
 			return res
 		}
 		// Waiting: carry the request forward and fall through to read it,

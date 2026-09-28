@@ -499,7 +499,7 @@ func renderBoardParts(w io.Writer, now time.Time, split bool) (string, string) {
 	fmt.Fprintf(&b, " %s%s%s\n", head("QUEUE"), label(VerbWaiting, wait), heldSummary(w))
 	if !split {
 		totals := []string{label(VerbWorking, fmt.Sprintf("%d in integration", integ)),
-			label(VerbOK, fmt.Sprintf("%d landed", board.landed))}
+			label(VerbDone, fmt.Sprintf("%d landed", board.landed))}
 		if q["failed"] > 0 {
 			totals = append(totals, label(VerbFail, fmt.Sprintf("%d failed", q["failed"])))
 		}
@@ -652,7 +652,7 @@ func fanBar(w io.Writer, done, total int) string {
 	if total > fanBarMax {
 		n, fill = fanBarMax, done*fanBarMax/total
 	}
-	return progressBar(w, VerbOK, fill, n)
+	return progressBar(w, VerbDone, fill, n)
 }
 
 // progressBar is fill of n cells in a state's colour, the rest dim.
@@ -727,7 +727,7 @@ func batchPipeline(w io.Writer, bt *boardBatch, now time.Time, failed bool) stri
 			out = append(out, step)
 			reached = false
 		case reached:
-			out = append(out, paint(w, stateColor(VerbOK), s.name+" "+strings.TrimSpace(boardIcon(VerbOK)))+elapsed(i))
+			out = append(out, paint(w, stateColor(VerbDone), s.name+" "+strings.TrimSpace(boardIcon(VerbDone)))+elapsed(i))
 		default:
 			out = append(out, Dim(w, s.name))
 		}
@@ -738,7 +738,7 @@ func batchPipeline(w io.Writer, bt *boardBatch, now time.Time, failed bool) stri
 func memberWord(w io.Writer, m *boardMember) string {
 	switch m.state {
 	case MemberLanded:
-		return paint(w, stateColor(VerbOK), m.key+" landed")
+		return paint(w, stateColor(VerbDone), m.key+" landed")
 	case MemberCulprit:
 		return paint(w, stateColor(VerbFail), m.key+" culprit"+detailSuffix(m.detail))
 	case MemberEjected:
@@ -758,7 +758,7 @@ func detailSuffix(d string) string {
 func checkVerb(state string) string {
 	switch state {
 	case CheckPassed:
-		return VerbOK
+		return VerbDone
 	case CheckFailed:
 		return VerbFail
 	}
@@ -819,7 +819,7 @@ func renderFan(w io.Writer, f *boardFan, indent string) string {
 		verb, name, tail := VerbWorking, c.label, ""
 		switch c.state {
 		case "done":
-			verb, tail = VerbOK, "  "+Italic(w, roundDur(c.took))
+			verb, tail = VerbDone, "  "+Italic(w, roundDur(c.took))
 		case "failed":
 			verb = VerbFail
 			name = paint(w, stateColor(VerbFail), c.label)
@@ -1003,7 +1003,7 @@ func renderBatch(b *strings.Builder, w io.Writer, now time.Time, head func(strin
 		fmt.Fprintf(b, " %s%s\n", head("CI"), strings.Join(cs, "   "))
 	}
 	if board.last != "" {
-		verb := VerbOK
+		verb := VerbDone
 		if !board.lastOK {
 			verb = VerbFail
 		}

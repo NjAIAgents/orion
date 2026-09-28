@@ -214,7 +214,7 @@ func runPlanChainWith(out io.Writer, ws *workspace.Workspace, run stageRunner, a
 		// counts as done, so a chain that skips everything still ends.
 		// Unless --from reaches it: then the operator has said to redo it.
 		if !forced && s.Done != nil && s.Done(ws) {
-			fmt.Fprintf(out, "\n  %s%s\n", ui.Icon(out, ui.VerbOK), ui.Dim(out, fmt.Sprintf("= done  %d/%d  %s", i+1, len(planStages), s.Stage)))
+			fmt.Fprintf(out, "\n  %s%s\n", ui.Icon(out, ui.VerbDone), ui.Dim(out, fmt.Sprintf("= done  %d/%d  %s", i+1, len(planStages), s.Stage)))
 			done++
 			continue
 		}
@@ -286,7 +286,7 @@ func runPlanChainWith(out io.Writer, ws *workspace.Workspace, run stageRunner, a
 				return done
 			} else {
 				done++
-				fmt.Fprintln(out, ui.Icon(out, ui.VerbOK)+ui.Label(out, "done", s.Stage))
+				fmt.Fprintln(out, ui.Icon(out, ui.VerbDone)+ui.Label(out, "done", s.Stage))
 				continue
 			}
 		}
@@ -311,7 +311,7 @@ func runPlanChainWith(out io.Writer, ws *workspace.Workspace, run stageRunner, a
 			return done
 		}
 		done++
-		fmt.Fprintln(out, ui.Icon(out, ui.VerbOK)+ui.Label(out, "done", s.Stage))
+		fmt.Fprintln(out, ui.Icon(out, ui.VerbDone)+ui.Label(out, "done", s.Stage))
 	}
 	return done
 }

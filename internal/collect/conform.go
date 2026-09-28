@@ -88,7 +88,7 @@ func reviewConformance(key string, pr PR, diff done.Diff, cfg config.Config, bra
 		// Said once on the console and nowhere else. A ticket that matches
 		// its plan is the ordinary case, and a comment for every one of them
 		// is how a tracker becomes something people stop reading.
-		ui.Say(w, key, events.ActorPlanConform, ui.VerbOK,
+		ui.Say(w, key, events.ActorPlanConform, ui.VerbDone,
 			"%s -- %s", v.Summary(), v.Note)
 		return
 	}

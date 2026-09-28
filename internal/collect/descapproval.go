@@ -50,7 +50,7 @@ func RequestDescriptionChange(deps DescTrackerAPI, key, actor, proposed string, 
 	if err := deps.SetLabels(key, []string{tracker.LabelDescPending}, nil); err != nil {
 		return fmt.Errorf("marking %s pending: %w", key, err)
 	}
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+	ui.Say(w, key, events.ActorOrion, ui.VerbSent,
 		"posted a description change for review; add %s or %s to decide it",
 		tracker.LabelDescApproved, tracker.LabelDescRejected)
 	return nil
@@ -106,7 +106,7 @@ func ResolveDescriptionChange(deps DescTrackerAPI, p PendingDescriptionChange, w
 			ui.Say(w, p.Key, events.ActorOrion, ui.VerbWarn,
 				"description applied but the pending label could not be cleared: %v", err)
 		}
-		ui.Say(w, p.Key, events.ActorOrion, ui.VerbOK,
+		ui.Say(w, p.Key, events.ActorOrion, ui.VerbDone,
 			"description approved and applied; replaced %d character(s)", len(was))
 		return nil
 
@@ -116,7 +116,7 @@ func ResolveDescriptionChange(deps DescTrackerAPI, p PendingDescriptionChange, w
 			ui.Say(w, p.Key, events.ActorOrion, ui.VerbWarn,
 				"rejection noted but the pending label could not be cleared: %v", err)
 		}
-		ui.Say(w, p.Key, events.ActorOrion, ui.VerbOK,
+		ui.Say(w, p.Key, events.ActorOrion, ui.VerbDone,
 			"description change rejected; nothing was written")
 		return nil
 

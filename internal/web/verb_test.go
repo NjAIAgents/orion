@@ -9,7 +9,7 @@ import (
 
 // A finished run (run-end present) reads its last real event's verb. Here
 // the last event before run-end is a tool call, which VerbFor maps to
-// "working" -- but run-end itself has no verb case (it falls to VerbOK), so
+// "working" -- but run-end itself has no verb case (it falls to VerbDone), so
 // the newest event by TIMESTAMP is what decides, matching Scan's own
 // newest-by-timestamp rule elsewhere.
 func TestVerbOfAFinishedRunReadsTheLastRealEvent(t *testing.T) {
@@ -21,8 +21,8 @@ func TestVerbOfAFinishedRunReadsTheLastRealEvent(t *testing.T) {
 	if len(cards) != 1 {
 		t.Fatalf("cards = %d, want 1", len(cards))
 	}
-	if got := cards[0].Verb; got != ui.VerbOK {
-		t.Errorf("Verb = %q, want %q (run-end itself carries no verb, defaulting to ok)", got, ui.VerbOK)
+	if got := cards[0].Verb; got != ui.VerbDone {
+		t.Errorf("Verb = %q, want %q (run-end itself carries no verb, defaulting to ok)", got, ui.VerbDone)
 	}
 }
 

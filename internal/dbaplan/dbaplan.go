@@ -145,7 +145,7 @@ func Run(ws *workspace.Workspace, cfg config.Config, deps Deps, opts Options) er
 		return nil
 	}
 
-	ui.Say(out, slug, events.ActorDBA, ui.VerbOK,
+	ui.Say(out, slug, events.ActorDBA, ui.VerbDone,
 		"the database and the initial schema are both confirmed; later stages may build on them")
 	return nil
 }
@@ -270,7 +270,7 @@ func recommend(ws *workspace.Workspace, cfg config.Config, deps Deps, opts Optio
 			"the record is written but Slack was not asked: %v", slackErr)
 	}
 
-	ui.Say(out, key, events.ActorDBA, ui.VerbOK,
+	ui.Say(out, key, events.ActorDBA, ui.VerbDone,
 		"recommended %s -- unconfirmed, and no later stage reads it until somebody says so", title)
 	fmt.Fprintf(out, "  recorded in %s\n", recordPath(decide.PendingDir, key))
 	if rec.TS == "" {

@@ -74,7 +74,7 @@ func TestFanLandingReportsOutcomeThroughTheVerbColumnNotExitZero(t *testing.T) {
 		t.Errorf("a landing still spells out \"exit 0\" -- the verb column already says the "+
 			"child worked, and a line has no room to say the same fact twice: %q", got)
 	}
-	if !strings.Contains(got, "ok") {
+	if !strings.Contains(got, "done") {
 		t.Errorf("the passing child's landing never says it worked: %q", got)
 	}
 }

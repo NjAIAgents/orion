@@ -739,7 +739,10 @@ func warnOnce(w io.Writer, msg string) {
 	if _, seen := warned.LoadOrStore(msg, true); seen {
 		return
 	}
-	fmt.Fprintf(w, "orion: %s\n", msg)
+	// A row of the grid rather than a bare "orion: ..." line that wrapped
+	// across the log with no time, ticket or status (OR-563). The whole text
+	// is in the line; a terminal narrower than it clips the tail.
+	ui.Say(w, "", events.ActorOrion, ui.VerbNote, "%s", strings.Join(strings.Fields(msg), " "))
 }
 
 func humanTokens(n int) string {

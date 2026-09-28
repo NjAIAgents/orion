@@ -167,13 +167,14 @@ func settleTripResidue(jobPath, branch, key, summary, issueURL string, runFailed
 		// Every one of them by name, and the command that clears them: a
 		// count is not something an operator can act on.
 		for _, line := range strings.Split(kept, "\n") {
-			fmt.Fprintf(w, "          %s\n", ui.Dim(w, line))
+			ui.Under(w, line)
 		}
-		fmt.Fprintf(w, "          %s\n", ui.Dim(w,
-			"Nothing was reverted; the work is still on disk. Settle it with:"))
+		ui.Under(w,
+			"Nothing was reverted; the work is still on disk. Settle it with:")
+
 		fmt.Fprintf(w, "            orion settle %s\n", key)
 	case dirty != "":
-		fmt.Fprintf(w, "          %s\n", ui.Dim(w, firstLine(dirty)))
+		ui.Under(w, firstLine(dirty))
 	}
 	log.Emitf(events.KindNote, events.ActorOrion,
 		"%s, holding uncommitted work; %s", tripPhrase(kind, detail), outcome)

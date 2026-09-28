@@ -42,7 +42,7 @@ func readTestLog(t *testing.T, log *events.Log) []events.Event {
 func TestABoundaryRendersDistinctlyFromAFiveVerbLine(t *testing.T) {
 	at := time.Date(2026, 8, 29, 13, 34, 52, 0, time.Local)
 	status := render(Line{At: at, Key: "OR-183", Actor: events.ActorImplementer,
-		Verb: VerbOK, Msg: "2 commit(s) on orion/or-183"})
+		Verb: VerbDone, Msg: "2 commit(s) on orion/or-183"})
 	boundary := renderStage(Handoff{At: at, Key: "OR-183",
 		From: "implementing", To: "qa",
 		By: events.ActorImplementer, Next: events.ActorQA,
@@ -53,7 +53,7 @@ func TestABoundaryRendersDistinctlyFromAFiveVerbLine(t *testing.T) {
 	}
 	// The distinction is LAYOUT, not vocabulary: the boundary drops the
 	// icon/verb columns entirely rather than borrowing a sixth verb.
-	for _, verb := range []string{VerbOK, VerbWorking, VerbWaiting, VerbWarn, VerbFail} {
+	for _, verb := range []string{VerbDone, VerbWorking, VerbWaiting, VerbWarn, VerbFail} {
 		if strings.Contains(boundary, iconFor(verb)) {
 			t.Errorf("a boundary must not wear the status icon for %q:\n%s", verb, boundary)
 		}
@@ -73,12 +73,13 @@ func TestABoundaryRendersDistinctlyFromAFiveVerbLine(t *testing.T) {
 // The five verbs are a closed vocabulary and this change must not have grown
 // it: the verb column answers "do I have to do something", which has five
 // answers, and a handoff asks nothing of the operator.
-func TestTheStatusVocabularyIsUnchanged(t *testing.T) {
-	if got := VerbFor(events.KindStage); got != VerbOK {
-		t.Errorf("a stage boundary must not have its own verb, got %q", got)
+func TestTheStatusVocabularyIsClosed(t *testing.T) {
+	// OR-563 gave a boundary its own status, so it sits in the grid.
+	if got := VerbFor(events.KindStage); got != VerbStage {
+		t.Errorf("a stage boundary's verb is %q, want %q", got, VerbStage)
 	}
-	verbs := map[string]bool{VerbOK: true, VerbWorking: true,
-		VerbWaiting: true, VerbWarn: true, VerbFail: true}
+	verbs := map[string]bool{VerbDone: true, VerbWorking: true,
+		VerbWaiting: true, VerbWarn: true, VerbFail: true, VerbStage: true}
 	for _, kind := range []string{
 		events.KindClaimed, events.KindBranch, events.KindRunStart, events.KindRunEnd,
 		events.KindAsk, events.KindAnswer, events.KindRefuse, events.KindEscalate,
@@ -88,7 +89,7 @@ func TestTheStatusVocabularyIsUnchanged(t *testing.T) {
 		events.KindTool, events.KindSay, events.KindStage, events.KindNote,
 	} {
 		if !verbs[VerbFor(kind)] {
-			t.Errorf("%s produced the verb %q, which is not one of the five",
+			t.Errorf("%s produced the verb %q, which is not in the vocabulary",
 				kind, VerbFor(kind))
 		}
 	}

@@ -186,7 +186,7 @@ func runAuthoredSuite(job qaJob, cfg config.Config, log *events.Log, w io.Writer
 	// much is slow and running too little is wrong.
 	argv, sc, err := suite.DetectScoped(dir, job.BaseSHA, cfg.QA.Procs())
 	if err != nil {
-		ui.Say(w, key, events.ActorQA, ui.VerbOK,
+		ui.Say(w, key, events.ActorQA, ui.VerbDone,
 			"no suite Orion can run here, so QA runs the tests itself")
 		log.Emitf(events.KindNote, events.ActorQA,
 			"suite detection found nothing certain; QA runs the tests in its own session")
@@ -220,7 +220,7 @@ func runAuthoredSuite(job qaJob, cfg config.Config, log *events.Log, w io.Writer
 		log.Emitf(events.KindNote, events.ActorQA,
 			"suite timed out after %s: %s", suiteTimeout, res.Cmd)
 	case res.Passed:
-		ui.Say(w, key, events.ActorQA, ui.VerbOK, "the suite is green")
+		ui.Say(w, key, events.ActorQA, ui.VerbDone, "the suite is green")
 		log.Emitf(events.KindNote, events.ActorQA, "suite passed: %s", res.Cmd)
 	default:
 		ui.Say(w, key, events.ActorQA, ui.VerbWarn, "the suite is red")

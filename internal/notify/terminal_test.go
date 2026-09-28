@@ -82,7 +82,7 @@ func TestTheTerminalEchoOccupiesTheSameColumnsAsEveryOtherLine(t *testing.T) {
 	// Rendered by ui, not by this package: the reference line for the same
 	// facts must be identical up to the message.
 	want := ui.Render(out, ui.Line{At: at, Key: "OR-183", Actor: events.ActorOrion,
-		Verb: ui.VerbOK, Msg: "notified: OR-183 is ready for review"})
+		Verb: ui.VerbSent, Msg: "notified: OR-183 is ready for review"})
 	if got != want {
 		t.Errorf("the echo does not render through ui\n got: %q\nwant: %q", got, want)
 	}
@@ -97,7 +97,7 @@ func TestTheTerminalEchoOccupiesTheSameColumnsAsEveryOtherLine(t *testing.T) {
 func TestTheTerminalEchoCarriesItsLevel(t *testing.T) {
 	isolate(t)
 	for level, want := range map[Level]string{
-		Info: ui.VerbOK, Warning: ui.VerbWarn, Blocked: ui.VerbFail,
+		Info: ui.VerbSent, Warning: ui.VerbWarn, Blocked: ui.VerbFail,
 	} {
 		out := captureOut(t)
 		Send(Event{Key: "OR-183", Level: level, Title: "something happened"})

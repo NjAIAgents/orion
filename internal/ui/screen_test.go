@@ -166,7 +166,7 @@ func TestTheWorkingIconTurnsOnlyOnTheScreen(t *testing.T) {
 	if len(seen) != 4 {
 		t.Fatalf("four frames drew %d distinct icons, want 4", len(seen))
 	}
-	if boardIcon(VerbOK) != iconFor(VerbOK) {
+	if boardIcon(VerbDone) != iconFor(VerbDone) {
 		t.Fatal("a finished icon spins too")
 	}
 }
@@ -287,6 +287,11 @@ func TestTheBottomPanelIsPinnedAndGrey(t *testing.T) {
 	if !strings.HasPrefix(rows[6], footBg) || !strings.Contains(rows[6], "BATCH row") ||
 		!strings.HasPrefix(rows[7], footBg) || !strings.Contains(rows[7], "CI row") {
 		t.Fatalf("the last two rows are not the grey foot: %q", rows[6:])
+	}
+	// The grey runs to the end of the last row: nothing after it erases
+	// from the cursor, which sits mid-row (seen live, 2026-09-28).
+	if !strings.HasSuffix(f, footBg+escEOL+reset) {
+		t.Fatalf("the frame does not end with the grey row filled to its end: %q", f[len(f)-40:])
 	}
 	if !strings.Contains(rows[2], "log one") || strings.Contains(rows[2], footBg) || strings.Contains(rows[2], panelBg) {
 		t.Fatalf("the log row is not between the panels on the terminal background: %q", rows[2])

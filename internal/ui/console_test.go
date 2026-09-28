@@ -33,7 +33,7 @@ func TestTheDefaultLevelKeepsTheSignalAndDropsTheTranscript(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		Trace(&b, "OR-217", events.ActorImplementer, "sonnet", VerbWorking, "ran git status %d", i)
 	}
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "2 commit(s) on orion/or-217")
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "2 commit(s) on orion/or-217")
 	Say(&b, "OR-217", events.ActorOrion, VerbWaiting, "opened PR #7, awaiting CI")
 	Say(&b, "OR-217", events.ActorOrion, VerbWarn, "budget checkpoint at 80 percent")
 	Stage(&b, nil, Handoff{Key: "OR-217", From: "implementing", To: "qa",
@@ -70,7 +70,7 @@ func TestVerboseWithholdsNothing(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		Trace(&b, "OR-217", events.ActorImplementer, "sonnet", VerbWorking, "ran git status %d", i)
 	}
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "2 commit(s)")
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "2 commit(s)")
 	Flush(&b)
 
 	got := b.String()
@@ -89,10 +89,10 @@ func TestIdentityIsPrintedOnlyWhenItChanges(t *testing.T) {
 	var b bytes.Buffer
 	who := actors.Display(events.ActorImplementer)
 
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "first")
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "second")
-	Say(&b, "OR-217", events.ActorQA, VerbOK, "third")
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "fourth")
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "first")
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "second")
+	Say(&b, "OR-217", events.ActorQA, VerbDone, "third")
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "fourth")
 	Flush(&b)
 
 	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
@@ -140,8 +140,8 @@ func TestTwoTicketsInFlightEachStateTheirOwnIdentity(t *testing.T) {
 	var b bytes.Buffer
 	who := actors.Display(events.ActorImplementer)
 
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "one")
-	Say(&b, "OR-220", events.ActorImplementer, VerbOK, "two")
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "one")
+	Say(&b, "OR-220", events.ActorImplementer, VerbDone, "two")
 	Flush(&b)
 
 	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
@@ -192,7 +192,7 @@ func TestACountIsPrintedBeforeTheLineThatBreaksTheRun(t *testing.T) {
 
 	Say(&b, "OR-217", events.ActorOrion, VerbWaiting, "waiting on CI")
 	Say(&b, "OR-217", events.ActorOrion, VerbWaiting, "waiting on CI")
-	Say(&b, "OR-217", events.ActorOrion, VerbOK, "checks pass")
+	Say(&b, "OR-217", events.ActorOrion, VerbDone, "checks pass")
 
 	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
 	if len(lines) != 3 {
@@ -212,11 +212,11 @@ func TestAStageBoundaryEndsTheRunOfLines(t *testing.T) {
 	atLevel(t, false)
 	var b bytes.Buffer
 
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "same")
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "same")
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "same")
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "same")
 	Stage(&b, nil, Handoff{Key: "OR-217", From: "implementing", To: "qa",
 		By: events.ActorImplementer, Next: events.ActorQA})
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "after")
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "after")
 
 	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
 	if len(lines) != 4 {
@@ -263,16 +263,16 @@ func TestTheSuppressedIdentityColumnsDegrade(t *testing.T) {
 	atLevel(t, false)
 	var b bytes.Buffer
 
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "first")
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "second")
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "second")
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "first")
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "second")
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "second")
 	Flush(&b)
 
 	got := b.String()
 	if strings.Contains(got, "\x1b[") {
 		t.Errorf("escape codes survived NO_COLOR:\n%q", got)
 	}
-	for _, want := range []string{"OR-217", VerbOK, "first", "second", "(x2)"} {
+	for _, want := range []string{"OR-217", VerbDone, "first", "second", "(x2)"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("%q must be readable on a plain terminal:\n%s", want, got)
 		}
@@ -286,8 +286,8 @@ func TestASecondWriterStartsItsOwnPage(t *testing.T) {
 	atLevel(t, false)
 	var one, two bytes.Buffer
 
-	Say(&one, "OR-217", events.ActorImplementer, VerbOK, "x")
-	Say(&two, "OR-217", events.ActorImplementer, VerbOK, "x")
+	Say(&one, "OR-217", events.ActorImplementer, VerbDone, "x")
+	Say(&two, "OR-217", events.ActorImplementer, VerbDone, "x")
 	Flush(&two)
 
 	if !strings.Contains(two.String(), actors.Display(events.ActorImplementer)) {
@@ -302,8 +302,8 @@ func TestIdentityRestatesWhenTheModelChanges(t *testing.T) {
 	atLevel(t, false)
 	var b bytes.Buffer
 
-	SayModel(&b, "OR-217", events.ActorImplementer, "sonnet", VerbOK, "first")
-	SayModel(&b, "OR-217", events.ActorImplementer, "opus", VerbOK, "second")
+	SayModel(&b, "OR-217", events.ActorImplementer, "sonnet", VerbDone, "first")
+	SayModel(&b, "OR-217", events.ActorImplementer, "opus", VerbDone, "second")
 	Flush(&b)
 
 	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
@@ -323,9 +323,9 @@ func TestBannerTriggersIdentityReset(t *testing.T) {
 	var b bytes.Buffer
 	who := actors.Display(events.ActorImplementer)
 
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "before")
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "before")
 	Banner(&b, "OR-217", "Build the thing", events.ActorImplementer, "opus", "orion/or-217")
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "after")
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "after")
 
 	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
 	last := lines[len(lines)-1]
@@ -368,7 +368,7 @@ func TestEmbeddedNewlinesRenderAsOneLine(t *testing.T) {
 	atLevel(t, false)
 	var b bytes.Buffer
 
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "first part\nsecond part")
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "first part\nsecond part")
 	Flush(&b)
 
 	out := strings.TrimRight(b.String(), "\n")
@@ -387,7 +387,7 @@ func TestLongMessageIsClippedWithAnEllipsis(t *testing.T) {
 	atLevel(t, false)
 	var b bytes.Buffer
 
-	Say(&b, "OR-217", events.ActorImplementer, VerbOK, "%s", strings.Repeat("word ", 200))
+	Say(&b, "OR-217", events.ActorImplementer, VerbDone, "%s", strings.Repeat("word ", 200))
 	Flush(&b)
 
 	if !strings.Contains(b.String(), "…") {

@@ -169,7 +169,7 @@ func verbFor(l Level) string {
 	case Blocked:
 		return ui.VerbFail
 	}
-	return ui.VerbOK
+	return ui.VerbSent
 }
 
 // slackSend posts to a channel. A package variable rather than a direct call

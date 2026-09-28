@@ -104,10 +104,11 @@ func RebaseBeforePush(key, dir, branch string, cfg config.Config,
 		// branch is untouched, so those commands are still the right ones.
 		ui.Warn(w, "%s: %s does not replay cleanly onto %s; pushing it as it stands "+
 			"and opening the pull request anyway", key, branch, base)
-		fmt.Fprintf(w, "          %s\n", ui.Dim(w,
-			"resolve it, push, and Orion picks it up again on the next pass:"))
+		ui.Under(w,
+			"resolve it, push, and Orion picks it up again on the next pass:")
+
 		for _, line := range rebaseSteps(ws, branch, base) {
-			fmt.Fprintf(w, "          %s\n", ui.Dim(w, line))
+			ui.Under(w, line)
 		}
 		log.Emit(events.Event{Kind: events.KindBlocked, Actor: events.ActorOrion,
 			Msg: "branch conflicts with its base before its first push; a human must rebase"})
