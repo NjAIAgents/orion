@@ -516,3 +516,15 @@ func TestEveryMemberBadOnAGreenBaseIsStillConvicted(t *testing.T) {
 		t.Fatalf("Isolate = %v, %v; want both convicted", keysOf(culprits), err)
 	}
 }
+
+// OR-568: a retried ticket works on orion/lta-144-2; the landed branch to
+// prune is the member's recorded one, not one rebuilt from the key.
+func TestALandedMemberIsPrunedByItsRecordedBranch(t *testing.T) {
+	ms := []Member{{Key: "LTA-144", Branch: "orion/lta-144-2"}, {Key: "LTA-77", Branch: "orion/lta-77"}}
+	if got := landedBranch("LTA-144", ms, "orion/"); got != "orion/lta-144-2" {
+		t.Fatalf("landedBranch = %q, want the recorded orion/lta-144-2", got)
+	}
+	if got := landedBranch("LTA-9", ms, "orion/"); got != "orion/lta-9" {
+		t.Fatalf("an unrecorded member = %q, want the key's branch", got)
+	}
+}
