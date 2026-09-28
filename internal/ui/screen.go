@@ -74,7 +74,14 @@ const (
 	panelBg  = "\x1b[97;48;5;234m"
 	// footBg is the bottom panel -- the batch, CI and last result -- in grey,
 	// set apart from the dark top so the two read as different things (OR-557).
-	footBg = "\x1b[97;48;5;239m"
+	// 238 since OR-559, the shade the approved design used.
+	footBg = "\x1b[97;48;5;238m"
+	// The light theme's three panels (OR-559): the same arrangement, pale
+	// grounds under near-black text, the header the darkest so it still reads
+	// as a title bar.
+	lightHeaderBg = "\x1b[38;5;235;48;5;252m"
+	lightPanelBg  = "\x1b[38;5;235;48;5;255m"
+	lightFootBg   = "\x1b[38;5;235;48;5;253m"
 )
 
 // StartScreen takes over the terminal and returns the writer to print
@@ -205,6 +212,10 @@ func (s *Screen) draw() {
 	if cols <= 0 {
 		cols = 100
 	}
+	// The header's counts are read before s.mu is taken, never under it:
+	// BoardTick holds board.mu while it writes, and its writer can be this
+	// screen, so board.mu inside s.mu is a lock-order inversion.
+	sum := boardSummary()
 	board.mu.Lock()
 	board.spinning = true
 	board.spin++
@@ -217,17 +228,42 @@ func (s *Screen) draw() {
 	if s.closed {
 		return
 	}
-	fmt.Fprint(s.term, frame(s, rows, cols, s.header(), b, s.lines, foot))
+	fmt.Fprint(s.term, frame(s, rows, cols, s.header(cols, sum), b, s.lines, foot))
 }
 
-func (s *Screen) header() string {
+// header is the summary bar (OR-559): what is watched and for how long, then
+// the counts a person looks up to see -- running, queued, landed, failed and
+// the spend -- each in its state's colour, and the clock at the right edge.
+// The counts lived in a totals row under the queue, where they were the
+// last thing read on a screen whose first question is "how is it going".
+//
+// The log path follows the clock when the row has room, and is dropped when
+// it has not: Close prints it on the normal screen whatever happens, so a
+// narrow terminal loses nothing it cannot get back. "ctrl-c stops" went
+// the same way -- it is what every terminal program does.
+func (s *Screen) header(cols int, c boardCounts) string {
 	now := clock()
-	h := fmt.Sprintf(" %s  %s", Heading(s, "orion watch "+s.title),
-		Dim(s, now.Format("15:04:05")+" · up "+roundDur(now.Sub(s.started))))
-	if s.logPath != "" {
-		h += Dim(s, "   log "+s.logPath)
+	bar := "│"
+	if !glyphs() {
+		bar = "|"
 	}
-	return h + Dim(s, "   ctrl-c stops")
+	count := func(verb string, n int, what string) string {
+		return paint(s, stateColor(verb), fmt.Sprintf("%s %d %s", strings.TrimSpace(iconFor(verb)), n, what))
+	}
+	sep := Dim(s, " · ")
+	left := " " + Heading(s, "orion watch "+s.title) + Dim(s, " · up "+roundDur(now.Sub(s.started))+"  "+bar+"  ") +
+		count(VerbWorking, c.running, "running") + sep + count(VerbWaiting, c.queued, "queued") + sep +
+		count(VerbOK, c.landed, "landed") + sep + count(VerbFail, c.failed, "failed") + sep +
+		fmt.Sprintf("$%.2f", c.spend)
+	right := now.Format("15:04:05")
+	if s.logPath != "" && visibleCells(left)+2+len(right)+6+visibleCells(s.logPath) <= cols-1 {
+		right += "   log " + s.logPath
+	}
+	gap := cols - 1 - visibleCells(left) - visibleCells(right)
+	if gap < 2 {
+		gap = 2
+	}
+	return left + strings.Repeat(" ", gap) + Dim(s, right)
 }
 
 // frame is one full redraw: exactly rows lines or fewer, none wider than the
@@ -279,6 +315,24 @@ func frame(w io.Writer, rows, cols int, header, board string, log []string, bott
 		all = append(all, row{l, footBg})
 	}
 
+	// The theme picks the panels' grounds and the recolouring their text
+	// gets (OR-559). Mono never reaches the panel branch below: enabled is
+	// false under it, so the frame carries no colour code at all.
+	recolor := onDark
+	if theme() == themeLight {
+		recolor = onLight
+		for i := range all {
+			switch all[i].bg {
+			case headerBg:
+				all[i].bg = lightHeaderBg
+			case panelBg:
+				all[i].bg = lightPanelBg
+			case footBg:
+				all[i].bg = lightFootBg
+			}
+		}
+	}
+
 	var b strings.Builder
 	b.WriteString(escHome)
 	for i, r := range all {
@@ -288,10 +342,16 @@ func frame(w io.Writer, rows, cols int, header, board string, log []string, bott
 		if r.bg != "" && enabled(w) {
 			// Every reset inside re-applies the panel, or the first dim word
 			// would end the colour halfway along the row.
-			line := strings.ReplaceAll(onDark.Replace(clipVisible(r.text, cols-1)), reset, reset+r.bg)
+			line := strings.ReplaceAll(recolor.Replace(clipVisible(r.text, cols-1)), reset, reset+r.bg)
 			b.WriteString(r.bg + line + r.bg + escEOL + reset)
 		} else {
-			b.WriteString(clipVisible(r.text, cols-1))
+			text := r.text
+			if !enabled(w) {
+				// Mono means none (OR-559), even in a line that arrived
+				// already painted -- an agent's own output, say.
+				text = stripANSI(text)
+			}
+			b.WriteString(clipVisible(text, cols-1))
 			b.WriteString(escEOL)
 		}
 		if i < len(all)-1 {
@@ -307,23 +367,29 @@ var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
 func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
 
 // clipVisible cuts a line to n visible columns, passing colour codes through
-// uncounted and resetting colour where it cuts. A wide rune counts two.
+// uncounted and resetting colour where it cuts. A wide rune counts two. A
+// line that carried no escape code is cut without one, so a mono frame
+// (OR-559) stays free of them.
 func clipVisible(s string, n int) string {
 	if n <= 0 {
 		return ""
 	}
 	var b strings.Builder
 	width := 0
+	coloured := false
 	for i := 0; i < len(s); {
 		if loc := ansiRE.FindStringIndex(s[i:]); loc != nil && loc[0] == 0 {
 			b.WriteString(s[i : i+loc[1]])
 			i += loc[1]
+			coloured = true
 			continue
 		}
 		r, size := utf8.DecodeRuneInString(s[i:])
 		rw := runeWidth(r)
 		if width+rw > n {
-			b.WriteString("\x1b[0m")
+			if coloured {
+				b.WriteString("\x1b[0m")
+			}
 			return b.String()
 		}
 		b.WriteRune(r)
@@ -345,6 +411,26 @@ func runeWidth(r rune) int {
 	return 1
 }
 
+// visibleCells is how many terminal columns s takes: escape codes count
+// nothing and a wide rune counts two. What the watch view pads and aligns
+// by (OR-559), since a rune count puts a row with colour or a wide glyph out
+// of line with the rest.
+func visibleCells(s string) int {
+	n := 0
+	for _, r := range stripANSI(s) {
+		n += runeWidth(r)
+	}
+	return n
+}
+
+// padCells widens s, colour and all, to n visible columns. Never truncates.
+func padCells(s string, n int) string {
+	if d := n - visibleCells(s); d > 0 {
+		return s + strings.Repeat(" ", d)
+	}
+	return s
+}
+
 // onDark swaps the terminal's basic and bright colours for fixed light 256-colour
 // shades on the dark panels (OR-555). Basic colours follow the terminal's theme, and
 // several themes draw even "bright blue" as a dark blue that disappears on near-black;
@@ -359,4 +445,24 @@ var onDark = strings.NewReplacer(
 	"\x1b[35m", "\x1b[38;5;213m", "\x1b[95m", "\x1b[38;5;219m",
 	"\x1b[36m", "\x1b[38;5;116m", "\x1b[96m", "\x1b[38;5;123m",
 	"\x1b[2m", "\x1b[38;5;248m",
+)
+
+// onLight is onDark's mirror for the light theme (OR-559): every colour the
+// panels carry, basic or 256, moved to a DARK shade that reads on a pale
+// ground. The terminal's own yellow and cyan are near-invisible on white on
+// most themes, and the dark theme's fixed light shades (the key colour, the
+// actor colour) would be worse. The section chip's slate is lifted a step so
+// it is still a chip on a white panel; NEEDS YOU keeps its magenta.
+var onLight = strings.NewReplacer(
+	"\x1b[30m", "\x1b[38;5;235m",
+	"\x1b[31m", "\x1b[38;5;160m", "\x1b[91m", "\x1b[38;5;160m",
+	"\x1b[32m", "\x1b[38;5;28m", "\x1b[92m", "\x1b[38;5;28m",
+	"\x1b[33m", "\x1b[38;5;130m", "\x1b[93m", "\x1b[38;5;130m",
+	"\x1b[34m", "\x1b[38;5;25m", "\x1b[94m", "\x1b[38;5;25m",
+	"\x1b[35m", "\x1b[38;5;127m", "\x1b[95m", "\x1b[38;5;127m",
+	"\x1b[36m", "\x1b[38;5;30m", "\x1b[96m", "\x1b[38;5;30m",
+	"\x1b[2m", "\x1b[38;5;242m",
+	"\x1b[38;5;117m", "\x1b[38;5;25m", // the ticket key
+	"\x1b[38;5;180m", "\x1b[38;5;94m", // who
+	chipBg, "\x1b[48;5;103m",
 )

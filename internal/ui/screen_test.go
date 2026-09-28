@@ -179,28 +179,36 @@ func TestTheHeaderSaysHowLongItHasRun(t *testing.T) {
 	t.Cleanup(func() { clock = time.Now })
 	s := &Screen{title: "LTA", started: base, term: &bytes.Buffer{}}
 	now = base.Add(8*time.Minute + 30*time.Second)
-	if h := stripANSI(s.header()); !strings.Contains(h, "up 8m") {
+	if h := stripANSI(s.header(118, boardCounts{})); !strings.Contains(h, "up 8m") {
 		t.Fatalf("header = %q, want the uptime", h)
 	}
 }
 
 // OR-555: section labels are filled chips of one width, so content lines up
-// under them, and plain text when colour is off.
+// under them. OR-559: every chip is the one slate but NEEDS YOU, which alone
+// keeps magenta; without colour a chip is its label in brackets.
 func TestSectionChipsAreColouredAndAligned(t *testing.T) {
 	colourOn(t)
 	var w bytes.Buffer
-	for _, s := range []string{"RUNNING", "QUEUE", "NEEDS YOU", ""} {
+	for _, s := range []string{"RUNNING", "QUEUE", "BATCH", "CI", "LAST", "NEEDS YOU", ""} {
 		c := sectionChip(&w, s)
 		if n := visibleWidth(stripANSI(c)); n != sectionChipWidth {
 			t.Fatalf("chip %q is %d wide, want %d", s, n, sectionChipWidth)
 		}
-		if s != "" && !strings.Contains(c, sectionBg[s]) {
-			t.Fatalf("chip %q has no background", s)
+		want := chipBg
+		if s == "NEEDS YOU" {
+			want = needsBg
+		}
+		if s != "" && !strings.Contains(c, want) {
+			t.Fatalf("chip %q lacks its background %q: %q", s, want, c)
+		}
+		if s != "NEEDS YOU" && strings.Contains(c, needsBg) {
+			t.Fatalf("chip %q wears the NEEDS YOU magenta", s)
 		}
 	}
 	t.Setenv("NO_COLOR", "1")
-	if c := sectionChip(&w, "QUEUE"); strings.Contains(c, "\x1b") {
-		t.Fatalf("a chip carries colour with NO_COLOR set: %q", c)
+	if c := sectionChip(&w, "QUEUE"); strings.Contains(c, "\x1b") || c != "[QUEUE]    " {
+		t.Fatalf("a chip with NO_COLOR set = %q, want the bracketed label and no escapes", c)
 	}
 }
 

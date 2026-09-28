@@ -207,13 +207,16 @@ func LiveBatchMember(key string, s MemberState)                 { boardBatchMemb
 func LiveBatchMemberDetail(key string, s MemberState, d string) { boardBatchMember(key, s, d) }
 func LiveBatchMemberCost(string, time.Duration, float64)        {}
 func LiveBatchSplit([]string, bool, int, int, bool)             {}
-func LiveBatchMedian(time.Duration)                             {}
+func LiveBatchMedian(d time.Duration)                           { board.mu.Lock(); board.median = d; board.mu.Unlock() }
 func LiveBatchResume(ref, _ string, members []string, since time.Time) {
 	boardBatchStart(ref, members)
 	boardBatchPhase(BatchTesting)
 	board.mu.Lock()
-	if board.batch != nil && !since.IsZero() {
-		board.batch.testing = since
+	if b := board.batch; b != nil && !since.IsZero() {
+		// Assembled by an earlier process: when CI started is known, how
+		// long assembling took is not, and its step shows no time (OR-559).
+		b.at[BatchTesting], b.started = since, since
+		delete(b.at, BatchAssembling)
 	}
 	board.mu.Unlock()
 }

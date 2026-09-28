@@ -107,7 +107,12 @@ const (
 	iconWorking = "◐" // in flight, money is being spent
 	iconOK      = "✓"
 	iconFail    = "✗"
-	iconWaiting = "⏳" // a machine or a person is deciding
+	// iconWaiting was the hourglass until OR-559. It is two cells wide on
+	// most terminals and one on some, so every row carrying it risked being a
+	// column out of line with the rest -- and a colour emoji ignores the
+	// status colour it is painted in. The clock face is one cell everywhere
+	// and takes the colour.
+	iconWaiting = "◷" // a machine or a person is deciding
 	iconBlocked = "⚠"
 )
 
@@ -128,11 +133,10 @@ var icons = map[string]icon{
 	"ci-wait": {iconWaiting, "~"},
 }
 
-// iconWidth is the icon column in terminal CELLS rather than runes.
-//
-// The hourglass is double-width. Padding it by rune count would push every
-// waiting line one column right of every other line, which is precisely the
-// ragged wall the column widths exist to prevent.
+// iconWidth is the icon column in terminal CELLS rather than runes: a glyph
+// and the space behind it. It was sized for the double-width hourglass;
+// every icon is one cell since OR-559 and the column keeps its width, so no
+// line moves.
 const iconWidth = 3
 
 // iconFor returns the icon column for a status word, already padded.
@@ -175,16 +179,11 @@ var (
 	spinASCII  = []string{"|", "/", "-", "\\"}
 )
 
-// cells is the terminal width of an icon. A table rather than a rune-range
-// guess: the set is six glyphs and only one of them is wide.
+// cells is the terminal width of an icon, or a spinner frame.
 func cells(s string) int {
 	n := 0
 	for _, r := range s {
-		if string(r) == iconWaiting {
-			n += 2
-			continue
-		}
-		n++
+		n += runeWidth(r)
 	}
 	return n
 }
