@@ -752,7 +752,7 @@ func runBatch(pass []string, cfg config.Config, opts Options, deps Deps,
 	// changes something -- a fix pushed, a member ejected, a different set
 	// assembled -- and the record no longer matches, so it stops applying
 	// without anybody having to clear it.
-	if errors.Is(err, ErrInteractionFault) {
+	if errors.Is(err, ErrInteractionFault) || errors.Is(err, ErrBaseRed) {
 		if serr := saveBatchState(ws.Dir, batchState{
 			Ref: ref, Base: cfg.VCS.WorkBranch, Members: keysOf(members),
 			Status: batchStuck, BaseSHA: b.BaseSHA, PRURL: batchPR(),

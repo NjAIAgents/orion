@@ -89,6 +89,9 @@ type fakeTester struct {
 	// is in flight -- a person pushing to the base being the case that
 	// matters (ADR 0017).
 	onTest func()
+	// everything fails every ref, the base included -- a check that is red
+	// whatever it runs on (OR-564).
+	everything bool
 }
 
 func (t *fakeTester) Test(ref string) (bool, error) {
@@ -99,6 +102,9 @@ func (t *fakeTester) Test(ref string) (bool, error) {
 	t.tested[ref] = true
 	if t.onTest != nil {
 		t.onTest()
+	}
+	if t.everything {
+		return false, nil
 	}
 	for _, b := range t.g.contents[ref] {
 		if t.bad[b] {
@@ -482,5 +488,31 @@ func TestEveryIsolationRefIsDeletedFromTheForgeToo(t *testing.T) {
 		if ref == "develop" {
 			t.Fatalf("the work branch was deleted from the forge: %v", g.deletedRemote)
 		}
+	}
+}
+
+// OR-564: a check red on everything -- LTA's secret scan over every branch --
+// made every half red, and isolation convicted all three members. With the
+// base red too, nobody is to blame.
+func TestARedBaseConvictsNobody(t *testing.T) {
+	g := newFakeGit()
+	tr := &fakeTester{g: g, everything: true}
+	culprits, _, err := Isolate(tr, g, "batch-iso", "develop", members("LTA-140", "LTA-141", "LTA-142"), nil)
+	if !errors.Is(err, ErrBaseRed) || len(culprits) != 0 {
+		t.Fatalf("Isolate = %v, %v; want no culprits and ErrBaseRed", keysOf(culprits), err)
+	}
+	if !tr.tested["batch-iso-base"] {
+		t.Fatalf("the base was never tested alone: %v", tr.tested)
+	}
+}
+
+// ...and a batch where every member really is bad, on a green base, still
+// convicts every member: the extra run confirms rather than excuses.
+func TestEveryMemberBadOnAGreenBaseIsStillConvicted(t *testing.T) {
+	g := newFakeGit()
+	tr := &fakeTester{g: g, bad: map[string]bool{"orion/or-1": true, "orion/or-2": true}}
+	culprits, _, err := Isolate(tr, g, "batch-iso", "develop", members("OR-1", "OR-2"), nil)
+	if err != nil || len(culprits) != 2 {
+		t.Fatalf("Isolate = %v, %v; want both convicted", keysOf(culprits), err)
 	}
 }
