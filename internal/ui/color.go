@@ -76,6 +76,12 @@ func enabled(w io.Writer) bool {
 	if _, ok := os.LookupEnv("NO_COLOR"); ok {
 		return false
 	}
+	// ORION_THEME=mono is the same request made to Orion alone (OR-559): no
+	// colour codes at all, on the watch view and everywhere else. An explicit
+	// choice, so it wins over a force as NO_COLOR does.
+	if theme() == themeMono {
+		return false
+	}
 	// CLICOLOR_FORCE is the counterpart convention: keep colour when the
 	// destination is not a terminal, for a pager or a CI log that renders it.
 	// "0" means off, matching how other tools read it.
@@ -237,6 +243,43 @@ func Heading(w io.Writer, s string) string { return paint(w, bold, s) }
 
 // Dim renders secondary detail, for continuation lines under a status.
 func Dim(w io.Writer, s string) string { return paint(w, dim, s) }
+
+// italic is SGR 3. Terminals that cannot slant ignore it, which is the right
+// failure: the text is still there, merely upright.
+const italic = "\x1b[3m"
+
+// Italic renders secondary detail that sits beside primary text on the same
+// row -- what a ticket is doing, a duration, "3m ago" (OR-559). Dim alone
+// left the watch view's rows one flat grey where the eye needed the ticket
+// and its state to stand out from the commentary; slanted and dim reads as
+// "aside" without spending a colour, and colour here means state. Two
+// sequences rather than one combined code, so the panels' recolouring
+// (onDark, onLight) still finds the dim and lifts it to a readable shade.
+func Italic(w io.Writer, s string) string { return paint(w, italic+dim, s) }
+
+// The watch view's themes (OR-559), picked by ORION_THEME. Dark is the
+// default and what the view drew before the variable existed; light is for
+// a light terminal, where the dark panels were a black slab across a white
+// screen; mono is no colour at all. NO_COLOR means mono whatever the theme
+// says, for the reason enabled gives.
+const (
+	themeDark  = "dark"
+	themeLight = "light"
+	themeMono  = "mono"
+)
+
+func theme() string {
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+		return themeMono
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ORION_THEME"))) {
+	case themeLight:
+		return themeLight
+	case themeMono:
+		return themeMono
+	}
+	return themeDark
+}
 
 // Detail renders a continuation line indented to a status line's detail
 // column, so a two-line status reads as one thing rather than two.

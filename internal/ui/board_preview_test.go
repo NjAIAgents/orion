@@ -48,15 +48,27 @@ func TestBoardPreview(t *testing.T) {
 	BoardFan("LTA-117", []string{"#1 qa · 4 case(s)", "#2 qa · 4 case(s)", "#3 qa · 4 case(s)", "#4 qa · 4 case(s)", "#5 qa · 4 case(s)"}, 2)
 	BoardFanChild("LTA-117", 0, "done", 28*time.Second)
 	BoardFanChild("LTA-117", 1, "running", 0)
-	BoardFanChild("LTA-117", 2, "done", 32*time.Second)
+	BoardFanChild("LTA-117", 2, "failed", 32*time.Second)
 	BoardFanChild("LTA-117", 3, "running", 0)
+	// A fan with nothing failed folds to a bar in its row (OR-559); LTA-117's,
+	// with a failed child, keeps its tree.
+	LiveStart("LTA-63")
+	Stage(&out, discardLog(), Handoff{At: at(1, 2), Key: "LTA-63", From: "implementing", To: "qa", By: "implementer", Next: "qa"})
+	BoardFan("LTA-63", []string{"#1 qa · 4 case(s)", "#2 qa · 4 case(s)", "#3 qa · 4 case(s)", "#4 qa · 4 case(s)", "#5 qa · 4 case(s)"}, 2)
+	for i := 0; i < 4; i++ {
+		BoardFanChild("LTA-63", i, "done", 30*time.Second)
+	}
+	BoardFanChild("LTA-63", 4, "running", 0)
 	LiveAgents("LTA-2")
 	LiveAgents("LTA-2")
 	LiveActivityNote("LTA-2", "implementer", "Edit src/log_triage/evidence.py")
 	LiveActivityNote("LTA-118", "implementer", "Edit tests/unit/test_store.py")
 
+	now = at(3, 0)
 	LiveBatchStart("orion/batch", "develop", []string{"LTA-119", "LTA-120", "LTA-124"})
+	now = at(3, 12)
 	LiveBatchPhase(BatchTesting)
+	LiveBatchMedian(6 * time.Minute)
 	LiveChecks([]Check{{Name: "test", State: CheckRunning}, {Name: "secret scan", State: CheckPassed}})
 	board.last, board.lastOK, board.lastAt = "landed LTA-123 LTA-128", true, at(-11, 0)
 	BoardNeedsYou([]string{"LTA-112 is out of automatic retries -- look at it, then requeue"})
@@ -65,9 +77,11 @@ func TestBoardPreview(t *testing.T) {
 	if sp := os.Getenv("SCREEN_PREVIEW"); sp != "" {
 		// The top-style view (OR-548): the same state, one frame.
 		log := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
-		h := " " + Heading(&out, "orion watch LTA") + "  " + Dim(&out, now.Format("15:04:05")) +
-			Dim(&out, "   log ~/.orion/logs/watch-20260927-130000.log   ctrl-c stops")
+		s := &Screen{title: "LTA", started: base.Add(-2 * time.Hour), term: &out, logPath: "~/.orion/logs/w.log"}
+		h := s.header(118, boardSummary())
+		board.mu.Lock()
 		top, foot := renderBoardParts(&out, now, true)
+		board.mu.Unlock()
 		f := frame(&out, 32, 118, h, top, log, foot)
 		f = strings.ReplaceAll(f, escHome, "")
 		f = strings.ReplaceAll(f, escBelow, "")

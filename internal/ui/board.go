@@ -66,7 +66,10 @@ type boardBatch struct {
 	phase   BatchPhase
 	members []*boardMember
 	started time.Time
-	testing time.Time
+	// at is when the batch entered each phase, so the bottom panel can say
+	// how long assembling took and how long CI has run (OR-559). A phase it
+	// never entered has no entry, and its step shows no time.
+	at map[BatchPhase]time.Time
 }
 
 var board struct {
@@ -84,13 +87,17 @@ var board struct {
 	checks   []Check
 	spend    float64
 	landed   int
-	batch    *boardBatch
-	last     string // the last finished batch, one line
-	lastOK   bool
-	lastAt   time.Time
-	needs    []string
-	sig      string
-	printed  time.Time
+	// median is the usual CI time of a batch, from LiveBatchMedian: what the
+	// CI step's bar measures against (OR-559). Zero means no baseline yet,
+	// and the step shows only its elapsed time rather than inventing one.
+	median  time.Duration
+	batch   *boardBatch
+	last    string // the last finished batch, one line
+	lastOK  bool
+	lastAt  time.Time
+	needs   []string
+	sig     string
+	printed time.Time
 }
 
 // BoardEnable turns the board on for this process. A watcher does; a single
@@ -143,6 +150,21 @@ func BoardLanded() {
 	board.mu.Lock()
 	board.landed++
 	board.mu.Unlock()
+}
+
+// boardCounts is what the full-screen view's header summarises (OR-559).
+type boardCounts struct {
+	running, queued, landed, failed int
+	spend                           float64
+}
+
+// boardSummary reads the header's counts. It takes board.mu itself, so the
+// screen asks for it before taking its own lock, never under it.
+func boardSummary() boardCounts {
+	board.mu.Lock()
+	defer board.mu.Unlock()
+	return boardCounts{running: len(board.jobs), queued: board.queue["queued"],
+		landed: board.landed, failed: board.queue["failed"], spend: board.spend}
 }
 
 func boardJobFor(key string) *boardJob {
@@ -244,7 +266,8 @@ func boardQueue(rows []QueueRow) {
 
 func boardBatchStart(ref string, members []string) {
 	board.mu.Lock()
-	b := &boardBatch{ref: ref, phase: BatchAssembling, started: clock()}
+	b := &boardBatch{ref: ref, phase: BatchAssembling, started: clock(),
+		at: map[BatchPhase]time.Time{BatchAssembling: clock()}}
 	for _, k := range members {
 		b.members = append(b.members, &boardMember{key: k, state: MemberPending})
 	}
@@ -256,8 +279,8 @@ func boardBatchPhase(p BatchPhase) {
 	board.mu.Lock()
 	if b := board.batch; b != nil {
 		b.phase = p
-		if p == BatchTesting && b.testing.IsZero() {
-			b.testing = clock()
+		if _, ok := b.at[p]; !ok {
+			b.at[p] = clock()
 		}
 	}
 	board.mu.Unlock()
@@ -388,9 +411,47 @@ func renderBoard(w io.Writer, now time.Time) string {
 	return top + bottom
 }
 
+// The running table's columns (OR-559), in terminal cells. Each ends in at
+// least one space, and a value wider than its column pushes the rest of the
+// row right rather than being cut -- the same rule the event lines keep. The
+// key column is the exception, widened to the longest key on the board, so
+// an ORION-1234 among LTA-2s does not put its own row out of line.
+const (
+	colKey   = 9
+	colStage = 14
+	colTook  = 8
+	colWho   = 27
+)
+
+// keyColor and whoColor are the one colour each for a ticket key and an
+// agent on the board (OR-559). The event lines keep their per-ticket and
+// per-actor identity colours; on the board those made every row a rainbow in
+// which the one red thing did not stand out. Here colour means state, and
+// the key and the agent are told apart by column, not hue.
+const (
+	keyColor = sky
+	whoColor = amber
+)
+
+// stateColor is statusColor for the board (OR-559): the same states, but
+// work in progress is amber, not cyan. Cyan sat beside the sky-blue keys and
+// read as one more identity colour; amber says "going" next to green done,
+// red failed and blue waiting. A warning shares it, and only ever appears on
+// the board with its word ("ejected") beside it.
+func stateColor(verb string) string {
+	if verb == VerbWorking {
+		return yellow
+	}
+	return statusColor(verb)
+}
+
 // renderBoardParts renders the board; with split, the batch, CI and last
 // result come back separately as the full-screen view's bottom panel
 // (OR-557), and the top ends at the running tickets, the queue and NEEDS YOU.
+//
+// Split is the full-screen view, and there the panel's ground sets sections
+// apart, so a blank row stands where the plain log draws a rule, and the
+// totals row is gone: the header carries those counts (OR-559).
 func renderBoardParts(w io.Writer, now time.Time, split bool) (string, string) {
 	// The terminal's own width, so the rules span it; 100 when it cannot be
 	// read (a pipe, a log file).
@@ -402,51 +463,21 @@ func renderBoardParts(w io.Writer, now time.Time, split bool) (string, string) {
 		width = 200
 	}
 	rule := Dim(w, strings.Repeat("─", width))
-	label := func(verb, s string) string { return paint(w, statusColor(verb), boardIcon(verb)+s) }
+	if split {
+		// A space, not nothing: the frame trims trailing newlines, and the
+		// last separator is a row of panel the design keeps.
+		rule = " "
+	}
+	label := func(verb, s string) string {
+		return paint(w, stateColor(verb), strings.TrimSpace(boardIcon(verb))+" "+s)
+	}
 	head := func(s string) string { return sectionChip(w, s) }
 
 	var b strings.Builder
 	b.WriteString(rule + "\n")
-
-	// Running.
-	keys := sortedJobKeys()
-	if len(keys) == 0 {
-		fmt.Fprintf(&b, " %s %s\n", head("RUNNING"), Dim(w, "nothing"))
-	}
-	for i, k := range keys {
-		j := board.jobs[k]
-		h := ""
-		if i == 0 {
-			h = "RUNNING"
-		}
-		who := ""
-		if j.actor != "" {
-			who = actors.DisplayFor(j.key, j.actor)
-		}
-		line := fmt.Sprintf("%s %-12s %s", paint(w, ticketColor(j.key), pad(j.key, keyWidth)),
-			j.stage, Dim(w, fmt.Sprintf("%6s", roundDur(now.Sub(j.started)))))
-		if who != "" {
-			line += "  " + paint(w, actorColor(j.actor), who)
-		}
-		if j.fan != nil {
-			done := 0
-			for _, c := range j.fan.children {
-				if c.state == "done" || c.state == "failed" {
-					done++
-				}
-			}
-			line += Dim(w, fmt.Sprintf(" · %d/%d done", done, len(j.fan.children)))
-		}
-		if j.agents > 0 {
-			line += Dim(w, fmt.Sprintf(" · %d subagent(s)", j.agents))
-		}
-		if j.note != "" && j.fan == nil {
-			line += Dim(w, " · "+shortenPaths(j.note))
-		}
-		fmt.Fprintf(&b, " %s %s %s\n", head(h), label(VerbWorking, ""), line)
-		if j.fan != nil {
-			b.WriteString(renderFan(w, j.fan, head("")))
-		}
+	renderRunning(&b, w, now)
+	if split {
+		b.WriteString(rule + "\n")
 	}
 
 	// Queue and totals: counts that add up. Waiting is labelled and not yet
@@ -465,21 +496,23 @@ func renderBoardParts(w io.Writer, now time.Time, split bool) (string, string) {
 	case board.held > 0:
 		wait += fmt.Sprintf(" · %d ready · %d blocked", ready, board.held)
 	}
-	fmt.Fprintf(&b, " %s %s%s\n", head("QUEUE"), label(VerbWaiting, wait), heldSummary(w))
-	totals := []string{label(VerbWorking, fmt.Sprintf("%d in integration", integ)),
-		label(VerbOK, fmt.Sprintf("%d landed", board.landed))}
-	if q["failed"] > 0 {
-		totals = append(totals, label(VerbFail, fmt.Sprintf("%d failed", q["failed"])))
+	fmt.Fprintf(&b, " %s%s%s\n", head("QUEUE"), label(VerbWaiting, wait), heldSummary(w))
+	if !split {
+		totals := []string{label(VerbWorking, fmt.Sprintf("%d in integration", integ)),
+			label(VerbOK, fmt.Sprintf("%d landed", board.landed))}
+		if q["failed"] > 0 {
+			totals = append(totals, label(VerbFail, fmt.Sprintf("%d failed", q["failed"])))
+		}
+		totals = append(totals, Dim(w, fmt.Sprintf("$%.2f", board.spend)))
+		fmt.Fprintf(&b, " %s%s\n", head(""), strings.Join(totals, Dim(w, " · ")))
 	}
-	totals = append(totals, Dim(w, fmt.Sprintf("$%.2f", board.spend)))
-	fmt.Fprintf(&b, " %s %s\n", head(""), strings.Join(totals, Dim(w, " · ")))
 
 	var bottom strings.Builder
 	batchTo := &b
 	if split {
 		batchTo = &bottom
 	}
-	renderBatch(batchTo, w, now, head, label)
+	renderBatch(batchTo, w, now, head)
 
 	// Needs you: only when there is something, and loudest.
 	if len(board.needs) > 0 {
@@ -489,12 +522,149 @@ func renderBoardParts(w io.Writer, now time.Time, split bool) (string, string) {
 			if i == 0 {
 				h = "NEEDS YOU"
 			}
-			fmt.Fprintf(&b, " %s %s\n", sectionChip(w, h),
-				paint(w, brightMagenta, needsGlyph()+" "+n))
+			fmt.Fprintf(&b, " %s%s\n", sectionChip(w, h),
+				paint(w, brightMagenta, " "+needsGlyph()+" "+n))
 		}
 	}
 	b.WriteString(rule + "\n")
 	return b.String(), bottom.String()
+}
+
+// renderRunning writes RUNNING as a table (OR-559): a dim header row on the
+// chip's line, then one row per ticket -- icon, key, stage, elapsed, who,
+// and what it is doing -- each column starting in the same place on every
+// row. Before, each row was a sentence whose words moved with the length of
+// the one before, and comparing two tickets' stages meant reading both rows
+// to the end. Caller holds board.mu.
+func renderRunning(b *strings.Builder, w io.Writer, now time.Time) {
+	keys := sortedJobKeys()
+	if len(keys) == 0 {
+		fmt.Fprintf(b, " %s%s\n", sectionChip(w, "RUNNING"), Dim(w, "nothing"))
+		return
+	}
+	keyW := colKey
+	for _, k := range keys {
+		if n := visibleCells(k) + 1; n > keyW {
+			keyW = n
+		}
+	}
+	fmt.Fprintf(b, " %s%s\n", sectionChip(w, "RUNNING"), Dim(w, strings.Repeat(" ", iconWidth)+
+		pad("TICKET", keyW)+pad("STAGE", colStage)+fmt.Sprintf("%*s", colTook, "ELAPSED")+"   "+
+		pad("WHO", colWho)+"DOING"))
+	for _, k := range keys {
+		j := board.jobs[k]
+		who := ""
+		if j.actor != "" {
+			who = actors.DisplayFor(j.key, j.actor)
+		}
+		verb := VerbWorking
+		failed := fanFailed(j.fan)
+		if failed {
+			verb = VerbFail
+		}
+		row := paint(w, stateColor(verb), boardIcon(verb)) +
+			padCells(paint(w, bold+keyColor, j.key), keyW-1) + " " +
+			padCells(j.stage, colStage-1) + " " +
+			Dim(w, fmt.Sprintf("%*s", colTook, roundDur(now.Sub(j.started)))) + "   " +
+			padCells(paint(w, whoColor, who), colWho-1) + " " + jobDoing(w, j)
+		fmt.Fprintf(b, " %s%s\n", sectionChip(w, ""), strings.TrimRight(row, " "))
+		// The tree only when a child failed: which one, and what the others
+		// are doing, is then the question. Otherwise the bar in DOING says
+		// all there is to say, in one row instead of six (OR-559).
+		if failed {
+			b.WriteString(renderFan(w, j.fan, sectionChip(w, "")))
+		}
+	}
+}
+
+// fanFailed reports whether any child of a fan-out has failed.
+func fanFailed(f *boardFan) bool {
+	if f == nil {
+		return false
+	}
+	for _, c := range f.children {
+		if c.state == "failed" {
+			return true
+		}
+	}
+	return false
+}
+
+// jobDoing is the DOING cell: a fan-out folded to its label, a count and a
+// bar, or the latest activity; then any subagents. Secondary detail, so
+// italic. Caller holds board.mu.
+func jobDoing(w io.Writer, j *boardJob) string {
+	var parts []string
+	if f := j.fan; f != nil {
+		done, running, failed := 0, 0, 0
+		for _, c := range f.children {
+			switch c.state {
+			case "done":
+				done++
+			case "failed":
+				done++
+				failed++
+			case "running":
+				running++
+			}
+		}
+		s := fmt.Sprintf("%s %d/%d ", fanLabel(j), done, len(f.children)) + fanBar(w, done, len(f.children))
+		if failed > 0 {
+			s += paint(w, stateColor(VerbFail), fmt.Sprintf("  %d failed", failed))
+		} else {
+			s += Italic(w, fmt.Sprintf("  %d running", running))
+		}
+		parts = append(parts, s)
+	} else if j.note != "" {
+		parts = append(parts, Italic(w, shortenPaths(j.note)))
+	}
+	if j.agents > 0 {
+		parts = append(parts, Italic(w, fmt.Sprintf("%d subagent(s)", j.agents)))
+	}
+	return strings.Join(parts, Italic(w, " · "))
+}
+
+// fanLabel names a fan-out by what its children are: "#3 qa · 4 case(s)"
+// is a qa fan. The stage when a label does not have that shape.
+func fanLabel(j *boardJob) string {
+	if len(j.fan.children) > 0 {
+		l := j.fan.children[0].label
+		if strings.HasPrefix(l, "#") {
+			if _, rest, ok := strings.Cut(l, " "); ok {
+				l = rest
+			}
+		}
+		l, _, _ = strings.Cut(l, " · ")
+		if l = strings.TrimSpace(l); l != "" {
+			return l
+		}
+	}
+	return j.stage
+}
+
+// fanBarMax caps a fan's bar: one cell per child up to here, scaled beyond,
+// so a forty-case fan does not push the row off the screen.
+const fanBarMax = 12
+
+// fanBar is done out of total as a bar, the done part in the done colour.
+func fanBar(w io.Writer, done, total int) string {
+	n, fill := total, done
+	if total > fanBarMax {
+		n, fill = fanBarMax, done*fanBarMax/total
+	}
+	return progressBar(w, VerbOK, fill, n)
+}
+
+// progressBar is fill of n cells in a state's colour, the rest dim.
+func progressBar(w io.Writer, verb string, fill, n int) string {
+	if fill > n {
+		fill = n
+	}
+	on, off := "▰", "▱"
+	if !glyphs() {
+		on, off = "#", "."
+	}
+	return paint(w, stateColor(verb), strings.Repeat(on, fill)) + Dim(w, strings.Repeat(off, n-fill))
 }
 
 func needsGlyph() string {
@@ -504,38 +674,75 @@ func needsGlyph() string {
 	return "?"
 }
 
-func batchPipeline(w io.Writer, p BatchPhase, failed bool) string {
+// batchPipeline is the batch's steps, each with how long it took or has
+// taken (OR-559), and the CI step measured against the usual CI time when
+// there is one: "CI ◐ 4m of ~6m" and a bar is the answer to "how much
+// longer", which the step's name alone never gave. Caller holds board.mu.
+func batchPipeline(w io.Writer, bt *boardBatch, now time.Time, failed bool) string {
 	steps := []struct {
 		name  string
 		phase BatchPhase
 	}{{"assembling", BatchAssembling}, {"CI", BatchTesting}, {"isolating", BatchIsolating}, {"landing", BatchDone}}
+	// took is how long step i ran: until the next phase the batch entered,
+	// or until now for the phase it is in. Unknown -- a phase never entered,
+	// or a resumed batch whose assembling happened in another process -- is
+	// negative, and the step shows no time.
+	took := func(i int) time.Duration {
+		start, ok := bt.at[steps[i].phase]
+		if !ok {
+			return -1
+		}
+		if steps[i].phase == bt.phase {
+			return now.Sub(start)
+		}
+		for _, next := range steps[i+1:] {
+			if end, ok := bt.at[next.phase]; ok {
+				return end.Sub(start)
+			}
+		}
+		return -1
+	}
+	elapsed := func(i int) string {
+		if d := took(i); d >= 0 {
+			return Italic(w, " "+roundDur(d))
+		}
+		return ""
+	}
 	reached := true
 	var out []string
-	for _, s := range steps {
+	for i, s := range steps {
 		switch {
-		case s.phase == p && failed && p == BatchTesting:
-			out = append(out, paint(w, statusColor(VerbFail), s.name+" "+strings.TrimSpace(boardIcon(VerbFail))))
+		case s.phase == bt.phase && failed && bt.phase == BatchTesting:
+			out = append(out, paint(w, stateColor(VerbFail), s.name+" "+strings.TrimSpace(boardIcon(VerbFail)))+elapsed(i))
 			reached = false
-		case s.phase == p:
-			out = append(out, paint(w, statusColor(VerbWorking), s.name+" "+strings.TrimSpace(boardIcon(VerbWorking))))
+		case s.phase == bt.phase:
+			step := paint(w, stateColor(VerbWorking), s.name+" "+strings.TrimSpace(boardIcon(VerbWorking)))
+			if d := took(i); s.phase == BatchTesting && d >= 0 && board.median > 0 {
+				const cells = 11
+				step += Italic(w, " "+roundDur(d)+" of ~"+roundDur(board.median)+" ") +
+					progressBar(w, VerbWorking, int(d*cells/board.median), cells)
+			} else {
+				step += elapsed(i)
+			}
+			out = append(out, step)
 			reached = false
 		case reached:
-			out = append(out, paint(w, statusColor(VerbOK), s.name+" "+strings.TrimSpace(boardIcon(VerbOK))))
+			out = append(out, paint(w, stateColor(VerbOK), s.name+" "+strings.TrimSpace(boardIcon(VerbOK)))+elapsed(i))
 		default:
 			out = append(out, Dim(w, s.name))
 		}
 	}
-	return strings.Join(out, Dim(w, " → "))
+	return strings.Join(out, Dim(w, "  →  "))
 }
 
 func memberWord(w io.Writer, m *boardMember) string {
 	switch m.state {
 	case MemberLanded:
-		return paint(w, statusColor(VerbOK), m.key+" landed")
+		return paint(w, stateColor(VerbOK), m.key+" landed")
 	case MemberCulprit:
-		return paint(w, statusColor(VerbFail), m.key+" culprit"+detailSuffix(m.detail))
+		return paint(w, stateColor(VerbFail), m.key+" culprit"+detailSuffix(m.detail))
 	case MemberEjected:
-		return paint(w, statusColor(VerbWarn), m.key+" ejected"+detailSuffix(m.detail))
+		return paint(w, stateColor(VerbWarn), m.key+" ejected"+detailSuffix(m.detail))
 	}
 	return ""
 }
@@ -547,14 +754,15 @@ func detailSuffix(d string) string {
 	return " (" + d + ")"
 }
 
-func checkIcon(w io.Writer, state string) string {
+// checkVerb is the board state of a CI check's state.
+func checkVerb(state string) string {
 	switch state {
 	case CheckPassed:
-		return paint(w, statusColor(VerbOK), strings.TrimSpace(boardIcon(VerbOK)))
+		return VerbOK
 	case CheckFailed:
-		return paint(w, statusColor(VerbFail), strings.TrimSpace(boardIcon(VerbFail)))
+		return VerbFail
 	}
-	return paint(w, statusColor(VerbWorking), strings.TrimSpace(boardIcon(VerbWorking)))
+	return VerbWorking
 }
 
 func roundDur(d time.Duration) string {
@@ -572,7 +780,7 @@ func resetBoard() {
 	board.mu.Lock()
 	defer board.mu.Unlock()
 	board.active, board.jobs, board.queue = false, nil, nil
-	board.held, board.inCI, board.checks, board.spend, board.landed = 0, 0, nil, 0, 0
+	board.held, board.inCI, board.checks, board.spend, board.landed, board.median = 0, 0, nil, 0, 0, 0
 	board.batch, board.last, board.lastOK, board.lastAt, board.needs = nil, "", false, time.Time{}, nil
 	board.sig, board.printed = "", time.Time{}
 	board.spinning, board.spin = false, 0
@@ -582,7 +790,9 @@ func resetBoard() {
 // fanShown is how many children a fan tree lists before summarising the rest.
 const fanShown = 6
 
-// renderFan draws a fan-out as a tree under its ticket. Caller holds board.mu.
+// renderFan draws a fan-out as a tree under its ticket: since OR-559 only
+// when a child has failed, with that child in the failure colour so it is
+// the first thing read. Caller holds board.mu.
 func renderFan(w io.Writer, f *boardFan, indent string) string {
 	branch, last := "├ ", "└ "
 	if !glyphs() {
@@ -606,31 +816,33 @@ func renderFan(w io.Writer, f *boardFan, indent string) string {
 		if i == n-1 {
 			mark = last
 		}
-		verb, tail := VerbWorking, ""
+		verb, name, tail := VerbWorking, c.label, ""
 		switch c.state {
 		case "done":
-			verb, tail = VerbOK, "  "+Dim(w, roundDur(c.took))
+			verb, tail = VerbOK, "  "+Italic(w, roundDur(c.took))
 		case "failed":
-			verb, tail = VerbFail, "  "+Dim(w, roundDur(c.took))
+			verb = VerbFail
+			name = paint(w, stateColor(VerbFail), c.label)
+			tail = "  " + paint(w, stateColor(VerbFail), roundDur(c.took))
 		case "pending":
 			verb = "pending"
 			if f.limit > 0 && running >= f.limit {
-				tail = "  " + Dim(w, fmt.Sprintf("queued (%d at a time)", f.limit))
+				tail = "  " + Italic(w, fmt.Sprintf("queued (%d at a time)", f.limit))
 			} else {
-				tail = "  " + Dim(w, "queued")
+				tail = "  " + Italic(w, "queued")
 			}
 		}
-		fmt.Fprintf(&b, " %s     %s%s%s%s\n", indent, Dim(w, mark),
-			paint(w, statusColor(verb), boardIcon(verb)), c.label, tail)
+		fmt.Fprintf(&b, " %s      %s%s%s%s\n", indent, Dim(w, mark),
+			paint(w, stateColor(verb), boardIcon(verb)), name, tail)
 	}
 	if shown < n {
 		rest := map[string]int{}
 		for _, c := range f.children[shown:] {
 			rest[c.state]++
 		}
-		fmt.Fprintf(&b, " %s     %s%s\n", indent, Dim(w, last),
-			Dim(w, fmt.Sprintf("%d more: %d done · %d running · %d queued",
-				n-shown, rest["done"]+rest["failed"], rest["running"], rest["pending"])))
+		fmt.Fprintf(&b, " %s      %s%s\n", indent, Dim(w, last),
+			Dim(w, fmt.Sprintf("%d more: %d done · %d failed · %d running · %d queued",
+				n-shown, rest["done"], rest["failed"], rest["running"], rest["pending"])))
 	}
 	return b.String()
 }
@@ -707,36 +919,40 @@ func boardIcon(verb string) string {
 	return iconFor(verb)
 }
 
-// sectionBg is each board section's label colour (OR-555): a filled chip
-// per section, so the eye finds RUNNING, QUEUE or NEEDS YOU without reading.
-// 256-colour backgrounds dark enough for white text on a light or a dark
-// terminal, and none of them green or red, which are verdicts.
-var sectionBg = map[string]string{
-	"RUNNING":   "\x1b[48;5;25m",
-	"QUEUE":     "\x1b[48;5;60m",
-	"BATCH":     "\x1b[48;5;30m",
-	"CI":        "\x1b[48;5;24m",
-	"LAST":      "\x1b[48;5;240m",
-	"NEEDS YOU": "\x1b[48;5;127m",
-}
+// A section's chip is one slate for every section (OR-559), and magenta for
+// NEEDS YOU alone. Each section had its own colour (OR-555), and six colours
+// competing with the status colours meant none of them stood out; colour now
+// means state, and the one chip that is a state -- a person is needed -- is
+// the one that keeps a colour. Dark enough for white text on any terminal.
+const (
+	chipBg  = "\x1b[48;5;60m"
+	needsBg = "\x1b[48;5;127m"
+)
 
 // sectionChipWidth fits the longest label, NEEDS YOU, with a space each side.
 const sectionChipWidth = 11
 
-// sectionChip is a section's label as a coloured chip, or blank space of the
+// sectionChip is a section's label as a filled chip, or blank space of the
 // same width on its continuation rows, so every row's content starts in the
-// same column. Plain text off a terminal or under NO_COLOR.
+// same column. Without colour -- off a terminal, NO_COLOR, the mono theme --
+// a chip is the label in brackets, which still reads as a heading and keeps
+// the width (OR-559).
 func sectionChip(w io.Writer, s string) string {
-	cell := " " + s + strings.Repeat(" ", sectionChipWidth-1-len(s))
-	if s == "" || sectionBg[s] == "" {
-		return cell
+	if s == "" {
+		return strings.Repeat(" ", sectionChipWidth)
 	}
-	return paint(w, bold+"\x1b[97m"+sectionBg[s], cell)
+	if !enabled(w) {
+		return pad("["+s+"]", sectionChipWidth)
+	}
+	bg := chipBg
+	if s == "NEEDS YOU" {
+		bg = needsBg
+	}
+	return paint(w, bold+"\x1b[97m"+bg, pad(" "+s, sectionChipWidth))
 }
 
 // renderBatch writes the batch, its CI checks and the last batch's result.
-func renderBatch(b *strings.Builder, w io.Writer, now time.Time,
-	head func(string) string, label func(string, string) string) {
+func renderBatch(b *strings.Builder, w io.Writer, now time.Time, head func(string) string) {
 	// Batch and CI.
 	failedCheck := false
 	for _, c := range board.checks {
@@ -745,10 +961,6 @@ func renderBatch(b *strings.Builder, w io.Writer, now time.Time,
 		}
 	}
 	if bt := board.batch; bt != nil {
-		since := bt.started
-		if !bt.testing.IsZero() {
-			since = bt.testing
-		}
 		var in, out []string
 		for _, m := range bt.members {
 			switch m.state {
@@ -760,10 +972,11 @@ func renderBatch(b *strings.Builder, w io.Writer, now time.Time,
 		}
 		ref := paint(w, bold, bt.ref)
 		if failedCheck {
-			ref = paint(w, statusColor(VerbFail), bt.ref+" red")
+			ref = paint(w, stateColor(VerbFail), bt.ref+" red")
 		}
-		fmt.Fprintf(b, " %s %s  %s  %s\n", head("BATCH"), ref, strings.Join(in, " "), Dim(w, roundDur(now.Sub(since))))
-		fmt.Fprintf(b, " %s %s\n", head(""), batchPipeline(w, bt.phase, failedCheck))
+		fmt.Fprintf(b, " %s%s  %s%s\n", head("BATCH"), ref, paint(w, keyColor, strings.Join(in, " ")),
+			Italic(w, "  started "+roundDur(now.Sub(bt.started))+" ago"))
+		fmt.Fprintf(b, " %s%s\n", head(""), batchPipeline(w, bt, now, failedCheck))
 		var ms []string
 		for _, m := range bt.members {
 			if m.state == MemberLanded || m.state == MemberCulprit {
@@ -771,26 +984,31 @@ func renderBatch(b *strings.Builder, w io.Writer, now time.Time,
 			}
 		}
 		if len(ms) > 0 {
-			fmt.Fprintf(b, " %s %s\n", head(""), strings.Join(ms, "  "))
+			fmt.Fprintf(b, " %s%s\n", head(""), strings.Join(ms, "  "))
 		}
 		if len(out) > 0 {
-			fmt.Fprintf(b, " %s %s\n", head(""), paint(w, statusColor(VerbWarn),
+			fmt.Fprintf(b, " %s%s\n", head(""), paint(w, stateColor(VerbWarn),
 				strings.TrimSpace(boardIcon(VerbWarn))+" ejected, next batch: "+strings.Join(out, ", ")))
 		}
 	}
+	// A check's state is its colour and its icon. No durations: a Check
+	// carries a name and a state and nothing about when it started, so a
+	// time here would be invented (OR-559).
 	if len(board.checks) > 0 {
 		var cs []string
 		for _, c := range board.checks {
-			cs = append(cs, c.Name+" "+checkIcon(w, c.State))
+			v := checkVerb(c.State)
+			cs = append(cs, paint(w, stateColor(v), c.Name+" "+strings.TrimSpace(boardIcon(v))))
 		}
-		fmt.Fprintf(b, " %s %s\n", head("CI"), strings.Join(cs, Dim(w, " · ")))
+		fmt.Fprintf(b, " %s%s\n", head("CI"), strings.Join(cs, "   "))
 	}
 	if board.last != "" {
 		verb := VerbOK
 		if !board.lastOK {
 			verb = VerbFail
 		}
-		fmt.Fprintf(b, " %s %s %s\n", head("LAST"), label(verb, board.last), Dim(w, "· "+roundDur(now.Sub(board.lastAt))+" ago"))
+		fmt.Fprintf(b, " %s%s%s\n", head("LAST"),
+			paint(w, stateColor(verb), strings.TrimSpace(boardIcon(verb))+" "+board.last),
+			Italic(w, " · "+roundDur(now.Sub(board.lastAt))+" ago"))
 	}
-
 }
