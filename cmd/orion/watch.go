@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -233,8 +234,8 @@ func watchScreen(args, projects []string, once, dry bool) *ui.Screen {
 	return ui.StartScreen(os.Stdout, title, logPath)
 }
 
-// workBranchHead is the project's work-branch head in its sandbox clone, as
-// last fetched; empty when anything along the way cannot be read.
+// workBranchHead is the project's work-branch head on the remote, read
+// through its sandbox clone; empty when anything along the way cannot be read.
 func workBranchHead(home, project string) string {
 	e, err := registry.Lookup(home, project)
 	if err != nil {
@@ -244,8 +245,22 @@ func workBranchHead(home, project string) string {
 	if err != nil {
 		return ""
 	}
-	branch := config.Load(e.Source).VCS.WorkBranch
-	out, err := exec.Command("git", "-C", ws.CloneDir(), "rev-parse", "--verify", "-q", "origin/"+branch).Output()
+	return remoteHead(ws.CloneDir(), config.Load(e.Source).VCS.WorkBranch)
+}
+
+// remoteHead fetches branch and returns origin/<branch>.
+//
+// FETCHED, not read as last fetched (OR-566). A batch lands through the
+// forge, so nothing updates this clone's origin/develop: on LTA, 2026-09-28,
+// develop moved at 10:34, the clone still said f878127, six failed tickets
+// waited for a move that had already happened, and the no-progress breaker
+// stopped the watch an hour later. A failed fetch falls back to the ref as it
+// stands -- stale is no worse than before, and never blocks a tick for long.
+func remoteHead(clone, branch string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_ = exec.CommandContext(ctx, "git", "-C", clone, "fetch", "-q", "origin", branch).Run()
+	out, err := exec.Command("git", "-C", clone, "rev-parse", "--verify", "-q", "origin/"+branch).Output()
 	if err != nil {
 		return ""
 	}
