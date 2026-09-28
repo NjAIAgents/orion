@@ -998,7 +998,7 @@ func failCulprit(res Result, m Member, ref string, cfg config.Config, opts Optio
 	// whose last run is stale or green (OR-336).
 	pr := PR{URL: batchPR(), Verdict: VerdictFailing, Head: m.Head,
 		FailedOn: ref,
-		Detail:   "convicted by the batch's isolation: " + detail}
+		Detail:   convictedPrefix + detail}
 	return failing(res, m.Key, pr, cfg, m.Branch, opts, deps, ws, log, w)
 }
 

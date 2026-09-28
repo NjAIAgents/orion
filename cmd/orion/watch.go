@@ -140,6 +140,9 @@ func runWatch(args []string) {
 				Merge: mergePR, OpenPR: openPR, Fix: fixRun, Judge: doneJudge,
 				Conform: conformReview,
 				Slack:   slackForApproval(),
+				RetriesLeft: func(key string) (int, int) {
+					return watch.RetriesLeft(workspace.Home(), key)
+				},
 			})
 		},
 		Work: func(o work.Options) []work.Result {

@@ -102,3 +102,17 @@ func TestNoRetryWhenTheWorkBranchCannotBeRead(t *testing.T) {
 		t.Errorf("retried with no way to know the base had moved: %v", r.requeued)
 	}
 }
+
+// OR-567: what the CI-failure notice is told about the retry budget.
+func TestRetriesLeftReadsTheLedger(t *testing.T) {
+	home := t.TempDir()
+	if left, used := RetriesLeft(home, "LTA-1"); left != maxFailedRetries || used != 0 {
+		t.Fatalf("an unknown ticket = %d left, %d used; want %d, 0", left, used, maxFailedRetries)
+	}
+	if err := saveRetries(home, map[string]retryEntry{"LTA-1": {Count: maxFailedRetries}}); err != nil {
+		t.Fatal(err)
+	}
+	if left, used := RetriesLeft(home, "LTA-1"); left != 0 || used != maxFailedRetries {
+		t.Fatalf("a spent ticket = %d left, %d used", left, used)
+	}
+}

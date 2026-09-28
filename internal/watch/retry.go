@@ -60,6 +60,16 @@ func loadRetries(home string) map[string]retryEntry {
 	return m
 }
 
+// RetriesLeft is how many automatic requeues key still has, and how many it
+// has used, from the ledger retryFailed keeps (OR-567).
+func RetriesLeft(home, key string) (left, used int) {
+	used = loadRetries(home)[key].Count
+	if left = maxFailedRetries - used; left < 0 {
+		left = 0
+	}
+	return left, used
+}
+
 func saveRetries(home string, m map[string]retryEntry) error {
 	if err := os.MkdirAll(filepath.Dir(retryPath(home)), 0o755); err != nil {
 		return err

@@ -168,6 +168,11 @@ type Deps struct {
 	// failedOn is the ref whose run to read the log from, or "" to read the
 	// branch's own (OR-336).
 	Fix func(ws *workspace.Workspace, key, branch, failedOn, failure string, log *events.Log) (pushed bool, summary string, denied *PolicyDenial, err error)
+	// RetriesLeft reports how many automatic retries the watch still has for
+	// a failed ticket, and how many it has used (OR-567). Nil -- `orion
+	// collect` run by hand, which never retries -- means none: the failure
+	// goes to a person.
+	RetriesLeft func(key string) (left, used int)
 	// Judge puts ONE question to a model about a finished, green run: does
 	// this diff do what the ticket asked for (OR-244)? It returns the reply
 	// verbatim; internal/done parses it.
@@ -792,10 +797,18 @@ func failing(res Result, key string, pr PR, cfg config.Config, branch string,
 		Msg: "CI failed: " + firstLine(pr.Detail)})
 	res.Changed = true
 
-	title, body := msgCIFailed(key, pr)
+	left, used := 0, 0
+	if deps.RetriesLeft != nil {
+		left, used = deps.RetriesLeft(key)
+	}
+	title, body, needsPerson := msgCIFailed(key, pr, left, used)
+	level, tag := notify.Warning, ""
+	if needsPerson {
+		level, tag = notify.Blocked, mention(cfg)
+	}
 	tell(w, log, notify.Event{
-		Key: key, Channel: channelOf(ws), Level: notify.Blocked, Workspace: ws.ID,
-		Title: title, Body: mention(cfg) + body,
+		Key: key, Channel: channelOf(ws), Level: level, Workspace: ws.ID,
+		Title: title, Body: tag + body,
 	})
 	ui.Fail(w, "%s: CI failed. %s", key, firstLine(pr.Detail))
 	return res
