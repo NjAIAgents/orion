@@ -128,6 +128,25 @@ func QACasesPrompt(key, summary, description, diff string) string {
 // It goes BEFORE the reporting contract rather than after it. The last thing
 // this prompt says is how to write the verdict; evidence appended past that
 // point arrives after the instructions that act on it.
+// testScope is what every prompt that writes a test says about scope and
+// fixtures (OR-565). Seen on LTA-141, a documentation ticket: QA wrote tests
+// for a sibling ticket's unlanded feature, which failed with it absent and
+// again with it present, and a fixture fix committed "AKIA..." literals that
+// the secret scan then failed every CI run in the repository on.
+func testScope() []string {
+	return []string{
+		"SCOPE AND FIXTURES",
+		"Test only what THIS ticket changes. If a claim depends on another",
+		"ticket's work that has not landed, skip that test and name the ticket in",
+		"the skip reason -- never write a test that fails until somebody else's",
+		"change arrives.",
+		"Never write a literal that looks like a credential -- an AWS key, a",
+		"token, a private key, a password in a URL. A secret scanner cannot tell",
+		"a fake from a real one and fails the build on it. Build fake values at",
+		"runtime instead, e.g. \"AKIA\" + \"X\" * 16.",
+	}
+}
+
 func QAPrompt(key, summary, description, cases string, tools QATools, evidence string) string {
 	var b strings.Builder
 	b.WriteString(join(
@@ -166,6 +185,11 @@ func QAPrompt(key, summary, description, cases string, tools QATools, evidence s
 		"A test that would not fail if this behaviour regressed does not count. Assert",
 		"on the behaviour the ticket describes, not on the shape of the code that",
 		"happens to implement it today.",
+		"",
+	))
+	b.WriteString(join(testScope()...))
+	b.WriteString(join(
+		"",
 		"",
 		"WHAT YOU MAY CHANGE",
 		"Test files only, inside the directories this repository already keeps its",
@@ -252,6 +276,8 @@ func QAFindingsMessage(findings string) string {
 		"plainly instead of editing it, and QA will look again.",
 		"",
 		"Change nothing else. This branch is about to be reviewed.",
+		"",
+		strings.Join(testScope(), "\n"),
 	)
 }
 
@@ -328,6 +354,8 @@ func QAAuthorPrompt(key, summary, cases string) string {
 		"2. Write a test for each case above. Put them where this repository puts",
 		"   its tests; do not invent a new location or a new framework.",
 		"3. Leave every other file alone. Another writer is in this worktree.",
+		"",
+		strings.Join(testScope(), "\n"),
 		"",
 		"DO NOT RUN THE TESTS. Not yours, not the suite, not a single package.",
 		"The other writers have not finished, so anything you compile now builds",
