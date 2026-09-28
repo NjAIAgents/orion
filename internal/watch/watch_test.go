@@ -1146,3 +1146,29 @@ func TestACollectErrorIsPrinted(t *testing.T) {
 		t.Fatalf("the collect error never reached the screen:\n%s", buf.String())
 	}
 }
+
+// OR-561: a blocker outside the queue is named in NEEDS YOU with what it
+// holds, most first; a blocker that is itself queued is not, since the watch
+// will get to it.
+func TestUnqueuedBlockersNeedAPerson(t *testing.T) {
+	held := []HeldTicket{
+		{Key: "LTA-140", Reason: "blocked by LTA-137"},
+		{Key: "LTA-141", Reason: "blocked by LTA-137"},
+		{Key: "LTA-77", Reason: "blocked by LTA-30, LTA-98"},
+		{Key: "LTA-5", Reason: "blocked by LTA-4"},
+		{Key: "LTA-9", Reason: "no free slot this pass"},
+	}
+	all := []tracker.Issue{{Key: "LTA-4"}, {Key: "LTA-30"}}
+	got := unqueuedBlockers(held, all)
+	if len(got) != 2 {
+		t.Fatalf("got %d items, want LTA-137 and LTA-98 only: %q", len(got), got)
+	}
+	if !strings.HasPrefix(got[0], "LTA-137 holds 2 ticket(s)") || !strings.HasPrefix(got[1], "LTA-98 holds 1 ticket(s)") {
+		t.Fatalf("wrong items or order: %q", got)
+	}
+	for _, g := range got {
+		if strings.Contains(g, "LTA-4 ") || strings.Contains(g, "LTA-30 ") {
+			t.Fatalf("a queued blocker was reported as needing a person: %q", g)
+		}
+	}
+}
