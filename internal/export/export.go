@@ -1,8 +1,3 @@
-// Author: Navjyot Nishant
-// Created: 2026-09-27
-// Last updated: 2026-09-27
-// Description: ships Orion's events to an observability backend over OTLP or Loki push (OR-556).
-
 // Package export ships Orion's events to the observability backend an
 // operator already runs, so a watch's history can be searched and charted
 // instead of living in a file per project.
