@@ -1,6 +1,9 @@
 package supervisor
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // The QA stage's prompts.
 //
@@ -68,6 +71,12 @@ func (t QATools) Path() string {
 // does not receive the criteria they came from -- that omission is the whole
 // saving. A case that says "as described in the ticket" arrives at a reader
 // who cannot follow the pointer.
+// MaxQACases is the most cases the derive step may hand QA. OR-558's derive
+// returned 803: the real cases, then hundreds of filler lines ("The change is
+// done.") that QA would have fanned out to five authors. A list that long is
+// a model that did not stop, not a specification.
+const MaxQACases = 40
+
 func QACasesPrompt(key, summary, description, diff string) string {
 	return join(
 		"Work out what a QA engineer has to test about this change. Do not test it.",
@@ -82,7 +91,8 @@ func QACasesPrompt(key, summary, description, diff string) string {
 		"",
 		"WHAT TO RETURN",
 		"The list of cases to cover, one per line, and nothing else. No preamble,",
-		"no account of how you read it, no test code.",
+		"no account of how you read it, no test code. At most "+strconv.Itoa(MaxQACases)+" cases:",
+		"the ones that matter most first, and stop when the criteria are covered.",
 		"Derive them from the criteria -- what SHOULD be true of this change --",
 		"and use the diff only to see what the change actually touches. A case",
 		"read off the implementation only re-states what it already does.",

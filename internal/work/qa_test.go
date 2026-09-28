@@ -1988,3 +1988,17 @@ func TestTheVerdictReAskIsShortAndRunsAsQA(t *testing.T) {
 			"(%d/%d)", ask.MaxMinutes, ask.MaxTurns, qaVerdictMaxMinutes, qaVerdictMaxTurns)
 	}
 }
+
+// OR-558's derive returned 803 lines, most of them filler. The cap keeps the
+// first cases in order, counts only case lines toward it, and says how many
+// it dropped.
+func TestCapCasesKeepsTheFirstN(t *testing.T) {
+	cases := "Cases:\ncase one\n\ncase two\ncase three\nThe change is done.\nThe change is ready."
+	got, dropped := capCases(cases, 2)
+	if got != "Cases:\ncase one\n\ncase two" || dropped != 3 {
+		t.Fatalf("capCases = %q, %d; want the first two cases and 3 dropped", got, dropped)
+	}
+	if got, dropped := capCases("a\nb", 2); got != "a\nb" || dropped != 0 {
+		t.Fatalf("a list at the cap = %q, %d; want it untouched", got, dropped)
+	}
+}

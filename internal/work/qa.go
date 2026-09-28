@@ -366,13 +366,37 @@ func deriveCases(job qaJob, deps Deps, log *events.Log, w io.Writer) string {
 		return ""
 	}
 
-	cases := strings.TrimSpace(res.Final)
+	cases, dropped := capCases(strings.TrimSpace(res.Final), supervisor.MaxQACases)
+	if dropped > 0 {
+		ui.Say(w, job.Key, events.ActorCaseDerive, ui.VerbWarn,
+			"kept the first %d case(s) and dropped %d past the cap", supervisor.MaxQACases, dropped)
+		log.Emitf(events.KindNote, events.ActorCaseDerive,
+			"case list capped at %d; %d more dropped", supervisor.MaxQACases, dropped)
+	}
 	log.Emit(events.Event{Kind: events.KindQA, Actor: events.ActorCaseDerive,
 		Model: actors.Model(events.ActorCaseDerive),
 		Msg:   "derived the cases to cover:\n" + cases})
 	ui.Say(w, job.Key, events.ActorCaseDerive, ui.VerbOK,
 		"derived %d case(s) from the acceptance criteria and the diff", countCases(cases))
 	return cases
+}
+
+// capCases keeps the first max cases of the list, counted the way countCases
+// counts them, and reports how many it dropped.
+func capCases(cases string, max int) (string, int) {
+	lines := strings.Split(cases, "\n")
+	n := 0
+	for i, line := range lines {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasSuffix(t, ":") {
+			continue
+		}
+		if n == max {
+			return strings.TrimSpace(strings.Join(lines[:i], "\n")), countCases(strings.Join(lines[i:], "\n"))
+		}
+		n++
+	}
+	return cases, 0
 }
 
 // countCases is how many lines of the list actually name a case, for the one
