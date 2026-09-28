@@ -68,7 +68,7 @@ func TestEveryLineCarriesATimePrefix(t *testing.T) {
 func TestEveryStatusRendersItsOwnIcon(t *testing.T) {
 	setUTF8Locale(t)
 	for verb, want := range map[string]string{
-		VerbDone:      iconOK,
+		VerbDone:    iconOK,
 		VerbWorking: iconWorking,
 		VerbWaiting: iconWaiting,
 		VerbWarn:    iconBlocked,
