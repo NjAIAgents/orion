@@ -1037,3 +1037,48 @@ func TestSnapshotDirtyCommitsWhatAnInterruptedRunLeft(t *testing.T) {
 		t.Errorf("a clean tree must produce no commit, got n=%d err=%v", n, err)
 	}
 }
+
+// OR-560: the Continuity plugin's untracked session notes are the tool's, not
+// the work, and must not keep a merged ticket's checkout on disk.
+func TestContinuityNotesAloneDoNotKeepAMergedWorktree(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/continuity-notes")
+	dir := filepath.Join(j.Path, ".continuity", "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{".continuity/state.md", ".continuity/metadata.json", ".continuity/sessions/s1.md"} {
+		if err := os.WriteFile(filepath.Join(j.Path, f), []byte("note\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if dirty, detail := Dirty(j.Path); dirty {
+		t.Fatalf("Continuity's session notes counted as the operator's work: %s", detail)
+	}
+	if err := RemoveMergedWorktree(ws, j.Path); err != nil {
+		t.Fatalf("kept the worktree over the plugin's own notes: %v", err)
+	}
+}
+
+// A .continuity file somebody committed is theirs: an edit to it still keeps
+// the worktree, and an agent's own untracked file beside the notes does too.
+func TestTrackedContinuityAndNearbyWorkAreStillProtected(t *testing.T) {
+	ws := sandbox(t)
+	j, _ := AddWorktree(ws, "develop", "orion/continuity-tracked")
+	if err := os.MkdirAll(filepath.Join(j.Path, ".continuity"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	note := filepath.Join(j.Path, ".continuity", "decisions.md")
+	os.WriteFile(note, []byte("committed\n"), 0o644)
+	gitT(t, j.Path, "add", "-f", ".continuity/decisions.md")
+	gitT(t, j.Path, "commit", "-q", "-m", "someone committed a decision")
+	os.WriteFile(note, []byte("edited\n"), 0o644)
+	if dirty, _ := Dirty(j.Path); !dirty {
+		t.Fatal("an edit to a tracked .continuity file was treated as discardable")
+	}
+	gitT(t, j.Path, "checkout", "--", ".continuity/decisions.md")
+	os.WriteFile(filepath.Join(j.Path, "new_test.py"), []byte("x\n"), 0o644)
+	if dirty, detail := Dirty(j.Path); !dirty || !strings.Contains(detail, "new_test.py") {
+		t.Fatalf("an agent's untracked file must still keep the worktree: %v %q", dirty, detail)
+	}
+}

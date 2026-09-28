@@ -334,6 +334,13 @@ func orionAuthored(worktree, status, path string) bool {
 	if strings.HasPrefix(path, ".orion/") {
 		return true
 	}
+	// The Continuity plugin's session notes (OR-560). A session hook writes them
+	// in every agent session, whatever the agent was asked to do, so they are
+	// the tool's record of the session and not the work. Counting them kept a
+	// landed ticket's whole checkout behind until someone forced the removal.
+	if strings.HasPrefix(path, ".continuity/") {
+		return true
+	}
 	// The breaker's stop-note (OR-194), at whatever plans path this repository
 	// configures.
 	plans := config.Load(worktree).Paths.Plans
