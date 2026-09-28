@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/orion-sdlc/orion/internal/actors"
@@ -332,11 +334,14 @@ func failingLog(dir, branch string) string {
 	// loop, and with it the whole watcher, with nothing visible to explain
 	// why.
 	list, listCancel := ghCommand(dir, "run", "list", "--branch", branch,
-		"--limit", "1", "--json", "databaseId,conclusion", "--jq", ".[0].databaseId")
+		"--limit", "10", "--json", "databaseId,conclusion")
 	defer listCancel()
-	idOut, err := list.Output()
-	id := strings.TrimSpace(string(idOut))
-	if err != nil || id == "" || id == "null" {
+	runsOut, err := list.Output()
+	if err != nil {
+		return ""
+	}
+	id := newestFailedRun(runsOut)
+	if id == "" {
 		return ""
 	}
 
@@ -347,6 +352,29 @@ func failingLog(dir, branch string) string {
 		return ""
 	}
 	return clipLog(string(out))
+}
+
+// newestFailedRun picks the newest FAILED run from `gh run list --json
+// databaseId,conclusion` output (newest first), or "".
+//
+// OR-570: taking the newest run of any workflow handed the fix agent the
+// secret scan -- green -- on a batch ref where `tests` had failed, so
+// --log-failed returned nothing and LTA-150's fix run reported it could not
+// see the failure. Every ref Orion tests runs more than one workflow.
+func newestFailedRun(listJSON []byte) string {
+	var runs []struct {
+		ID         int64  `json:"databaseId"`
+		Conclusion string `json:"conclusion"`
+	}
+	if json.Unmarshal(listJSON, &runs) != nil {
+		return ""
+	}
+	for _, r := range runs {
+		if r.Conclusion == "failure" {
+			return strconv.FormatInt(r.ID, 10)
+		}
+	}
+	return ""
 }
 
 // clipLog bounds what is sent to the model.
