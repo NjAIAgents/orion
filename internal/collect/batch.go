@@ -205,6 +205,22 @@ var ErrInteractionFault = errors.New(
 	"the batch is red but every part of it is green: the fault needs two " +
 		"members together, so no single branch can be ejected")
 
+// ErrBaseRed is returned when isolation convicted every member and the base
+// itself, with no member on it, is red too: the fault is outside the batch.
+//
+// Seen on LTA, 2026-09-28 (OR-564). A secret-scan workflow that scanned every
+// branch in the repository failed on one branch's fixture, so every CI run
+// went red whatever it held. Bisection found every half red, convicted all
+// three members, and sent three sound branches into the fix loop.
+//
+// Checked only when every member is convicted, because that is the one
+// result a red base produces and a real multi-culprit batch rarely does --
+// so the extra run is spent only where the answer can change the verdict.
+var ErrBaseRed = errors.New(
+	"every member tested red and so does the base with none of them: the " +
+		"failure is outside the batch (a check failing on everything), so no " +
+		"branch is to blame")
+
 // Tester runs CI against a ref and reports whether it passed.
 //
 // Returns ErrCheckPending while a build is still running. It must NOT block
@@ -431,6 +447,22 @@ func isolateProving(t Tester, g Git, refPrefix, base string, members []Member,
 	// is the top-level call.
 	if len(culprits) == 0 && depth == 0 {
 		return nil, runs, green, ErrInteractionFault
+	}
+	// EVERYBODY GUILTY IS WORTH ONE MORE RUN (OR-564): test the base alone.
+	// ponytail: the full search is spent before this check; testing the base
+	// first when both top halves are red would save runs if this recurs.
+	if depth == 0 && len(members) > 1 && len(culprits) == len(members) {
+		ref := refPrefix + "-base"
+		if _, _, aerr := Assemble(g, ref, base, nil, nil); aerr != nil {
+			return culprits, runs, green, nil
+		}
+		ok, terr := t.Test(ref)
+		runs++
+		*total++
+		dropScratch(g, ref)
+		if terr == nil && !ok {
+			return nil, runs, green, ErrBaseRed
+		}
 	}
 	return culprits, runs, green, nil
 }
