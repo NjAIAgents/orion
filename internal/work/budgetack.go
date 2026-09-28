@@ -120,7 +120,7 @@ func budgetGate(key string, opts Options, cfg config.Config, ws *workspace.Works
 			clearBudgetRequest(opts.Home)
 			log.Emitf(events.KindBudget, events.ActorHuman,
 				"%s acknowledged the %d%% checkpoint in Slack", by, st.Crossed)
-			ui.Say(w, key, events.ActorHuman, ui.VerbOK,
+			ui.Say(w, key, events.ActorHuman, ui.VerbDone,
 				"%s acknowledged the %d%% budget checkpoint; continuing", by, st.Crossed)
 			// Consent clears the checkpoint; it does not skip admission. The
 			// run still has to be reserved, or the next concurrent one reads a
@@ -159,16 +159,17 @@ func budgetGate(key string, opts Options, cfg config.Config, ws *workspace.Works
 		clearBudgetRequest(opts.Home)
 		log.Emitf(events.KindBudget, events.ActorHuman,
 			"%s acknowledged the %d%% checkpoint", who, st.Crossed)
-		ui.Say(w, key, events.ActorHuman, ui.VerbOK,
+		ui.Say(w, key, events.ActorHuman, ui.VerbDone,
 			"acknowledged the %d%% checkpoint (%s); continuing", st.Crossed, who)
 		_, release, _, admitted := admitBudget(opts.Home, cfg)
 		return admitted, release, ""
 	}
 
 	if channel != "" {
-		fmt.Fprintf(w, "          %s\n", ui.Dim(w, fmt.Sprintf(
+		ui.Under(w, fmt.Sprintf(
 			"the request is still in Slack -- tick it there and the next pass continues, "+
-				"or run: orion budget ack %d", st.Crossed)))
+				"or run: orion budget ack %d", st.Crossed))
+
 	}
 	return false, noop, ""
 }

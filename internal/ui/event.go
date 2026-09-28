@@ -51,8 +51,21 @@ import (
 // resolved/claimed all looked identical and said nothing a reader could
 // filter on. What a scanning reader needs from this column is the answer to
 // "do I have to do something", which has five values.
+//
+// "ok" was the sixth word and it said nothing (OR-563): it covered a step
+// that finished, a check that passed, a review deliberately not run, a
+// person being told, and a branch being made. Those are four things a reader
+// scans for differently, so they are four words now -- and a stage boundary,
+// a ticket starting and an informational note are three more row kinds that
+// used to be drawn outside the grid and now sit in it.
 const (
-	VerbOK      = "ok"      // it worked
+	VerbDone    = "done"    // a step finished, or a check came back green
+	VerbSkipped = "skipped" // deliberately not run; the message says why
+	VerbSent    = "sent"    // a person or a channel was told
+	VerbSetup   = "setup"   // something to work in was made: a branch, a route
+	VerbStart   = "start"   // a ticket was claimed; the message is its title
+	VerbStage   = "stage"   // a stage boundary; the message is the transition
+	VerbNote    = "note"    // worth reading once, nothing to do
 	VerbWorking = "working" // in flight, money is being spent
 	VerbWaiting = "waiting" // in flight, waiting on a machine or a person
 	VerbWarn    = "warning" // worth a look, nothing is broken
@@ -81,16 +94,14 @@ func VerbFor(kind string) string {
 		events.KindAsk, events.KindTool, events.KindSay:
 		return VerbWorking
 	case events.KindNote:
-		return VerbOK
+		return VerbDone
+	case events.KindStage:
+		return VerbStage
 	}
 	// answer, decision, commit, push, pr, merge, refresh, run-end, usage:
 	// something happened and it worked.
 	//
-	// KindStage is here too, and on purpose. A handoff asks nothing of the
-	// operator, so its category is `ok` -- spending a sixth verb on it would
-	// re-open the decision this comment records. What a boundary needs is a
-	// different LAYOUT, not a different word: see stage.go.
-	return VerbOK
+	return VerbDone
 }
 
 // The icon column: a glyph saying the same thing as the status word.
@@ -106,6 +117,11 @@ const (
 	iconPending = "○" // queued, or a verb this build does not recognise
 	iconWorking = "◐" // in flight, money is being spent
 	iconOK      = "✓"
+	iconSkipped = "○"
+	iconSent    = "↗"
+	iconSetup   = "+"
+	iconStart   = "▸"
+	iconStage   = "⇢"
 	iconFail    = "✗"
 	// iconWaiting was the hourglass until OR-559. It is two cells wide on
 	// most terminals and one on some, so every row carrying it risked being a
@@ -119,7 +135,13 @@ const (
 type icon struct{ glyph, ascii string }
 
 var icons = map[string]icon{
-	VerbOK:      {iconOK, "+"},
+	VerbDone:    {iconOK, "+"},
+	VerbSkipped: {iconSkipped, "-"},
+	VerbSent:    {iconSent, "^"},
+	VerbSetup:   {iconSetup, "*"},
+	VerbStart:   {iconStart, "#"},
+	VerbStage:   {iconStage, "="},
+	VerbNote:    {iconBlocked, "!"},
 	VerbWorking: {iconWorking, ">"},
 	VerbWaiting: {iconWaiting, "~"},
 	VerbWarn:    {iconBlocked, "!"},
@@ -339,25 +361,30 @@ func Banner(w io.Writer, key, summary, actor, model, branch string) {
 	if model == "" {
 		model = noModel
 	}
-	who := actors.DisplayFor(key, actor)
-	c := ticketColor(key)
-	// ONE LINE, not a five-line block between two 60-character rules.
-	//
-	// The heavy form predates the pinned region, when scrollback was the only
-	// display and a ticket starting had to be findable by scrolling. The
-	// region now carries the key, the actor, the model and the branch on the
-	// ticket's own row, continuously, so the banner was restating what was
-	// already on screen -- and its rules fought the region's own lighter one
-	// for the eye (OR-265).
-	//
-	// What a banner is still FOR is the moment: this ticket started, here is
-	// what it is. That is a sentence, and the summary is the part of it a
-	// person cannot get anywhere else on the row.
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "%s  %s\n", paint(w, c, pad(key, keyWidth)), summary)
-	if detail := strings.Join(nonEmpty(who, shortModel(model), branch), " · "); detail != "" {
-		fmt.Fprintf(w, "%s  %s\n", strings.Repeat(" ", keyWidth), Dim(w, detail))
+	// One row of the grid (OR-563). It used to be a two-line block and a
+	// blank line drawn outside the columns, which is most of why the log read
+	// as unaligned: who and model now sit in their own columns, and the
+	// title and branch are the message.
+	Print(w, Line{Key: key, Actor: actor, Model: model, Verb: VerbStart,
+		Msg: strings.Join(nonEmpty(summary, branch), " · ")})
+}
+
+// detailIndent is where the message column starts on a row that states its
+// identity: time, ticket, icon and status, who, model.
+const detailIndent = 8 + 1 + keyWidth + 1 + iconWidth + verbColumn + 1 + actorWidth + 1 + modelWidth + 1
+
+// Under prints a continuation line under the row above it, dim and starting
+// in that row's message column, so it reads as part of the message rather
+// than as a row of its own. Clipped to the terminal like a message.
+func Under(w io.Writer, text string) {
+	Flush(w)
+	text = strings.ReplaceAll(strings.TrimRight(text, "\n"), "\n", " ")
+	if cols := columns(); cols > 0 {
+		if room := cols - detailIndent; room > 12 && utf8.RuneCountInString(text) > room {
+			text = string([]rune(text)[:room-1]) + "…"
+		}
 	}
+	fmt.Fprintf(w, "%s%s\n", strings.Repeat(" ", detailIndent), Dim(w, text))
 }
 
 func nonEmpty(in ...string) []string {
@@ -387,8 +414,16 @@ func shortModel(m string) string {
 
 func statusColor(verb string) string {
 	switch verb {
-	case VerbOK:
+	case VerbDone:
 		return green
+	case VerbSent:
+		return brightBlue
+	case VerbSetup:
+		return brightCyan
+	case VerbStart:
+		return bold
+	case VerbNote:
+		return yellow
 	case VerbFail:
 		return red
 	case VerbWarn:

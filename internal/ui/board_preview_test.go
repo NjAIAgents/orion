@@ -42,7 +42,7 @@ func TestBoardPreview(t *testing.T) {
 	Stage(&out, discardLog(), Handoff{At: at(3, 10), Key: "LTA-117", From: "implementing", To: "qa", By: "implementer", Next: "qa", Detail: "5 case(s) planned"})
 	LiveStart("LTA-118")
 	Stage(&out, discardLog(), Handoff{At: at(3, 40), Key: "LTA-118", From: "routing", To: "implementing", By: "orion", Next: "implementer"})
-	Print(&out, Line{At: at(4, 31), Key: "LTA-117", Actor: "qa", Verb: VerbOK, Msg: "QA cases 5/5 passed"})
+	Print(&out, Line{At: at(4, 31), Key: "LTA-117", Actor: "qa", Verb: VerbDone, Msg: "QA cases 5/5 passed"})
 	Print(&out, Line{At: at(6, 55), Key: "LTA-117", Actor: "qa", Verb: VerbFail,
 		Msg: "suite red: 3 failed / 1124 -- tests/unit/test_store_sink_emit.py::test_retry_on_locked, tests/unit/test_store_keys.py::test_null_primary_key_rejected, +1 more (orion logs LTA-117)"})
 	BoardFan("LTA-117", []string{"#1 qa · 4 case(s)", "#2 qa · 4 case(s)", "#3 qa · 4 case(s)", "#4 qa · 4 case(s)", "#5 qa · 4 case(s)"}, 2)

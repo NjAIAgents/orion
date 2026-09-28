@@ -126,7 +126,7 @@ func retryFailed(opts Options, deps Deps, w io.Writer, rows []tracker.Issue) (wa
 		e.Base, e.Seen = head, now()
 		ledger[key] = e
 		changed, moved = true, true
-		ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+		ui.Say(w, key, events.ActorOrion, ui.VerbDone,
 			"requeued: the work branch moved since it failed, so it runs again on the new base (retry %d of %d)",
 			e.Count, maxFailedRetries)
 	}

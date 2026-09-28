@@ -128,7 +128,7 @@ func TestFanLandingSaysTheOutcomeOnce(t *testing.T) {
 	if strings.Contains(got, "exit 0") {
 		t.Errorf("a landing still reports exit 0 alongside the outcome word: %q", got)
 	}
-	if !strings.Contains(got, "ok") {
+	if !strings.Contains(got, "done") {
 		t.Errorf("a successful landing never says it worked: %q", got)
 	}
 }

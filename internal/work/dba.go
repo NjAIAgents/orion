@@ -134,7 +134,7 @@ func dbaScope(job dbaJob, cfg config.Config, deps Deps,
 	// Removing the guard would buy a review of the reviewer's own diff, which
 	// is the one thing this actor exists not to be.
 	if job.Actor == events.ActorDBA {
-		ui.Say(w, job.Key, events.ActorOrion, ui.VerbOK,
+		ui.Say(w, job.Key, events.ActorOrion, ui.VerbSkipped,
 			"the database architect worked this ticket, so there is no independent review to run")
 		return nil, false
 	}
@@ -155,7 +155,7 @@ func dbaScope(job dbaJob, cfg config.Config, deps Deps,
 		// the same reason route()'s default is announced (OR-191).
 		log.Emitf(events.KindNote, events.ActorOrion,
 			"no database review: %s", dba.Reason(nil))
-		ui.Say(w, job.Key, events.ActorOrion, ui.VerbOK,
+		ui.Say(w, job.Key, events.ActorOrion, ui.VerbSkipped,
 			"nothing in this change touches the data model, so there is no database review to pay for")
 		return nil, false
 	}
@@ -309,7 +309,7 @@ func runDBA(job dbaJob, sigs []dba.Signal, cfg config.Config, opts Options, deps
 		Model: actors.Model(events.ActorDBA),
 		Msg: fmt.Sprintf("reviewed the data model and found it sound (%d fix round(s)); %s",
 			out.Rounds, target.Path())})
-	ui.Say(w, key, events.ActorDBA, ui.VerbOK, "the data model in this change is sound")
+	ui.Say(w, key, events.ActorDBA, ui.VerbDone, "the data model in this change is sound")
 	if out.Rounds == 0 {
 		dbaPostNothingFound(deps, key, target)
 	}

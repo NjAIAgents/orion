@@ -195,7 +195,7 @@ func (p *stageProgress) redraw() {
 // commit turns the live line into a transcript line behind a ✓: the action
 // it named has ended. Caller holds the mutex.
 func (p *stageProgress) commit() {
-	fmt.Fprintf(p.out, "%s  %s%s %s\n", clearLine, ui.Icon(p.out, ui.VerbOK),
+	fmt.Fprintf(p.out, "%s  %s%s %s\n", clearLine, ui.Icon(p.out, ui.VerbDone),
 		ui.Dim(p.out, p.liveAt.Sub(p.start).Round(time.Second).String()), p.live)
 	p.live = ""
 }

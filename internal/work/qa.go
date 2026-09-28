@@ -99,7 +99,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 
 	key := job.Key
 	if !cfg.QA.On() {
-		ui.Say(w, key, events.ActorOrion, ui.VerbOK, "QA is switched off for this project")
+		ui.Say(w, key, events.ActorOrion, ui.VerbSkipped, "QA is switched off for this project")
 		return qaOutcome{}
 	}
 	if deps.Supervise == nil {
@@ -296,7 +296,7 @@ func runQA(job qaJob, cfg config.Config, opts Options, deps Deps,
 	log.Emit(events.Event{Kind: events.KindQA, Actor: events.ActorQA,
 		Model: actors.Model(events.ActorQA),
 		Msg:   fmt.Sprintf("verified the change; every case passes (%d fix round(s))", out.Rounds)})
-	ui.Say(w, key, events.ActorQA, ui.VerbOK, "every case passes")
+	ui.Say(w, key, events.ActorQA, ui.VerbDone, "every case passes")
 	return out
 }
 
@@ -370,7 +370,7 @@ func deriveCases(job qaJob, deps Deps, log *events.Log, w io.Writer) string {
 	log.Emit(events.Event{Kind: events.KindQA, Actor: events.ActorCaseDerive,
 		Model: actors.Model(events.ActorCaseDerive),
 		Msg:   "derived the cases to cover:\n" + cases})
-	ui.Say(w, job.Key, events.ActorCaseDerive, ui.VerbOK,
+	ui.Say(w, job.Key, events.ActorCaseDerive, ui.VerbDone,
 		"derived %d case(s) from the acceptance criteria and the diff", countCases(cases))
 	return cases
 }
@@ -454,7 +454,7 @@ func commitQAWork(job qaJob, cfg config.Config, log *events.Log, w io.Writer) {
 		// Said out loud, because the whole failure this replaces was invisible.
 		log.Emitf(events.KindQA, events.ActorOrion,
 			"committed %d file(s) the QA stage left uncommitted, so they reach the pull request", n)
-		ui.Say(w, job.Key, events.ActorOrion, ui.VerbOK,
+		ui.Say(w, job.Key, events.ActorOrion, ui.VerbDone,
 			"committed %d file(s) QA left uncommitted", n)
 	}
 }
@@ -497,7 +497,7 @@ func reportRedBeforeGreen(job qaJob, preQA string, log *events.Log, w io.Writer)
 		msg := fmt.Sprintf("proved red before green on %d test file(s): %s",
 			len(res.Proven), strings.Join(res.Proven, ", "))
 		log.Emit(events.Event{Kind: events.KindQA, Actor: events.ActorQA, Msg: msg})
-		ui.Say(w, key, events.ActorQA, ui.VerbOK, "%s", msg)
+		ui.Say(w, key, events.ActorQA, ui.VerbDone, "%s", msg)
 	}
 	if len(res.Unproven) > 0 {
 		msg := fmt.Sprintf("%d test file(s) already passed against the code before this change, "+

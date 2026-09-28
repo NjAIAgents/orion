@@ -253,7 +253,7 @@ func (s *Screen) header(cols int, c boardCounts) string {
 	sep := Dim(s, " · ")
 	left := " " + Heading(s, "orion watch "+s.title) + Dim(s, " · up "+roundDur(now.Sub(s.started))+"  "+bar+"  ") +
 		count(VerbWorking, c.running, "running") + sep + count(VerbWaiting, c.queued, "queued") + sep +
-		count(VerbOK, c.landed, "landed") + sep + count(VerbFail, c.failed, "failed") + sep +
+		count(VerbDone, c.landed, "landed") + sep + count(VerbFail, c.failed, "failed") + sep +
 		fmt.Sprintf("$%.2f", c.spend)
 	right := now.Format("15:04:05")
 	if s.logPath != "" && visibleCells(left)+2+len(right)+6+visibleCells(s.logPath) <= cols-1 {
@@ -358,7 +358,14 @@ func frame(w io.Writer, rows, cols int, header, board string, log []string, bott
 			b.WriteString("\r\n")
 		}
 	}
-	b.WriteString(escBelow)
+	// Erase-below erases from the CURSOR, and the cursor sits after the last
+	// word of the last row -- so sent there it wiped the rest of the grey
+	// bottom panel back to the terminal's ground. Sent from the line under
+	// the frame instead, and only when there is one: a frame that fills the
+	// screen has nothing below it to clear.
+	if len(all) < rows {
+		b.WriteString("\r\n" + escBelow)
+	}
 	return b.String()
 }
 

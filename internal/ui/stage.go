@@ -182,10 +182,15 @@ func RenderStage(w io.Writer, h Handoff) string {
 	b.WriteString(Dim(w, at.Local().Format("15:04:05")) + " ")
 	b.WriteString(paint(w, ticketColor(h.Key), pad(h.Key, keyWidth)) + " ")
 
-	rule := stageRule()
-	b.WriteString(Dim(w, rule+" "+stageWord+" "+rule) + " ")
-	b.WriteString(paint(w, bold, h.From+" "+stageArrow()+" "+h.To) + "  ")
-	b.WriteString(handoffClause(h))
+	// Then the same status, who and model columns as every other row
+	// (OR-563): the word "stage" in the status column, which keeps `grep
+	// stage` finding every boundary, and the party now holding the run in
+	// the who column. The transition is the message.
+	b.WriteString(paint(w, statusColor(VerbStage), iconFor(VerbStage)+pad(stageWord, verbColumn)) + " ")
+	b.WriteString(paint(w, actorColor(h.Next), pad(party(h.Key, h.Next), actorWidth)) + " ")
+	b.WriteString(strings.Repeat(" ", modelWidth+1))
+	b.WriteString(paint(w, bold, h.From+" "+stageArrow()+" "+h.To))
+	b.WriteString(Dim(w, " · "+handoffClause(h)))
 	return b.String()
 }
 

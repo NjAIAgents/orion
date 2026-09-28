@@ -757,7 +757,7 @@ func TestChainLinesCarryTheOutcomeIcon(t *testing.T) {
 	}
 	runPlanChain(&out, w, run, yes)
 	got := out.String()
-	ok, fail := ui.Icon(&out, ui.VerbOK), ui.Icon(&out, ui.VerbFail)
+	ok, fail := ui.Icon(&out, ui.VerbDone), ui.Icon(&out, ui.VerbFail)
 	if !strings.Contains(got, ok+"= done") {
 		t.Errorf("a skipped step lacks the ok icon:\n%s", got)
 	}

@@ -150,7 +150,7 @@ func announceFanDone(jobs []Options, results []FanResult) {
 			failed++
 		}
 	}
-	verb, tail := ui.VerbOK, ""
+	verb, tail := ui.VerbDone, ""
 	if failed > 0 {
 		verb, tail = ui.VerbWarn, fmt.Sprintf(", %d failed", failed)
 	}
@@ -260,7 +260,7 @@ func announceLanded(i int, o Options, res *Result, err error, n, total int) {
 			return
 		}
 	}
-	verb, verdict := ui.VerbOK, ""
+	verb, verdict := ui.VerbDone, ""
 	switch {
 	case err != nil && res == nil:
 		verb, verdict = ui.VerbFail, " failed: "+err.Error()

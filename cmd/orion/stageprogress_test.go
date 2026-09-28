@@ -190,7 +190,7 @@ func TestOnATerminalTheNewestLineIsLiveAndTheRestAreCommitted(t *testing.T) {
 	if !strings.Contains(got, clearLine) {
 		t.Fatalf("no in-place redraw on a terminal:\n%q", got)
 	}
-	ok := strings.TrimSpace(ui.Icon(&out, ui.VerbOK))
+	ok := strings.TrimSpace(ui.Icon(&out, ui.VerbDone))
 	// "starting" and "started on m" were committed when the next line
 	// arrived; "Read spec.md" when the stage closed.
 	for _, want := range []string{ok + " ", "started on m\n", "Read spec.md\n"} {
@@ -211,8 +211,8 @@ func TestTheSpinnerTurns(t *testing.T) {
 	if ui.Spinner(io.Discard, 0) != ui.Spinner(io.Discard, 4) {
 		t.Error("the spinner does not cycle")
 	}
-	if len([]rune(ui.Spinner(io.Discard, 2))) != len([]rune(ui.Icon(io.Discard, ui.VerbOK))) {
-		t.Errorf("spinner %q and icon %q occupy different widths", ui.Spinner(io.Discard, 2), ui.Icon(io.Discard, ui.VerbOK))
+	if len([]rune(ui.Spinner(io.Discard, 2))) != len([]rune(ui.Icon(io.Discard, ui.VerbDone))) {
+		t.Errorf("spinner %q and icon %q occupy different widths", ui.Spinner(io.Discard, 2), ui.Icon(io.Discard, ui.VerbDone))
 	}
 }
 

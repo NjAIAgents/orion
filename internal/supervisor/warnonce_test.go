@@ -39,7 +39,7 @@ func TestADifferentWarningIsStillSaid(t *testing.T) {
 	warnOnce(&buf, "nj-agents was not found; "+t.Name())
 	warnOnce(&buf, "could not link a skill; "+t.Name())
 
-	if n := strings.Count(buf.String(), "orion: "); n != 2 {
+	if n := strings.Count(buf.String(), "\n"); n != 2 {
 		t.Errorf("expected both warnings, got %d:\n%s", n, buf.String())
 	}
 }

@@ -460,7 +460,7 @@ func Run(opts Options, deps Deps) error {
 		// closed. Ctrl-c still exits at the end of the current step.
 		if opts.MaxJobs > 0 && started >= opts.MaxJobs {
 			if !unfinished {
-				ui.Say(w, "", events.ActorOrion, ui.VerbOK,
+				ui.Say(w, "", events.ActorOrion, ui.VerbDone,
 					"started %d job(s) and finished them; the limit for this run", started)
 				break
 			}
@@ -1001,22 +1001,25 @@ func rehearse(w io.Writer, opts Options, queued []tracker.Issue) {
 		}
 		fmt.Fprintf(w, "          %s %d. %s\n", marker, i+1, is.Key)
 	}
-	fmt.Fprintf(w, "          %s\n", ui.Dim(w, fmt.Sprintf(
-		"limits.max_concurrent_tickets %d: that many run at once.", opts.MaxConcurrent)))
+	ui.Under(w, fmt.Sprintf(
+		"limits.max_concurrent_tickets %d: that many run at once.", opts.MaxConcurrent))
+
 	if basis != "" && len(first) > 1 {
-		fmt.Fprintf(w, "          %s\n", ui.Dim(w, basis+"."))
+		ui.Under(w, basis+".")
 	}
 	if opts.MaxJobs > 0 {
 		n := opts.MaxJobs
 		if n > len(queued) {
 			n = len(queued)
 		}
-		fmt.Fprintf(w, "          %s\n", ui.Dim(w,
+		ui.Under(w,
 			fmt.Sprintf("--max-jobs %d: it would start the first %d and stop.",
-				opts.MaxJobs, n)))
+				opts.MaxJobs, n))
+
 	} else {
-		fmt.Fprintf(w, "          %s\n", ui.Dim(w,
-			fmt.Sprintf("no job limit: it would work all %d and keep watching.", len(queued))))
+		ui.Under(w,
+			fmt.Sprintf("no job limit: it would work all %d and keep watching.", len(queued)))
+
 	}
 }
 
@@ -1898,7 +1901,7 @@ func InFlight(j LockAPI, home string, projects []string, w io.Writer) ([]string,
 				if rec != nil && rec.Branch != "" {
 					where = ", its work is on " + rec.Branch
 				}
-				ui.Say(w, i.Key, events.ActorOrion, ui.VerbOK,
+				ui.Say(w, i.Key, events.ActorOrion, ui.VerbDone,
 					"released: the run holding this ended without finishing%s. "+
 						"Re-label it %s to pick it up again", where, tracker.QueueLabelDefault)
 				continue
@@ -1930,7 +1933,7 @@ func InFlight(j LockAPI, home string, projects []string, w io.Writer) ([]string,
 					continue
 				}
 				_ = claim.Release(home, i.Key)
-				ui.Say(w, i.Key, events.ActorOrion, ui.VerbOK,
+				ui.Say(w, i.Key, events.ActorOrion, ui.VerbDone,
 					"its work finished but the ticket still said %s; moved it to %s "+
 						"so the integration queue can see it",
 					tracker.LabelWorking, tracker.LabelReady)

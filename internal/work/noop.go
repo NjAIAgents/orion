@@ -19,7 +19,6 @@ package work
 // that will never look at it again.
 
 import (
-	"fmt"
 	"io"
 	"strings"
 
@@ -70,7 +69,7 @@ func alreadyMerged(res Result, key, actorID, prURL, branch string, cfg config.Co
 	if prURL != "" {
 		res.Note += " (" + prURL + ")"
 	}
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+	ui.Say(w, key, events.ActorOrion, ui.VerbSkipped,
 		"already merged; nothing to do, and nothing was spent")
 	if opts.DryRun {
 		return res
@@ -109,7 +108,7 @@ func alreadyResolved(res Result, key, status string, cfg config.Config,
 			"its queue label could not be removed, so it will be offered again: %v", err)
 		return res
 	}
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+	ui.Say(w, key, events.ActorOrion, ui.VerbDone,
 		"removing its %s label so the queue stops offering it", cfg.Tracker.QueueLabel)
 	log.Emitf(events.KindNote, events.ActorOrion,
 		"skipped %s: already resolved (%s); queue label removed", key, status)
@@ -125,9 +124,9 @@ func noChange(res Result, key, actorID, why string, cfg config.Config,
 	if res.Note == "" {
 		res.Note = "the agent reported there was nothing to do"
 	}
-	ui.Say(w, key, actorID, ui.VerbOK,
+	ui.Say(w, key, actorID, ui.VerbDone,
 		"needed no change. That is a result, not a failure.")
-	fmt.Fprintf(w, "          %s\n", ui.Dim(w, firstLine(res.Note)))
+	ui.Under(w, firstLine(res.Note))
 	if opts.DryRun {
 		return res
 	}

@@ -265,7 +265,7 @@ func stale(res Result, key string, pr PR, branch string, cfg config.Config,
 
 	ui.Warn(w, "%s", staleBranch(key, branch, base))
 	for _, line := range rebaseSteps(ws, branch, base) {
-		fmt.Fprintf(w, "          %s\n", ui.Dim(w, line))
+		ui.Under(w, line)
 	}
 
 	log.Emit(events.Event{Kind: events.KindBlocked, Actor: events.ActorOrion,

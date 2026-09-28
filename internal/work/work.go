@@ -290,7 +290,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		ui.Say(w, key, events.ActorOrion, ui.VerbFail, "%v", err)
 		return fail(res, err)
 	}
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "%s -> %s", registry.ProjectOf(key), entry.Source)
+	ui.Say(w, key, events.ActorOrion, ui.VerbSetup, "%s -> %s", registry.ProjectOf(key), entry.Source)
 
 	ws, err := workspace.Open(entry.Workspace)
 	if err != nil {
@@ -302,7 +302,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// stale clone serves stale policy. Branch bases are already taken from
 	// origin/<base> by AddWorktree, so this is only about the config.
 	if msg, syncErr := workspace.SyncSandbox(ws, cfg.VCS.WorkBranch); syncErr == nil && msg != "" {
-		ui.Say(w, key, events.ActorOrion, ui.VerbOK, "%s", msg)
+		ui.Say(w, key, events.ActorOrion, ui.VerbSetup, "%s", msg)
 		cfg = config.Load(ws.RepoDir())
 	}
 
@@ -388,7 +388,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		return fail(res, err)
 	}
 	res.Summary, res.IssueURL = issue.Summary, issue.URL
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "%s", issue.Summary)
+	ui.Say(w, key, events.ActorOrion, ui.VerbDone, "%s", issue.Summary)
 
 	// Routed once, here, at the top -- before the claim, before the agent
 	// runs, before the QA fix loop that must resume whichever actor this
@@ -407,7 +407,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// having been recorded (OR-201).
 	actorID, routeWhy := Route(*issue)
 	log.Emitf(events.KindDecision, events.ActorOrion, "routed to the %s: %s", actorID, routeWhy)
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "routed to %s: %s", actors.DisplayFor(key, actorID), routeWhy)
+	ui.Say(w, key, events.ActorOrion, ui.VerbSetup, "routed to %s: %s", actors.DisplayFor(key, actorID), routeWhy)
 
 	// Is it already finished? The queue query excludes resolved tickets, but
 	// between that search and this claim a person can close one -- and `orion
@@ -476,10 +476,11 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			"could not read its sub-tasks (%v); working it as a single ticket", cErr)
 	}
 	if len(children) > 0 {
-		ui.Say(w, key, events.ActorOrion, ui.VerbOK, "%d sub-task(s), to be done in one branch", len(children))
+		ui.Say(w, key, events.ActorOrion, ui.VerbSetup, "%d sub-task(s), to be done in one branch", len(children))
 		for i, c := range children {
-			fmt.Fprintf(w, "          %s\n", ui.Dim(w,
-				fmt.Sprintf("%d. %s  %s", i+1, c.Key, c.Summary)))
+			ui.Under(w,
+				fmt.Sprintf("%d. %s  %s", i+1, c.Key, c.Summary))
+
 		}
 		// Say it is a long one rather than refusing it.
 		//
@@ -497,7 +498,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		// The budget, stated before it costs anything. A wrong number read
 		// here is a config problem; the same wrong number discovered at turn
 		// 121 of an opus run is $17 (OR-117).
-		ui.Say(w, key, events.ActorOrion, ui.VerbOK, "budget: %d turns, %d minutes for %d sub-task(s)",
+		ui.Say(w, key, events.ActorOrion, ui.VerbSetup, "budget: %d turns, %d minutes for %d sub-task(s)",
 			turnsFor(opts.MaxTurns, len(children)), minutesFor(opts.MaxMinutes, len(children)), len(children))
 	}
 
@@ -624,7 +625,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		at = resumeAt(ws.Dir, key)
 	}
 	if job.Resumed {
-		ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+		ui.Say(w, key, events.ActorOrion, ui.VerbDone,
 			"resumed %s, where the interrupted run stopped", job.Branch)
 		// A tree the previous run left dirty is committed before the agent
 		// touches it. The breaker already does this for its own trips
@@ -635,7 +636,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			ui.Say(w, key, events.ActorOrion, ui.VerbWarn,
 				"the interrupted run left changes that could not be committed: %v", err)
 		} else if n > 0 {
-			ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+			ui.Say(w, key, events.ActorOrion, ui.VerbDone,
 				"committed %d file(s) the interrupted run was holding, unverified, so the resume starts clean", n)
 		}
 	}
@@ -703,8 +704,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}()
 
 	log.Emitf(events.KindBranch, events.ActorOrion, "branch %s from %s", job.Branch, cfg.VCS.WorkBranch)
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "branch %s", job.Branch)
-	fmt.Fprintf(w, "          %s\n", ui.Dim(w, job.Path))
+	ui.Say(w, key, events.ActorOrion, ui.VerbSetup, "branch %s", job.Branch)
 
 	// The commit before anything about this ticket exists. QA's red-before-
 	// green check (OR-156) needs it to prove a test would actually have
@@ -770,7 +770,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	// when it is empty): the agent re-reads the tree rather than recalling
 	// the conversation, which is slower and not wrong.
 	if at.Stage != "" {
-		ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+		ui.Say(w, key, events.ActorOrion, ui.VerbSkipped,
 			"skipping implementation: %s. Its commits are on %s, and %s picks up from there",
 			at.Why, job.Branch, at.Stage)
 		log.Emitf(events.KindNote, events.ActorOrion,
@@ -914,7 +914,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 		// because the record is on the branch and a reader will want it.
 		log.Emitf(events.KindDecision, events.ActorOrion, "%s -- grounded in %s; recorded in %s",
 			ans.Decision, ans.Grounding, rel)
-		ui.Say(w, key, events.ActorOrion, ui.VerbOK, "recorded %s", rel)
+		ui.Say(w, key, events.ActorOrion, ui.VerbDone, "recorded %s", rel)
 
 		anTitle, anBody := msgAnswered(key, ans, question)
 		tell(w, log, ws, notify.Event{
@@ -971,7 +971,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 			"ran cleanly but produced no commits; treating the closing message as a question")
 		ui.Say(w, key, actorID, ui.VerbFail, "produced no commits. It is blocked, not done.")
 		if res.Question != "" {
-			fmt.Fprintf(w, "          %s\n", ui.Dim(w, firstLine(res.Question)))
+			ui.Under(w, firstLine(res.Question))
 		}
 		body := "Orion stopped without making a change.\n\n" + res.Question
 		if res.Advice.Verdict != "" && !res.Advice.Answered() {
@@ -1003,7 +1003,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	if att := readAttribution(job.Path, cfg.VCS.WorkBranch, commits); att.line() != "" {
 		verb := ui.VerbWarn
 		if !att.wrong() && att.Missing == 0 {
-			verb = ui.VerbOK
+			verb = ui.VerbDone
 		}
 		// The KIND carries the severity, because `orion log` replays a
 		// stored event through ui.VerbFor(kind) and has nothing else to go
@@ -1153,7 +1153,7 @@ func one(key string, opts Options, deps Deps) (res Result) {
 	}
 	res.PR = url
 	log.Emitf(events.KindPR, events.ActorOrion, "opened %s", url)
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK, "opened %s", url)
+	ui.Say(w, key, events.ActorOrion, ui.VerbDone, "opened %s", url)
 
 	// Hand the ticket to the CI-wait state and release the job slot. The
 	// state lives on the ticket so a crash here does not lose the fact that
@@ -1221,7 +1221,7 @@ func readyForBatch(res Result, key string, issue *tracker.Issue, job *workspace.
 			"assembled into the next batch, tested with it, and land with it."))
 	_ = deps.Jira.TransitionTo(key, "In Review")
 
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+	ui.Say(w, key, events.ActorOrion, ui.VerbDone,
 		"ready for the next batch on %s; no pull request, no CI run of its own", job.Branch)
 	log.Emitf(events.KindNote, events.ActorOrion,
 		"ready for batch integration on %s", job.Branch)
@@ -1585,8 +1585,8 @@ func consult(deps Deps, key, actorID, dir, question string, log *events.Log, w i
 			Model:  ans.Model,
 			Msg:    ans.Decision,
 			Detail: map[string]any{"grounding": ans.Grounding}})
-		ui.SayModel(w, key, actorFor(ans.Role), ans.Model, ui.VerbOK, "%s", firstLine(ans.Decision))
-		fmt.Fprintf(w, "          %s\n", ui.Dim(w, ans.Grounding))
+		ui.SayModel(w, key, actorFor(ans.Role), ans.Model, ui.VerbDone, "%s", firstLine(ans.Decision))
+		ui.Under(w, ans.Grounding)
 		return ans, true
 	}
 
@@ -1776,6 +1776,6 @@ func ensureSandboxVenv(dir, key string, w io.Writer) {
 	case err != nil:
 		ui.Say(w, key, events.ActorOrion, ui.VerbWarn, "could not build the sandbox virtualenv: %v", err)
 	case res.Action == "created" || res.Action == "refreshed":
-		ui.Say(w, key, events.ActorOrion, ui.VerbOK, "sandbox virtualenv %s at %s", res.Action, res.Path)
+		ui.Say(w, key, events.ActorOrion, ui.VerbSetup, "sandbox virtualenv %s at %s", res.Action, res.Path)
 	}
 }

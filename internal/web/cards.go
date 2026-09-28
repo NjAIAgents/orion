@@ -199,7 +199,7 @@ func verbOf(evs []events.Event, s Session, live bool) string {
 		}
 	}
 
-	verb := ui.VerbOK
+	verb := ui.VerbDone
 	var at time.Time
 	for _, e := range evs {
 		if e.At.Before(at) {

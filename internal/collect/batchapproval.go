@@ -114,7 +114,7 @@ func batchApprover(cfg config.Config, opts Options, deps Deps,
 			}
 			log.Emitf(events.KindNote, events.ActorOrion,
 				"asked for approval to land %s (%s)", ref, strings.Join(members, " "))
-			ui.Say(w, "", events.ActorOrion, ui.VerbOK,
+			ui.Say(w, "", events.ActorOrion, ui.VerbSent,
 				"%d branch(es) green; asked #%s to approve the merge", len(members), channel)
 			return false, nil
 		}
@@ -170,7 +170,7 @@ func batchApprover(cfg config.Config, opts Options, deps Deps,
 		}
 		log.Emitf(events.KindNote, events.ActorHuman,
 			"%s approved landing %s (%s)", d.By, ref, d.How)
-		ui.Say(w, "", events.ActorHuman, ui.VerbOK,
+		ui.Say(w, "", events.ActorHuman, ui.VerbDone,
 			"%s approved the batch (%s); landing it", d.By, d.How)
 		return true, nil
 	}

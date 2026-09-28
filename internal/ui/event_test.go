@@ -2,10 +2,12 @@ package ui
 
 import (
 	"bytes"
+	"io"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/events"
@@ -22,7 +24,7 @@ func render(l Line) string {
 // to somebody who did not see the start of the run.
 func TestEveryLineCarriesKeyActorModelAndMessage(t *testing.T) {
 	got := render(Line{Key: "FCIA-8", Actor: events.ActorImplementer,
-		Model: "claude-opus-4-1-20250805", Verb: VerbOK, Msg: "3 commits on orion/fcia-8"})
+		Model: "claude-opus-4-1-20250805", Verb: VerbDone, Msg: "3 commits on orion/fcia-8"})
 
 	for _, want := range []string{
 		"FCIA-8", actors.Display(events.ActorImplementer), "opus", "3 commits on orion/fcia-8",
@@ -44,7 +46,7 @@ func TestEveryLineCarriesKeyActorModelAndMessage(t *testing.T) {
 // that has no stamp of its own.
 func TestEveryLineCarriesATimePrefix(t *testing.T) {
 	stamped := render(Line{At: time.Date(2026, 8, 27, 15, 4, 5, 0, time.Local),
-		Key: "OR-125", Verb: VerbOK, Msg: "done"})
+		Key: "OR-125", Verb: VerbDone, Msg: "done"})
 	if !strings.HasPrefix(stamped, "15:04:05 ") {
 		t.Errorf("a stamped line lost its time: %q", stamped)
 	}
@@ -66,7 +68,7 @@ func TestEveryLineCarriesATimePrefix(t *testing.T) {
 func TestEveryStatusRendersItsOwnIcon(t *testing.T) {
 	setUTF8Locale(t)
 	for verb, want := range map[string]string{
-		VerbOK:      iconOK,
+		VerbDone:      iconOK,
 		VerbWorking: iconWorking,
 		VerbWaiting: iconWaiting,
 		VerbWarn:    iconBlocked,
@@ -94,7 +96,7 @@ func TestEveryStatusRendersItsOwnIcon(t *testing.T) {
 // make the column decorative -- it exists to make a state JUMP visible.
 func TestTheIconsAreDistinctPerCategory(t *testing.T) {
 	seen := map[string]string{}
-	for _, verb := range []string{VerbOK, VerbWorking, VerbWaiting, VerbWarn, VerbFail, "queued"} {
+	for _, verb := range []string{VerbDone, VerbWorking, VerbWaiting, VerbWarn, VerbFail, "queued"} {
 		g := icons[verb]
 		if other, dup := seen[g.glyph]; dup {
 			t.Errorf("%q and %q share the icon %q", verb, other, g.glyph)
@@ -157,7 +159,7 @@ func TestTheIconsFallBackToASCII(t *testing.T) {
 // the fixed widths exist to prevent.
 func TestTheIconColumnIsPaddedInCellsNotRunes(t *testing.T) {
 	setUTF8Locale(t)
-	for _, verb := range []string{VerbOK, VerbWorking, VerbWaiting, VerbWarn, VerbFail} {
+	for _, verb := range []string{VerbDone, VerbWorking, VerbWaiting, VerbWarn, VerbFail} {
 		if got := cells(iconFor(verb)); got != iconWidth {
 			t.Errorf("%q occupies %d cells, want %d", verb, got, iconWidth)
 		}
@@ -167,7 +169,7 @@ func TestTheIconColumnIsPaddedInCellsNotRunes(t *testing.T) {
 // Orion and CI have no name, and a dangling separator would read as a
 // missing column rather than as an actor without one.
 func TestANamelessActorRendersWithoutATrailingSeparator(t *testing.T) {
-	got := render(Line{Key: "FCIA-8", Actor: events.ActorOrion, Verb: VerbOK, Msg: "opened PR #3"})
+	got := render(Line{Key: "FCIA-8", Actor: events.ActorOrion, Verb: VerbDone, Msg: "opened PR #3"})
 	if strings.Contains(got, actors.Separator) {
 		t.Errorf("orion has no name and must render without a separator:\n%s", got)
 	}
@@ -180,7 +182,7 @@ func TestANamelessActorRendersWithoutATrailingSeparator(t *testing.T) {
 // output used to present them as one voice. An event that did not record one
 // falls back to the actor's own.
 func TestTheModelFallsBackToTheActorsOwn(t *testing.T) {
-	got := render(Line{Key: "FCIA-8", Actor: events.ActorRouter, Verb: VerbOK, Msg: "routed"})
+	got := render(Line{Key: "FCIA-8", Actor: events.ActorRouter, Verb: VerbDone, Msg: "routed"})
 	if !strings.Contains(got, actors.Model(events.ActorRouter)) {
 		t.Errorf("want the router's own model in:\n%s", got)
 	}
@@ -192,7 +194,7 @@ func TestTheModelFallsBackToTheActorsOwn(t *testing.T) {
 func TestTheMessageTruncatesAndTheMetadataNever(t *testing.T) {
 	t.Setenv("COLUMNS", "80")
 	long := strings.Repeat("word ", 200)
-	got := render(Line{Key: "FCIA-8", Actor: events.ActorImplementer, Verb: VerbOK, Msg: long})
+	got := render(Line{Key: "FCIA-8", Actor: events.ActorImplementer, Verb: VerbDone, Msg: long})
 
 	if len([]rune(strings.TrimRight(got, "\n"))) > 80 {
 		t.Errorf("line was not clipped to the terminal width:\n%s", got)
@@ -255,8 +257,8 @@ func TestTicketColourAndActorColourAreDifferentColumns(t *testing.T) {
 	resetTicketColors()
 	var b bytes.Buffer
 
-	one := Render(&b, Line{Key: "FCIA-8", Actor: events.ActorImplementer, Verb: VerbOK, Msg: "x"})
-	two := Render(&b, Line{Key: "FCIA-10", Actor: events.ActorImplementer, Verb: VerbOK, Msg: "x"})
+	one := Render(&b, Line{Key: "FCIA-8", Actor: events.ActorImplementer, Verb: VerbDone, Msg: "x"})
+	two := Render(&b, Line{Key: "FCIA-10", Actor: events.ActorImplementer, Verb: VerbDone, Msg: "x"})
 
 	// Same actor, different ticket: the actor colour is common to both and
 	// the ticket colour is not. If one column carried both axes, changing
@@ -294,7 +296,7 @@ func TestTheBannerCarriesEverythingAboutTheTicket(t *testing.T) {
 // cannot filter apart.
 func TestTheVerbVocabularyIsOneWordPerCategory(t *testing.T) {
 	allowed := map[string]bool{
-		VerbOK: true, VerbWorking: true, VerbWaiting: true, VerbWarn: true, VerbFail: true,
+		VerbDone: true, VerbWorking: true, VerbWaiting: true, VerbWarn: true, VerbFail: true,
 	}
 	for _, kind := range []string{
 		events.KindClaimed, events.KindBranch, events.KindRunStart, events.KindRunEnd,
@@ -338,23 +340,40 @@ func resetTicketColors() {
 // ticket's own row continuously, so the rules were weight spent restating
 // what was already on screen -- and they fought the region's own lighter
 // rule for the eye (OR-265).
-func TestTheBannerIsTwoLinesWithNoRules(t *testing.T) {
+func TestTheBannerIsOneRowOfTheGrid(t *testing.T) {
+	Reset(io.Discard)
 	var b bytes.Buffer
 	Banner(&b, "OR-135", "Add a database architect agent", events.ActorImplementer, "", "orion/or-135")
-	got := b.String()
+	got := strings.TrimRight(b.String(), "\n")
+	if strings.Contains(got, "\n") {
+		t.Fatalf("the banner is more than one row (OR-563):\n%q", got)
+	}
+	for _, want := range []string{"OR-135", VerbStart, "backend developer",
+		"Add a database architect agent · orion/or-135"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the start row lacks %q: %q", want, got)
+		}
+	}
+}
 
-	if strings.Contains(got, strings.Repeat("=", 10)) {
-		t.Errorf("the banner drew a rule:\n%s", got)
+// Every kind of row puts its message in the same column (OR-563): an event
+// row, a stage boundary, and a continuation line under either.
+func TestEveryRowKindSharesTheMessageColumn(t *testing.T) {
+	Reset(io.Discard)
+	col := func(line, msg string) int {
+		return utf8.RuneCountInString(line[:strings.Index(line, msg)])
 	}
-	// A leading blank separates it from what came before; the two lines are
-	// the summary and its detail.
-	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
-	if len(lines) != 3 || lines[0] != "" {
-		t.Errorf("want a blank line then two lines, got %d:\n%q", len(lines), got)
+	var ev bytes.Buffer
+	Print(&ev, Line{Key: "OR-1", Actor: events.ActorOrion, Verb: VerbSetup, Msg: "branch orion/or-1"})
+	st := stripANSI(RenderStage(io.Discard, Handoff{Key: "OR-1", From: "routing", To: "implementing",
+		By: events.ActorOrion, Next: events.ActorImplementer}))
+	var un bytes.Buffer
+	Under(&un, "grounding text")
+	want := col(stripANSI(ev.String()), "branch orion/or-1")
+	if got := col(st, "routing"); got != want {
+		t.Errorf("the stage message starts at %d, the event message at %d:\n%s\n%s", got, want, st, ev.String())
 	}
-	// The detail line is indented to the key column, so the banner and the
-	// rows below it read as one table rather than two.
-	if len(lines) > 2 && !strings.HasPrefix(lines[2], strings.Repeat(" ", keyWidth)) {
-		t.Errorf("the detail line is not aligned to the key column: %q", lines[2])
+	if got := col(stripANSI(un.String()), "grounding text"); got != want {
+		t.Errorf("a continuation line starts at %d, the message column is %d", got, want)
 	}
 }

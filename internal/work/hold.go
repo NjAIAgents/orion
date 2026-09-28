@@ -285,7 +285,7 @@ func held(res Result, key string, f Fault, job *workspace.Job, claimed bool,
 	res.Note = f.Describe()
 
 	ui.Say(w, key, events.ActorOrion, ui.VerbFail, "%s", res.Note)
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+	ui.Say(w, key, events.ActorOrion, ui.VerbDone,
 		"nothing was attempted, so %s is held in the queue rather than marked failed", key)
 	log.Emitf(events.KindBlocked, events.ActorOrion, "%s", res.Note)
 	if opts.DryRun {
@@ -369,7 +369,7 @@ func tidyResidue(job *workspace.Job, key string, ws *workspace.Workspace, w io.W
 			"left the branch %s behind: %v", job.Branch, err)
 		return
 	}
-	ui.Say(w, key, events.ActorOrion, ui.VerbOK,
+	ui.Say(w, key, events.ActorOrion, ui.VerbDone,
 		"removed the empty worktree and branch %s, so the retry starts clean", job.Branch)
 }
 
@@ -528,7 +528,7 @@ func resume(home string, h Hold, detail string, deps ReleaseDeps, w io.Writer) {
 	}
 	msg := fmt.Sprintf("%s is healthy again (%s). Releasing %s.",
 		h.Kind, detail, strings.Join(h.Keys, ", "))
-	ui.Say(w, "", events.ActorOrion, ui.VerbOK, "%s", msg)
+	ui.Say(w, "", events.ActorOrion, ui.VerbDone, "%s", msg)
 	if deps.Slack != nil && h.Channel != "" && h.TS != "" {
 		_ = deps.Slack.Reply(h.Channel, h.TS, msg)
 	}
