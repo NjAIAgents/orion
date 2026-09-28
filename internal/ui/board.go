@@ -943,18 +943,33 @@ const sectionChipWidth = 11
 // too -- so the columns behind the labels stay aligned.
 const chipMargin = "  "
 
+// chipGap separates a chip from the row it heads, so a label never touches
+// the icon beside it (2026-09-28 review).
+const chipGap = " "
+
 func sectionChip(w io.Writer, s string) string {
 	if s == "" {
-		return chipMargin + strings.Repeat(" ", sectionChipWidth)
+		return chipMargin + strings.Repeat(" ", sectionChipWidth) + chipGap
 	}
 	if !enabled(w) {
-		return chipMargin + pad("["+s+"]", sectionChipWidth)
+		return chipMargin + pad("["+s+"]", sectionChipWidth) + chipGap
 	}
 	bg := chipBg
 	if s == "NEEDS YOU" {
 		bg = needsBg
 	}
-	return chipMargin + paint(w, bold+"\x1b[97m"+bg, pad(" "+s, sectionChipWidth))
+	return chipMargin + paint(w, bold+"\x1b[97m"+bg, centre(s, sectionChipWidth)) + chipGap
+}
+
+// centre sets s in the middle of n columns, the odd space on the right: a
+// label padded only on the right sat against the chip's left edge with a
+// wide empty tail (2026-09-28 review).
+func centre(s string, n int) string {
+	d := n - visibleCells(s)
+	if d <= 0 {
+		return s
+	}
+	return strings.Repeat(" ", d/2) + s + strings.Repeat(" ", d-d/2)
 }
 
 // renderBatch writes the batch, its CI checks and the last batch's result.

@@ -192,8 +192,8 @@ func TestSectionChipsAreColouredAndAligned(t *testing.T) {
 	var w bytes.Buffer
 	for _, s := range []string{"RUNNING", "QUEUE", "BATCH", "CI", "LAST", "NEEDS YOU", ""} {
 		c := sectionChip(&w, s)
-		if n := visibleWidth(stripANSI(c)); n != len(chipMargin)+sectionChipWidth {
-			t.Fatalf("chip %q is %d wide, want %d", s, n, len(chipMargin)+sectionChipWidth)
+		if n := visibleWidth(stripANSI(c)); n != len(chipMargin)+sectionChipWidth+len(chipGap) {
+			t.Fatalf("chip %q is %d wide, want %d", s, n, len(chipMargin)+sectionChipWidth+len(chipGap))
 		}
 		want := chipBg
 		if s == "NEEDS YOU" {
@@ -207,7 +207,7 @@ func TestSectionChipsAreColouredAndAligned(t *testing.T) {
 		}
 	}
 	t.Setenv("NO_COLOR", "1")
-	if c := sectionChip(&w, "QUEUE"); strings.Contains(c, "\x1b") || c != chipMargin+"[QUEUE]    " {
+	if c := sectionChip(&w, "QUEUE"); strings.Contains(c, "\x1b") || c != chipMargin+"[QUEUE]    "+chipGap {
 		t.Fatalf("a chip with NO_COLOR set = %q, want the bracketed label and no escapes", c)
 	}
 }
@@ -365,5 +365,18 @@ func TestTheFrameClosesEveryRowAndFallsBackToASCII(t *testing.T) {
 	m := frame(&w, 9, 60, "head", "top", []string{"log"}, "BATCH row")
 	if strings.Contains(m, "\x1b[2m") || strings.ContainsAny(m, "╭│─╯") || !strings.Contains(m, "+-") {
 		t.Fatalf("mono should draw the frame in ASCII with no colour:\n%s", m)
+	}
+}
+
+// 2026-09-28 review: a label sits in the middle of its chip, and a space
+// separates the chip from the icon after it.
+func TestAChipLabelIsCentredAndClearOfTheRow(t *testing.T) {
+	colourOn(t)
+	var w bytes.Buffer
+	for label, want := range map[string]string{"RUNNING": "  RUNNING  ", "QUEUE": "   QUEUE   ", "NEEDS YOU": " NEEDS YOU "} {
+		c := stripANSI(sectionChip(&w, label))
+		if got := strings.TrimPrefix(c, chipMargin); got != want+chipGap {
+			t.Errorf("chip %q = %q, want %q", label, got, want+chipGap)
+		}
 	}
 }
