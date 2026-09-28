@@ -345,17 +345,18 @@ func runeWidth(r rune) int {
 	return 1
 }
 
-// onDark swaps the colours written for a terminal's own background for
-// their bright variants, which stay readable on the dark panel: plain blue
-// on near-black is close to invisible, and dim is dimmer still (OR-555).
-// The 256-colour palettes are already light enough and pass through.
+// onDark swaps the terminal's basic and bright colours for fixed light 256-colour
+// shades on the dark panels (OR-555). Basic colours follow the terminal's theme, and
+// several themes draw even "bright blue" as a dark blue that disappears on near-black;
+// a 256-colour value is the same on every theme. Dim becomes a light grey for the same
+// reason. The 256-colour identity palettes are already light and pass through.
 var onDark = strings.NewReplacer(
-	"\x1b[30m", "\x1b[37m",
-	"\x1b[31m", "\x1b[91m",
-	"\x1b[32m", "\x1b[92m",
-	"\x1b[33m", "\x1b[93m",
-	"\x1b[34m", "\x1b[94m",
-	"\x1b[35m", "\x1b[95m",
-	"\x1b[36m", "\x1b[96m",
+	"\x1b[30m", "\x1b[38;5;250m",
+	"\x1b[31m", "\x1b[38;5;210m", "\x1b[91m", "\x1b[38;5;210m",
+	"\x1b[32m", "\x1b[38;5;114m", "\x1b[92m", "\x1b[38;5;114m",
+	"\x1b[33m", "\x1b[38;5;221m", "\x1b[93m", "\x1b[38;5;221m",
+	"\x1b[34m", "\x1b[38;5;111m", "\x1b[94m", "\x1b[38;5;117m",
+	"\x1b[35m", "\x1b[38;5;213m", "\x1b[95m", "\x1b[38;5;219m",
+	"\x1b[36m", "\x1b[38;5;116m", "\x1b[96m", "\x1b[38;5;123m",
 	"\x1b[2m", "\x1b[38;5;248m",
 )

@@ -252,8 +252,13 @@ func TestDarkPanelTextIsBrightened(t *testing.T) {
 	if strings.Contains(rows[1], "\x1b[34m") || strings.Contains(rows[1], "\x1b[2m") {
 		t.Fatalf("dark panel row still carries plain blue or dim: %q", rows[1])
 	}
-	if !strings.Contains(rows[1], "\x1b[94m") {
-		t.Fatalf("blue was not brightened on the panel: %q", rows[1])
+	if !strings.Contains(rows[1], "\x1b[38;5;111m") {
+		t.Fatalf("blue was not lifted to a fixed light shade on the panel: %q", rows[1])
+	}
+	for _, themed := range []string{"\x1b[94m", "\x1b[34m"} {
+		if strings.Contains(rows[1], themed) {
+			t.Fatalf("a theme-dependent blue survived on the panel: %q", rows[1])
+		}
 	}
 	if !strings.Contains(rows[2], "\x1b[34m") {
 		t.Fatalf("the log row's colour was changed: %q", rows[2])
