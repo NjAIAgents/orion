@@ -995,9 +995,32 @@ func closeTicket(key, prURL, queueLabel string, deps Deps, w io.Writer) error {
 	if err := deps.Jira.TransitionTo(key, "Done"); err != nil {
 		ui.Warn(w, "%s: merged and released, but could not transition to Done: %v", key, err)
 	}
-	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion, "merged: "+prURL))
-	closeChildren(key, prURL, queueLabel, deps, w)
+	// The children FIRST, so the landing comment can name the ones left open
+	// for a person (OR-558). A reader who sees "merged" on a story whose
+	// sub-task is still open needs the reason in the same comment, not in a
+	// second one below it.
+	held := closeChildren(key, prURL, queueLabel, deps, w)
+	_ = deps.Jira.Comment(key, actors.Comment(events.ActorOrion, landingNote(prURL, held)))
 	return nil
+}
+
+// landingNote is what a landed ticket's comment says: where the work went,
+// and which sub-tasks are a person's to do.
+//
+// With nothing held it is the pull request URL and nothing else, which is
+// what it has always been -- that URL is how a reader finds the work, so
+// nothing is appended to or reformatted around it.
+func landingNote(prURL string, held []string) string {
+	note := "merged: " + prURL
+	switch len(held) {
+	case 0:
+		return note
+	case 1:
+		return note + "\n\n" + held[0] + " is a person's task and stays open."
+	default:
+		return note + "\n\n" + strings.Join(held, ", ") +
+			" are a person's tasks and stay open."
+	}
 }
 
 // closeChildren moves a merged story's sub-tasks to Done.
@@ -1014,19 +1037,32 @@ func closeTicket(key, prURL, queueLabel string, deps Deps, w io.Writer) error {
 //
 // Only sub-tasks Orion can see, and only ones not already Done -- a task
 // somebody closed by hand is left alone rather than re-transitioned.
-func closeChildren(key, prURL, queueLabel string, deps Deps, w io.Writer) {
+//
+// And only ones an agent COULD have delivered. The keys it returns are the
+// HUMAN-marked sub-tasks it deliberately left open, for the landing comment
+// to name.
+func closeChildren(key, prURL, queueLabel string, deps Deps, w io.Writer) []string {
 	kids, err := deps.Jira.Children(key)
 	if err != nil {
 		// Usually a tracker without a parent field, which is the ordinary
 		// case for a project that does not decompose. Not worth a warning.
-		return
+		return nil
 	}
 	kids = tracker.Workable(kids)
 	if len(kids) == 0 {
-		return
+		return nil
 	}
-	var closed []string
+	var closed, held []string
 	for _, c := range kids {
+		// WORK NO AGENT CAN DO WAS NOT DELIVERED BY THIS PULL REQUEST. It was
+		// never offered to the queue, so no agent picked it up, so nobody has
+		// done it -- closing it as "delivered in" the story states something
+		// false and, worse, releases whatever was linked behind it (OR-558).
+		// A person picks it up; until they do it stays open.
+		if tracker.HumanOnly(c) {
+			held = append(held, c.Key)
+			continue
+		}
 		if err := deps.Jira.TransitionTo(c.Key, "Done"); err != nil {
 			ui.Warn(w, "%s: merged, but %s could not be closed: %v", key, c.Key, err)
 			continue
@@ -1046,6 +1082,14 @@ func closeChildren(key, prURL, queueLabel string, deps Deps, w io.Writer) {
 		ui.Ok(w, "closed", "%d sub-task(s) delivered by %s: %s",
 			len(closed), key, strings.Join(closed, ", "))
 	}
+	// Said out loud rather than silently skipped: a story that reports 27 of
+	// its 28 sub-tasks closed, with no reason given for the twenty-eighth,
+	// reads as a tracker failure.
+	if len(held) > 0 {
+		ui.Ok(w, "held", "%d sub-task(s) of %s are a person's and stay open: %s",
+			len(held), key, strings.Join(held, ", "))
+	}
+	return held
 }
 
 // runPassHook observes each single-project pass. A test seam only.

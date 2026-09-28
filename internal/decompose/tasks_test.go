@@ -3,6 +3,8 @@ package decompose
 import (
 	"strings"
 	"testing"
+
+	"github.com/orion-sdlc/orion/internal/tracker"
 )
 
 // A real /speckit.tasks output, trimmed to the shapes that matter: the
@@ -518,6 +520,19 @@ func TestAHumanTaskIsMarkedAsSuch(t *testing.T) {
 	}
 	if byID["T002"].Human {
 		t.Error("an ordinary task was marked human")
+	}
+	// The body written here is the ONLY trace of [HUMAN] a tracker keeps --
+	// no label is applied and the bracket is stripped from the summary -- and
+	// collect reads it back through tracker.HumanOnly to decide what a landed
+	// story may close. Reword this body without that reader agreeing and a
+	// person's task is closed as delivered again (OR-558).
+	if !tracker.HumanOnly(tracker.Issue{Key: "T001", Description: human.Body}) {
+		t.Errorf("the body no longer reads as a HUMAN marker to tracker.HumanOnly, "+
+			"which is what keeps a landed story from closing it:\n%s", human.Body)
+	}
+	if tracker.HumanOnly(tracker.Issue{Key: "T002", Description: byID["T002"].Body}) {
+		t.Errorf("an ordinary task's body reads as a HUMAN marker, so it would "+
+			"never be closed:\n%s", byID["T002"].Body)
 	}
 }
 
