@@ -12,6 +12,8 @@ import (
 	"github.com/orion-sdlc/orion/internal/actors"
 	"github.com/orion-sdlc/orion/internal/collect"
 	"github.com/orion-sdlc/orion/internal/config"
+	"github.com/orion-sdlc/orion/internal/events"
+	"github.com/orion-sdlc/orion/internal/export"
 	"github.com/orion-sdlc/orion/internal/registry"
 	"github.com/orion-sdlc/orion/internal/supervisor"
 	"github.com/orion-sdlc/orion/internal/tracker"
@@ -112,6 +114,8 @@ func runWatch(args []string) {
 		watchBanner(w, projects, interval, maxJobs, concurrent, concurrentFrom, dry)
 	}
 
+	stopExport := startExport(w)
+
 	watch.Listen(w)
 
 	err = watch.Run(watch.Options{
@@ -180,8 +184,34 @@ func runWatch(args []string) {
 				append([]string{tracker.LabelWorking}, actors.StageLabels()...))
 		},
 	})
+	stopExport()
 	ui.CloseScreen()
 	exitOn(err)
+}
+
+// startExport ships this watcher's events to the observability backend in
+// ~/.orion/observability.json, when one is enabled (OR-556). Anything wrong
+// with it is said and export stays off: the watch runs either way.
+func startExport(w io.Writer) (stop func()) {
+	cfg, err := export.Load(workspace.Home())
+	if err != nil {
+		ui.Warn(w, "%v; observability export is off", err)
+		return func() {}
+	}
+	if !cfg.Enabled {
+		return func() {}
+	}
+	ex, err := export.Start(cfg, func(m string) { ui.Warn(w, "%s", m) })
+	if err != nil {
+		ui.Warn(w, "%v", err)
+		return func() {}
+	}
+	events.SetSink(ex.Send)
+	fmt.Fprintf(w, "  %s\n", ui.Dim(w, "exporting events to "+cfg.Endpoint+" ("+cfg.Preset+")"))
+	return func() {
+		events.SetSink(nil)
+		ex.Close()
+	}
 }
 
 // watchScreen starts the top-style view when stdout is a terminal, unless
